@@ -28,21 +28,21 @@ MAX_IDLE defaults to 3 (exit after N consecutive idle sessions).
 ## How it works
 
 ```
-Host                                /tmp (bare repos)
-~/project/ ── git clone --bare ──>  project-upstream.git  (rw)
-                                    project-mirror-*.git  (ro)
-                                             |
-                                             | docker volumes
-                                             |
-                   .-----------.------------+-----------.-----------.
-                   |           |            |           |           |
-             Container 1           Container 2           Container 3
-             /upstream  (rw)       /upstream  (rw)       /upstream  (rw)
-             /mirrors/* (ro)       /mirrors/* (ro)       /mirrors/* (ro)
-                   |                     |                     |
-                   v                     v                     v
-             /workspace/           /workspace/           /workspace/
-             (agent-work)          (agent-work)          (agent-work)
+Host                             /tmp (bare repos)
+~/project/ ── git clone ──>      project-upstream.git (rw)
+               --bare            project-mirror-*.git (ro)
+                                          |
+                                          | docker volumes
+                                          |
+                 .-----------.------------+-----------.-----------.
+                 |           |            |           |           |
+           Container 1            Container 2            Container 3
+           /upstream  (rw)        /upstream  (rw)        /upstream  (rw)
+           /mirrors/* (ro)        /mirrors/* (ro)        /mirrors/* (ro)
+                 |                      |                      |
+                 v                      v                      v
+           /workspace/            /workspace/            /workspace/
+           (agent-work)           (agent-work)           (agent-work)
 ```
 
 All containers mount the same bare repo. When one agent pushes,
