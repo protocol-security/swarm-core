@@ -9,6 +9,11 @@ AGENT_PROMPT="${AGENT_PROMPT:?AGENT_PROMPT is required.}"
 AGENT_SETUP="${AGENT_SETUP:-}"
 MAX_IDLE="${MAX_IDLE:-3}"
 
+GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"
+GIT_USER_EMAIL="${GIT_USER_EMAIL:-agent@claude-swarm.local}"
+git config --global user.name "$GIT_USER_NAME"
+git config --global user.email "$GIT_USER_EMAIL"
+
 echo "[harness:${AGENT_ID}] Starting (model=${CLAUDE_MODEL}, prompt=${AGENT_PROMPT})..."
 
 if [ ! -d "/workspace/.git" ]; then

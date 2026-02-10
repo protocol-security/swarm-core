@@ -67,6 +67,8 @@ Agents stop after MAX_IDLE consecutive sessions with no commits.
 | CLAUDE_MODEL | no | claude-opus-4-6 | Model for Claude Code. |
 | NUM_AGENTS | no | 3 | Number of containers. |
 | MAX_IDLE | no | 3 | Idle sessions before exit. |
+| GIT_USER_NAME | no | swarm-agent | Git author name for agent commits. |
+| GIT_USER_EMAIL | no | agent@claude-swarm.local | Git author email for agent commits. |
 | ANTHROPIC_BASE_URL | no | | Override API URL (e.g. OpenRouter). |
 | ANTHROPIC_AUTH_TOKEN | no | | Override auth token. |
 

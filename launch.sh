@@ -103,6 +103,8 @@ cmd_start() {
             -e "AGENT_PROMPT=${AGENT_PROMPT}" \
             -e "AGENT_SETUP=${AGENT_SETUP:-}" \
             -e "MAX_IDLE=${MAX_IDLE:-3}" \
+            -e "GIT_USER_NAME=${GIT_USER_NAME:-swarm-agent}" \
+            -e "GIT_USER_EMAIL=${GIT_USER_EMAIL:-agent@claude-swarm.local}" \
             -e "AGENT_ID=${i}" \
             "$IMAGE_NAME"
     done

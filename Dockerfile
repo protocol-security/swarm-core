@@ -24,9 +24,7 @@ RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
 ENV PATH="/home/agent/.local/bin:${PATH}"
 
 # Trust mounted bare repos and allow file:// transport for submodules.
-RUN git config --global user.name "swarm-agent" \
-    && git config --global user.email "agent@claude-swarm.local" \
-    && git config --global --add safe.directory '*' \
+RUN git config --global --add safe.directory '*' \
     && git config --global protocol.file.allow always
 
 COPY --chmod=755 harness.sh /harness.sh
