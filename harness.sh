@@ -16,9 +16,13 @@ if [ ! -d "/workspace/.git" ]; then
     git clone /upstream /workspace
     cd /workspace
 
-    # Point submodule URLs at local mirrors.
-    git submodule foreach --quiet \
-        'git -C "$toplevel" config "submodule.$name.url" "/mirrors/$name"'
+    # Point submodule URLs at local mirrors before init.
+    git config --file .gitmodules --get-regexp 'submodule\..*\.path' | \
+    while read -r key path; do
+        name="${key#submodule.}"
+        name="${name%.path}"
+        git config "submodule.${name}.url" "/mirrors/${name}"
+    done
     git submodule update --init --recursive
 
     git checkout agent-work
