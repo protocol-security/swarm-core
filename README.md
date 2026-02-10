@@ -75,7 +75,6 @@ Agents stop after MAX_IDLE consecutive sessions with no commits.
     ./tools/claude-swarm/progress.sh
     ./tools/claude-swarm/harvest.sh --dry
     ./tools/claude-swarm/harvest.sh
-    ./tools/claude-swarm/harvest.sh --strip-coauthor
 
 ## Smoke test
 

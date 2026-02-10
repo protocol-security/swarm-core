@@ -2,19 +2,17 @@
 set -euo pipefail
 
 # Fetch agent-work from the bare repo, merge into current branch.
-# Usage: ./harvest.sh [--dry] [--strip-coauthor]
+# Usage: ./harvest.sh [--dry]
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT="$(basename "$REPO_ROOT")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 REMOTE_NAME="_agent-harvest"
 DRY_RUN=false
-STRIP_COAUTHOR=false
 
 for arg in "$@"; do
     case "$arg" in
-        --dry)             DRY_RUN=true ;;
-        --strip-coauthor)  STRIP_COAUTHOR=true ;;
+        --dry)  DRY_RUN=true ;;
     esac
 done
 
@@ -56,17 +54,6 @@ fi
 echo ""
 echo "--- Merging agent-work ---"
 git merge "$REMOTE_NAME/agent-work" --no-edit
-
-if [ "$STRIP_COAUTHOR" = true ]; then
-    MERGE_BASE=$(git merge-base HEAD "$REMOTE_NAME/agent-work" 2>/dev/null || true)
-    if [ -n "$MERGE_BASE" ]; then
-        echo ""
-        echo "--- Stripping Co-Authored-By from agent commits ---"
-        git rebase "$MERGE_BASE" --rebase-merges \
-            --exec 'git commit --amend --no-edit --reset-author \
-            -m "$(git log -1 --pretty=%B | grep -v "^Co-Authored-By:")"'
-    fi
-fi
 
 git remote remove "$REMOTE_NAME"
 
