@@ -1,0 +1,36 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    ca-certificates \
+    clang \
+    make \
+    && rm -rf /var/lib/apt/lists/*
+
+# Claude Code refuses --dangerously-skip-permissions as root.
+RUN useradd -m -s /bin/bash agent
+USER agent
+
+# Download then execute (not piped) so curl failures stop the build.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh \
+    && sh /tmp/rustup.sh -y --default-toolchain stable \
+    && rm /tmp/rustup.sh
+ENV PATH="/home/agent/.cargo/bin:${PATH}"
+
+RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
+    && bash /tmp/claude-install.sh \
+    && rm /tmp/claude-install.sh
+ENV PATH="/home/agent/.local/bin:${PATH}"
+
+# Trust mounted bare repos and allow file:// transport for submodules.
+RUN git config --global user.name "swarm-agent" \
+    && git config --global user.email "agent@claude-swarm.local" \
+    && git config --global --add safe.directory '*' \
+    && git config --global protocol.file.allow always
+
+COPY --chmod=755 harness.sh /harness.sh
+
+WORKDIR /workspace
+
+ENTRYPOINT ["/harness.sh"]
