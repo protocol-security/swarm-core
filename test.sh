@@ -62,8 +62,9 @@ git push origin agent-work
 PROMPT
 
 cd "$REPO_ROOT"
-git add "$PROMPT_FILE"
+git add -f "$PROMPT_FILE"
 git commit --quiet -m "tmp: smoke test prompt"
+PROMPT_COMMITTED=true
 
 cleanup() {
     echo ""
@@ -74,11 +75,11 @@ cleanup() {
         "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
     rm -rf "$REVIEW_DIR"
 
-    # Remove the temp prompt commit.
-    cd "$REPO_ROOT"
-    git rm --quiet -f "$PROMPT_FILE" 2>/dev/null || true
-    git commit --quiet --allow-empty -m "tmp: remove smoke test prompt" 2>/dev/null || true
-    git reset --quiet --soft HEAD~2
+    # Undo the temp commit.
+    if [ "${PROMPT_COMMITTED:-}" = true ]; then
+        cd "$REPO_ROOT"
+        git reset --quiet --hard HEAD~1
+    fi
 }
 trap cleanup EXIT
 
