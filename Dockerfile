@@ -12,11 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -m -s /bin/bash agent
 USER agent
 
-# Download then execute (not piped) so curl failures stop the build.
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh \
-    && sh /tmp/rustup.sh -y --default-toolchain stable \
-    && rm /tmp/rustup.sh
-ENV PATH="/home/agent/.cargo/bin:${PATH}"
+# Language toolchains are installed by AGENT_SETUP, not here.
 
 RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
     && bash /tmp/claude-install.sh \
