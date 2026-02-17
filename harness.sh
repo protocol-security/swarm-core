@@ -24,15 +24,17 @@ if [ ! -d "/workspace/.git" ]; then
     # Init only submodules whose mirrors were mounted into the
     # container. Client submodules without mirrors keep their
     # upstream URLs and are left for the agent to init on demand.
-    git config --file .gitmodules --get-regexp 'submodule\..*\.path' | \
-    while read -r key path; do
-        name="${key#submodule.}"
-        name="${name%.path}"
-        if [ -d "/mirrors/${name}" ]; then
-            git config "submodule.${name}.url" "/mirrors/${name}"
-            git submodule update --init -- "$path"
-        fi
-    done
+    if [ -f .gitmodules ]; then
+        git config --file .gitmodules --get-regexp 'submodule\..*\.path' | \
+        while read -r key path; do
+            name="${key#submodule.}"
+            name="${name%.path}"
+            if [ -d "/mirrors/${name}" ]; then
+                git config "submodule.${name}.url" "/mirrors/${name}"
+                git submodule update --init -- "$path"
+            fi
+        done
+    fi
 
     git checkout agent-work
 
