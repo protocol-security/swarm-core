@@ -29,10 +29,11 @@ echo "--- Fetching agent-work ---"
 git remote add "$REMOTE_NAME" "$BARE_REPO"
 git fetch "$REMOTE_NAME" agent-work
 
-NEW_COMMITS=$(git log --oneline "$REMOTE_NAME/agent-work" ^HEAD | wc -l)
+COMMIT_LOG=$(git log --oneline "$REMOTE_NAME/agent-work" ^HEAD)
+NEW_COMMITS=$(echo "$COMMIT_LOG" | grep -c . || true)
 echo ""
 echo "${NEW_COMMITS} new commits on agent-work:"
-git log --oneline "$REMOTE_NAME/agent-work" ^HEAD | head -20
+echo "$COMMIT_LOG" | head -20
 if [ "$NEW_COMMITS" -gt 20 ]; then
     echo "  ... and $((NEW_COMMITS - 20)) more"
 fi
