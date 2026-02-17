@@ -78,6 +78,7 @@ PROMPT_COMMITTED=true
 cleanup() {
     echo ""
     echo "--- Cleaning up ---"
+    cd "$REPO_ROOT"
     AGENT_PROMPT="$PROMPT_FILE" \
         AGENT_SETUP="$SETUP_FILE" \
         ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
@@ -87,7 +88,6 @@ cleanup() {
 
     # Undo the temp commit.
     if [ "${PROMPT_COMMITTED:-}" = true ]; then
-        cd "$REPO_ROOT"
         git reset --quiet --hard HEAD~1
     fi
 }
