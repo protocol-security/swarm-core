@@ -6,10 +6,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     clang \
     make \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # Claude Code refuses --dangerously-skip-permissions as root.
-RUN useradd -m -s /bin/bash agent
+RUN useradd -m -s /bin/bash agent \
+    && echo "agent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/agent
 USER agent
 
 # Language toolchains are installed by AGENT_SETUP, not here.
