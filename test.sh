@@ -61,8 +61,17 @@ git push origin agent-work
 - Use the exact bash commands above. Do not improvise.
 PROMPT
 
+# Write a setup script that requires root (tests sudo in harness).
+SETUP_FILE=".claude-swarm-smoke-setup.sh"
+cat > "$REPO_ROOT/$SETUP_FILE" <<'SETUP'
+#!/bin/bash
+set -euo pipefail
+apt-get update -qq > /dev/null
+echo "Smoke test setup complete."
+SETUP
+
 cd "$REPO_ROOT"
-git add -f "$PROMPT_FILE"
+git add -f "$PROMPT_FILE" "$SETUP_FILE"
 git commit --quiet -m "tmp: smoke test prompt"
 PROMPT_COMMITTED=true
 
@@ -70,6 +79,7 @@ cleanup() {
     echo ""
     echo "--- Cleaning up ---"
     AGENT_PROMPT="$PROMPT_FILE" \
+        AGENT_SETUP="$SETUP_FILE" \
         ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
         NUM_AGENTS="${NUM_AGENTS}" \
         "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
@@ -87,6 +97,7 @@ echo "=== Smoke test: ${NUM_AGENTS} agents ==="
 echo ""
 
 AGENT_PROMPT="$PROMPT_FILE" \
+    AGENT_SETUP="$SETUP_FILE" \
     ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
     NUM_AGENTS="${NUM_AGENTS}" \
     "$SWARM_DIR/launch.sh" start

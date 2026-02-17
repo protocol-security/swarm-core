@@ -21,21 +21,25 @@ if [ ! -d "/workspace/.git" ]; then
     git clone /upstream /workspace
     cd /workspace
 
-    # Point submodule URLs at local mirrors before init.
+    # Init only submodules whose mirrors were mounted into the
+    # container. Client submodules without mirrors keep their
+    # upstream URLs and are left for the agent to init on demand.
     git config --file .gitmodules --get-regexp 'submodule\..*\.path' | \
     while read -r key path; do
         name="${key#submodule.}"
         name="${name%.path}"
-        git config "submodule.${name}.url" "/mirrors/${name}"
+        if [ -d "/mirrors/${name}" ]; then
+            git config "submodule.${name}.url" "/mirrors/${name}"
+            git submodule update --init -- "$path"
+        fi
     done
-    git submodule update --init --recursive
 
     git checkout agent-work
 
     # Run project-specific setup if provided.
     if [ -n "$AGENT_SETUP" ] && [ -f "$AGENT_SETUP" ]; then
         echo "[harness:${AGENT_ID}] Running ${AGENT_SETUP}..."
-        bash "$AGENT_SETUP"
+        sudo bash "$AGENT_SETUP"
     fi
 
     mkdir -p agent_logs
