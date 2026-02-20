@@ -132,6 +132,11 @@ cmd_start() {
         NAME="${IMAGE_NAME}-${AGENT_IDX}"
         docker rm -f "$NAME" 2>/dev/null || true
 
+        # Tag git user name with model so commits identify the model.
+        local short_model="${agent_model/claude-/}"
+        short_model="${short_model//\//-}"
+        local agent_git_name="${GIT_USER_NAME} [${short_model}]"
+
         echo "--- Launching ${NAME} (${agent_model}) ---"
         EXTRA_ENV=()
         if [ -n "$agent_base_url" ]; then
@@ -152,7 +157,7 @@ cmd_start() {
             -e "AGENT_PROMPT=${AGENT_PROMPT}" \
             -e "AGENT_SETUP=${AGENT_SETUP}" \
             -e "MAX_IDLE=${MAX_IDLE}" \
-            -e "GIT_USER_NAME=${GIT_USER_NAME}" \
+            -e "GIT_USER_NAME=${agent_git_name}" \
             -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
             -e "AGENT_ID=${AGENT_IDX}" \
             "$IMAGE_NAME"
