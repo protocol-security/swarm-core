@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Create bare repos, build image, launch N agent containers.
-# Usage: ./launch.sh {start|stop|logs N|status}
+# Usage: ./launch.sh {start|stop|logs N|status|wait|post-process}
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -197,13 +197,143 @@ cmd_status() {
     done
 }
 
+cmd_wait() {
+    echo "--- Waiting for all agents to finish ---"
+
+    while true; do
+        sleep 10
+        local all_done=true running=0 exited=0
+        for i in $(seq 1 "$NUM_AGENTS"); do
+            local state
+            state=$(docker inspect -f '{{.State.Status}}' "${IMAGE_NAME}-${i}" 2>/dev/null || echo "not found")
+            case "$state" in
+                running) running=$((running + 1)); all_done=false ;;
+                exited)  exited=$((exited + 1)) ;;
+            esac
+        done
+
+        printf "\r  %d running, %d exited " "$running" "$exited"
+
+        if $all_done; then
+            echo ""
+            echo "All agents finished."
+            break
+        fi
+    done
+
+    if [ -n "$CONFIG_FILE" ]; then
+        local pp_prompt
+        pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE")
+        if [ -n "$pp_prompt" ]; then
+            echo ""
+            cmd_post_process
+            return
+        fi
+    fi
+
+    echo ""
+    echo "--- Harvesting results ---"
+    "$SWARM_DIR/harvest.sh"
+}
+
+cmd_post_process() {
+    if [ -z "$CONFIG_FILE" ]; then
+        echo "ERROR: post-process requires a config file with a post_process section." >&2
+        exit 1
+    fi
+
+    local pp_prompt pp_model pp_base_url pp_api_key
+    pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE")
+    pp_model=$(jq -r '.post_process.model // "claude-opus-4-6"' "$CONFIG_FILE")
+    pp_base_url=$(jq -r '.post_process.base_url // empty' "$CONFIG_FILE")
+    pp_api_key=$(jq -r '.post_process.api_key // empty' "$CONFIG_FILE")
+
+    if [ -z "$pp_prompt" ]; then
+        echo "ERROR: post_process.prompt is not set in ${CONFIG_FILE}." >&2
+        exit 1
+    fi
+
+    if [ ! -d "$BARE_REPO" ]; then
+        echo "ERROR: ${BARE_REPO} not found." >&2
+        exit 1
+    fi
+
+    local NAME="${IMAGE_NAME}-post"
+    docker rm -f "$NAME" 2>/dev/null || true
+
+    # Build mirror volume args from existing mirrors.
+    local MIRROR_ARGS=()
+    cd "$REPO_ROOT"
+    git submodule foreach --quiet 'echo "$name"' 2>/dev/null | while read -r name; do
+        local safe_name="${name//\//_}"
+        local mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
+        if [ -d "$mirror" ]; then
+            echo "-v ${mirror}:/mirrors/${name}:ro"
+        fi
+    done > /tmp/${PROJECT}-pp-vols.txt
+    while read -r line; do
+        # shellcheck disable=SC2086
+        MIRROR_ARGS+=($line)
+    done < /tmp/${PROJECT}-pp-vols.txt
+    rm -f /tmp/${PROJECT}-pp-vols.txt
+
+    local EXTRA_ENV=()
+    if [ -n "$pp_base_url" ]; then
+        EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${pp_base_url}")
+    elif [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
+        EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}")
+    fi
+    [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
+        && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
+
+    echo "--- Starting post-processing (${pp_model}) ---"
+    docker run -d \
+        --name "$NAME" \
+        -v "${BARE_REPO}:/upstream:rw" \
+        "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
+        -e "ANTHROPIC_API_KEY=${pp_api_key:-${ANTHROPIC_API_KEY:-}}" \
+        "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
+        -e "CLAUDE_MODEL=${pp_model}" \
+        -e "AGENT_PROMPT=${pp_prompt}" \
+        -e "AGENT_SETUP=${AGENT_SETUP:-}" \
+        -e "MAX_IDLE=${MAX_IDLE}" \
+        -e "GIT_USER_NAME=${GIT_USER_NAME}" \
+        -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
+        -e "AGENT_ID=post" \
+        "$IMAGE_NAME"
+
+    echo "Post-processing agent launched: ${NAME}"
+    echo "Waiting for completion..."
+
+    while true; do
+        sleep 10
+        local state
+        state=$(docker inspect -f '{{.State.Status}}' "$NAME" 2>/dev/null || echo "not found")
+        if [ "$state" = "running" ]; then
+            printf "."
+            continue
+        fi
+        echo ""
+        echo "Post-processing agent finished (${state})."
+        break
+    done
+
+    docker rm "$NAME" 2>/dev/null || true
+
+    echo ""
+    echo "--- Harvesting results ---"
+    "$SWARM_DIR/harvest.sh"
+}
+
 case "${1:-start}" in
-    start)  cmd_start ;;
-    stop)   cmd_stop ;;
-    logs)   cmd_logs "${2:-1}" ;;
-    status) cmd_status ;;
+    start)         cmd_start ;;
+    stop)          cmd_stop ;;
+    logs)          cmd_logs "${2:-1}" ;;
+    status)        cmd_status ;;
+    wait)          cmd_wait ;;
+    post-process)  cmd_post_process ;;
     *)
-        echo "Usage: $0 {start|stop|logs N|status}" >&2
+        echo "Usage: $0 {start|stop|logs N|status|wait|post-process}" >&2
         exit 1
         ;;
 esac

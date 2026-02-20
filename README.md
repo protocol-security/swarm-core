@@ -25,6 +25,7 @@ Or configure manually:
     ./tools/claude-swarm/launch.sh start
     ./tools/claude-swarm/launch.sh status
     ./tools/claude-swarm/launch.sh logs 1
+    ./tools/claude-swarm/launch.sh wait
     ./tools/claude-swarm/launch.sh stop
 
 SWARM_MODEL defaults to claude-opus-4-6.
@@ -119,6 +120,30 @@ When a config file is present it takes precedence over env vars.
 Always-on TUI showing agent status, models, session counts, and
 recent commits. Keyboard shortcuts: `q` quit, `1`-`9` show agent
 logs, `h` harvest, `s` stop all, `p` post-process.
+
+## Post-processing
+
+Add a `post_process` section to `swarm.json`:
+
+```json
+{
+  "post_process": {
+    "prompt": "prompts/review.md",
+    "model": "claude-opus-4-6"
+  }
+}
+```
+
+After all agents finish (or manually):
+
+    ./tools/claude-swarm/launch.sh wait          # blocks until done, then post-processes + harvests
+    ./tools/claude-swarm/launch.sh post-process   # run post-processing immediately
+
+The `wait` command polls until all agents exit, then launches a
+single post-processing agent with a different prompt against the
+same bare repo.  The post-processing agent sees all agent commits
+on `agent-work`, does its review/consolidation, and pushes.
+Results are harvested automatically.
 
 ## Inspect and harvest results
 
