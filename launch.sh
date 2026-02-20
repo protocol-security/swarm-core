@@ -9,8 +9,13 @@ SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT="$(basename "$REPO_ROOT")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
-NUM_AGENTS="${NUM_AGENTS:-3}"
-CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-4-6}"
+NUM_AGENTS="${SWARM_NUM_AGENTS:-3}"
+CLAUDE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
+AGENT_PROMPT="${SWARM_PROMPT:-}"
+AGENT_SETUP="${SWARM_SETUP:-}"
+MAX_IDLE="${SWARM_MAX_IDLE:-3}"
+GIT_USER_NAME="${SWARM_GIT_USER_NAME:-swarm-agent}"
+GIT_USER_EMAIL="${SWARM_GIT_USER_EMAIL:-agent@claude-swarm.local}"
 
 cmd_start() {
     if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
@@ -23,8 +28,8 @@ cmd_start() {
         exit 1
     fi
 
-    if [ -z "${AGENT_PROMPT:-}" ]; then
-        echo "ERROR: AGENT_PROMPT is not set." >&2
+    if [ -z "$AGENT_PROMPT" ]; then
+        echo "ERROR: SWARM_PROMPT is not set." >&2
         exit 1
     fi
 
@@ -101,10 +106,10 @@ cmd_start() {
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
             -e "CLAUDE_MODEL=${CLAUDE_MODEL}" \
             -e "AGENT_PROMPT=${AGENT_PROMPT}" \
-            -e "AGENT_SETUP=${AGENT_SETUP:-}" \
-            -e "MAX_IDLE=${MAX_IDLE:-3}" \
-            -e "GIT_USER_NAME=${GIT_USER_NAME:-swarm-agent}" \
-            -e "GIT_USER_EMAIL=${GIT_USER_EMAIL:-agent@claude-swarm.local}" \
+            -e "AGENT_SETUP=${AGENT_SETUP}" \
+            -e "MAX_IDLE=${MAX_IDLE}" \
+            -e "GIT_USER_NAME=${GIT_USER_NAME}" \
+            -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
             -e "AGENT_ID=${i}" \
             "$IMAGE_NAME"
     done

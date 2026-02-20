@@ -9,7 +9,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT="$(basename "$REPO_ROOT")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 REVIEW_DIR="/tmp/${PROJECT}-test-review"
-NUM_AGENTS="${NUM_AGENTS:-2}"
+NUM_AGENTS="${SWARM_NUM_AGENTS:-2}"
 TIMEOUT="${TIMEOUT:-600}"
 
 # Write the smoke test prompt as a temp file and commit it.
@@ -79,10 +79,10 @@ cleanup() {
     echo ""
     echo "--- Cleaning up ---"
     cd "$REPO_ROOT"
-    AGENT_PROMPT="$PROMPT_FILE" \
-        AGENT_SETUP="$SETUP_FILE" \
+    SWARM_PROMPT="$PROMPT_FILE" \
+        SWARM_SETUP="$SETUP_FILE" \
         ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
-        NUM_AGENTS="${NUM_AGENTS}" \
+        SWARM_NUM_AGENTS="${NUM_AGENTS}" \
         "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
     rm -rf "$REVIEW_DIR"
 
@@ -96,10 +96,10 @@ trap cleanup EXIT
 echo "=== Smoke test: ${NUM_AGENTS} agents ==="
 echo ""
 
-AGENT_PROMPT="$PROMPT_FILE" \
-    AGENT_SETUP="$SETUP_FILE" \
+SWARM_PROMPT="$PROMPT_FILE" \
+    SWARM_SETUP="$SETUP_FILE" \
     ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
-    NUM_AGENTS="${NUM_AGENTS}" \
+    SWARM_NUM_AGENTS="${NUM_AGENTS}" \
     "$SWARM_DIR/launch.sh" start
 
 echo ""

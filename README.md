@@ -15,15 +15,15 @@ Add as a submodule:
 ## Usage
 
     export ANTHROPIC_API_KEY="sk-ant-..."
-    export AGENT_PROMPT="path/to/prompt.md"
+    export SWARM_PROMPT="path/to/prompt.md"
     ./tools/claude-swarm/launch.sh start
     ./tools/claude-swarm/launch.sh status
     ./tools/claude-swarm/launch.sh logs 1
     ./tools/claude-swarm/launch.sh stop
 
-CLAUDE_MODEL defaults to claude-opus-4-6.
-NUM_AGENTS defaults to 3.
-MAX_IDLE defaults to 3 (exit after N consecutive idle sessions).
+SWARM_MODEL defaults to claude-opus-4-6.
+SWARM_NUM_AGENTS defaults to 3.
+SWARM_MAX_IDLE defaults to 3 (exit after N consecutive idle sessions).
 
 ## How it works
 
@@ -62,13 +62,13 @@ Agents stop after MAX_IDLE consecutive sessions with no commits.
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | ANTHROPIC_API_KEY | yes | | API key. |
-| AGENT_PROMPT | yes | | Path to prompt file (relative to repo root). |
-| AGENT_SETUP | no | | Path to setup script (relative to repo root). |
-| CLAUDE_MODEL | no | claude-opus-4-6 | Model for Claude Code. |
-| NUM_AGENTS | no | 3 | Number of containers. |
-| MAX_IDLE | no | 3 | Idle sessions before exit. |
-| GIT_USER_NAME | no | swarm-agent | Git author name for agent commits. |
-| GIT_USER_EMAIL | no | agent@claude-swarm.local | Git author email for agent commits. |
+| SWARM_PROMPT | yes | | Path to prompt file (relative to repo root). |
+| SWARM_SETUP | no | | Path to setup script (relative to repo root). |
+| SWARM_MODEL | no | claude-opus-4-6 | Model for Claude Code. |
+| SWARM_NUM_AGENTS | no | 3 | Number of containers. |
+| SWARM_MAX_IDLE | no | 3 | Idle sessions before exit. |
+| SWARM_GIT_USER_NAME | no | swarm-agent | Git author name for agent commits. |
+| SWARM_GIT_USER_EMAIL | no | agent@claude-swarm.local | Git author email for agent commits. |
 | ANTHROPIC_BASE_URL | no | | Override API URL (e.g. OpenRouter). |
 | ANTHROPIC_AUTH_TOKEN | no | | Override auth token. |
 
@@ -82,7 +82,7 @@ Agents stop after MAX_IDLE consecutive sessions with no commits.
 
     ANTHROPIC_API_KEY="sk-ant-..." ./tools/claude-swarm/test.sh
 
-Launches NUM_AGENTS (default 2) with an embedded counting prompt,
+Launches SWARM_NUM_AGENTS (default 2) agents with an embedded counting prompt,
 verifies each agent writes deterministic output and pushes.
 
 ## Verify image
