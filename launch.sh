@@ -331,7 +331,12 @@ cmd_post_process() {
 }
 
 case "${1:-start}" in
-    start)         cmd_start ;;
+    start)
+        cmd_start
+        if [ "${2:-}" = "--dashboard" ]; then
+            exec "$SWARM_DIR/dashboard.sh"
+        fi
+        ;;
     stop)          cmd_stop ;;
     logs)          cmd_logs "${2:-1}" ;;
     status)        cmd_status ;;

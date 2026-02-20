@@ -23,6 +23,7 @@ Or configure manually:
     export ANTHROPIC_API_KEY="sk-ant-..."
     export SWARM_PROMPT="path/to/prompt.md"
     ./tools/claude-swarm/launch.sh start
+    ./tools/claude-swarm/launch.sh start --dashboard
     ./tools/claude-swarm/launch.sh status
     ./tools/claude-swarm/launch.sh logs 1
     ./tools/claude-swarm/launch.sh wait
@@ -154,9 +155,11 @@ Results are harvested automatically.
 ## Smoke test
 
     ANTHROPIC_API_KEY="sk-ant-..." ./tools/claude-swarm/test.sh
+    ANTHROPIC_API_KEY="sk-ant-..." ./tools/claude-swarm/test.sh --config swarm.json
 
-Launches SWARM_NUM_AGENTS (default 2) agents with an embedded counting prompt,
-verifies each agent writes deterministic output and pushes.
+Launches agents with an embedded counting prompt, verifies each agent
+writes deterministic output and pushes.  The `--config` flag runs the
+smoke test with a config file (mixed models, custom endpoints).
 
 ## Verify image
 
