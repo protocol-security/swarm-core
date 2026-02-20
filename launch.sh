@@ -9,16 +9,38 @@ SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT="$(basename "$REPO_ROOT")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
-NUM_AGENTS="${SWARM_NUM_AGENTS:-3}"
-CLAUDE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
-AGENT_PROMPT="${SWARM_PROMPT:-}"
-AGENT_SETUP="${SWARM_SETUP:-}"
-MAX_IDLE="${SWARM_MAX_IDLE:-3}"
-GIT_USER_NAME="${SWARM_GIT_USER_NAME:-swarm-agent}"
-GIT_USER_EMAIL="${SWARM_GIT_USER_EMAIL:-agent@claude-swarm.local}"
+CONFIG_FILE="${SWARM_CONFIG:-}"
+if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
+    CONFIG_FILE="$REPO_ROOT/swarm.json"
+fi
+
+if [ -n "$CONFIG_FILE" ]; then
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "ERROR: Config file ${CONFIG_FILE} not found." >&2
+        exit 1
+    fi
+    if ! command -v jq &>/dev/null; then
+        echo "ERROR: jq is required to parse config files." >&2
+        exit 1
+    fi
+    AGENT_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
+    AGENT_SETUP=$(jq -r '.setup // empty' "$CONFIG_FILE")
+    MAX_IDLE=$(jq -r '.max_idle // 3' "$CONFIG_FILE")
+    GIT_USER_NAME=$(jq -r '.git_user.name // "swarm-agent"' "$CONFIG_FILE")
+    GIT_USER_EMAIL=$(jq -r '.git_user.email // "agent@claude-swarm.local"' "$CONFIG_FILE")
+    NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
+else
+    NUM_AGENTS="${SWARM_NUM_AGENTS:-3}"
+    CLAUDE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
+    AGENT_PROMPT="${SWARM_PROMPT:-}"
+    AGENT_SETUP="${SWARM_SETUP:-}"
+    MAX_IDLE="${SWARM_MAX_IDLE:-3}"
+    GIT_USER_NAME="${SWARM_GIT_USER_NAME:-swarm-agent}"
+    GIT_USER_EMAIL="${SWARM_GIT_USER_EMAIL:-agent@claude-swarm.local}"
+fi
 
 cmd_start() {
-    if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+    if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "$CONFIG_FILE" ]; then
         echo "ERROR: ANTHROPIC_API_KEY is not set." >&2
         exit 1
     fi
@@ -29,7 +51,11 @@ cmd_start() {
     fi
 
     if [ -z "$AGENT_PROMPT" ]; then
-        echo "ERROR: SWARM_PROMPT is not set." >&2
+        if [ -n "$CONFIG_FILE" ]; then
+            echo "ERROR: 'prompt' is missing in ${CONFIG_FILE}." >&2
+        else
+            echo "ERROR: SWARM_PROMPT is not set." >&2
+        fi
         exit 1
     fi
 
@@ -80,41 +106,59 @@ cmd_start() {
         echo "-v ${mirror}:/mirrors/${name}:ro"
     done > /tmp/${PROJECT}-mirror-vols.txt
 
-    for i in $(seq 1 "$NUM_AGENTS"); do
-        NAME="${IMAGE_NAME}-${i}"
+    # Build per-agent config (model, base_url, api_key per line).
+    AGENTS_TSV="/tmp/${PROJECT}-agents.tsv"
+    if [ -n "$CONFIG_FILE" ]; then
+        jq -r '.agents[] | range(.count) as $i |
+            [.model, (.base_url // ""), (.api_key // "")] | @tsv' \
+            "$CONFIG_FILE" > "$AGENTS_TSV"
+    else
+        : > "$AGENTS_TSV"
+        for _i in $(seq 1 "$NUM_AGENTS"); do
+            printf '%s\t\t\n' "$CLAUDE_MODEL" >> "$AGENTS_TSV"
+        done
+    fi
+
+    # Read mirror volume mounts (shared across all containers).
+    MIRROR_ARGS=()
+    while read -r line; do
+        # shellcheck disable=SC2086
+        MIRROR_ARGS+=($line)
+    done < /tmp/${PROJECT}-mirror-vols.txt
+
+    AGENT_IDX=0
+    while IFS=$'\t' read -r agent_model agent_base_url agent_api_key; do
+        AGENT_IDX=$((AGENT_IDX + 1))
+        NAME="${IMAGE_NAME}-${AGENT_IDX}"
         docker rm -f "$NAME" 2>/dev/null || true
 
-        echo "--- Launching ${NAME} ---"
+        echo "--- Launching ${NAME} (${agent_model}) ---"
         EXTRA_ENV=()
-        [ -n "${ANTHROPIC_BASE_URL:-}" ] \
-            && EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}")
+        if [ -n "$agent_base_url" ]; then
+            EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${agent_base_url}")
+        elif [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
+            EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}")
+        fi
         [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
             && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
-
-        # Read mirror volume mounts.
-        MIRROR_ARGS=()
-        while read -r line; do
-            # shellcheck disable=SC2086
-            MIRROR_ARGS+=($line)
-        done < /tmp/${PROJECT}-mirror-vols.txt
 
         docker run -d \
             --name "$NAME" \
             -v "${BARE_REPO}:/upstream:rw" \
-            "${MIRROR_ARGS[@]}" \
-            -e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}" \
+            "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
+            -e "ANTHROPIC_API_KEY=${agent_api_key:-${ANTHROPIC_API_KEY:-}}" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
-            -e "CLAUDE_MODEL=${CLAUDE_MODEL}" \
+            -e "CLAUDE_MODEL=${agent_model}" \
             -e "AGENT_PROMPT=${AGENT_PROMPT}" \
             -e "AGENT_SETUP=${AGENT_SETUP}" \
             -e "MAX_IDLE=${MAX_IDLE}" \
             -e "GIT_USER_NAME=${GIT_USER_NAME}" \
             -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
-            -e "AGENT_ID=${i}" \
+            -e "AGENT_ID=${AGENT_IDX}" \
             "$IMAGE_NAME"
-    done
+    done < "$AGENTS_TSV"
 
-    rm -f /tmp/${PROJECT}-mirror-vols.txt
+    rm -f /tmp/${PROJECT}-mirror-vols.txt /tmp/${PROJECT}-agents.tsv
 
     echo ""
     echo "--- ${NUM_AGENTS} agents launched ---"

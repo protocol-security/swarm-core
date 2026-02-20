@@ -52,17 +52,49 @@ Each container runs `harness.sh`:
 
 1. Clones `/upstream` to `/workspace`.
 2. Points submodule URLs at local read-only mirrors.
-3. Runs an optional setup hook (`AGENT_SETUP`).
+3. Runs an optional setup hook (`SWARM_SETUP`).
 4. Loops: reset to `origin/agent-work`, run one Claude session.
 
-Agents stop after MAX_IDLE consecutive sessions with no commits.
+Agents stop after SWARM_MAX_IDLE consecutive sessions with no commits.
 
 ## Configuration
+
+### Config file (recommended for mixed models)
+
+Place a `swarm.json` in your repo root, or point to one with
+`SWARM_CONFIG=/path/to/config.json`:
+
+```json
+{
+  "prompt": "prompts/task.md",
+  "setup": "scripts/setup.sh",
+  "max_idle": 3,
+  "git_user": { "name": "swarm-agent", "email": "agent@claude-swarm.local" },
+  "agents": [
+    { "count": 2, "model": "claude-opus-4-6" },
+    { "count": 1, "model": "claude-sonnet-4-5" },
+    {
+      "count": 3,
+      "model": "openrouter/custom",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "sk-or-..."
+    }
+  ]
+}
+```
+
+Agent groups without `api_key` use `ANTHROPIC_API_KEY` from the
+environment. Total agent count is the sum of all `count` fields.
+
+Requires `jq` on the host.
+
+### Environment variables (simple case)
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | ANTHROPIC_API_KEY | yes | | API key. |
 | SWARM_PROMPT | yes | | Path to prompt file (relative to repo root). |
+| SWARM_CONFIG | no | | Path to config file (auto-detects swarm.json). |
 | SWARM_SETUP | no | | Path to setup script (relative to repo root). |
 | SWARM_MODEL | no | claude-opus-4-6 | Model for Claude Code. |
 | SWARM_NUM_AGENTS | no | 3 | Number of containers. |
@@ -71,6 +103,8 @@ Agents stop after MAX_IDLE consecutive sessions with no commits.
 | SWARM_GIT_USER_EMAIL | no | agent@claude-swarm.local | Git author email for agent commits. |
 | ANTHROPIC_BASE_URL | no | | Override API URL (e.g. OpenRouter). |
 | ANTHROPIC_AUTH_TOKEN | no | | Override auth token. |
+
+When a config file is present it takes precedence over env vars.
 
 ## Inspect and harvest results
 
