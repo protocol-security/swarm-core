@@ -14,6 +14,12 @@ Add as a submodule:
 
 ## Usage
 
+Interactive setup (produces `swarm.json`):
+
+    ./tools/claude-swarm/setup.sh
+
+Or configure manually:
+
     export ANTHROPIC_API_KEY="sk-ant-..."
     export SWARM_PROMPT="path/to/prompt.md"
     ./tools/claude-swarm/launch.sh start
