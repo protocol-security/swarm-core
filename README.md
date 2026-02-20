@@ -106,6 +106,14 @@ Requires `jq` on the host.
 
 When a config file is present it takes precedence over env vars.
 
+## Dashboard
+
+    ./tools/claude-swarm/dashboard.sh
+
+Always-on TUI showing agent status, models, session counts, and
+recent commits. Keyboard shortcuts: `q` quit, `1`-`9` show agent
+logs, `h` harvest, `s` stop all, `p` post-process.
+
 ## Inspect and harvest results
 
     ./tools/claude-swarm/progress.sh
