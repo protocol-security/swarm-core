@@ -78,6 +78,42 @@ format_duration() {
     fi
 }
 
+format_duration_ms() {
+    format_duration $(( ${1:-0} / 1000 ))
+}
+
+format_tokens() {
+    local n=${1:-0}
+    if [ "$n" -ge 1000000 ]; then
+        printf '%.1fM' "$(echo "$n / 1000000" | bc -l)"
+    elif [ "$n" -ge 1000 ]; then
+        printf '%.0fk' "$(echo "$n / 1000" | bc -l)"
+    else
+        printf '%d' "$n"
+    fi
+}
+
+format_cost() {
+    printf '$%.2f' "${1:-0}"
+}
+
+read_agent_stats() {
+    local name=$1 agent_id=$2
+    local stats_file="agent_logs/stats_agent_${agent_id}.tsv"
+    local raw
+    raw=$(docker exec "$name" cat "/workspace/$stats_file" 2>/dev/null || true)
+    if [ -z "$raw" ]; then
+        echo "0 0 0 0 0 0 0"
+        return
+    fi
+    echo "$raw" | awk -F'\t' '{
+        cost += $2; tok_in += $3; tok_out += $4;
+        cache += $5; dur += $7; turns += $9
+    } END {
+        printf "%s %d %d %d %d %d\n", cost, tok_in, tok_out, cache, dur, turns
+    }'
+}
+
 draw() {
     local now elapsed uptime_str
     now=$(date +%s)
@@ -97,9 +133,11 @@ draw() {
     echo ""
 
     # Agent table header.
-    printf "  ${BOLD}%-4s %-20s %-14s %8s${RESET}\n" "#" "Model" "Status" "Sessions"
+    printf "  ${BOLD}%-3s %-16s %-10s %8s %9s %5s %7s${RESET}\n" \
+        "#" "Model" "Status" "Cost" "In/Out" "Turns" "Time"
 
     local running_count=0 exited_count=0
+    local total_cost=0 total_in=0 total_out=0 total_cache=0 total_dur=0 total_turns=0
 
     for i in $(seq 1 "$NUM_AGENTS"); do
         local name="${IMAGE_NAME}-${i}"
@@ -122,6 +160,23 @@ draw() {
             sessions=$(printf '%s' "$logs" | grep -c "Starting session" || true)
             idle_str=$(printf '%s' "$logs" | grep -o 'idle [0-9]*/[0-9]*' | tail -1 || true)
         fi
+
+        # Read cumulative stats from the container.
+        local agent_stats a_cost a_in a_out a_cache a_dur a_turns
+        agent_stats=$(read_agent_stats "$name" "$i")
+        a_cost=$(echo "$agent_stats" | awk '{print $1}')
+        a_in=$(echo "$agent_stats" | awk '{print $2}')
+        a_out=$(echo "$agent_stats" | awk '{print $3}')
+        a_cache=$(echo "$agent_stats" | awk '{print $4}')
+        a_dur=$(echo "$agent_stats" | awk '{print $5}')
+        a_turns=$(echo "$agent_stats" | awk '{print $6}')
+
+        total_cost=$(echo "$total_cost + $a_cost" | bc)
+        total_in=$((total_in + a_in))
+        total_out=$((total_out + a_out))
+        total_cache=$((total_cache + a_cache))
+        total_dur=$((total_dur + a_dur))
+        total_turns=$((total_turns + a_turns))
 
         local status_text status_color
         case "$state" in
@@ -146,10 +201,24 @@ draw() {
                 ;;
         esac
 
-        printf "  %-4s %-20s " "$i" "$short"
-        printf "%b%-14s%b" "$status_color" "$status_text" "$RESET"
-        printf " %7s\n" "$sessions"
+        local cost_str in_out_str dur_str
+        cost_str=$(format_cost "$a_cost")
+        in_out_str="$(format_tokens "$a_in")/$(format_tokens "$a_out")"
+        dur_str=$(format_duration_ms "$a_dur")
+
+        printf "  %-3s %-16s " "$i" "$short"
+        printf "%b%-10s%b" "$status_color" "$status_text" "$RESET"
+        printf " %8s %9s %5s %7s\n" "$cost_str" "$in_out_str" "$a_turns" "$dur_str"
     done
+
+    # Totals row.
+    printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s─' $(seq 1 $((TERM_COLS - 4))))"
+    local t_cost_str t_inout_str t_dur_str
+    t_cost_str=$(format_cost "$total_cost")
+    t_inout_str="$(format_tokens "$total_in")/$(format_tokens "$total_out")"
+    t_dur_str=$(format_duration_ms "$total_dur")
+    printf "  ${BOLD}%-3s %-16s %-10s %8s %9s %5s %7s${RESET}\n" \
+        "" "Total" "" "$t_cost_str" "$t_inout_str" "$total_turns" "$t_dur_str"
 
     echo ""
 
