@@ -184,7 +184,6 @@ cmd_stop() {
         NAME="${IMAGE_NAME}-${i}"
         docker stop "$NAME" 2>/dev/null && echo "  stopped ${NAME}" \
             || echo "  ${NAME} not running"
-        docker rm "$NAME" 2>/dev/null || true
     done
 }
 

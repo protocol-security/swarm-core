@@ -16,19 +16,21 @@ fi
 read_agent_stats() {
     local name=$1 agent_id=$2
     local stats_file="agent_logs/stats_agent_${agent_id}.tsv"
-    local raw
-    raw=$(docker exec "$name" cat "/workspace/$stats_file" 2>/dev/null || true)
-    if [ -z "$raw" ]; then
+    local tmpf="/tmp/.swarm-stats-${name}.tsv"
+    docker cp "${name}:/workspace/${stats_file}" "$tmpf" 2>/dev/null || true
+    if [ ! -s "$tmpf" ]; then
+        rm -f "$tmpf"
         echo "0 0 0 0 0 0 0"
         return
     fi
-    echo "$raw" | awk -F'\t' '{
+    awk -F'\t' '{
         cost += $2; tok_in += $3; tok_out += $4;
         cache += $5; dur += $7; turns += $9; sessions++
     } END {
         printf "%s %d %d %d %d %d %d\n",
             cost, tok_in, tok_out, cache, dur, turns, sessions
-    }'
+    }' "$tmpf"
+    rm -f "$tmpf"
 }
 
 format_tokens() {
