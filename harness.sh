@@ -78,14 +78,22 @@ while true; do
            --output-format json > "$LOGFILE" 2>"${LOGFILE}.err" || true
 
     # Extract usage stats from JSON output.
-    cost=$(jq -r '.total_cost_usd // 0' "$LOGFILE" 2>/dev/null || echo 0)
-    dur=$(jq -r '.duration_ms // 0' "$LOGFILE" 2>/dev/null || echo 0)
-    api_ms=$(jq -r '.duration_api_ms // 0' "$LOGFILE" 2>/dev/null || echo 0)
-    turns=$(jq -r '.num_turns // 0' "$LOGFILE" 2>/dev/null || echo 0)
-    tok_in=$(jq -r '.usage.input_tokens // 0' "$LOGFILE" 2>/dev/null || echo 0)
-    tok_out=$(jq -r '.usage.output_tokens // 0' "$LOGFILE" 2>/dev/null || echo 0)
-    cache_rd=$(jq -r '.usage.cache_read_input_tokens // 0' "$LOGFILE" 2>/dev/null || echo 0)
-    cache_cr=$(jq -r '.usage.cache_creation_input_tokens // 0' "$LOGFILE" 2>/dev/null || echo 0)
+    cost=$(jq -r '.total_cost_usd // 0' "$LOGFILE" 2>/dev/null || true)
+    cost="${cost:-0}"
+    dur=$(jq -r '.duration_ms // 0' "$LOGFILE" 2>/dev/null || true)
+    dur="${dur:-0}"
+    api_ms=$(jq -r '.duration_api_ms // 0' "$LOGFILE" 2>/dev/null || true)
+    api_ms="${api_ms:-0}"
+    turns=$(jq -r '.num_turns // 0' "$LOGFILE" 2>/dev/null || true)
+    turns="${turns:-0}"
+    tok_in=$(jq -r '.usage.input_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    tok_in="${tok_in:-0}"
+    tok_out=$(jq -r '.usage.output_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    tok_out="${tok_out:-0}"
+    cache_rd=$(jq -r '.usage.cache_read_input_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    cache_rd="${cache_rd:-0}"
+    cache_cr=$(jq -r '.usage.cache_creation_input_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    cache_cr="${cache_cr:-0}"
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
         "$(date +%s)" "$cost" "$tok_in" "$tok_out" \
         "$cache_rd" "$cache_cr" "$dur" "$api_ms" "$turns" \

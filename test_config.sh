@@ -29,7 +29,11 @@ parse_setup()      { jq -r '.setup // empty' "$1"; }
 parse_max_idle()   { jq -r '.max_idle // 3' "$1"; }
 parse_git_name()   { jq -r '.git_user.name // "swarm-agent"' "$1"; }
 parse_git_email()  { jq -r '.git_user.email // "agent@claude-swarm.local"' "$1"; }
-parse_num_agents() { jq '[.agents[].count] | add' "$1"; }
+parse_num_agents()       { jq '[.agents[].count] | add' "$1"; }
+parse_inject_git_rules() { jq -r 'if has("inject_git_rules") then .inject_git_rules else true end' "$1"; }
+parse_title()            { jq -r '.title // empty' "$1"; }
+parse_pp_prompt()        { jq -r '.post_process.prompt // empty' "$1"; }
+parse_pp_model()         { jq -r '.post_process.model // "claude-opus-4-6"' "$1"; }
 
 parse_agents_tsv() {
     jq -r '.agents[] | range(.count) as $i |
@@ -207,6 +211,57 @@ EOF
 
 assert_eq "git name override"  "custom-name"              "$(parse_git_name "$TMPDIR/partialuser.json")"
 assert_eq "git email fallback" "agent@claude-swarm.local"  "$(parse_git_email "$TMPDIR/partialuser.json")"
+
+# ============================================================
+echo ""
+echo "=== 9. inject_git_rules field ==="
+
+cat > "$TMPDIR/inject_default.json" <<'EOF'
+{ "prompt": "p.md", "agents": [{ "count": 1, "model": "m" }] }
+EOF
+
+cat > "$TMPDIR/inject_false.json" <<'EOF'
+{ "prompt": "p.md", "inject_git_rules": false, "agents": [{ "count": 1, "model": "m" }] }
+EOF
+
+cat > "$TMPDIR/inject_true.json" <<'EOF'
+{ "prompt": "p.md", "inject_git_rules": true, "agents": [{ "count": 1, "model": "m" }] }
+EOF
+
+assert_eq "inject default"  "true"  "$(parse_inject_git_rules "$TMPDIR/inject_default.json")"
+assert_eq "inject false"    "false" "$(parse_inject_git_rules "$TMPDIR/inject_false.json")"
+assert_eq "inject true"     "true"  "$(parse_inject_git_rules "$TMPDIR/inject_true.json")"
+
+# ============================================================
+echo ""
+echo "=== 10. title field ==="
+
+cat > "$TMPDIR/title.json" <<'EOF'
+{ "prompt": "p.md", "title": "My Project", "agents": [{ "count": 1, "model": "m" }] }
+EOF
+
+assert_eq "title present" "My Project" "$(parse_title "$TMPDIR/title.json")"
+assert_eq "title missing" ""           "$(parse_title "$TMPDIR/inject_default.json")"
+
+# ============================================================
+echo ""
+echo "=== 11. post_process section ==="
+
+cat > "$TMPDIR/pp.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": {
+    "prompt": "review.md",
+    "model": "claude-sonnet-4-5"
+  }
+}
+EOF
+
+assert_eq "pp prompt"       "review.md"         "$(parse_pp_prompt "$TMPDIR/pp.json")"
+assert_eq "pp model"        "claude-sonnet-4-5"  "$(parse_pp_model "$TMPDIR/pp.json")"
+assert_eq "pp prompt absent" ""                  "$(parse_pp_prompt "$TMPDIR/inject_default.json")"
+assert_eq "pp model default" "claude-opus-4-6"   "$(parse_pp_model "$TMPDIR/inject_default.json")"
 
 # ============================================================
 echo ""
