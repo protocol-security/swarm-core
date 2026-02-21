@@ -64,7 +64,7 @@ json_agents="["
 if ! $JSON_MODE; then
     printf "%-4s %-20s %9s %10s %10s %6s %8s %8s\n" \
         "#" "Model" "Cost" "Input" "Output" "Cache" "Turns" "Time"
-    printf "%s\n" "$(printf '%.0s─' $(seq 1 78))"
+    printf "%s\n" "$(printf '%.0s─' $(seq 1 82))"
 fi
 
 first_json=true
@@ -118,7 +118,7 @@ if $JSON_MODE; then
         "$json_agents" "$total_cost" "$total_in" "$total_out" \
         "$total_cache" "$total_dur" "$total_turns" "$total_sessions"
 else
-    printf "%s\n" "$(printf '%.0s─' $(seq 1 78))"
+    printf "%s\n" "$(printf '%.0s─' $(seq 1 82))"
     t_dur_s=$((total_dur / 1000))
     printf "%-4s %-20s \$%8.4f %10s %10s %6s %8s %7ds\n" \
         "" "TOTAL" "$total_cost" \
