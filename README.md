@@ -46,6 +46,10 @@ Each container runs `harness.sh`:
 Agents stop after `SWARM_MAX_IDLE` consecutive sessions
 with no commits.
 
+A session is one `claude` invocation. After it exits the
+harness checks whether `agent-work` advanced. If not, the
+idle counter increments. Any push by any agent resets it.
+
 ## Configuration
 
 ### Config file (recommended for mixed models)
