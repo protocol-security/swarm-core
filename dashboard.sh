@@ -10,6 +10,7 @@ PROJECT="$(basename "$REPO_ROOT")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
 START_TIME=$(date +%s)
+DASHBOARD_TITLE="${SWARM_TITLE:-claude-swarm}"
 
 CONFIG_FILE="${SWARM_CONFIG:-}"
 if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
@@ -17,6 +18,10 @@ if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
 fi
 
 if [ -n "$CONFIG_FILE" ]; then
+    local_title=$(jq -r '.title // empty' "$CONFIG_FILE")
+    if [ -n "$local_title" ]; then
+        DASHBOARD_TITLE="$local_title"
+    fi
     AGENT_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
     MODEL_SUMMARY=$(jq -r \
@@ -83,9 +88,10 @@ draw() {
     tput ed
 
     # Header.
-    local title=" ${BOLD}claude-swarm${RESET}"
+    local title=" ${BOLD}${DASHBOARD_TITLE}${RESET}"
+    local title_len=${#DASHBOARD_TITLE}
     local right="${DIM}uptime: ${uptime_str}${RESET}"
-    printf "%b%*s%b\n" "$title" $((TERM_COLS - 13 - ${#uptime_str} - 10)) "" "$right"
+    printf "%b%*s%b\n" "$title" $((TERM_COLS - title_len - 2 - ${#uptime_str} - 10)) "" "$right"
     printf " ${DIM}config: %s | prompt: %s${RESET}\n" "$CONFIG_LABEL" "$AGENT_PROMPT"
     printf " ${DIM}agents: %s (%s)${RESET}\n" "$NUM_AGENTS" "$MODEL_SUMMARY"
     echo ""
