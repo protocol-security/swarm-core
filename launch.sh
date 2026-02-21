@@ -322,8 +322,6 @@ cmd_post_process() {
         break
     done
 
-    docker rm "$NAME" 2>/dev/null || true
-
     echo ""
     echo "--- Harvesting results ---"
     "$SWARM_DIR/harvest.sh"

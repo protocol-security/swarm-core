@@ -213,6 +213,47 @@ draw() {
         printf " %8s %9s %5s %7s\n" "$cost_str" "$in_out_str" "$a_turns" "$dur_str"
     done
 
+    # Post-process row (if container exists).
+    local pp_name="${IMAGE_NAME}-post"
+    local pp_state
+    pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || echo "none")
+    if [ "$pp_state" != "none" ]; then
+        local pp_model
+        pp_model=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+            "$pp_name" 2>/dev/null | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
+        pp_model="${pp_model:-unknown}"
+        local pp_short="${pp_model/claude-/}"
+
+        local pp_stats pp_cost pp_in pp_out pp_dur pp_turns
+        pp_stats=$(read_agent_stats "$pp_name" "post")
+        pp_cost=$(echo "$pp_stats" | awk '{print $1}')
+        pp_in=$(echo "$pp_stats" | awk '{print $2}')
+        pp_out=$(echo "$pp_stats" | awk '{print $3}')
+        pp_dur=$(echo "$pp_stats" | awk '{print $5}')
+        pp_turns=$(echo "$pp_stats" | awk '{print $6}')
+
+        total_cost=$(echo "$total_cost + $pp_cost" | bc)
+        total_in=$((total_in + pp_in))
+        total_out=$((total_out + pp_out))
+        total_dur=$((total_dur + pp_dur))
+        total_turns=$((total_turns + pp_turns))
+
+        local pp_status_color
+        case "$pp_state" in
+            running) pp_status_color="$GREEN" ;;
+            exited)  pp_status_color="$RED" ;;
+            *)       pp_status_color="$DIM" ;;
+        esac
+
+        printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
+        printf "  %-3s %-16s " "PP" "$pp_short"
+        printf "%b%-10s%b" "$pp_status_color" "$pp_state" "$RESET"
+        printf " %8s %9s %5s %7s\n" \
+            "$(format_cost "$pp_cost")" \
+            "$(format_tokens "$pp_in")/$(format_tokens "$pp_out")" \
+            "$pp_turns" "$(format_duration_ms "$pp_dur")"
+    fi
+
     # Totals row.
     printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s─' $(seq 1 $((TERM_COLS - 4))))"
     local t_cost_str t_inout_str t_dur_str

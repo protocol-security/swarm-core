@@ -99,7 +99,11 @@ for cname in $containers; do
     if $JSON_MODE; then
         $first_json || json_agents="${json_agents},"
         first_json=false
-        json_agents="${json_agents}{\"id\":${agent_id},\"model\":\"${model}\",\"state\":\"${state}\","
+        id_json="${agent_id}"
+        if ! [[ "$agent_id" =~ ^[0-9]+$ ]]; then
+            id_json="\"${agent_id}\""
+        fi
+        json_agents="${json_agents}{\"id\":${id_json},\"model\":\"${model}\",\"state\":\"${state}\","
         json_agents="${json_agents}\"cost_usd\":${a_cost},\"input_tokens\":${a_in},"
         json_agents="${json_agents}\"output_tokens\":${a_out},\"cache_read_tokens\":${a_cache},"
         json_agents="${json_agents}\"duration_ms\":${a_dur},\"turns\":${a_turns},\"sessions\":${a_sessions}}"
@@ -114,8 +118,9 @@ done
 json_agents="${json_agents}]"
 
 if $JSON_MODE; then
+    total_cost_json=$(printf '%.6f' "$total_cost")
     printf '{"agents":%s,"total":{"cost_usd":%s,"input_tokens":%d,"output_tokens":%d,"cache_read_tokens":%d,"duration_ms":%d,"turns":%d,"sessions":%d}}\n' \
-        "$json_agents" "$total_cost" "$total_in" "$total_out" \
+        "$json_agents" "$total_cost_json" "$total_in" "$total_out" \
         "$total_cache" "$total_dur" "$total_turns" "$total_sessions"
 else
     printf "%s\n" "$(printf '%.0s─' $(seq 1 82))"
