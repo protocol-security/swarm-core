@@ -12,84 +12,92 @@ Add as a submodule:
 
     git submodule add <url> tools/claude-swarm
 
-## Usage
-
-    export ANTHROPIC_API_KEY="sk-ant-..."
-    export AGENT_PROMPT="path/to/prompt.md"
-    ./tools/claude-swarm/launch.sh start
-    ./tools/claude-swarm/launch.sh status
-    ./tools/claude-swarm/launch.sh logs 1
-    ./tools/claude-swarm/launch.sh stop
-
-CLAUDE_MODEL defaults to claude-opus-4-6.
-NUM_AGENTS defaults to 3.
-MAX_IDLE defaults to 3 (exit after N consecutive idle sessions).
-
 ## How it works
 
 ```
-Host                             /tmp (bare repos)
-~/project/ ── git clone ──>      project-upstream.git (rw)
-               --bare            project-mirror-*.git (ro)
-                                          |
-                                          | docker volumes
-                                          |
-                 .-----------.------------+-----------.-----------.
-                 |           |            |           |           |
-           Container 1            Container 2            Container 3
-           /upstream  (rw)        /upstream  (rw)        /upstream  (rw)
-           /mirrors/* (ro)        /mirrors/* (ro)        /mirrors/* (ro)
-                 |                      |                      |
-                 v                      v                      v
-           /workspace/            /workspace/            /workspace/
-           (agent-work)           (agent-work)           (agent-work)
+Host                         /tmp (bare repos)
+~/project/ ── git clone ──>  project-upstream.git (rw)
+               --bare        project-mirror-*.git (ro)
+                                        |
+                                        | docker volumes
+                                        |
+                 .-----------.----------+-----------.
+                 |           |          |           |
+           Container 1            Container 2       ...
+           /upstream  (rw)        /upstream  (rw)
+           /mirrors/* (ro)        /mirrors/* (ro)
+                 |                      |
+                 v                      v
+           /workspace/            /workspace/
+           (agent-work)           (agent-work)
 ```
 
-All containers mount the same bare repo. When one agent pushes,
-others see the changes on the next fetch.
+All containers mount the same bare repo. When one agent
+pushes, others see the changes on the next fetch.
 
 Each container runs `harness.sh`:
 
 1. Clones `/upstream` to `/workspace`.
 2. Points submodule URLs at local read-only mirrors.
-3. Runs an optional setup hook (`AGENT_SETUP`).
-4. Loops: reset to `origin/agent-work`, run one Claude session.
+3. Runs an optional setup hook (`SWARM_SETUP`).
+4. Loops: reset to `origin/agent-work`, run one Claude
+   session.
 
-Agents stop after MAX_IDLE consecutive sessions with no commits.
+Agents stop after `SWARM_MAX_IDLE` consecutive sessions
+with no commits.
 
 ## Configuration
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| ANTHROPIC_API_KEY | yes | | API key. |
-| AGENT_PROMPT | yes | | Path to prompt file (relative to repo root). |
-| AGENT_SETUP | no | | Path to setup script (relative to repo root). |
-| CLAUDE_MODEL | no | claude-opus-4-6 | Model for Claude Code. |
-| NUM_AGENTS | no | 3 | Number of containers. |
-| MAX_IDLE | no | 3 | Idle sessions before exit. |
-| GIT_USER_NAME | no | swarm-agent | Git author name for agent commits. |
-| GIT_USER_EMAIL | no | agent@claude-swarm.local | Git author email for agent commits. |
-| ANTHROPIC_BASE_URL | no | | Override API URL (e.g. OpenRouter). |
-| ANTHROPIC_AUTH_TOKEN | no | | Override auth token. |
+### Config file (recommended for mixed models)
 
-## Inspect and harvest results
+Place a `swarm.json` in your repo root, or point to one
+with `SWARM_CONFIG=/path/to/config.json`:
 
-    ./tools/claude-swarm/progress.sh
-    ./tools/claude-swarm/harvest.sh --dry
-    ./tools/claude-swarm/harvest.sh
+```json
+{
+  "prompt": "prompts/task.md",
+  "setup": "scripts/setup.sh",
+  "max_idle": 3,
+  "agents": [
+    { "count": 2, "model": "claude-opus-4-6" },
+    { "count": 1, "model": "claude-sonnet-4-5" },
+    {
+      "count": 3,
+      "model": "openrouter/custom",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "sk-or-..."
+    }
+  ],
+  "post_process": {
+    "prompt": "prompts/review.md",
+    "model": "claude-opus-4-6"
+  }
+}
+```
 
-## Smoke test
+Agent groups without `api_key` use `ANTHROPIC_API_KEY` from
+the environment. Total agent count is the sum of all `count`
+fields. Requires `jq` on the host.
 
-    ANTHROPIC_API_KEY="sk-ant-..." ./tools/claude-swarm/test.sh
+### Environment variables (simple case)
 
-Launches NUM_AGENTS (default 2) with an embedded counting prompt,
-verifies each agent writes deterministic output and pushes.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| ANTHROPIC_API_KEY | (required) | API key. |
+| SWARM_PROMPT | (required) | Prompt file path. |
+| SWARM_CONFIG | | Config file path. |
+| SWARM_SETUP | | Setup script path. |
+| SWARM_MODEL | claude-opus-4-6 | Model. |
+| SWARM_NUM_AGENTS | 3 | Container count. |
+| SWARM_MAX_IDLE | 3 | Idle sessions before exit. |
+| SWARM_GIT_USER_NAME | swarm-agent | Git author name. |
+| SWARM_GIT_USER_EMAIL | agent@claude-swarm.local | Git email. |
+| ANTHROPIC_BASE_URL | | Override API URL. |
+| ANTHROPIC_AUTH_TOKEN | | Override auth token. |
 
-## Verify image
+Config file takes precedence over env vars when present.
 
-    docker run --rm --entrypoint bash \
-        -e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" \
-        $(basename $(pwd))-agent \
-        -c 'claude --dangerously-skip-permissions \
-            -p "What model are you? Reply with the model id only." \
-            --model claude-opus-4-6 2>&1'
+## Commands and usage
+
+See [USAGE.md](USAGE.md) for the full command reference,
+including dashboard shortcuts, testing, and post-processing.

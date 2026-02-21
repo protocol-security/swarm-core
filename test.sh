@@ -9,8 +9,19 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT="$(basename "$REPO_ROOT")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 REVIEW_DIR="/tmp/${PROJECT}-test-review"
-NUM_AGENTS="${NUM_AGENTS:-2}"
 TIMEOUT="${TIMEOUT:-600}"
+
+CONFIG_FILE=""
+if [ "${1:-}" = "--config" ] && [ -n "${2:-}" ]; then
+    CONFIG_FILE="$2"
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "ERROR: Config file ${CONFIG_FILE} not found." >&2
+        exit 1
+    fi
+    NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
+else
+    NUM_AGENTS="${SWARM_NUM_AGENTS:-2}"
+fi
 
 # Write the smoke test prompt as a temp file and commit it.
 PROMPT_FILE=".claude-swarm-smoke-test.md"
@@ -75,18 +86,31 @@ git add -f "$PROMPT_FILE" "$SETUP_FILE"
 git commit --quiet -m "tmp: smoke test prompt"
 PROMPT_COMMITTED=true
 
+# When using a config file, create a temp copy with prompt/setup overridden.
+TEMP_CONFIG=""
+if [ -n "$CONFIG_FILE" ]; then
+    TEMP_CONFIG=$(mktemp /tmp/${PROJECT}-test-config.XXXXXX.json)
+    jq --arg p "$PROMPT_FILE" --arg s "$SETUP_FILE" \
+        '.prompt = $p | .setup = $s' "$CONFIG_FILE" > "$TEMP_CONFIG"
+fi
+
 cleanup() {
     echo ""
     echo "--- Cleaning up ---"
     cd "$REPO_ROOT"
-    AGENT_PROMPT="$PROMPT_FILE" \
-        AGENT_SETUP="$SETUP_FILE" \
-        ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
-        NUM_AGENTS="${NUM_AGENTS}" \
-        "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
-    rm -rf "$REVIEW_DIR"
+    if [ -n "$TEMP_CONFIG" ]; then
+        SWARM_CONFIG="$TEMP_CONFIG" \
+            "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
+        rm -f "$TEMP_CONFIG"
+    else
+        SWARM_PROMPT="$PROMPT_FILE" \
+            SWARM_SETUP="$SETUP_FILE" \
+            ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
+            SWARM_NUM_AGENTS="${NUM_AGENTS}" \
+            "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
+    fi
+    rm -rf "$REVIEW_DIR" /tmp/${PROJECT}-upstream.git
 
-    # Undo the temp commit.
     if [ "${PROMPT_COMMITTED:-}" = true ]; then
         git reset --quiet --hard HEAD~1
     fi
@@ -96,11 +120,17 @@ trap cleanup EXIT
 echo "=== Smoke test: ${NUM_AGENTS} agents ==="
 echo ""
 
-AGENT_PROMPT="$PROMPT_FILE" \
-    AGENT_SETUP="$SETUP_FILE" \
-    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
-    NUM_AGENTS="${NUM_AGENTS}" \
-    "$SWARM_DIR/launch.sh" start
+if [ -n "$TEMP_CONFIG" ]; then
+    SWARM_CONFIG="$TEMP_CONFIG" \
+        ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+        "$SWARM_DIR/launch.sh" start
+else
+    SWARM_PROMPT="$PROMPT_FILE" \
+        SWARM_SETUP="$SETUP_FILE" \
+        ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
+        SWARM_NUM_AGENTS="${NUM_AGENTS}" \
+        "$SWARM_DIR/launch.sh" start
+fi
 
 echo ""
 echo "--- Waiting for agents (timeout ${TIMEOUT}s) ---"
