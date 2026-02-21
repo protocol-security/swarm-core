@@ -49,7 +49,7 @@ Re-run `./dashboard.sh` to re-attach while agents run.
 
 ## Testing
 
-Basic smoke test:
+Basic smoke test (uses injected git rules):
 
 ```bash
 ANTHROPIC_API_KEY="sk-..." ./test.sh
@@ -67,6 +67,15 @@ With a config file (mixed models):
 ```bash
 ANTHROPIC_API_KEY="sk-..." ./test.sh --config swarm.json
 ```
+
+Backward compatibility (explicit git commands in prompt,
+no git rule injection):
+
+```bash
+ANTHROPIC_API_KEY="sk-..." ./test.sh --no-inject
+```
+
+Flags combine freely: `./test.sh --config swarm.json --no-inject`.
 
 `test.sh` always uses its own built-in prompt regardless of
 what the config file specifies.
