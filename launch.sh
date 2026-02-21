@@ -26,7 +26,7 @@ if [ -n "$CONFIG_FILE" ]; then
     AGENT_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
     AGENT_SETUP=$(jq -r '.setup // empty' "$CONFIG_FILE")
     MAX_IDLE=$(jq -r '.max_idle // 3' "$CONFIG_FILE")
-    INJECT_GIT_RULES=$(jq -r '.inject_git_rules // true' "$CONFIG_FILE")
+    INJECT_GIT_RULES=$(jq -r 'if has("inject_git_rules") then .inject_git_rules else true end' "$CONFIG_FILE")
     GIT_USER_NAME=$(jq -r '.git_user.name // "swarm-agent"' "$CONFIG_FILE")
     GIT_USER_EMAIL=$(jq -r '.git_user.email // "agent@claude-swarm.local"' "$CONFIG_FILE")
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
