@@ -78,6 +78,7 @@ with `SWARM_CONFIG=/path/to/config.json`:
       "api_key": "sk-or-..."
     }
   ],
+  "inject_git_rules": true,
   "post_process": {
     "prompt": "prompts/review.md",
     "model": "claude-opus-4-6"
@@ -88,6 +89,11 @@ with `SWARM_CONFIG=/path/to/config.json`:
 Agent groups without `api_key` use `ANTHROPIC_API_KEY` from
 the environment. Total agent count is the sum of all `count`
 fields. Requires `jq` on the host.
+
+By default, agents receive git coordination rules
+(commit/push/rebase workflow) appended to their system
+prompt. Set `"inject_git_rules": false` in the config to
+disable this, e.g. when you want full control over the prompt.
 
 ### Environment variables (simple case)
 
@@ -100,6 +106,7 @@ fields. Requires `jq` on the host.
 | SWARM_MODEL | claude-opus-4-6 | Model. |
 | SWARM_NUM_AGENTS | 3 | Container count. |
 | SWARM_MAX_IDLE | 3 | Idle sessions before exit. |
+| SWARM_INJECT_GIT_RULES | true | Inject git coordination rules. |
 | SWARM_GIT_USER_NAME | swarm-agent | Git author name. |
 | SWARM_GIT_USER_EMAIL | agent@claude-swarm.local | Git email. |
 | ANTHROPIC_BASE_URL | | Override API URL. |

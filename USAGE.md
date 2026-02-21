@@ -96,6 +96,16 @@ or automatically through `./launch.sh wait`.
 The post-process agent clones the same bare repo, sees all
 agent commits on `agent-work`, runs its prompt, and pushes.
 
+## Git coordination
+
+Agents automatically receive git rules (commit, push, rebase
+workflow) via a system prompt appendix. This means your task
+prompt does not need to explain the git machinery -- just
+describe the work.
+
+To disable, set `"inject_git_rules": false` in `swarm.json`
+or `SWARM_INJECT_GIT_RULES=false` as an env var.
+
 ## Cost tracking
 
 The dashboard shows per-agent and total cost, tokens, and
