@@ -6,6 +6,12 @@ No orchestrator, no message passing.
 Based on the agent-team pattern from
 [Building a C Compiler with Large Language Models](https://www.anthropic.com/engineering/building-c-compiler).
 
+## Prerequisites
+
+- Docker
+- bash, git, jq, bc
+- An Anthropic API key (or compatible endpoint)
+
 ## Setup
 
 Add as a submodule:

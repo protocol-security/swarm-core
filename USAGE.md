@@ -31,8 +31,9 @@ export SWARM_PROMPT="path/to/prompt.md"
 ./dashboard.sh                 # Attach to TUI dashboard.
 ```
 
-Shows agent status, models, session counts, and recent
-commits (with model attribution).
+Shows agent status, models, cost, token usage, agentic
+turns, duration, and recent commits (with model
+attribution). Stats update live as sessions complete.
 
 Keyboard shortcuts:
 
@@ -94,6 +95,19 @@ or automatically through `./launch.sh wait`.
 
 The post-process agent clones the same bare repo, sees all
 agent commits on `agent-work`, runs its prompt, and pushes.
+
+## Cost tracking
+
+The dashboard shows per-agent and total cost, tokens, and
+duration in real time. For a non-interactive summary:
+
+```bash
+./costs.sh                     # Table output.
+./costs.sh --json              # Machine-readable JSON.
+```
+
+Stats are collected per session inside each container
+(`agent_logs/stats_agent_*.tsv`) and read on demand.
 
 ## Cleanup
 
