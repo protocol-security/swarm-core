@@ -8,6 +8,7 @@ CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-4-6}"
 AGENT_PROMPT="${AGENT_PROMPT:?AGENT_PROMPT is required.}"
 AGENT_SETUP="${AGENT_SETUP:-}"
 MAX_IDLE="${MAX_IDLE:-3}"
+INJECT_GIT_RULES="${INJECT_GIT_RULES:-true}"
 STATS_FILE="agent_logs/stats_agent_${AGENT_ID}.tsv"
 
 GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"
@@ -65,9 +66,15 @@ while true; do
 
     echo "[harness:${AGENT_ID}] Starting session at ${COMMIT}..."
 
+    APPEND_ARGS=()
+    if [ "$INJECT_GIT_RULES" = "true" ] && [ -f /agent-system-prompt.md ]; then
+        APPEND_ARGS+=(--append-system-prompt-file /agent-system-prompt.md)
+    fi
+
     claude --dangerously-skip-permissions \
            -p "$(cat "$AGENT_PROMPT")" \
            --model "$CLAUDE_MODEL" \
+           "${APPEND_ARGS[@]+"${APPEND_ARGS[@]}"}" \
            --output-format json > "$LOGFILE" 2>"${LOGFILE}.err" || true
 
     # Extract usage stats from JSON output.

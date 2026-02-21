@@ -49,7 +49,7 @@ Re-run `./dashboard.sh` to re-attach while agents run.
 
 ## Testing
 
-Basic smoke test:
+Basic smoke test (uses injected git rules):
 
 ```bash
 ANTHROPIC_API_KEY="sk-..." ./test.sh
@@ -67,6 +67,15 @@ With a config file (mixed models):
 ```bash
 ANTHROPIC_API_KEY="sk-..." ./test.sh --config swarm.json
 ```
+
+Backward compatibility (explicit git commands in prompt,
+no git rule injection):
+
+```bash
+ANTHROPIC_API_KEY="sk-..." ./test.sh --no-inject
+```
+
+Flags combine freely: `./test.sh --config swarm.json --no-inject`.
 
 `test.sh` always uses its own built-in prompt regardless of
 what the config file specifies.
@@ -95,6 +104,16 @@ or automatically through `./launch.sh wait`.
 
 The post-process agent clones the same bare repo, sees all
 agent commits on `agent-work`, runs its prompt, and pushes.
+
+## Git coordination
+
+Agents automatically receive git rules (commit, push, rebase
+workflow) via a system prompt appendix. This means your task
+prompt does not need to explain the git machinery -- just
+describe the work.
+
+To disable, set `"inject_git_rules": false` in `swarm.json`
+or `SWARM_INJECT_GIT_RULES=false` as an env var.
 
 ## Cost tracking
 

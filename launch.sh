@@ -26,6 +26,7 @@ if [ -n "$CONFIG_FILE" ]; then
     AGENT_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
     AGENT_SETUP=$(jq -r '.setup // empty' "$CONFIG_FILE")
     MAX_IDLE=$(jq -r '.max_idle // 3' "$CONFIG_FILE")
+    INJECT_GIT_RULES=$(jq -r '.inject_git_rules // true' "$CONFIG_FILE")
     GIT_USER_NAME=$(jq -r '.git_user.name // "swarm-agent"' "$CONFIG_FILE")
     GIT_USER_EMAIL=$(jq -r '.git_user.email // "agent@claude-swarm.local"' "$CONFIG_FILE")
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
@@ -35,6 +36,7 @@ else
     AGENT_PROMPT="${SWARM_PROMPT:-}"
     AGENT_SETUP="${SWARM_SETUP:-}"
     MAX_IDLE="${SWARM_MAX_IDLE:-3}"
+    INJECT_GIT_RULES="${SWARM_INJECT_GIT_RULES:-true}"
     GIT_USER_NAME="${SWARM_GIT_USER_NAME:-swarm-agent}"
     GIT_USER_EMAIL="${SWARM_GIT_USER_EMAIL:-agent@claude-swarm.local}"
 fi
@@ -159,6 +161,7 @@ cmd_start() {
             -e "MAX_IDLE=${MAX_IDLE}" \
             -e "GIT_USER_NAME=${agent_git_name}" \
             -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
+            -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
             -e "AGENT_ID=${AGENT_IDX}" \
             "$IMAGE_NAME"
     done < "$AGENTS_TSV"
@@ -303,6 +306,7 @@ cmd_post_process() {
         -e "MAX_IDLE=${MAX_IDLE}" \
         -e "GIT_USER_NAME=${GIT_USER_NAME}" \
         -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
+        -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
         -e "AGENT_ID=post" \
         "$IMAGE_NAME"
 

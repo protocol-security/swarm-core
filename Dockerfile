@@ -27,6 +27,7 @@ RUN git config --global --add safe.directory '*' \
     && git config --global protocol.file.allow always
 
 COPY --chmod=755 harness.sh /harness.sh
+COPY --chmod=644 agent-system-prompt.md /agent-system-prompt.md
 
 WORKDIR /workspace
 
