@@ -8,6 +8,7 @@ CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-4-6}"
 AGENT_PROMPT="${AGENT_PROMPT:?AGENT_PROMPT is required.}"
 AGENT_SETUP="${AGENT_SETUP:-}"
 MAX_IDLE="${MAX_IDLE:-3}"
+STATS_FILE="agent_logs/stats_agent_${AGENT_ID}.tsv"
 
 GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-agent@claude-swarm.local}"
@@ -66,7 +67,23 @@ while true; do
 
     claude --dangerously-skip-permissions \
            -p "$(cat "$AGENT_PROMPT")" \
-           --model "$CLAUDE_MODEL" &> "$LOGFILE" || true
+           --model "$CLAUDE_MODEL" \
+           --output-format json > "$LOGFILE" 2>"${LOGFILE}.err" || true
+
+    # Extract usage stats from JSON output.
+    cost=$(jq -r '.total_cost_usd // 0' "$LOGFILE" 2>/dev/null || echo 0)
+    dur=$(jq -r '.duration_ms // 0' "$LOGFILE" 2>/dev/null || echo 0)
+    api_ms=$(jq -r '.duration_api_ms // 0' "$LOGFILE" 2>/dev/null || echo 0)
+    turns=$(jq -r '.num_turns // 0' "$LOGFILE" 2>/dev/null || echo 0)
+    tok_in=$(jq -r '.usage.input_tokens // 0' "$LOGFILE" 2>/dev/null || echo 0)
+    tok_out=$(jq -r '.usage.output_tokens // 0' "$LOGFILE" 2>/dev/null || echo 0)
+    cache_rd=$(jq -r '.usage.cache_read_input_tokens // 0' "$LOGFILE" 2>/dev/null || echo 0)
+    cache_cr=$(jq -r '.usage.cache_creation_input_tokens // 0' "$LOGFILE" 2>/dev/null || echo 0)
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "$(date +%s)" "$cost" "$tok_in" "$tok_out" \
+        "$cache_rd" "$cache_cr" "$dur" "$api_ms" "$turns" \
+        >> "$STATS_FILE"
+    echo "[harness:${AGENT_ID}] Session cost=\$${cost} tokens=${tok_in}/${tok_out} turns=${turns} duration=${dur}ms"
 
     git fetch origin
     AFTER=$(git rev-parse origin/agent-work)
