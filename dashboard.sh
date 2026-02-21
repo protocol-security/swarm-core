@@ -29,7 +29,13 @@ if [ -n "$CONFIG_FILE" ]; then
         "$CONFIG_FILE")
     CONFIG_LABEL="$(basename "$CONFIG_FILE")"
 else
-    NUM_AGENTS="${SWARM_NUM_AGENTS:-3}"
+    NUM_AGENTS="${SWARM_NUM_AGENTS:-}"
+    if [ -z "$NUM_AGENTS" ]; then
+        NUM_AGENTS=$(docker ps -a --filter "name=${IMAGE_NAME}-" \
+            --format '{{.Names}}' 2>/dev/null \
+            | grep -c "^${IMAGE_NAME}-[0-9]" || echo 0)
+        [ "$NUM_AGENTS" -eq 0 ] && NUM_AGENTS=3
+    fi
     AGENT_PROMPT="${SWARM_PROMPT:-}"
     CLAUDE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
     MODEL_SUMMARY="${NUM_AGENTS}x ${CLAUDE_MODEL}"
@@ -122,8 +128,8 @@ draw() {
     elapsed=$((now - START_TIME))
     uptime_str=$(format_duration "$elapsed")
 
-    tput cup 0 0
-    tput ed
+    tput cup 0 0 2>/dev/null || true
+    tput ed 2>/dev/null || true
 
     # Header.
     local title=" ${BOLD}${DASHBOARD_TITLE}${RESET}"
@@ -216,8 +222,8 @@ draw() {
     # Post-process row (if container exists).
     local pp_name="${IMAGE_NAME}-post"
     local pp_state
-    pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || echo "none")
-    if [ "$pp_state" != "none" ]; then
+    pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || true)
+    if [ -n "$pp_state" ] && [ "$pp_state" != "none" ]; then
         local pp_model
         pp_model=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
             "$pp_name" 2>/dev/null | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
@@ -297,7 +303,7 @@ draw() {
 enter_alt_screen
 
 while true; do
-    draw
+    draw || true
 
     if read -rsn1 -t 3 key 2>/dev/null; then
         case "$key" in
