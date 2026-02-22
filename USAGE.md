@@ -80,10 +80,40 @@ Flags combine freely: `./test.sh --config swarm.json --no-inject`.
 `test.sh` always uses its own built-in prompt regardless of
 what the config file specifies.
 
-Config parsing unit tests (no Docker or API key needed):
+Full suite (unit tests then integration matrix):
 
 ```bash
-./test_config.sh
+ANTHROPIC_API_KEY="sk-..." ./test.sh --all
+```
+
+Integration matrix (`--all` runs these sequentially):
+
+| Case | Agents | Model | Config | Notes |
+|------|--------|-------|--------|-------|
+| `1-agent-env` | 1 | default | env | |
+| `2-agents-env` | 2 | default | env | |
+| `3-agents-env` | 3 | default | env | |
+| `2-agents-no-inject` | 2 | default | env | `--no-inject` |
+| `2-agents-sonnet` | 2 | sonnet | env | |
+| `2-agents-config` | 2 | default | swarm.json | |
+| `3-agents-mixed` | 3 | opus + sonnet | swarm.json | |
+| `2-agents-postprocess` | 2 | default | swarm.json | + post-process |
+
+All cases use the same counting prompt. Each agent N writes
+`test-results/agent-N.txt` with 100 numbers. Run
+`./dashboard.sh` in a second tmux pane to watch each case
+live (the dashboard title updates per test).
+
+Unit tests only (no Docker or API key needed):
+
+```bash
+./test_config.sh     # Config parsing.
+./test_format.sh     # Formatting helpers.
+./test_launch.sh     # Launch logic.
+./test_harness.sh    # Harness stat extraction.
+./test_costs.sh      # Cost aggregation.
+./test_harvest.sh    # Harvest git ops.
+./test_setup.sh      # Setup wizard config.
 ```
 
 ## Post-processing

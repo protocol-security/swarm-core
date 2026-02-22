@@ -4,7 +4,8 @@ set -euo pipefail
 # Smoke test: launch agents with a counting prompt, verify results.
 # Each agent N writes test-results/agent-N.txt with N*100..N*100+99.
 #
-# Usage: ./test.sh [--config FILE] [--no-inject]
+# Usage: ./test.sh [--all] [--config FILE] [--no-inject]
+#   --all           Run all unit tests then full integration matrix.
 #   --config FILE   Use a swarm.json for mixed-model testing.
 #   --no-inject     Disable git rule injection; prompt includes
 #                   explicit git commands (backward compat test).
@@ -17,8 +18,167 @@ REVIEW_DIR="/tmp/${PROJECT}-test-review"
 INJECT_DIR="/tmp/${PROJECT}-test-inject"
 TIMEOUT="${TIMEOUT:-600}"
 
+# ---- --all: full test suite runner ----
+
+run_all_tests() {
+    local total_start unit_pass=0 unit_fail=0 int_pass=0 int_fail=0
+    total_start=$(date +%s)
+
+    echo "============================================================"
+    echo "  Full test suite"
+    echo "============================================================"
+    echo ""
+
+    # Phase 1: unit tests.
+    echo "=== Phase 1: Unit tests ==="
+    echo ""
+    for f in "$SWARM_DIR"/test_*.sh; do
+        local name
+        name=$(basename "$f")
+        local count
+        count=$("$f" 2>&1 | grep -o '[0-9]* passed' | head -1 || true)
+        if "$f" > /dev/null 2>&1; then
+            printf "  PASS  %-24s (%s)\n" "$name" "${count:-?}"
+            unit_pass=$((unit_pass + 1))
+        else
+            printf "  FAIL  %-24s\n" "$name"
+            unit_fail=$((unit_fail + 1))
+        fi
+    done
+    echo ""
+
+    # Phase 2: integration tests (require ANTHROPIC_API_KEY).
+    echo "=== Phase 2: Integration tests ==="
+    echo ""
+    if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+        echo "  SKIP  (ANTHROPIC_API_KEY not set)"
+        echo ""
+    else
+        local cases=(
+            "1-agent-env|1||"
+            "2-agents-env|2||"
+            "3-agents-env|3||"
+            "2-agents-no-inject|2||--no-inject"
+            "2-agents-sonnet|2|claude-sonnet-4-6|"
+            "2-agents-config|2|config-single|"
+            "3-agents-mixed|3|config-mixed|"
+            "2-agents-postprocess|2|config-pp|"
+        )
+
+        for entry in "${cases[@]}"; do
+            IFS='|' read -r label num_agents model_or_cfg extra_flag <<< "$entry"
+            local t_start t_elapsed
+            t_start=$(date +%s)
+
+            local rc=0
+            run_integration_case "$label" "$num_agents" \
+                "$model_or_cfg" "$extra_flag" || rc=$?
+
+            t_elapsed=$(( $(date +%s) - t_start ))
+            if [ "$rc" -eq 0 ]; then
+                printf "  PASS  %-24s (%ds)\n" "$label" "$t_elapsed"
+                int_pass=$((int_pass + 1))
+            else
+                printf "  FAIL  %-24s (%ds)\n" "$label" "$t_elapsed"
+                int_fail=$((int_fail + 1))
+            fi
+        done
+        echo ""
+    fi
+
+    # Summary.
+    local total_elapsed
+    total_elapsed=$(( $(date +%s) - total_start ))
+    local total_m=$((total_elapsed / 60))
+    local total_s=$((total_elapsed % 60))
+
+    echo "============================================================"
+    printf "  Unit:        %d/%d passed\n" \
+        "$unit_pass" $((unit_pass + unit_fail))
+    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        printf "  Integration: %d/%d passed\n" \
+            "$int_pass" $((int_pass + int_fail))
+    fi
+    printf "  Total time:  %dm %02ds\n" "$total_m" "$total_s"
+    echo "============================================================"
+
+    [ "$unit_fail" -eq 0 ] && [ "$int_fail" -eq 0 ]
+}
+
+run_integration_case() {
+    local label="$1" num_agents="$2" model_or_cfg="$3" extra_flag="$4"
+    local args=()
+    local env_prefix=()
+
+    case "$model_or_cfg" in
+        config-single)
+            local cfg
+            cfg=$(mktemp /tmp/${PROJECT}-inttest.XXXXXX.json)
+            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
+                '{prompt: "unused", agents: [{count: '"$num_agents"', model: $m}]}' \
+                > "$cfg"
+            args+=(--config "$cfg")
+            ;;
+        config-mixed)
+            local cfg
+            cfg=$(mktemp /tmp/${PROJECT}-inttest.XXXXXX.json)
+            jq -n --arg m1 "${SWARM_MODEL:-claude-opus-4-6}" \
+                  --arg m2 "claude-sonnet-4-6" \
+                '{prompt: "unused", agents: [
+                    {count: 2, model: $m1},
+                    {count: 1, model: $m2}
+                ]}' > "$cfg"
+            args+=(--config "$cfg")
+            ;;
+        config-pp)
+            local cfg pp_prompt
+            cfg=$(mktemp /tmp/${PROJECT}-inttest.XXXXXX.json)
+            pp_prompt=$(mktemp /tmp/${PROJECT}-pp-prompt.XXXXXX.md)
+            cat > "$pp_prompt" <<'PPPROMPT'
+List all files in test-results/ and write a summary to
+test-results/summary.txt with the word DONE on the last line.
+Commit and push.
+PPPROMPT
+            cp "$pp_prompt" "$REPO_ROOT/.claude-swarm-pp-prompt.md"
+            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
+                  --arg pp ".claude-swarm-pp-prompt.md" \
+                '{prompt: "unused",
+                  agents: [{count: '"$num_agents"', model: $m}],
+                  post_process: {prompt: $pp, model: $m}}' \
+                > "$cfg"
+            args+=(--config "$cfg")
+            rm -f "$pp_prompt"
+            ;;
+        "")
+            env_prefix=(SWARM_NUM_AGENTS="$num_agents")
+            ;;
+        *)
+            env_prefix=(SWARM_NUM_AGENTS="$num_agents"
+                        SWARM_MODEL="$model_or_cfg")
+            ;;
+    esac
+
+    if [ -n "$extra_flag" ]; then
+        args+=($extra_flag)
+    fi
+
+    local rc=0
+    env "${env_prefix[@]+"${env_prefix[@]}"}" \
+        ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
+        SWARM_TITLE="$label" \
+        TIMEOUT="${TIMEOUT}" \
+        "$SWARM_DIR/test.sh" "${args[@]+"${args[@]}"}" || rc=$?
+
+    # Clean up temp configs and prompt files.
+    rm -f /tmp/${PROJECT}-inttest.*.json
+    rm -f "$REPO_ROOT/.claude-swarm-pp-prompt.md"
+
+    return "$rc"
+}
+
 CONFIG_FILE=""
 NO_INJECT=false
+RUN_ALL=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --config)
@@ -29,9 +189,15 @@ while [ $# -gt 0 ]; do
             fi
             shift 2 ;;
         --no-inject) NO_INJECT=true; shift ;;
+        --all) RUN_ALL=true; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+if $RUN_ALL; then
+    run_all_tests
+    exit $?
+fi
 
 if [ -n "$CONFIG_FILE" ] && [ ! -f "$CONFIG_FILE" ]; then
     echo "ERROR: Config file ${CONFIG_FILE} not found." >&2
