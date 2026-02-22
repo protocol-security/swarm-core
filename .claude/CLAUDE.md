@@ -17,6 +17,10 @@ elective.
 - Treat panics, resource exhaustion, undefined behavior, and crashes as
   security-relevant until proven otherwise.
 
+## Testing
+
+- All tests must pass (`./test.sh --all`).
+
 ## Quality bars (non-procedural)
 
 - Wrap commit bodies, docs, and examples to 79 chars.

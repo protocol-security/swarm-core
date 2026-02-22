@@ -80,10 +80,22 @@ Flags combine freely: `./test.sh --config swarm.json --no-inject`.
 `test.sh` always uses its own built-in prompt regardless of
 what the config file specifies.
 
-Config parsing unit tests (no Docker or API key needed):
+Full suite (unit tests then integration matrix):
 
 ```bash
-./test_config.sh
+ANTHROPIC_API_KEY="sk-..." ./test.sh --all
+```
+
+Unit tests only (no Docker or API key needed):
+
+```bash
+./test_config.sh     # Config parsing.
+./test_format.sh     # Formatting helpers.
+./test_launch.sh     # Launch logic.
+./test_harness.sh    # Harness stat extraction.
+./test_costs.sh      # Cost aggregation.
+./test_harvest.sh    # Harvest git ops.
+./test_setup.sh      # Setup wizard config.
 ```
 
 ## Post-processing
