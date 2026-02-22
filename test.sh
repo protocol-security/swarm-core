@@ -165,6 +165,7 @@ PPPROMPT
     local rc=0
     env "${env_prefix[@]+"${env_prefix[@]}"}" \
         ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
+        SWARM_TITLE="$label" \
         TIMEOUT="${TIMEOUT}" \
         "$SWARM_DIR/test.sh" "${args[@]+"${args[@]}"}" || rc=$?
 
