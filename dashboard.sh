@@ -33,7 +33,8 @@ else
     if [ -z "$NUM_AGENTS" ]; then
         NUM_AGENTS=$(docker ps -a --filter "name=${IMAGE_NAME}-" \
             --format '{{.Names}}' 2>/dev/null \
-            | grep -c "^${IMAGE_NAME}-[0-9]" || echo 0)
+            | grep -c "^${IMAGE_NAME}-[0-9]" 2>/dev/null || true)
+        NUM_AGENTS="${NUM_AGENTS:-0}"
         [ "$NUM_AGENTS" -eq 0 ] && NUM_AGENTS=3
     fi
     AGENT_PROMPT="${SWARM_PROMPT:-}"
