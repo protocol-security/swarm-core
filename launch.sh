@@ -168,6 +168,25 @@ cmd_start() {
 
     rm -f /tmp/${PROJECT}-mirror-vols.txt /tmp/${PROJECT}-agents.tsv
 
+    # Write state file so a standalone dashboard can pick up config.
+    local state_model_summary state_config_label
+    if [ -n "$CONFIG_FILE" ]; then
+        state_model_summary=$(jq -r \
+            '[.agents[] | "\(.count)x \(.model | split("/") | .[-1])"] | join(", ")' \
+            "$CONFIG_FILE")
+        state_config_label=$(basename "$CONFIG_FILE")
+    else
+        state_model_summary="${NUM_AGENTS}x ${CLAUDE_MODEL}"
+        state_config_label="env vars"
+    fi
+    cat > "/tmp/${PROJECT}-swarm.env" <<ENVEOF
+SWARM_TITLE="${SWARM_TITLE:-}"
+SWARM_PROMPT="${AGENT_PROMPT}"
+SWARM_NUM_AGENTS="${NUM_AGENTS}"
+SWARM_MODEL_SUMMARY="${state_model_summary}"
+SWARM_CONFIG_LABEL="${state_config_label}"
+ENVEOF
+
     echo ""
     echo "--- ${NUM_AGENTS} agents launched ---"
     echo ""
@@ -188,6 +207,7 @@ cmd_stop() {
         docker stop "$NAME" 2>/dev/null && echo "  stopped ${NAME}" \
             || echo "  ${NAME} not running"
     done
+    rm -f "/tmp/${PROJECT}-swarm.env"
 }
 
 cmd_logs() {

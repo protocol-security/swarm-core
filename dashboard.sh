@@ -10,6 +10,15 @@ PROJECT="$(basename "$REPO_ROOT")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
 START_TIME=$(date +%s)
+
+# Source state file written by launch.sh (fills in env vars
+# that a standalone dashboard would otherwise lack).
+STATE_FILE="/tmp/${PROJECT}-swarm.env"
+if [ -f "$STATE_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$STATE_FILE"
+fi
+
 DASHBOARD_TITLE="${SWARM_TITLE:-claude-swarm}"
 
 CONFIG_FILE="${SWARM_CONFIG:-}"
@@ -124,6 +133,17 @@ read_agent_stats() {
 }
 
 draw() {
+    # Re-read state file so display updates between test cases.
+    if [ -f "$STATE_FILE" ]; then
+        # shellcheck disable=SC1090
+        source "$STATE_FILE"
+        DASHBOARD_TITLE="${SWARM_TITLE:-claude-swarm}"
+        NUM_AGENTS="${SWARM_NUM_AGENTS:-$NUM_AGENTS}"
+        AGENT_PROMPT="${SWARM_PROMPT:-$AGENT_PROMPT}"
+        MODEL_SUMMARY="${SWARM_MODEL_SUMMARY:-$MODEL_SUMMARY}"
+        CONFIG_LABEL="${SWARM_CONFIG_LABEL:-$CONFIG_LABEL}"
+    fi
+
     local now elapsed uptime_str
     now=$(date +%s)
     elapsed=$((now - START_TIME))
