@@ -136,6 +136,16 @@ while true; do
         if [ -n "$GROUP_KEY" ]; then
             AGENT_OBJ+=", \"api_key\": \"${GROUP_KEY}\""
         fi
+    else
+        echo "  Auth source for this group:"
+        echo "    1) auto (pass both API key + OAuth token; CLI decides)"
+        echo "    2) apikey (API key only)"
+        echo "    3) oauth (subscription/OAuth token only)"
+        AUTH_CHOICE=$(input "Choice [1/2/3]" "1")
+        case "$AUTH_CHOICE" in
+            2) AGENT_OBJ+=", \"auth\": \"apikey\"" ;;
+            3) AGENT_OBJ+=", \"auth\": \"oauth\"" ;;
+        esac
     fi
 
     AGENT_OBJ+="}"
