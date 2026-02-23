@@ -120,6 +120,22 @@ disable this, e.g. when you want full control over the prompt.
 
 Config file takes precedence over env vars when present.
 
+### Third-party models
+
+Any Anthropic-compatible endpoint works. Set `base_url` and
+`api_key` per agent group, or use environment variables for
+all agents:
+
+```bash
+ANTHROPIC_API_KEY="sk-..." \
+ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic" \
+SWARM_MODEL="MiniMax-M2.5" \
+SWARM_PROMPT="tasks/task.md" \
+./launch.sh start
+```
+
+The model name is passed through as-is to `claude --model`.
+
 ## Commands and usage
 
 See [USAGE.md](USAGE.md) for the full command reference,
