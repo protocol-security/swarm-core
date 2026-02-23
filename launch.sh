@@ -43,8 +43,8 @@ else
 fi
 
 cmd_start() {
-    if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "$CONFIG_FILE" ]; then
-        echo "ERROR: ANTHROPIC_API_KEY is not set." >&2
+    if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "$CONFIG_FILE" ]; then
+        echo "ERROR: ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN must be set." >&2
         exit 1
     fi
 
@@ -150,6 +150,8 @@ cmd_start() {
         fi
         [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
             && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
+        [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
+            && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
         local eff="${agent_effort:-${EFFORT_LEVEL:-}}"
         [ -n "$eff" ] \
             && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${eff}")
@@ -318,6 +320,8 @@ cmd_post_process() {
     fi
     [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
         && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
+    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
+        && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
     [ -n "$pp_effort" ] \
         && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${pp_effort}")
 
