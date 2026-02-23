@@ -3,6 +3,17 @@ set -euo pipefail
 
 # Show what agents have pushed to the bare repo.
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    cat <<HELP
+Usage: $0
+
+Show what agents have pushed to the bare repo.
+Clones the bare repo to a temp directory, displays recent
+commits on agent-work, and lists running agent containers.
+HELP
+    exit 0
+fi
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT="$(basename "$REPO_ROOT")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
