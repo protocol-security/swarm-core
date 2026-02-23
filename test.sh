@@ -80,27 +80,44 @@ run_all_tests() {
         echo ""
     fi
 
-    # Phase 3: OAuth integration test (requires CLAUDE_CODE_OAUTH_TOKEN).
-    local oauth_fail=0
-    echo "=== Phase 3: OAuth integration test ==="
+    # Phase 3: OAuth integration tests (require CLAUDE_CODE_OAUTH_TOKEN).
+    local oauth_pass=0 oauth_fail=0
+    echo "=== Phase 3: OAuth integration tests ==="
     echo ""
     if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
         echo "  SKIP  (CLAUDE_CODE_OAUTH_TOKEN not set)"
         echo ""
     else
-        local t_start t_elapsed
-        t_start=$(date +%s)
-
-        local rc=0
-        cmd_oauth || rc=$?
-
-        t_elapsed=$(( $(date +%s) - t_start ))
-        if [ "$rc" -eq 0 ]; then
-            printf "  PASS  %-24s (%ds)\n" "1-agent-oauth" "$t_elapsed"
-        else
-            printf "  FAIL  %-24s (%ds)\n" "1-agent-oauth" "$t_elapsed"
-            oauth_fail=1
+        local oauth_cases=(
+            "1-agent-oauth|1|oauth-only|"
+        )
+        # Mixed-auth requires both API key and OAuth token.
+        if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+            oauth_cases+=("2-agents-mixed-auth|2|config-mixed-auth|")
         fi
+
+        for entry in "${oauth_cases[@]}"; do
+            IFS='|' read -r label num_agents model_or_cfg extra_flag <<< "$entry"
+            local t_start t_elapsed
+            t_start=$(date +%s)
+
+            local rc=0
+            if [ "$model_or_cfg" = "oauth-only" ]; then
+                cmd_oauth || rc=$?
+            else
+                run_integration_case "$label" "$num_agents" \
+                    "$model_or_cfg" "$extra_flag" || rc=$?
+            fi
+
+            t_elapsed=$(( $(date +%s) - t_start ))
+            if [ "$rc" -eq 0 ]; then
+                printf "  PASS  %-24s (%ds)\n" "$label" "$t_elapsed"
+                oauth_pass=$((oauth_pass + 1))
+            else
+                printf "  FAIL  %-24s (%ds)\n" "$label" "$t_elapsed"
+                oauth_fail=$((oauth_fail + 1))
+            fi
+        done
         echo ""
     fi
 
@@ -119,13 +136,14 @@ run_all_tests() {
     if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
         printf "  Integration: %d/%d passed\n" \
             "$int_pass" $((int_pass + int_fail))
+    else
+        echo "  Integration: SKIP (ANTHROPIC_API_KEY not set)"
     fi
     if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-        if [ "$oauth_fail" -eq 0 ]; then
-            echo "  OAuth:       PASS"
-        else
-            echo "  OAuth:       FAIL"
-        fi
+        printf "  OAuth:       %d/%d passed\n" \
+            "$oauth_pass" $((oauth_pass + oauth_fail))
+    else
+        echo "  OAuth:       SKIP (CLAUDE_CODE_OAUTH_TOKEN not set)"
     fi
     printf "  Total time:  %dm %02ds\n" "$total_m" "$total_s"
     echo "============================================================"
@@ -192,6 +210,16 @@ PPPROMPT
                 ]}' > "$cfg"
             args+=(--config "$cfg")
             ;;
+        config-mixed-auth)
+            local cfg
+            cfg=$(mktemp /tmp/${PROJECT}-inttest.XXXXXX.json)
+            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
+                '{prompt: "unused", agents: [
+                    {count: 1, model: $m, auth: "apikey"},
+                    {count: 1, model: $m, auth: "oauth"}
+                ]}' > "$cfg"
+            args+=(--config "$cfg")
+            ;;
         "")
             env_prefix=(SWARM_NUM_AGENTS="$num_agents")
             ;;
@@ -224,15 +252,17 @@ cmd_unit() {
     echo "=== Unit tests ==="
     echo ""
     for f in "$SWARM_DIR"/test_*.sh; do
-        local name
+        local name rc output count
         name=$(basename "$f")
-        local count
-        count=$("$f" 2>&1 | grep -o '[0-9]* passed' | head -1 || true)
-        if "$f" > /dev/null 2>&1; then
+        rc=0
+        output=$("$f" 2>&1) || rc=$?
+        count=$(printf '%s' "$output" | grep -oE '[0-9]+ passed' | tail -1 || true)
+        if [ "$rc" -eq 0 ]; then
             printf "  PASS  %-24s (%s)\n" "$name" "${count:-?}"
             pass=$((pass + 1))
         else
             printf "  FAIL  %-24s\n" "$name"
+            printf '%s\n' "$output" | tail -20 | sed 's/^/        /'
             fail=$((fail + 1))
         fi
     done
