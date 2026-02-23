@@ -35,6 +35,13 @@
 4. 3-6 summary bullets. Group related commits.
 5. Test plan: runnable commands or observable behaviors.
 
+## Linting
+
+- `shellcheck -s bash` on all `.sh` files before committing.
+- Only SC2016 (intentional single-quote) and SC2317 (trap
+  handlers) info-level notices are acceptable.
+- `claude-lint run.sh` to check `.claude/CLAUDE.md` formatting.
+
 ## Quality bars
 
 - Wrap to 79 chars.
