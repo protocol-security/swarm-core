@@ -69,37 +69,33 @@ echo "claude-swarm setup wizard"
 echo "========================="
 echo ""
 
-# 1. Authentication (API key or OAuth token).
+# 1. Authentication (API key and/or OAuth token).
 API_KEY="${ANTHROPIC_API_KEY:-}"
 OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}"
-AUTH_MODE=""
 
 if [ -n "$OAUTH_TOKEN" ]; then
-    AUTH_MODE="oauth"
     echo "CLAUDE_CODE_OAUTH_TOKEN detected in environment (${#OAUTH_TOKEN} chars)."
-elif [ -n "$API_KEY" ]; then
-    AUTH_MODE="apikey"
+fi
+if [ -n "$API_KEY" ]; then
     echo "ANTHROPIC_API_KEY detected in environment (${#API_KEY} chars)."
-else
-    if yesno "Use an OAuth token instead of an API key? (for Pro/Max/Teams/Enterprise)"; then
-        AUTH_MODE="oauth"
-        OAUTH_TOKEN=$(password "Enter your CLAUDE_CODE_OAUTH_TOKEN (from 'claude setup-token')")
-        if [ -z "$OAUTH_TOKEN" ]; then
-            echo "ERROR: OAuth token is required." >&2
-            exit 1
-        fi
-        echo ""
-        echo "Tip: export CLAUDE_CODE_OAUTH_TOKEN before running launch.sh."
-    else
-        AUTH_MODE="apikey"
+fi
+
+if [ -z "$API_KEY" ] && [ -z "$OAUTH_TOKEN" ]; then
+    echo "No credentials detected. You can set one or both."
+    echo ""
+    if yesno "Set an API key?"; then
         API_KEY=$(password "Enter your ANTHROPIC_API_KEY")
-        if [ -z "$API_KEY" ]; then
-            echo "ERROR: API key is required." >&2
-            exit 1
-        fi
-        echo ""
-        echo "Tip: export ANTHROPIC_API_KEY before running launch.sh."
     fi
+    if yesno "Set an OAuth token? (for Pro/Max/Teams/Enterprise)"; then
+        OAUTH_TOKEN=$(password "Enter your CLAUDE_CODE_OAUTH_TOKEN (from 'claude setup-token')")
+    fi
+    if [ -z "$API_KEY" ] && [ -z "$OAUTH_TOKEN" ]; then
+        echo "ERROR: At least one credential is required." >&2
+        exit 1
+    fi
+    echo ""
+    [ -n "$API_KEY" ] && echo "Tip: export ANTHROPIC_API_KEY before running launch.sh."
+    [ -n "$OAUTH_TOKEN" ] && echo "Tip: export CLAUDE_CODE_OAUTH_TOKEN before running launch.sh."
 fi
 
 # 2. Prompt file.
@@ -136,7 +132,7 @@ while true; do
         if [ -n "$GROUP_KEY" ]; then
             AGENT_OBJ+=", \"api_key\": \"${GROUP_KEY}\""
         fi
-    else
+    elif [ -n "$API_KEY" ] && [ -n "$OAUTH_TOKEN" ]; then
         echo "  Auth source for this group:"
         echo "    1) auto (pass both API key + OAuth token; CLI decides)"
         echo "    2) apikey (API key only)"
@@ -223,11 +219,8 @@ if yesno "Write ${OUTPUT}?"; then
     echo "Config written to ${OUTPUT}"
     echo ""
     if yesno "Launch swarm now?"; then
-        if [ "$AUTH_MODE" = "oauth" ]; then
-            export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN"
-        else
-            export ANTHROPIC_API_KEY="$API_KEY"
-        fi
+        [ -n "$API_KEY" ] && export ANTHROPIC_API_KEY="$API_KEY"
+        [ -n "$OAUTH_TOKEN" ] && export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN"
         "$SWARM_DIR/launch.sh" start
     fi
 else

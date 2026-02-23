@@ -68,10 +68,12 @@ build_agents_json() {
     echo "$result"
 }
 
-# Mirrors setup.sh auth mode detection logic.
+# Mirrors setup.sh credential detection logic.
 detect_auth_mode() {
     local api_key="$1" oauth_token="$2"
-    if [ -n "$oauth_token" ]; then
+    if [ -n "$api_key" ] && [ -n "$oauth_token" ]; then
+        echo "both"
+    elif [ -n "$oauth_token" ]; then
         echo "oauth"
     elif [ -n "$api_key" ]; then
         echo "apikey"
@@ -159,7 +161,7 @@ echo "=== 7. OAuth auth mode detection ==="
 
 assert_eq "oauth token present"   "oauth"   "$(detect_auth_mode "" "sk-ant-oat01-tok")"
 assert_eq "api key present"       "apikey"  "$(detect_auth_mode "sk-key" "")"
-assert_eq "oauth takes precedence" "oauth"  "$(detect_auth_mode "sk-key" "sk-ant-oat01-tok")"
+assert_eq "both set"              "both"    "$(detect_auth_mode "sk-key" "sk-ant-oat01-tok")"
 assert_eq "neither set"           "prompt"  "$(detect_auth_mode "" "")"
 
 # ============================================================
