@@ -10,7 +10,7 @@ Based on the agent-team pattern from
 
 - Docker
 - bash, git, jq, bc
-- An Anthropic API key (or compatible endpoint)
+- An Anthropic API key, OAuth token, or compatible endpoint
 
 ## Setup
 
@@ -69,7 +69,8 @@ with `SWARM_CONFIG=/path/to/config.json`:
   "setup": "scripts/setup.sh",
   "max_idle": 3,
   "agents": [
-    { "count": 2, "model": "claude-opus-4-6", "effort": "high" },
+    { "count": 2, "model": "claude-opus-4-6", "effort": "high", "auth": "apikey" },
+    { "count": 1, "model": "claude-opus-4-6", "auth": "oauth" },
     { "count": 1, "model": "claude-sonnet-4-6", "effort": "medium" },
     {
       "count": 3,
@@ -87,13 +88,22 @@ with `SWARM_CONFIG=/path/to/config.json`:
 }
 ```
 
-Agent groups without `api_key` use `ANTHROPIC_API_KEY` from
-the environment. Total agent count is the sum of all `count`
-fields. Requires `jq` on the host.
+Agent groups without `api_key` use `ANTHROPIC_API_KEY` (or
+`CLAUDE_CODE_OAUTH_TOKEN`) from the environment. Total agent
+count is the sum of all `count` fields. Requires `jq` on the
+host.
 
 The `effort` field controls Claude's adaptive reasoning depth
 (`low`, `medium`, `high`). Supported on Opus 4.6 and Sonnet 4.6.
 Omit it to use the model's default (`high`).
+
+The `auth` field selects which credential is passed into the
+container: `"apikey"` uses only `ANTHROPIC_API_KEY`, `"oauth"`
+uses only `CLAUDE_CODE_OAUTH_TOKEN` (subscription mode), and
+omitting it passes both (the CLI decides). Groups with a custom
+`api_key`/`base_url` ignore `auth` -- their own key is always
+used. The dashboard shows the active auth source per agent
+(e.g. `{oauth}`, `{apikey}`).
 
 By default, agents receive git coordination rules
 (commit/push/rebase workflow) appended to their system
@@ -104,7 +114,8 @@ disable this, e.g. when you want full control over the prompt.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| ANTHROPIC_API_KEY | (required) | API key. |
+| ANTHROPIC_API_KEY | | API key (required unless CLAUDE_CODE_OAUTH_TOKEN is set). |
+| CLAUDE_CODE_OAUTH_TOKEN | | OAuth token from `claude setup-token`. Uses your subscription instead of API credits. |
 | SWARM_PROMPT | (required) | Prompt file path. |
 | SWARM_CONFIG | | Config file path. |
 | SWARM_SETUP | | Setup script path. |
@@ -135,6 +146,26 @@ SWARM_PROMPT="tasks/task.md" \
 ```
 
 The model name is passed through as-is to `claude --model`.
+
+### Using a Claude subscription (Pro/Max/Teams/Enterprise)
+
+Instead of an API key you can use your Claude subscription.
+Generate an OAuth token on the host:
+
+    claude setup-token
+
+Then launch with the token instead of an API key:
+
+```bash
+CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..." \
+SWARM_PROMPT="tasks/task.md" \
+./launch.sh start
+```
+
+Both `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` can be
+set simultaneously; the `claude` CLI decides which to use.
+Per-agent `api_key` in `swarm.json` still works as before for
+the API-key flow.
 
 ## Commands and usage
 

@@ -41,7 +41,47 @@ parse_pp_effort()   { jq -r '.post_process.effort // empty' "$1"; }
 
 parse_agents_cfg() {
     jq -r '.agents[] | range(.count) as $i |
-        [.model, (.base_url // ""), (.api_key // ""), (.effort // "")] | join("|")' "$1"
+        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // "")] | join("|")' "$1"
+}
+
+# Mirrors the per-agent credential selection in launch.sh.
+resolve_agent_creds() {
+    local agent_auth="$1" agent_api_key="$2" global_api_key="$3" global_oauth="$4"
+    local resolved_key="" oauth_env=""
+    case "${agent_auth}" in
+        oauth)
+            resolved_key=""
+            oauth_env="CLAUDE_CODE_OAUTH_TOKEN=${global_oauth}"
+            ;;
+        apikey)
+            resolved_key="${agent_api_key:-${global_api_key}}"
+            oauth_env=""
+            ;;
+        *)
+            resolved_key="${agent_api_key:-${global_api_key}}"
+            [ -n "$global_oauth" ] && oauth_env="CLAUDE_CODE_OAUTH_TOKEN=${global_oauth}"
+            ;;
+    esac
+    echo "${resolved_key}|${oauth_env}"
+}
+
+# Mirrors the validation guard in cmd_start().
+check_auth() {
+    local api_key="$1" oauth_token="$2" config_file="$3"
+    if [ -z "$api_key" ] && [ -z "$oauth_token" ] && [ -z "$config_file" ]; then
+        echo "fail"
+    else
+        echo "pass"
+    fi
+}
+
+# Mirrors the EXTRA_ENV construction for CLAUDE_CODE_OAUTH_TOKEN.
+build_oauth_extra_env() {
+    local token="$1"
+    local -a EXTRA_ENV=()
+    [ -n "$token" ] \
+        && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${token}")
+    echo "${EXTRA_ENV[*]+"${EXTRA_ENV[*]}"}"
 }
 
 # ============================================================
@@ -63,16 +103,17 @@ EFFORT_LEVEL="medium"
 NUM_AGENTS=3
 : > "$TMPDIR/env-agents.cfg"
 for _i in $(seq 1 "$NUM_AGENTS"); do
-    printf '%s|||%s\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
+    printf '%s|||%s|\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
 done
 
 assert_eq "line count" "3" "$(wc -l < "$TMPDIR/env-agents.cfg" | tr -d ' ')"
 
-IFS='|' read -r m u k e < "$TMPDIR/env-agents.cfg"
+IFS='|' read -r m u k e a < "$TMPDIR/env-agents.cfg"
 assert_eq "model"    "claude-opus-4-6" "$m"
 assert_eq "base_url" ""               "$u"
 assert_eq "api_key"  ""               "$k"
 assert_eq "effort"   "medium"         "$e"
+assert_eq "auth"     ""               "$a"
 
 # ============================================================
 echo ""
@@ -172,13 +213,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE4=$(echo "$CFG" | sed -n '4p')
 
-IFS='|' read -r m1 u1 k1 e1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 <<< "$LINE1"
 assert_eq "opus effort"  "high"   "$e1"
 
-IFS='|' read -r m2 u2 k2 e2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 <<< "$LINE2"
 assert_eq "sonnet effort" "medium" "$e2"
 
-IFS='|' read -r m4 u4 k4 e4 <<< "$LINE4"
+IFS='|' read -r m4 u4 k4 e4 a4 <<< "$LINE4"
 assert_eq "haiku effort (empty)" "" "$e4"
 
 # ============================================================
@@ -206,10 +247,89 @@ echo "=== 8. Effort env var fallback (no effort set) ==="
 
 EFFORT_LEVEL=""
 : > "$TMPDIR/env-no-effort.cfg"
-printf '%s|||%s\n' "claude-opus-4-6" "$EFFORT_LEVEL" >> "$TMPDIR/env-no-effort.cfg"
+printf '%s|||%s|\n' "claude-opus-4-6" "$EFFORT_LEVEL" >> "$TMPDIR/env-no-effort.cfg"
 
-IFS='|' read -r m u k e < "$TMPDIR/env-no-effort.cfg"
+IFS='|' read -r m u k e a < "$TMPDIR/env-no-effort.cfg"
 assert_eq "no effort" "" "$e"
+
+# ============================================================
+echo ""
+echo "=== 9. OAuth auth validation ==="
+
+assert_eq "api_key only"        "pass" "$(check_auth "sk-key" "" "")"
+assert_eq "oauth only"          "pass" "$(check_auth "" "sk-ant-oat01-tok" "")"
+assert_eq "both set"            "pass" "$(check_auth "sk-key" "sk-ant-oat01-tok" "")"
+assert_eq "config only"         "pass" "$(check_auth "" "" "swarm.json")"
+assert_eq "nothing set"         "fail" "$(check_auth "" "" "")"
+assert_eq "oauth + config"      "pass" "$(check_auth "" "sk-ant-oat01-tok" "swarm.json")"
+
+# ============================================================
+echo ""
+echo "=== 10. OAuth EXTRA_ENV construction ==="
+
+assert_eq "oauth env set" \
+    "-e CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test" \
+    "$(build_oauth_extra_env "sk-ant-oat01-test")"
+assert_eq "oauth env empty" "" "$(build_oauth_extra_env "")"
+
+# ============================================================
+echo ""
+echo "=== 11. Per-agent auth field in TSV ==="
+
+cat > "$TMPDIR/auth_mixed.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6", "auth": "apikey" },
+    { "count": 1, "model": "claude-opus-4-6", "auth": "oauth" },
+    { "count": 1, "model": "MiniMax-M2.5", "base_url": "https://api.minimax.io", "api_key": "sk-mm" }
+  ]
+}
+EOF
+
+CFG=$(parse_agents_cfg "$TMPDIR/auth_mixed.json")
+LINE1=$(echo "$CFG" | sed -n '1p')
+LINE2=$(echo "$CFG" | sed -n '2p')
+LINE3=$(echo "$CFG" | sed -n '3p')
+
+IFS='|' read -r m1 u1 k1 e1 a1 <<< "$LINE1"
+assert_eq "auth apikey"  "apikey"  "$a1"
+assert_eq "auth apikey model" "claude-opus-4-6" "$m1"
+
+IFS='|' read -r m2 u2 k2 e2 a2 <<< "$LINE2"
+assert_eq "auth oauth"   "oauth"   "$a2"
+
+IFS='|' read -r m3 u3 k3 e3 a3 <<< "$LINE3"
+assert_eq "auth custom (empty)" "" "$a3"
+assert_eq "auth custom key" "sk-mm" "$k3"
+
+# ============================================================
+echo ""
+echo "=== 12. Per-agent credential resolution ==="
+
+RESULT=$(resolve_agent_creds "oauth" "" "sk-global" "sk-oat-tok")
+IFS='|' read -r rk re <<< "$RESULT"
+assert_eq "oauth: api_key cleared"  ""  "$rk"
+assert_eq "oauth: token passed" "CLAUDE_CODE_OAUTH_TOKEN=sk-oat-tok" "$re"
+
+RESULT=$(resolve_agent_creds "apikey" "" "sk-global" "sk-oat-tok")
+IFS='|' read -r rk re <<< "$RESULT"
+assert_eq "apikey: api_key set"   "sk-global" "$rk"
+assert_eq "apikey: no token"      ""           "$re"
+
+RESULT=$(resolve_agent_creds "" "" "sk-global" "sk-oat-tok")
+IFS='|' read -r rk re <<< "$RESULT"
+assert_eq "default: api_key set"  "sk-global" "$rk"
+assert_eq "default: token passed" "CLAUDE_CODE_OAUTH_TOKEN=sk-oat-tok" "$re"
+
+RESULT=$(resolve_agent_creds "" "sk-agent" "sk-global" "sk-oat-tok")
+IFS='|' read -r rk re <<< "$RESULT"
+assert_eq "custom key overrides"  "sk-agent" "$rk"
+
+RESULT=$(resolve_agent_creds "" "" "sk-global" "")
+IFS='|' read -r rk re <<< "$RESULT"
+assert_eq "no oauth: api_key set" "sk-global" "$rk"
+assert_eq "no oauth: no token"    ""           "$re"
 
 # ============================================================
 echo ""

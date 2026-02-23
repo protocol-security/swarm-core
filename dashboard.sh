@@ -165,8 +165,8 @@ draw() {
     echo ""
 
     # Agent table header.
-    printf "  ${BOLD}%-3s %-16s %-10s %8s %9s %6s %5s %7s${RESET}\n" \
-        "#" "Model" "Status" "Cost" "In/Out" "Cache" "Turns" "Time"
+    printf "  ${BOLD}%-3s %-16s %-6s %-10s %8s %9s %6s %5s %7s${RESET}\n" \
+        "#" "Model" "Auth" "Status" "Cost" "In/Out" "Cache" "Turns" "Time"
 
     local running_count=0 exited_count=0
     local total_cost=0 total_in=0 total_out=0 total_cache=0 total_dur=0 total_turns=0
@@ -177,7 +177,7 @@ draw() {
         local state
         state=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo "not found")
 
-        local model="unknown" effort=""
+        local model="unknown" effort="" auth_mode=""
         if [ "$state" != "not found" ]; then
             local env_dump
             env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
@@ -185,6 +185,18 @@ draw() {
             model=$(printf '%s' "$env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
             model="${model:-unknown}"
             effort=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
+            auth_mode=$(printf '%s' "$env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
+            # Auto-detect auth source when not explicitly set.
+            if [ -z "$auth_mode" ]; then
+                local has_apikey has_oauth
+                has_apikey=$(printf '%s' "$env_dump" | grep '^ANTHROPIC_API_KEY=' | head -1 | cut -d= -f2- || true)
+                has_oauth=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_OAUTH_TOKEN=' | head -1 | cut -d= -f2- || true)
+                if [ -n "$has_oauth" ] && [ -z "$has_apikey" ]; then
+                    auth_mode="oauth"
+                elif [ -n "$has_apikey" ] && [ -z "$has_oauth" ]; then
+                    auth_mode="apikey"
+                fi
+            fi
         fi
         local short="${model/claude-/}"
         if [ -n "$effort" ]; then
@@ -246,7 +258,7 @@ draw() {
         cache_str=$(format_tokens "$a_cache")
         dur_str=$(format_duration_ms "$a_dur")
 
-        printf "  %-3s %-16s " "$i" "$short"
+        printf "  %-3s %-16s %-6s " "$i" "$short" "$auth_mode"
         printf "%b%-10s%b" "$status_color" "$status_text" "$RESET"
         printf " %8s %9s %6s %5s %7s\n" "$cost_str" "$in_out_str" "$cache_str" "$a_turns" "$dur_str"
     done
@@ -256,13 +268,24 @@ draw() {
     local pp_state
     pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || true)
     if [ -n "$pp_state" ] && [ "$pp_state" != "none" ]; then
-        local pp_model pp_effort
+        local pp_model pp_effort pp_auth_mode
         local pp_env_dump
         pp_env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
             "$pp_name" 2>/dev/null || true)
         pp_model=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
         pp_model="${pp_model:-unknown}"
         pp_effort=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
+        pp_auth_mode=$(printf '%s' "$pp_env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
+        if [ -z "$pp_auth_mode" ]; then
+            local pp_has_apikey pp_has_oauth
+            pp_has_apikey=$(printf '%s' "$pp_env_dump" | grep '^ANTHROPIC_API_KEY=' | head -1 | cut -d= -f2- || true)
+            pp_has_oauth=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_CODE_OAUTH_TOKEN=' | head -1 | cut -d= -f2- || true)
+            if [ -n "$pp_has_oauth" ] && [ -z "$pp_has_apikey" ]; then
+                pp_auth_mode="oauth"
+            elif [ -n "$pp_has_apikey" ] && [ -z "$pp_has_oauth" ]; then
+                pp_auth_mode="apikey"
+            fi
+        fi
         local pp_short="${pp_model/claude-/}"
         if [ -n "$pp_effort" ]; then
             local pp_eff_tag="${pp_effort:0:1}"
@@ -292,7 +315,7 @@ draw() {
         esac
 
         printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
-        printf "  %-3s %-16s " "PP" "$pp_short"
+        printf "  %-3s %-16s %-6s " "PP" "$pp_short" "$pp_auth_mode"
         printf "%b%-10s%b" "$pp_status_color" "$pp_state" "$RESET"
         printf " %8s %9s %6s %5s %7s\n" \
             "$(format_cost "$pp_cost")" \
@@ -308,8 +331,8 @@ draw() {
     t_inout_str="$(format_tokens "$total_in")/$(format_tokens "$total_out")"
     t_cache_str=$(format_tokens "$total_cache")
     t_dur_str=$(format_duration_ms "$total_dur")
-    printf "  ${BOLD}%-3s %-16s %-10s %8s %9s %6s %5s %7s${RESET}\n" \
-        "" "Total" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" "$total_turns" "$t_dur_str"
+    printf "  ${BOLD}%-3s %-16s %-6s %-10s %8s %9s %6s %5s %7s${RESET}\n" \
+        "" "Total" "" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" "$total_turns" "$t_dur_str"
 
     echo ""
 
