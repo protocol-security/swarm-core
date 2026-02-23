@@ -22,7 +22,7 @@ assert_eq() {
     fi
 }
 
-# --- Helpers: same jq pipeline used in setup.sh ---
+# --- Helpers: same jq pipeline and auth logic used in setup.sh ---
 
 build_config() {
     local prompt="$1" setup="$2" max_idle="$3"
@@ -66,6 +66,18 @@ build_agents_json() {
         shift 2
     done
     echo "$result"
+}
+
+# Mirrors setup.sh auth mode detection logic.
+detect_auth_mode() {
+    local api_key="$1" oauth_token="$2"
+    if [ -n "$oauth_token" ]; then
+        echo "oauth"
+    elif [ -n "$api_key" ]; then
+        echo "apikey"
+    else
+        echo "prompt"
+    fi
 }
 
 # ============================================================
@@ -140,6 +152,30 @@ CONFIG=$(build_config "p.md" "" 3 "sa" "a@a" "$AGENTS")
 
 assert_eq "base_url" "https://example.com" "$(echo "$CONFIG" | jq -r '.agents[0].base_url')"
 assert_eq "api_key"  "sk-test"             "$(echo "$CONFIG" | jq -r '.agents[0].api_key')"
+
+# ============================================================
+echo ""
+echo "=== 7. OAuth auth mode detection ==="
+
+assert_eq "oauth token present"   "oauth"   "$(detect_auth_mode "" "sk-ant-oat01-tok")"
+assert_eq "api key present"       "apikey"  "$(detect_auth_mode "sk-key" "")"
+assert_eq "oauth takes precedence" "oauth"  "$(detect_auth_mode "sk-key" "sk-ant-oat01-tok")"
+assert_eq "neither set"           "prompt"  "$(detect_auth_mode "" "")"
+
+# ============================================================
+echo ""
+echo "=== 8. Config valid without API key (OAuth-only) ==="
+
+AGENTS=$(build_agents_json 3 "claude-opus-4-6")
+CONFIG=$(build_config "task.md" "" 3 "swarm-agent" "agent@claude-swarm.local" "$AGENTS")
+
+echo "$CONFIG" > "$TMPDIR/oauth-config.json"
+assert_eq "valid JSON (oauth)" "true" \
+    "$(jq empty "$TMPDIR/oauth-config.json" 2>/dev/null && echo true || echo false)"
+assert_eq "no api_key in config" "null" \
+    "$(echo "$CONFIG" | jq -r '.agents[0].api_key // "null"')"
+assert_eq "agent count (oauth)" "3" \
+    "$(echo "$CONFIG" | jq '[.agents[].count] | add')"
 
 # ============================================================
 echo ""

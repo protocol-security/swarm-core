@@ -44,6 +44,25 @@ parse_agents_cfg() {
         [.model, (.base_url // ""), (.api_key // ""), (.effort // "")] | join("|")' "$1"
 }
 
+# Mirrors the validation guard in cmd_start().
+check_auth() {
+    local api_key="$1" oauth_token="$2" config_file="$3"
+    if [ -z "$api_key" ] && [ -z "$oauth_token" ] && [ -z "$config_file" ]; then
+        echo "fail"
+    else
+        echo "pass"
+    fi
+}
+
+# Mirrors the EXTRA_ENV construction for CLAUDE_CODE_OAUTH_TOKEN.
+build_oauth_extra_env() {
+    local token="$1"
+    local -a EXTRA_ENV=()
+    [ -n "$token" ] \
+        && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${token}")
+    echo "${EXTRA_ENV[*]+"${EXTRA_ENV[*]}"}"
+}
+
 # ============================================================
 echo "=== 1. Model name shortening ==="
 
@@ -210,6 +229,26 @@ printf '%s|||%s\n' "claude-opus-4-6" "$EFFORT_LEVEL" >> "$TMPDIR/env-no-effort.c
 
 IFS='|' read -r m u k e < "$TMPDIR/env-no-effort.cfg"
 assert_eq "no effort" "" "$e"
+
+# ============================================================
+echo ""
+echo "=== 9. OAuth auth validation ==="
+
+assert_eq "api_key only"        "pass" "$(check_auth "sk-key" "" "")"
+assert_eq "oauth only"          "pass" "$(check_auth "" "sk-ant-oat01-tok" "")"
+assert_eq "both set"            "pass" "$(check_auth "sk-key" "sk-ant-oat01-tok" "")"
+assert_eq "config only"         "pass" "$(check_auth "" "" "swarm.json")"
+assert_eq "nothing set"         "fail" "$(check_auth "" "" "")"
+assert_eq "oauth + config"      "pass" "$(check_auth "" "sk-ant-oat01-tok" "swarm.json")"
+
+# ============================================================
+echo ""
+echo "=== 10. OAuth EXTRA_ENV construction ==="
+
+assert_eq "oauth env set" \
+    "-e CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test" \
+    "$(build_oauth_extra_env "sk-ant-oat01-test")"
+assert_eq "oauth env empty" "" "$(build_oauth_extra_env "")"
 
 # ============================================================
 echo ""
