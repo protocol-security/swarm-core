@@ -3,6 +3,30 @@ set -euo pipefail
 
 # Container entrypoint: clone, setup, loop claude sessions.
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    cat <<HELP
+Usage: $0
+
+Container entrypoint for claude-swarm agents. Not intended to
+be run directly -- launched automatically inside Docker by
+launch.sh.
+
+Clones the bare repo, runs optional setup, then loops claude
+sessions until the agent is idle for MAX_IDLE cycles.
+
+Required environment:
+  AGENT_PROMPT   Path to prompt file (relative to repo root).
+  CLAUDE_MODEL   Model to use for claude sessions.
+
+Optional environment:
+  AGENT_ID       Agent identifier (default: unnamed).
+  AGENT_SETUP    Setup script to run before first session.
+  MAX_IDLE       Idle sessions before exit (default: 3).
+  INJECT_GIT_RULES  Inject git coordination rules (default: true).
+HELP
+    exit 0
+fi
+
 AGENT_ID="${AGENT_ID:-unnamed}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-4-6}"
 AGENT_PROMPT="${AGENT_PROMPT:?AGENT_PROMPT is required.}"
