@@ -41,7 +41,7 @@ Host                         /tmp (bare repos)
 All containers mount the same bare repo. When one agent
 pushes, others see the changes on the next fetch.
 
-Each container runs `harness.sh`:
+Each container runs `lib/harness.sh`:
 
 1. Clones `/upstream` to `/workspace`.
 2. Points submodule URLs at local read-only mirrors.
@@ -49,16 +49,14 @@ Each container runs `harness.sh`:
 4. Loops: reset to `origin/agent-work`, run one Claude
    session.
 
-Agents stop after `SWARM_MAX_IDLE` consecutive sessions
-with no commits.
-
+Agents stop after `SWARM_MAX_IDLE` consecutive idle sessions.
 A session is one `claude` invocation. After it exits the
 harness checks whether `agent-work` advanced. If not, the
-idle counter increments. Any push by any agent resets it.
+idle counter increments. Any push resets it.
 
 ## Configuration
 
-### Config file (recommended for mixed models)
+### Config file (recommended)
 
 Place a `swarm.json` in your repo root, or point to one
 with `SWARM_CONFIG=/path/to/config.json`:
@@ -88,86 +86,69 @@ with `SWARM_CONFIG=/path/to/config.json`:
 }
 ```
 
-Agent groups without `api_key` use `ANTHROPIC_API_KEY` (or
-`CLAUDE_CODE_OAUTH_TOKEN`) from the environment. Total agent
-count is the sum of all `count` fields. Requires `jq` on the
-host.
+Groups without `api_key` use `ANTHROPIC_API_KEY` or
+`CLAUDE_CODE_OAUTH_TOKEN` from the environment. Total
+agents = sum of `count` fields. Requires `jq`.
 
-The `effort` field controls Claude's adaptive reasoning depth
-(`low`, `medium`, `high`). Supported on Opus 4.6 and Sonnet 4.6.
-Omit it to use the model's default (`high`).
+**Fields:**
 
-The `auth` field selects which credential is passed into the
-container: `"apikey"` uses only `ANTHROPIC_API_KEY`, `"oauth"`
-uses only `CLAUDE_CODE_OAUTH_TOKEN` (subscription mode), and
-omitting it passes both (the CLI decides). Groups with a custom
-`api_key`/`base_url` ignore `auth` -- their own key is always
-used. The dashboard shows the active auth source per agent
-(e.g. `{oauth}`, `{apikey}`).
+| Field | Values | Notes |
+|-------|--------|-------|
+| `effort` | `low`, `medium`, `high` | Adaptive reasoning depth. Opus/Sonnet 4.6+. |
+| `auth` | `apikey`, `oauth`, omit | Which credential to inject. Omit = both. |
+| `inject_git_rules` | `true`, `false` | Append git coordination rules to system prompt. |
 
-By default, agents receive git coordination rules
-(commit/push/rebase workflow) appended to their system
-prompt. Set `"inject_git_rules": false` in the config to
-disable this, e.g. when you want full control over the prompt.
+Groups with `api_key`/`base_url` ignore `auth`; their own
+key is always used. The dashboard shows auth per agent.
 
-### Environment variables (simple case)
+### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| ANTHROPIC_API_KEY | | API key (required unless CLAUDE_CODE_OAUTH_TOKEN is set). |
-| CLAUDE_CODE_OAUTH_TOKEN | | OAuth token from `claude setup-token`. Uses your subscription instead of API credits. |
-| SWARM_PROMPT | (required) | Prompt file path. |
-| SWARM_CONFIG | | Config file path. |
-| SWARM_SETUP | | Setup script path. |
-| SWARM_MODEL | claude-opus-4-6 | Model. |
-| SWARM_NUM_AGENTS | 3 | Container count. |
-| SWARM_MAX_IDLE | 3 | Idle sessions before exit. |
-| SWARM_EFFORT | | Reasoning effort: low, medium, high. |
-| SWARM_INJECT_GIT_RULES | true | Inject git coordination rules. |
-| SWARM_GIT_USER_NAME | swarm-agent | Git author name. |
-| SWARM_GIT_USER_EMAIL | agent@claude-swarm.local | Git email. |
-| ANTHROPIC_BASE_URL | | Override API URL. |
-| ANTHROPIC_AUTH_TOKEN | | Override auth token. |
+| `ANTHROPIC_API_KEY` | | API key (or `CLAUDE_CODE_OAUTH_TOKEN`). |
+| `CLAUDE_CODE_OAUTH_TOKEN` | | OAuth token via `claude setup-token`. |
+| `SWARM_PROMPT` | (required) | Prompt file path. |
+| `SWARM_CONFIG` | | Config file path. |
+| `SWARM_SETUP` | | Setup script path. |
+| `SWARM_MODEL` | `claude-opus-4-6` | Model. |
+| `SWARM_NUM_AGENTS` | `3` | Container count. |
+| `SWARM_MAX_IDLE` | `3` | Idle sessions before exit. |
+| `SWARM_EFFORT` | | Reasoning effort. |
+| `SWARM_INJECT_GIT_RULES` | `true` | Inject git rules. |
+| `SWARM_GIT_USER_NAME` | `swarm-agent` | Git author name. |
+| `SWARM_GIT_USER_EMAIL` | `agent@claude-swarm.local` | Git email. |
+| `ANTHROPIC_BASE_URL` | | Override API URL. |
+| `ANTHROPIC_AUTH_TOKEN` | | Override auth token. |
 
-Config file takes precedence over env vars when present.
+Config file takes precedence when present.
 
 ### Third-party models
 
-Any Anthropic-compatible endpoint works. Set `base_url` and
-`api_key` per agent group, or use environment variables for
-all agents:
+Any Anthropic-compatible endpoint works. Per-group via
+`base_url`/`api_key`, or globally:
 
-```bash
-ANTHROPIC_API_KEY="sk-..." \
-ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic" \
-SWARM_MODEL="MiniMax-M2.5" \
-SWARM_PROMPT="tasks/task.md" \
-./launch.sh start
-```
+    ANTHROPIC_API_KEY="sk-..." \
+    ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic" \
+    SWARM_MODEL="MiniMax-M2.5" \
+    SWARM_PROMPT="tasks/task.md" \
+    ./launch.sh start
 
-The model name is passed through as-is to `claude --model`.
+### Subscription auth (Pro/Max/Teams/Enterprise)
 
-### Using a Claude subscription (Pro/Max/Teams/Enterprise)
-
-Instead of an API key you can use your Claude subscription.
 Generate an OAuth token on the host:
 
     claude setup-token
 
-Then launch with the token instead of an API key:
+Then launch with it:
 
-```bash
-CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..." \
-SWARM_PROMPT="tasks/task.md" \
-./launch.sh start
-```
+    CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..." \
+    SWARM_PROMPT="tasks/task.md" \
+    ./launch.sh start
 
-Both `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` can be
-set simultaneously; the `claude` CLI decides which to use.
-Per-agent `api_key` in `swarm.json` still works as before for
-the API-key flow.
+Both credentials can coexist; the CLI decides which to use.
+Per-agent `api_key` in `swarm.json` still works for the
+API-key flow.
 
 ## Commands and usage
 
-See [USAGE.md](USAGE.md) for the full command reference,
-including dashboard shortcuts, testing, and post-processing.
+See [USAGE.md](USAGE.md).

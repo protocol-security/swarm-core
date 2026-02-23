@@ -2,110 +2,83 @@
 
 ## Quick start
 
-```bash
-# Interactive setup (generates swarm.json).
-./tools/claude-swarm/setup.sh
+    # Interactive setup (generates swarm.json).
+    ./setup.sh
 
-# Or configure via environment.
-export ANTHROPIC_API_KEY="sk-ant-..."
-export SWARM_PROMPT="path/to/prompt.md"
-./tools/claude-swarm/launch.sh start
-```
+    # Or configure via environment.
+    ANTHROPIC_API_KEY="sk-ant-..." \
+    SWARM_PROMPT="path/to/prompt.md" \
+    ./launch.sh start
 
 ## Commands
 
-```bash
-./launch.sh start              # Launch agents.
-./launch.sh start --dashboard  # Launch agents and open TUI.
-./launch.sh stop               # Stop all agents.
-./launch.sh status             # Show running containers.
-./launch.sh logs N             # Tail logs for agent N.
-./launch.sh wait               # Block until done, harvest,
-                               # and post-process if configured.
-./launch.sh post-process       # Run post-processing agent.
-```
+    ./launch.sh start              # Launch agents.
+    ./launch.sh start --dashboard  # Launch + open TUI.
+    ./launch.sh stop               # Stop all agents.
+    ./launch.sh status             # Show containers.
+    ./launch.sh logs N             # Tail agent N logs.
+    ./launch.sh wait               # Block, harvest, post-process.
+    ./launch.sh post-process       # Run post-process agent.
 
 ## Dashboard
 
-```bash
-./dashboard.sh                 # Attach to TUI dashboard.
-```
+    ./dashboard.sh
 
-Shows agent status, models, cost, token usage, agentic
-turns, duration, and recent commits (with model
-attribution). Stats update live as sessions complete.
+Per-agent model, auth source, status, cost, tokens, cache,
+turns, and duration. Updates every 2s.
 
-Keyboard shortcuts:
-
-| Key   | Action              |
-|-------|---------------------|
-| `q`   | Quit dashboard.     |
-| `l N` | Logs for agent N.   |
-| `h`   | Harvest results.    |
-| `s`   | Stop all agents.    |
-| `p`   | Post-process.       |
-
-Re-run `./dashboard.sh` to re-attach while agents run.
+| Key | Action |
+|-----|--------|
+| `q` | Quit. |
+| `1`-`9` | Logs for agent N. |
+| `h` | Harvest results. |
+| `s` | Stop all agents. |
+| `p` | Post-process. |
 
 ## Testing
 
-```bash
-./tests/test.sh --help               # Show all options.
-./tests/test.sh --unit               # Unit tests only (no Docker/API key).
-./tests/test.sh                      # Single integration smoke test.
-./tests/test.sh --all                # Unit tests + full integration matrix.
-./tests/test.sh --config swarm.json  # With a config file (mixed models).
-./tests/test.sh --no-inject          # Explicit git in prompt (compat test).
-```
+    ./tests/test.sh --help               # All options.
+    ./tests/test.sh --unit               # Unit tests only.
+    ./tests/test.sh                      # Single smoke test.
+    ./tests/test.sh --all                # Full matrix.
+    ./tests/test.sh --config swarm.json  # Custom config.
+    ./tests/test.sh --no-inject          # Explicit git prompt.
 
-Flags combine freely: `./tests/test.sh --config swarm.json --no-inject`.
+Flags combine: `./tests/test.sh --config f.json --no-inject`.
 
-`tests/test.sh` always uses its own built-in prompt regardless of
-what the config file specifies. The prompt includes a
-reasoning step (sum computation) that exercises adaptive
-thinking at different effort levels.
+The test harness uses its own built-in prompt (counting +
+reasoning) regardless of config. The reasoning step exercises
+adaptive thinking at different effort levels.
 
-Integration matrix (`--all` runs these sequentially):
+Integration matrix (`--all`):
 
-| Case | Agents | Model | Effort | Notes |
-|------|--------|-------|--------|-------|
-| `1-agent-env` | 1 | default | | |
-| `2-agents-env` | 2 | default | | |
-| `3-agents-env` | 3 | default | | |
-| `2-agents-no-inject` | 2 | default | | `--no-inject` |
-| `2-agents-sonnet` | 2 | sonnet | | |
-| `2-agents-config` | 2 | default | | swarm.json |
-| `3-agents-mixed` | 3 | opus + sonnet | | swarm.json |
-| `1-agent-effort-env` | 1 | default | medium | env var |
-| `2-agents-effort-cfg` | 2 | opus + sonnet | high / low | swarm.json |
-| `2-agents-postprocess` | 2 | default | | + post-process |
+| Case | Agents | Notes |
+|------|--------|-------|
+| `1-agent-env` | 1 | |
+| `2-agents-env` | 2 | |
+| `3-agents-env` | 3 | |
+| `2-agents-no-inject` | 2 | `--no-inject` |
+| `2-agents-sonnet` | 2 | sonnet model |
+| `2-agents-config` | 2 | swarm.json |
+| `3-agents-mixed` | 3 | opus + sonnet |
+| `1-agent-effort-env` | 1 | effort via env |
+| `2-agents-effort-cfg` | 2 | effort via config |
+| `2-agents-postprocess` | 2 | + post-process |
 
-All cases use the same counting + reasoning prompt. Each
-agent N writes `test-results/agent-N.txt` (100 numbers) and
-`test-results/reasoning-N.txt` (computed sum + explanation).
+Unit tests (no Docker or API key):
 
-Run `./dashboard.sh` in a second tmux pane to watch each
-case live (the dashboard title updates per test, and the
-Model column shows effort levels like `opus-4-6 [high]`).
-
-Unit tests (no Docker or API key needed):
-
-```bash
-./tests/test.sh --unit               # Run all unit test files.
-
-# Or individually:
-./tests/test_config.sh     # Config + effort parsing.
-./tests/test_format.sh     # Formatting helpers.
-./tests/test_launch.sh     # Launch logic + effort.
-./tests/test_harness.sh    # Harness stat extraction.
-./tests/test_costs.sh      # Cost aggregation + duration.
-./tests/test_harvest.sh    # Harvest git ops.
-./tests/test_setup.sh      # Setup wizard config.
-```
+    ./tests/test.sh --unit         # All unit tests.
+    ./tests/test_config.sh         # Config parsing.
+    ./tests/test_format.sh         # Formatting helpers.
+    ./tests/test_launch.sh         # Launch logic.
+    ./tests/test_harness.sh        # Stat extraction.
+    ./tests/test_costs.sh          # Cost aggregation.
+    ./tests/test_harvest.sh        # Harvest git ops.
+    ./tests/test_setup.sh          # Setup wizard.
 
 ## Post-processing
 
-Add a `post_process` section to `swarm.json`:
+Add to `swarm.json`:
 
 ```json
 {
@@ -118,49 +91,37 @@ Add a `post_process` section to `swarm.json`:
 ```
 
 Trigger via `[p]` in the dashboard, `./launch.sh post-process`,
-or automatically through `./launch.sh wait`.
+or automatically via `./launch.sh wait`.
 
 The post-process agent clones the same bare repo, sees all
-agent commits on `agent-work`, runs its prompt, and pushes.
+commits on `agent-work`, runs its prompt, and pushes.
 
 ## Git coordination
 
-Agents automatically receive git rules (commit, push, rebase
-workflow) via a system prompt appendix. This means your task
-prompt does not need to explain the git machinery -- just
-describe the work.
+Agents receive git rules (commit/push/rebase) via a system
+prompt appendix. Your task prompt only needs to describe the
+work.
 
-To disable, set `"inject_git_rules": false` in `swarm.json`
-or `SWARM_INJECT_GIT_RULES=false` as an env var.
+Disable with `"inject_git_rules": false` in `swarm.json` or
+`SWARM_INJECT_GIT_RULES=false`.
 
 ## Cost tracking
 
-The dashboard shows per-agent and total cost, tokens, and
-duration in real time. For a non-interactive summary:
+    ./costs.sh          # Table.
+    ./costs.sh --json   # JSON.
 
-```bash
-./costs.sh                     # Table output.
-./costs.sh --json              # Machine-readable JSON.
-```
-
-Stats are collected per session inside each container
-(`agent_logs/stats_agent_*.tsv`) and read on demand.
+Stats collected per session inside each container
+(`agent_logs/stats_agent_*.tsv`), read on demand.
 
 ## Cleanup
 
-Remove the bare repo after testing:
-
-```bash
-rm -rf /tmp/<project>-upstream.git
-```
+    rm -rf /tmp/<project>-upstream.git
 
 ## Verify image
 
-```bash
-docker run --rm --entrypoint bash \
-    -e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" \
-    $(basename $(pwd))-agent \
-    -c 'claude --dangerously-skip-permissions \
-        -p "What model are you? Reply with model id only." \
-        --model claude-opus-4-6 2>&1'
-```
+    docker run --rm --entrypoint bash \
+        -e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" \
+        $(basename $(pwd))-agent \
+        -c 'claude --dangerously-skip-permissions \
+            -p "What model are you? Reply with model id only." \
+            --model claude-opus-4-6 2>&1'
