@@ -223,7 +223,7 @@ write_prompt() {
 # Smoke Test: Deterministic Counting
 
 You are agent $AGENT_ID in an infrastructure smoke test.
-Your ONLY task is to create one file and push it.
+Your ONLY task is to create two files and push them.
 
 ## Steps
 
@@ -233,7 +233,7 @@ Your ONLY task is to create one file and push it.
 echo $AGENT_ID
 ```
 
-2. Create the output file. The file must be named
+2. Create the counting file. The file must be named
    `test-results/agent-{AGENT_ID}.txt` and contain numbers
    from `AGENT_ID * 100` to `AGENT_ID * 100 + 99`, one per
    line. For example, agent 1 writes 100..199, agent 2 writes
@@ -246,7 +246,17 @@ END=$((START + 99))
 seq $START $END > test-results/agent-${AGENT_ID}.txt
 ```
 
-3. Commit and push:
+3. Reasoning checkpoint — think through this before proceeding:
+   Compute the sum of all 100 numbers you just wrote. The formula
+   for the sum of consecutive integers from a to b is:
+   sum = (b - a + 1) * (a + b) / 2
+
+   Write a second file `test-results/reasoning-{AGENT_ID}.txt`
+   containing exactly two lines:
+   - Line 1: the computed sum (a single integer)
+   - Line 2: a one-sentence explanation of how you derived it
+
+4. Commit and push:
 
 ```bash
 git add test-results/
@@ -255,22 +265,24 @@ git pull --rebase origin agent-work
 git push origin agent-work
 ```
 
-4. Stop. Do NOT loop, do NOT pick another task. Exit after
+5. Stop. Do NOT loop, do NOT pick another task. Exit after
    the push succeeds.
 
 ## Rules
 
 - Do NOT modify any existing files.
-- Do NOT create any files other than test-results/agent-{AGENT_ID}.txt.
-- The file must contain exactly 100 lines, one number per line.
-- Use the exact bash commands above. Do not improvise.
+- Only create test-results/agent-{AGENT_ID}.txt and
+  test-results/reasoning-{AGENT_ID}.txt.
+- The counting file must contain exactly 100 lines, one number per line.
+- The reasoning file must contain exactly 2 lines.
+- Use the exact bash commands above for steps 2 and 4. Do not improvise.
 PROMPT
     else
         cat > "$dest/$PROMPT_FILE" <<'PROMPT'
 # Smoke Test: Deterministic Counting
 
 You are agent $AGENT_ID in an infrastructure smoke test.
-Your ONLY task is to create one file and commit it.
+Your ONLY task is to create two files and commit them.
 
 ## Steps
 
@@ -280,7 +292,7 @@ Your ONLY task is to create one file and commit it.
 echo $AGENT_ID
 ```
 
-2. Create the output file. The file must be named
+2. Create the counting file. The file must be named
    `test-results/agent-{AGENT_ID}.txt` and contain numbers
    from `AGENT_ID * 100` to `AGENT_ID * 100 + 99`, one per
    line. For example, agent 1 writes 100..199, agent 2 writes
@@ -293,15 +305,27 @@ END=$((START + 99))
 seq $START $END > test-results/agent-${AGENT_ID}.txt
 ```
 
-3. Commit your work with message "Smoke test: agent ${AGENT_ID} counting".
+3. Reasoning checkpoint — think through this before proceeding:
+   Compute the sum of all 100 numbers you just wrote. The formula
+   for the sum of consecutive integers from a to b is:
+   sum = (b - a + 1) * (a + b) / 2
 
-4. Stop. Do NOT loop, do NOT pick another task.
+   Write a second file `test-results/reasoning-{AGENT_ID}.txt`
+   containing exactly two lines:
+   - Line 1: the computed sum (a single integer)
+   - Line 2: a one-sentence explanation of how you derived it
+
+4. Commit your work with message "Smoke test: agent ${AGENT_ID} counting".
+
+5. Stop. Do NOT loop, do NOT pick another task.
 
 ## Rules
 
 - Do NOT modify any existing files.
-- Do NOT create any files other than test-results/agent-{AGENT_ID}.txt.
-- The file must contain exactly 100 lines, one number per line.
+- Only create test-results/agent-{AGENT_ID}.txt and
+  test-results/reasoning-{AGENT_ID}.txt.
+- The counting file must contain exactly 100 lines, one number per line.
+- The reasoning file must contain exactly 2 lines.
 PROMPT
     fi
 
@@ -437,6 +461,7 @@ git checkout --quiet agent-work
 
 for i in $(seq 1 "$NUM_AGENTS"); do
     FILE="test-results/agent-${i}.txt"
+    RFILE="test-results/reasoning-${i}.txt"
 
     if [ ! -f "$FILE" ]; then
         echo "  FAIL: ${FILE} missing"
@@ -450,10 +475,24 @@ for i in $(seq 1 "$NUM_AGENTS"); do
     ACTUAL=$(cat "$FILE")
 
     if [ "$ACTUAL" = "$EXPECTED" ]; then
-        echo "  PASS: agent ${i} (${START}..${END})"
+        echo "  PASS: agent ${i} counting (${START}..${END})"
     else
         echo "  FAIL: agent ${i} content mismatch"
         errors=$((errors + 1))
+    fi
+
+    # Verify reasoning file: first line should be the sum.
+    EXPECTED_SUM=$(( (END - START + 1) * (START + END) / 2 ))
+    if [ ! -f "$RFILE" ]; then
+        echo "  WARN: ${RFILE} missing (reasoning step skipped)"
+    else
+        ACTUAL_SUM=$(head -1 "$RFILE" | tr -d '[:space:]')
+        if [ "$ACTUAL_SUM" = "$EXPECTED_SUM" ]; then
+            echo "  PASS: agent ${i} reasoning (sum=${EXPECTED_SUM})"
+        else
+            echo "  FAIL: agent ${i} reasoning (expected ${EXPECTED_SUM}, got ${ACTUAL_SUM})"
+            errors=$((errors + 1))
+        fi
     fi
 done
 
