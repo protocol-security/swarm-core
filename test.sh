@@ -9,6 +9,8 @@ set -euo pipefail
 # Options:
 #   --unit          Run unit tests only (no Docker or API key needed).
 #   --all           Run unit tests then full integration matrix.
+#   --oauth         Integration test using OAuth token (needs Docker +
+#                   CLAUDE_CODE_OAUTH_TOKEN).
 #   --config FILE   Use a swarm.json for mixed-model testing.
 #   --no-inject     Disable git rule injection; prompt includes
 #                   explicit git commands (backward compat test).
@@ -78,6 +80,30 @@ run_all_tests() {
         echo ""
     fi
 
+    # Phase 3: OAuth integration test (requires CLAUDE_CODE_OAUTH_TOKEN).
+    local oauth_fail=0
+    echo "=== Phase 3: OAuth integration test ==="
+    echo ""
+    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        echo "  SKIP  (CLAUDE_CODE_OAUTH_TOKEN not set)"
+        echo ""
+    else
+        local t_start t_elapsed
+        t_start=$(date +%s)
+
+        local rc=0
+        cmd_oauth || rc=$?
+
+        t_elapsed=$(( $(date +%s) - t_start ))
+        if [ "$rc" -eq 0 ]; then
+            printf "  PASS  %-24s (%ds)\n" "1-agent-oauth" "$t_elapsed"
+        else
+            printf "  FAIL  %-24s (%ds)\n" "1-agent-oauth" "$t_elapsed"
+            oauth_fail=1
+        fi
+        echo ""
+    fi
+
     # Summary.
     local total_elapsed
     total_elapsed=$(( $(date +%s) - total_start ))
@@ -94,10 +120,17 @@ run_all_tests() {
         printf "  Integration: %d/%d passed\n" \
             "$int_pass" $((int_pass + int_fail))
     fi
+    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        if [ "$oauth_fail" -eq 0 ]; then
+            echo "  OAuth:       PASS"
+        else
+            echo "  OAuth:       FAIL"
+        fi
+    fi
     printf "  Total time:  %dm %02ds\n" "$total_m" "$total_s"
     echo "============================================================"
 
-    [ "$unit_fail" -eq 0 ] && [ "$int_fail" -eq 0 ]
+    [ "$unit_fail" -eq 0 ] && [ "$int_fail" -eq 0 ] && [ "$oauth_fail" -eq 0 ]
 }
 
 run_integration_case() {
@@ -208,6 +241,23 @@ cmd_unit() {
     [ "$fail" -eq 0 ]
 }
 
+cmd_oauth() {
+    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        echo "ERROR: CLAUDE_CODE_OAUTH_TOKEN is not set." >&2
+        echo "       Generate one with: claude setup-token" >&2
+        exit 1
+    fi
+
+    local rc=0
+    env ANTHROPIC_API_KEY="" \
+        CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN}" \
+        SWARM_NUM_AGENTS="1" \
+        SWARM_TITLE="1-agent-oauth" \
+        TIMEOUT="${TIMEOUT}" \
+        "$SWARM_DIR/test.sh" || rc=$?
+    return "$rc"
+}
+
 cmd_help() {
     cat <<'HELP'
 Usage: ./test.sh [OPTIONS]
@@ -218,14 +268,17 @@ Options:
   (no args)         Single integration smoke test (needs Docker + API key).
   --unit            Unit tests only (no Docker or API key needed).
   --all             Unit tests, then full integration matrix.
+  --oauth           Integration test using CLAUDE_CODE_OAUTH_TOKEN
+                    (needs Docker + OAuth token).
   --config FILE     Use a swarm.json for mixed-model testing.
   --no-inject       Explicit git commands in prompt (backward compat test).
   -h, --help        Show this help message.
 
 Environment:
-  ANTHROPIC_API_KEY  Required for integration tests.
-  TIMEOUT            Seconds to wait for agents (default: 600).
-  SWARM_MODEL        Model for env-var integration cases.
+  ANTHROPIC_API_KEY        Required for integration tests.
+  CLAUDE_CODE_OAUTH_TOKEN  Required for --oauth tests.
+  TIMEOUT                  Seconds to wait for agents (default: 600).
+  SWARM_MODEL              Model for env-var integration cases.
 HELP
 }
 
@@ -233,6 +286,7 @@ CONFIG_FILE=""
 NO_INJECT=false
 RUN_ALL=false
 RUN_UNIT=false
+RUN_OAUTH=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --config)
@@ -245,6 +299,7 @@ while [ $# -gt 0 ]; do
         --no-inject) NO_INJECT=true; shift ;;
         --all) RUN_ALL=true; shift ;;
         --unit) RUN_UNIT=true; shift ;;
+        --oauth) RUN_OAUTH=true; shift ;;
         -h|--help) cmd_help; exit 0 ;;
         *) echo "Unknown option: $1 (try --help)" >&2; exit 1 ;;
     esac
@@ -252,6 +307,11 @@ done
 
 if $RUN_UNIT; then
     cmd_unit
+    exit $?
+fi
+
+if $RUN_OAUTH; then
+    cmd_oauth
     exit $?
 fi
 
@@ -427,7 +487,8 @@ cleanup() {
     else
         SWARM_PROMPT="$PROMPT_FILE" \
             SWARM_SETUP="$SETUP_FILE" \
-            ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
+            ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+            CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
             SWARM_NUM_AGENTS="${NUM_AGENTS}" \
             "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
     fi
@@ -450,11 +511,13 @@ echo ""
 if [ -n "$TEMP_CONFIG" ]; then
     SWARM_CONFIG="$TEMP_CONFIG" \
         ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+        CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
         "$SWARM_DIR/launch.sh" start
 else
     SWARM_PROMPT="$PROMPT_FILE" \
         SWARM_SETUP="$SETUP_FILE" \
-        ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
+        ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+        CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
         SWARM_NUM_AGENTS="${NUM_AGENTS}" \
         SWARM_INJECT_GIT_RULES="${INJECT_ENV}" \
         "$SWARM_DIR/launch.sh" start
