@@ -10,6 +10,27 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 OUTPUT="$REPO_ROOT/swarm.json"
 USE_WHIPTAIL=false
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    cat <<HELP
+Usage: $0
+
+Interactive setup wizard for claude-swarm.
+Generates a swarm.json config file in the repo root.
+
+Walks through: credentials, prompt file, agent groups (model,
+count, custom endpoints, auth source), advanced settings
+(setup script, idle limit, git user), and post-processing.
+
+Output:
+  \$REPO_ROOT/swarm.json   Generated config file.
+
+Environment (auto-detected if set):
+  ANTHROPIC_API_KEY         API key.
+  CLAUDE_CODE_OAUTH_TOKEN   OAuth token for subscription auth.
+HELP
+    exit 0
+fi
+
 if command -v whiptail &>/dev/null; then
     USE_WHIPTAIL=true
 fi
