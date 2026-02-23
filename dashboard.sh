@@ -11,6 +11,28 @@ BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
 START_TIME=$(date +%s)
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    cat <<HELP
+Usage: $0
+
+Always-on TUI dashboard for claude-swarm.
+Refreshes every 2 seconds. Shows per-agent model, auth source,
+status, cost, token usage, cache hits, turns, and duration.
+
+Keybindings:
+  q           Quit the dashboard.
+  1-9         Tail logs for agent N.
+  h           Harvest agent results into current branch.
+  s           Stop all agents.
+  p           Run post-processing agent.
+
+Environment:
+  SWARM_TITLE    Dashboard title override.
+  SWARM_CONFIG   Path to swarm.json (auto-detected from repo root).
+HELP
+    exit 0
+fi
+
 # Save user's explicit env var so it takes priority over state file.
 USER_TITLE="${SWARM_TITLE:-}"
 
