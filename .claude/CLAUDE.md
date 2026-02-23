@@ -20,6 +20,35 @@ elective.
 ## Testing
 
 - All tests must pass (`./test.sh --all`).
+- `./test.sh --unit` runs unit tests only (no Docker/API key).
+- `./test.sh --help` shows available flags.
+- Integration matrix covers effort levels (`low`, `medium`, `high`)
+  via env var and per-agent config.
+
+## Pull requests
+
+When asked to prepare a PR title and body:
+
+1. Run `git diff --stat origin/master..HEAD` and
+   `git log --oneline origin/master..HEAD` to understand scope.
+2. Title: imperative, concise, covers the main themes
+   (e.g., "Add effort level support, cache column, and test
+   improvements").
+3. Body format:
+
+```
+## Summary
+- Bullet per logical change. Focus on what and why, not
+  per-file diffs. Wrap to 79 chars.
+
+## Test plan
+- [ ] Checklist of concrete verification steps.
+```
+
+4. Keep summary bullets to 3-6. Group related commits into
+   one bullet rather than listing every commit.
+5. Test plan items should be runnable commands or observable
+   behaviors, not vague ("passes" not "looks good").
 
 ## Quality bars (non-procedural)
 
