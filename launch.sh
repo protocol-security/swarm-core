@@ -87,7 +87,6 @@ cmd_start() {
     git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
 
     # Mirror each submodule so containers can init without network.
-    MIRROR_VOLS=()
     cd "$REPO_ROOT"
     git submodule foreach --quiet 'echo "$name|$toplevel/.git/modules/$sm_path"' | \
     while IFS='|' read -r name gitdir; do
@@ -102,12 +101,11 @@ cmd_start() {
     docker build -t "$IMAGE_NAME" -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
 
     # Build mirror volume args from discovered submodules.
-    MIRROR_VOLS=()
     git submodule foreach --quiet 'echo "$name"' | while read -r name; do
         safe_name="${name//\//_}"
         mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
         echo "-v ${mirror}:/mirrors/${name}:ro"
-    done > /tmp/${PROJECT}-mirror-vols.txt
+    done > "/tmp/${PROJECT}-mirror-vols.txt"
 
     # Build per-agent config (model|base_url|api_key|effort|auth per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
@@ -126,9 +124,9 @@ cmd_start() {
     # Read mirror volume mounts (shared across all containers).
     MIRROR_ARGS=()
     while read -r line; do
-        # shellcheck disable=SC2086
+        # shellcheck disable=SC2206
         MIRROR_ARGS+=($line)
-    done < /tmp/${PROJECT}-mirror-vols.txt
+    done < "/tmp/${PROJECT}-mirror-vols.txt"
 
     AGENT_IDX=0
     while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth; do
@@ -196,7 +194,7 @@ cmd_start() {
             "$IMAGE_NAME"
     done < "$AGENTS_CFG"
 
-    rm -f /tmp/${PROJECT}-mirror-vols.txt /tmp/${PROJECT}-agents.cfg
+    rm -f "/tmp/${PROJECT}-mirror-vols.txt" "/tmp/${PROJECT}-agents.cfg"
 
     # Write state file so a standalone dashboard can pick up config.
     local state_model_summary state_config_label
@@ -329,12 +327,12 @@ cmd_post_process() {
         if [ -d "$mirror" ]; then
             echo "-v ${mirror}:/mirrors/${name}:ro"
         fi
-    done > /tmp/${PROJECT}-pp-vols.txt
+    done > "/tmp/${PROJECT}-pp-vols.txt"
     while read -r line; do
-        # shellcheck disable=SC2086
+        # shellcheck disable=SC2206
         MIRROR_ARGS+=($line)
-    done < /tmp/${PROJECT}-pp-vols.txt
-    rm -f /tmp/${PROJECT}-pp-vols.txt
+    done < "/tmp/${PROJECT}-pp-vols.txt"
+    rm -f "/tmp/${PROJECT}-pp-vols.txt"
 
     if [ -z "$pp_auth" ] && [ -n "$pp_api_key" ]; then
         pp_auth="apikey"

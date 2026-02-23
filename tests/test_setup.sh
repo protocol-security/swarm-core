@@ -52,13 +52,6 @@ add_post_process() {
 }
 
 build_agents_json() {
-    local base="[]"
-    shift_args() {
-        local count="$1" model="$2"
-        local obj="{\"count\": ${count}, \"model\": \"${model}\"}"
-        echo "$obj"
-    }
-    # Build from arguments: count1 model1 count2 model2 ...
     local result="[]"
     while [ $# -ge 2 ]; do
         local obj="{\"count\": $1, \"model\": \"$2\"}"

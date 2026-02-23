@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2034
 set -euo pipefail
 
 # Unit tests for harness.sh stat extraction and logic.

@@ -160,7 +160,7 @@ run_integration_case() {
     case "$model_or_cfg" in
         config-single)
             local cfg
-            cfg=$(mktemp /tmp/${PROJECT}-inttest.XXXXXX.json)
+            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
             jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
                 '{prompt: "unused", agents: [{count: '"$num_agents"', model: $m}]}' \
                 > "$cfg"
@@ -168,7 +168,7 @@ run_integration_case() {
             ;;
         config-mixed)
             local cfg
-            cfg=$(mktemp /tmp/${PROJECT}-inttest.XXXXXX.json)
+            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
             jq -n --arg m1 "${SWARM_MODEL:-claude-opus-4-6}" \
                   --arg m2 "claude-sonnet-4-6" \
                 '{prompt: "unused", agents: [
@@ -179,8 +179,8 @@ run_integration_case() {
             ;;
         config-pp)
             local cfg pp_prompt
-            cfg=$(mktemp /tmp/${PROJECT}-inttest.XXXXXX.json)
-            pp_prompt=$(mktemp /tmp/${PROJECT}-pp-prompt.XXXXXX.md)
+            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
+            pp_prompt=$(mktemp "/tmp/${PROJECT}-pp-prompt.XXXXXX.md")
             cat > "$pp_prompt" <<'PPPROMPT'
 List all files in test-results/ and write a summary to
 test-results/summary.txt with the word DONE on the last line.
@@ -202,7 +202,7 @@ PPPROMPT
             ;;
         config-effort)
             local cfg
-            cfg=$(mktemp /tmp/${PROJECT}-inttest.XXXXXX.json)
+            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
             jq -n --arg m1 "${SWARM_MODEL:-claude-opus-4-6}" \
                   --arg m2 "claude-sonnet-4-6" \
                 '{prompt: "unused", agents: [
@@ -213,7 +213,7 @@ PPPROMPT
             ;;
         config-mixed-auth)
             local cfg
-            cfg=$(mktemp /tmp/${PROJECT}-inttest.XXXXXX.json)
+            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
             jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
                 '{prompt: "unused", agents: [
                     {count: 1, model: $m, auth: "apikey"},
@@ -231,6 +231,7 @@ PPPROMPT
     esac
 
     if [ -n "$extra_flag" ]; then
+        # shellcheck disable=SC2206
         args+=($extra_flag)
     fi
 
@@ -242,7 +243,7 @@ PPPROMPT
         "$TESTS_DIR/test.sh" "${args[@]+"${args[@]}"}" || rc=$?
 
     # Clean up temp configs and prompt files.
-    rm -f /tmp/${PROJECT}-inttest.*.json
+    rm -f "/tmp/${PROJECT}-inttest."*.json
     rm -f "$REPO_ROOT/.claude-swarm-pp-prompt.md"
 
     return "$rc"
@@ -495,7 +496,7 @@ write_prompt "$REPO_ROOT"
 
 TEMP_CONFIG=""
 if [ -n "$CONFIG_FILE" ]; then
-    TEMP_CONFIG=$(mktemp /tmp/${PROJECT}-test-config.XXXXXX.json)
+    TEMP_CONFIG=$(mktemp "/tmp/${PROJECT}-test-config.XXXXXX.json")
     if $NO_INJECT; then
         jq --arg p "$PROMPT_FILE" --arg s "$SETUP_FILE" \
             '.prompt = $p | .setup = $s | .inject_git_rules = false' \
@@ -523,7 +524,7 @@ cleanup() {
             SWARM_NUM_AGENTS="${NUM_AGENTS}" \
             "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
     fi
-    rm -rf "$REVIEW_DIR" "$INJECT_DIR" /tmp/${PROJECT}-upstream.git
+    rm -rf "$REVIEW_DIR" "$INJECT_DIR" "/tmp/${PROJECT}-upstream.git"
     rm -f "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$SETUP_FILE"
 }
 trap cleanup EXIT

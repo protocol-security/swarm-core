@@ -226,11 +226,10 @@ draw() {
             short="${short} [${eff_tag^^}]"
         fi
 
-        local sessions=0 idle_str=""
+        local idle_str=""
         if [ "$state" != "not found" ]; then
             local logs
             logs=$(docker logs "$name" 2>&1 || true)
-            sessions=$(printf '%s' "$logs" | grep -c "Starting session" || true)
             idle_str=$(printf '%s' "$logs" | grep -o 'idle [0-9]*/[0-9]*' | tail -1 || true)
         fi
 
@@ -368,6 +367,7 @@ draw() {
             printf "   ${DIM}%s${RESET}\n" "$line"
         done
     else
+        # shellcheck disable=SC2059
         printf " ${DIM}(bare repo not found -- are agents running?)${RESET}\n"
     fi
 
@@ -379,10 +379,15 @@ draw() {
     fi
 
     # Help bar.
+    # shellcheck disable=SC2059
     printf " ${DIM}[q]${RESET} quit"
+    # shellcheck disable=SC2059
     printf "  ${DIM}[1-9]${RESET} logs"
+    # shellcheck disable=SC2059
     printf "  ${DIM}[h]${RESET} harvest"
+    # shellcheck disable=SC2059
     printf "  ${DIM}[s]${RESET} stop all"
+    # shellcheck disable=SC2059
     printf "  ${DIM}[p]${RESET} post-process"
     printf "\n"
 }
@@ -414,8 +419,9 @@ while true; do
                 leave_alt_screen
                 echo "--- Stopping all agents ---"
                 for i in $(seq 1 "$NUM_AGENTS"); do
-                    docker stop "${IMAGE_NAME}-${i}" 2>/dev/null \
-                        && echo "  stopped ${IMAGE_NAME}-${i}" || true
+                    if docker stop "${IMAGE_NAME}-${i}" 2>/dev/null; then
+                        echo "  stopped ${IMAGE_NAME}-${i}"
+                    fi
                 done
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
