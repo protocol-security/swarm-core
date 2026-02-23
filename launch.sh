@@ -407,7 +407,36 @@ cmd_post_process() {
     "$SWARM_DIR/harvest.sh"
 }
 
+cmd_help() {
+    cat <<HELP
+Usage: $0 COMMAND [OPTIONS]
+
+Orchestrate Claude Code agents in Docker containers.
+
+Commands:
+  start [--dashboard]  Build image, create bare repo, launch agents.
+                       With --dashboard, open the TUI after launch.
+  stop                 Stop all running agent containers.
+  logs N               Tail logs for agent N (default: 1).
+  status               Show running/stopped state for each agent.
+  wait                 Block until all agents exit, then harvest.
+  post-process         Run the post-processing agent from the config.
+
+Environment:
+  ANTHROPIC_API_KEY         API key (required unless OAuth token or config).
+  CLAUDE_CODE_OAUTH_TOKEN   OAuth token for subscription-based auth.
+  SWARM_CONFIG              Path to swarm.json config file.
+  SWARM_PROMPT              Prompt file path (env-var mode).
+  SWARM_MODEL               Model name (default: claude-opus-4-6).
+  SWARM_NUM_AGENTS          Agent count (default: 3).
+  SWARM_MAX_IDLE            Idle sessions before exit (default: 3).
+  SWARM_EFFORT              Reasoning effort: low, medium, high.
+  SWARM_TITLE               Dashboard title override.
+HELP
+}
+
 case "${1:-start}" in
+    -h|--help)     cmd_help ;;
     start)
         cmd_start
         if [ "${2:-}" = "--dashboard" ]; then
@@ -421,6 +450,7 @@ case "${1:-start}" in
     post-process)  cmd_post_process ;;
     *)
         echo "Usage: $0 {start|stop|logs N|status|wait|post-process}" >&2
+        echo "Try '$0 --help' for more information." >&2
         exit 1
         ;;
 esac

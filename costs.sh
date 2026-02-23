@@ -9,6 +9,22 @@ PROJECT="$(basename "$REPO_ROOT")"
 IMAGE_NAME="${PROJECT}-agent"
 JSON_MODE=false
 
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    cat <<HELP
+Usage: $0 [--json]
+
+Print cost and usage summary for all swarm agents.
+
+Options:
+  --json   Output as JSON instead of a formatted table.
+  -h, --help  Show this help message.
+
+Reads stats from running or stopped agent containers via
+docker cp. Requires Docker access.
+HELP
+    exit 0
+fi
+
 if [ "${1:-}" = "--json" ]; then
     JSON_MODE=true
 fi

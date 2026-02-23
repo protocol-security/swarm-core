@@ -12,6 +12,21 @@ DRY_RUN=false
 
 for arg in "$@"; do
     case "$arg" in
+        -h|--help)
+            cat <<HELP
+Usage: $0 [--dry]
+
+Fetch agent-work from the bare repo and merge into the current branch.
+
+Options:
+  --dry        Show what would be merged without actually merging.
+  -h, --help   Show this help message.
+
+The bare repo is expected at /tmp/<project>-upstream.git,
+created by launch.sh when starting agents.
+HELP
+            exit 0
+            ;;
         --dry)  DRY_RUN=true ;;
     esac
 done
