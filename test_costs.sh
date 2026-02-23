@@ -154,6 +154,28 @@ assert_eq "zero ms" "0" "$dur_s"
 
 # ============================================================
 echo ""
+echo "=== 8. format_duration (costs.sh) ==="
+
+format_duration() {
+    local s=$1
+    if [ "$s" -ge 3600 ]; then
+        printf '%dh %02dm' $((s / 3600)) $(((s % 3600) / 60))
+    elif [ "$s" -ge 60 ]; then
+        printf '%dm %02ds' $((s / 60)) $((s % 60))
+    else
+        printf '%ds' "$s"
+    fi
+}
+
+assert_eq "0 seconds"    "0s"      "$(format_duration 0)"
+assert_eq "45 seconds"   "45s"     "$(format_duration 45)"
+assert_eq "60 seconds"   "1m 00s"  "$(format_duration 60)"
+assert_eq "445 seconds"  "7m 25s"  "$(format_duration 445)"
+assert_eq "3600 seconds" "1h 00m"  "$(format_duration 3600)"
+assert_eq "7384 seconds" "2h 03m"  "$(format_duration 7384)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
