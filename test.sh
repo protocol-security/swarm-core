@@ -52,6 +52,8 @@ run_all_tests() {
             "2-agents-sonnet|2|claude-sonnet-4-6|"
             "2-agents-config|2|config-single|"
             "3-agents-mixed|3|config-mixed|"
+            "1-agent-effort-env|1|effort-env|"
+            "2-agents-effort-cfg|2|config-effort|"
             "2-agents-postprocess|2|config-pp|"
         )
 
@@ -141,6 +143,21 @@ PPPROMPT
                 > "$cfg"
             args+=(--config "$cfg")
             rm -f "$pp_prompt"
+            ;;
+        effort-env)
+            env_prefix=(SWARM_NUM_AGENTS="$num_agents"
+                        SWARM_EFFORT="medium")
+            ;;
+        config-effort)
+            local cfg
+            cfg=$(mktemp /tmp/${PROJECT}-inttest.XXXXXX.json)
+            jq -n --arg m1 "${SWARM_MODEL:-claude-opus-4-6}" \
+                  --arg m2 "claude-sonnet-4-6" \
+                '{prompt: "unused", agents: [
+                    {count: 1, model: $m1, effort: "high"},
+                    {count: 1, model: $m2, effort: "low"}
+                ]}' > "$cfg"
+            args+=(--config "$cfg")
             ;;
         "")
             env_prefix=(SWARM_NUM_AGENTS="$num_agents")

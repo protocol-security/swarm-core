@@ -83,10 +83,16 @@ first_json=true
 for cname in $containers; do
     agent_id="${cname##*-}"
     state=$(docker inspect -f '{{.State.Status}}' "$cname" 2>/dev/null || echo "?")
-    model=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
-        "$cname" 2>/dev/null | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
+    env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+        "$cname" 2>/dev/null || true)
+    model=$(printf '%s' "$env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
     model="${model:-unknown}"
+    effort=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
     short="${model/claude-/}"
+    if [ -n "$effort" ]; then
+        eff_tag="${effort:0:1}"
+        short="${short} [${eff_tag^^}]"
+    fi
 
     stats=$(read_agent_stats "$cname" "$agent_id")
     a_cost=$(echo "$stats" | awk '{print $1}')
@@ -114,7 +120,7 @@ for cname in $containers; do
         if ! [[ "$agent_id" =~ ^[0-9]+$ ]]; then
             id_json="\"${agent_id}\""
         fi
-        json_agents="${json_agents}{\"id\":${id_json},\"model\":\"${model}\",\"state\":\"${state}\","
+        json_agents="${json_agents}{\"id\":${id_json},\"model\":\"${model}\",\"effort\":\"${effort}\",\"state\":\"${state}\","
         json_agents="${json_agents}\"cost_usd\":${a_cost},\"input_tokens\":${a_in},"
         json_agents="${json_agents}\"output_tokens\":${a_out},\"cache_read_tokens\":${a_cache},"
         json_agents="${json_agents}\"duration_ms\":${a_dur},\"turns\":${a_turns},\"sessions\":${a_sessions}}"

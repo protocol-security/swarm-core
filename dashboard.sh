@@ -177,13 +177,20 @@ draw() {
         local state
         state=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo "not found")
 
-        local model="unknown"
+        local model="unknown" effort=""
         if [ "$state" != "not found" ]; then
-            model=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
-                "$name" 2>/dev/null | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
+            local env_dump
+            env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+                "$name" 2>/dev/null || true)
+            model=$(printf '%s' "$env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
             model="${model:-unknown}"
+            effort=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
         fi
         local short="${model/claude-/}"
+        if [ -n "$effort" ]; then
+            local eff_tag="${effort:0:1}"
+            short="${short} [${eff_tag^^}]"
+        fi
 
         local sessions=0 idle_str=""
         if [ "$state" != "not found" ]; then
@@ -249,11 +256,18 @@ draw() {
     local pp_state
     pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || true)
     if [ -n "$pp_state" ] && [ "$pp_state" != "none" ]; then
-        local pp_model
-        pp_model=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
-            "$pp_name" 2>/dev/null | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
+        local pp_model pp_effort
+        local pp_env_dump
+        pp_env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+            "$pp_name" 2>/dev/null || true)
+        pp_model=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
         pp_model="${pp_model:-unknown}"
+        pp_effort=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
         local pp_short="${pp_model/claude-/}"
+        if [ -n "$pp_effort" ]; then
+            local pp_eff_tag="${pp_effort:0:1}"
+            pp_short="${pp_short} [${pp_eff_tag^^}]"
+        fi
 
         local pp_stats pp_cost pp_in pp_out pp_cache pp_dur pp_turns
         pp_stats=$(read_agent_stats "$pp_name" "post")

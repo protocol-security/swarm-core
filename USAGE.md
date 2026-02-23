@@ -49,69 +49,56 @@ Re-run `./dashboard.sh` to re-attach while agents run.
 
 ## Testing
 
-Basic smoke test (uses injected git rules):
-
 ```bash
-ANTHROPIC_API_KEY="sk-..." ./test.sh
-```
-
-With a specific model:
-
-```bash
-ANTHROPIC_API_KEY="sk-..." SWARM_MODEL="claude-sonnet-4-6" \
-    ./test.sh
-```
-
-With a config file (mixed models):
-
-```bash
-ANTHROPIC_API_KEY="sk-..." ./test.sh --config swarm.json
-```
-
-Backward compatibility (explicit git commands in prompt,
-no git rule injection):
-
-```bash
-ANTHROPIC_API_KEY="sk-..." ./test.sh --no-inject
+./test.sh --help               # Show all options.
+./test.sh --unit               # Unit tests only (no Docker/API key).
+./test.sh                      # Single integration smoke test.
+./test.sh --all                # Unit tests + full integration matrix.
+./test.sh --config swarm.json  # With a config file (mixed models).
+./test.sh --no-inject          # Explicit git in prompt (compat test).
 ```
 
 Flags combine freely: `./test.sh --config swarm.json --no-inject`.
 
 `test.sh` always uses its own built-in prompt regardless of
-what the config file specifies.
-
-Full suite (unit tests then integration matrix):
-
-```bash
-ANTHROPIC_API_KEY="sk-..." ./test.sh --all
-```
+what the config file specifies. The prompt includes a
+reasoning step (sum computation) that exercises adaptive
+thinking at different effort levels.
 
 Integration matrix (`--all` runs these sequentially):
 
-| Case | Agents | Model | Config | Notes |
+| Case | Agents | Model | Effort | Notes |
 |------|--------|-------|--------|-------|
-| `1-agent-env` | 1 | default | env | |
-| `2-agents-env` | 2 | default | env | |
-| `3-agents-env` | 3 | default | env | |
-| `2-agents-no-inject` | 2 | default | env | `--no-inject` |
-| `2-agents-sonnet` | 2 | sonnet | env | |
-| `2-agents-config` | 2 | default | swarm.json | |
-| `3-agents-mixed` | 3 | opus + sonnet | swarm.json | |
-| `2-agents-postprocess` | 2 | default | swarm.json | + post-process |
+| `1-agent-env` | 1 | default | | |
+| `2-agents-env` | 2 | default | | |
+| `3-agents-env` | 3 | default | | |
+| `2-agents-no-inject` | 2 | default | | `--no-inject` |
+| `2-agents-sonnet` | 2 | sonnet | | |
+| `2-agents-config` | 2 | default | | swarm.json |
+| `3-agents-mixed` | 3 | opus + sonnet | | swarm.json |
+| `1-agent-effort-env` | 1 | default | medium | env var |
+| `2-agents-effort-cfg` | 2 | opus + sonnet | high / low | swarm.json |
+| `2-agents-postprocess` | 2 | default | | + post-process |
 
-All cases use the same counting prompt. Each agent N writes
-`test-results/agent-N.txt` with 100 numbers. Run
-`./dashboard.sh` in a second tmux pane to watch each case
-live (the dashboard title updates per test).
+All cases use the same counting + reasoning prompt. Each
+agent N writes `test-results/agent-N.txt` (100 numbers) and
+`test-results/reasoning-N.txt` (computed sum + explanation).
 
-Unit tests only (no Docker or API key needed):
+Run `./dashboard.sh` in a second tmux pane to watch each
+case live (the dashboard title updates per test, and the
+Model column shows effort levels like `opus-4-6 [high]`).
+
+Unit tests (no Docker or API key needed):
 
 ```bash
-./test_config.sh     # Config parsing.
+./test.sh --unit               # Run all unit test files.
+
+# Or individually:
+./test_config.sh     # Config + effort parsing.
 ./test_format.sh     # Formatting helpers.
-./test_launch.sh     # Launch logic.
+./test_launch.sh     # Launch logic + effort.
 ./test_harness.sh    # Harness stat extraction.
-./test_costs.sh      # Cost aggregation.
+./test_costs.sh      # Cost aggregation + duration.
 ./test_harvest.sh    # Harvest git ops.
 ./test_setup.sh      # Setup wizard config.
 ```
@@ -124,7 +111,8 @@ Add a `post_process` section to `swarm.json`:
 {
   "post_process": {
     "prompt": "prompts/review.md",
-    "model": "claude-opus-4-6"
+    "model": "claude-opus-4-6",
+    "effort": "low"
   }
 }
 ```

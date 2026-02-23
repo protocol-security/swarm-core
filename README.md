@@ -69,8 +69,8 @@ with `SWARM_CONFIG=/path/to/config.json`:
   "setup": "scripts/setup.sh",
   "max_idle": 3,
   "agents": [
-    { "count": 2, "model": "claude-opus-4-6" },
-    { "count": 1, "model": "claude-sonnet-4-5" },
+    { "count": 2, "model": "claude-opus-4-6", "effort": "high" },
+    { "count": 1, "model": "claude-sonnet-4-6", "effort": "medium" },
     {
       "count": 3,
       "model": "openrouter/custom",
@@ -81,7 +81,8 @@ with `SWARM_CONFIG=/path/to/config.json`:
   "inject_git_rules": true,
   "post_process": {
     "prompt": "prompts/review.md",
-    "model": "claude-opus-4-6"
+    "model": "claude-opus-4-6",
+    "effort": "low"
   }
 }
 ```
@@ -89,6 +90,10 @@ with `SWARM_CONFIG=/path/to/config.json`:
 Agent groups without `api_key` use `ANTHROPIC_API_KEY` from
 the environment. Total agent count is the sum of all `count`
 fields. Requires `jq` on the host.
+
+The `effort` field controls Claude's adaptive reasoning depth
+(`low`, `medium`, `high`). Supported on Opus 4.6 and Sonnet 4.6.
+Omit it to use the model's default (`high`).
 
 By default, agents receive git coordination rules
 (commit/push/rebase workflow) appended to their system
@@ -106,6 +111,7 @@ disable this, e.g. when you want full control over the prompt.
 | SWARM_MODEL | claude-opus-4-6 | Model. |
 | SWARM_NUM_AGENTS | 3 | Container count. |
 | SWARM_MAX_IDLE | 3 | Idle sessions before exit. |
+| SWARM_EFFORT | | Reasoning effort: low, medium, high. |
 | SWARM_INJECT_GIT_RULES | true | Inject git coordination rules. |
 | SWARM_GIT_USER_NAME | swarm-agent | Git author name. |
 | SWARM_GIT_USER_EMAIL | agent@claude-swarm.local | Git email. |
