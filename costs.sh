@@ -44,6 +44,17 @@ format_tokens() {
     fi
 }
 
+format_duration() {
+    local s=$1
+    if [ "$s" -ge 3600 ]; then
+        printf '%dh %02dm' $((s / 3600)) $(((s % 3600) / 60))
+    elif [ "$s" -ge 60 ]; then
+        printf '%dm %02ds' $((s / 60)) $((s % 60))
+    else
+        printf '%ds' "$s"
+    fi
+}
+
 containers=$(docker ps -a --filter "name=${IMAGE_NAME}-" \
     --format '{{.Names}}' 2>/dev/null | sort -V || true)
 
@@ -108,10 +119,10 @@ for cname in $containers; do
         json_agents="${json_agents}\"output_tokens\":${a_out},\"cache_read_tokens\":${a_cache},"
         json_agents="${json_agents}\"duration_ms\":${a_dur},\"turns\":${a_turns},\"sessions\":${a_sessions}}"
     else
-        printf "%-4s %-20s \$%8.4f %10s %10s %6s %8s %7ds\n" \
+        printf "%-4s %-20s \$%8.4f %10s %10s %6s %8s %8s\n" \
             "$agent_id" "$short" "$a_cost" \
             "$(format_tokens "$a_in")" "$(format_tokens "$a_out")" \
-            "$(format_tokens "$a_cache")" "$a_turns" "$dur_s"
+            "$(format_tokens "$a_cache")" "$a_turns" "$(format_duration "$dur_s")"
     fi
 done
 
@@ -125,10 +136,10 @@ if $JSON_MODE; then
 else
     printf "%s\n" "$(printf '%.0s─' $(seq 1 82))"
     t_dur_s=$((total_dur / 1000))
-    printf "%-4s %-20s \$%8.4f %10s %10s %6s %8s %7ds\n" \
+    printf "%-4s %-20s \$%8.4f %10s %10s %6s %8s %8s\n" \
         "" "TOTAL" "$total_cost" \
         "$(format_tokens "$total_in")" "$(format_tokens "$total_out")" \
-        "$(format_tokens "$total_cache")" "$total_turns" "$t_dur_s"
+        "$(format_tokens "$total_cache")" "$total_turns" "$(format_duration "$t_dur_s")"
     printf "\n%d agents, %d sessions, \$%.4f total cost\n" \
         "$(echo "$containers" | wc -l)" "$total_sessions" "$total_cost"
 fi
