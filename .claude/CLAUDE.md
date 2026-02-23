@@ -36,14 +36,12 @@ When asked to prepare a PR title and body:
    improvements").
 3. Body format:
 
-```
-## Summary
-- Bullet per logical change. Focus on what and why, not
-  per-file diffs. Wrap to 79 chars.
+       ## Summary
+       - Bullet per logical change. Focus on what and why,
+         not per-file diffs. Wrap to 79 chars.
 
-## Test plan
-- [ ] Checklist of concrete verification steps.
-```
+       ## Test plan
+       - [ ] Checklist of concrete verification steps.
 
 4. Keep summary bullets to 3-6. Group related commits into
    one bullet rather than listing every commit.
