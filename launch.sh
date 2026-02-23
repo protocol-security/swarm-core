@@ -109,17 +109,17 @@ cmd_start() {
         echo "-v ${mirror}:/mirrors/${name}:ro"
     done > /tmp/${PROJECT}-mirror-vols.txt
 
-    # Build per-agent config (model|base_url|api_key|effort per line).
+    # Build per-agent config (model|base_url|api_key|effort|auth per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
     AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
     if [ -n "$CONFIG_FILE" ]; then
         jq -r '.agents[] | range(.count) as $i |
-            [.model, (.base_url // ""), (.api_key // ""), (.effort // "")] | join("|")' \
+            [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // "")] | join("|")' \
             "$CONFIG_FILE" > "$AGENTS_CFG"
     else
         : > "$AGENTS_CFG"
         for _i in $(seq 1 "$NUM_AGENTS"); do
-            printf '%s|||%s\n' "$CLAUDE_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
+            printf '%s|||%s|\n' "$CLAUDE_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
         done
     fi
 
@@ -131,7 +131,7 @@ cmd_start() {
     done < /tmp/${PROJECT}-mirror-vols.txt
 
     AGENT_IDX=0
-    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort; do
+    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth; do
         AGENT_IDX=$((AGENT_IDX + 1))
         NAME="${IMAGE_NAME}-${AGENT_IDX}"
         docker rm -f "$NAME" 2>/dev/null || true
@@ -141,7 +141,7 @@ cmd_start() {
         short_model="${short_model//\//-}"
         local agent_git_name="${GIT_USER_NAME} [${short_model}]"
 
-        echo "--- Launching ${NAME} (${agent_model}${agent_effort:+ effort=${agent_effort}}) ---"
+        echo "--- Launching ${NAME} (${agent_model}${agent_effort:+ effort=${agent_effort}}${agent_auth:+ auth=${agent_auth}}) ---"
         EXTRA_ENV=()
         if [ -n "$agent_base_url" ]; then
             EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${agent_base_url}")
@@ -150,8 +150,30 @@ cmd_start() {
         fi
         [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
             && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
-        [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
-            && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
+
+        # Auto-tag agents with a custom api_key as "apikey" for the dashboard.
+        if [ -z "$agent_auth" ] && [ -n "$agent_api_key" ]; then
+            agent_auth="apikey"
+        fi
+
+        # Per-agent auth source: "oauth" = subscription only,
+        # "apikey" = API key only, "" = pass both (CLI decides).
+        local resolved_api_key
+        case "${agent_auth}" in
+            oauth)
+                resolved_api_key=""
+                EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}")
+                ;;
+            apikey)
+                resolved_api_key="${agent_api_key:-${ANTHROPIC_API_KEY:-}}"
+                ;;
+            *)
+                resolved_api_key="${agent_api_key:-${ANTHROPIC_API_KEY:-}}"
+                [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
+                    && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
+                ;;
+        esac
+
         local eff="${agent_effort:-${EFFORT_LEVEL:-}}"
         [ -n "$eff" ] \
             && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${eff}")
@@ -160,7 +182,7 @@ cmd_start() {
             --name "$NAME" \
             -v "${BARE_REPO}:/upstream:rw" \
             "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
-            -e "ANTHROPIC_API_KEY=${agent_api_key:-${ANTHROPIC_API_KEY:-}}" \
+            -e "ANTHROPIC_API_KEY=${resolved_api_key}" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
             -e "CLAUDE_MODEL=${agent_model}" \
             -e "AGENT_PROMPT=${AGENT_PROMPT}" \
@@ -170,6 +192,7 @@ cmd_start() {
             -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
             -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
             -e "AGENT_ID=${AGENT_IDX}" \
+            -e "SWARM_AUTH_MODE=${agent_auth}" \
             "$IMAGE_NAME"
     done < "$AGENTS_CFG"
 
@@ -276,12 +299,13 @@ cmd_post_process() {
         exit 1
     fi
 
-    local pp_prompt pp_model pp_base_url pp_api_key pp_effort
+    local pp_prompt pp_model pp_base_url pp_api_key pp_effort pp_auth
     pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE")
     pp_model=$(jq -r '.post_process.model // "claude-opus-4-6"' "$CONFIG_FILE")
     pp_base_url=$(jq -r '.post_process.base_url // empty' "$CONFIG_FILE")
     pp_api_key=$(jq -r '.post_process.api_key // empty' "$CONFIG_FILE")
     pp_effort=$(jq -r '.post_process.effort // empty' "$CONFIG_FILE")
+    pp_auth=$(jq -r '.post_process.auth // empty' "$CONFIG_FILE")
 
     if [ -z "$pp_prompt" ]; then
         echo "ERROR: post_process.prompt is not set in ${CONFIG_FILE}." >&2
@@ -312,6 +336,10 @@ cmd_post_process() {
     done < /tmp/${PROJECT}-pp-vols.txt
     rm -f /tmp/${PROJECT}-pp-vols.txt
 
+    if [ -z "$pp_auth" ] && [ -n "$pp_api_key" ]; then
+        pp_auth="apikey"
+    fi
+
     local EXTRA_ENV=()
     if [ -n "$pp_base_url" ]; then
         EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${pp_base_url}")
@@ -320,8 +348,23 @@ cmd_post_process() {
     fi
     [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
         && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
-    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
-        && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
+
+    local pp_resolved_api_key
+    case "${pp_auth}" in
+        oauth)
+            pp_resolved_api_key=""
+            EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}")
+            ;;
+        apikey)
+            pp_resolved_api_key="${pp_api_key:-${ANTHROPIC_API_KEY:-}}"
+            ;;
+        *)
+            pp_resolved_api_key="${pp_api_key:-${ANTHROPIC_API_KEY:-}}"
+            [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
+                && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
+            ;;
+    esac
+
     [ -n "$pp_effort" ] \
         && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${pp_effort}")
 
@@ -330,7 +373,7 @@ cmd_post_process() {
         --name "$NAME" \
         -v "${BARE_REPO}:/upstream:rw" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
-        -e "ANTHROPIC_API_KEY=${pp_api_key:-${ANTHROPIC_API_KEY:-}}" \
+        -e "ANTHROPIC_API_KEY=${pp_resolved_api_key}" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
         -e "CLAUDE_MODEL=${pp_model}" \
         -e "AGENT_PROMPT=${pp_prompt}" \
@@ -340,6 +383,7 @@ cmd_post_process() {
         -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
         -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
         -e "AGENT_ID=post" \
+        -e "SWARM_AUTH_MODE=${pp_auth}" \
         "$IMAGE_NAME"
 
     echo "Post-processing agent launched: ${NAME}"
