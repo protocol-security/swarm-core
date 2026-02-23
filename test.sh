@@ -4,11 +4,15 @@ set -euo pipefail
 # Smoke test: launch agents with a counting prompt, verify results.
 # Each agent N writes test-results/agent-N.txt with N*100..N*100+99.
 #
-# Usage: ./test.sh [--all] [--config FILE] [--no-inject]
-#   --all           Run all unit tests then full integration matrix.
+# Usage: ./test.sh [OPTIONS]
+#
+# Options:
+#   --unit          Run unit tests only (no Docker or API key needed).
+#   --all           Run unit tests then full integration matrix.
 #   --config FILE   Use a swarm.json for mixed-model testing.
 #   --no-inject     Disable git rule injection; prompt includes
 #                   explicit git commands (backward compat test).
+#   -h, --help      Show this help message.
 
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -21,7 +25,7 @@ TIMEOUT="${TIMEOUT:-600}"
 # ---- --all: full test suite runner ----
 
 run_all_tests() {
-    local total_start unit_pass=0 unit_fail=0 int_pass=0 int_fail=0
+    local total_start unit_fail=0 int_pass=0 int_fail=0
     total_start=$(date +%s)
 
     echo "============================================================"
@@ -30,21 +34,7 @@ run_all_tests() {
     echo ""
 
     # Phase 1: unit tests.
-    echo "=== Phase 1: Unit tests ==="
-    echo ""
-    for f in "$SWARM_DIR"/test_*.sh; do
-        local name
-        name=$(basename "$f")
-        local count
-        count=$("$f" 2>&1 | grep -o '[0-9]* passed' | head -1 || true)
-        if "$f" > /dev/null 2>&1; then
-            printf "  PASS  %-24s (%s)\n" "$name" "${count:-?}"
-            unit_pass=$((unit_pass + 1))
-        else
-            printf "  FAIL  %-24s\n" "$name"
-            unit_fail=$((unit_fail + 1))
-        fi
-    done
+    cmd_unit || unit_fail=1
     echo ""
 
     # Phase 2: integration tests (require ANTHROPIC_API_KEY).
@@ -93,8 +83,11 @@ run_all_tests() {
     local total_s=$((total_elapsed % 60))
 
     echo "============================================================"
-    printf "  Unit:        %d/%d passed\n" \
-        "$unit_pass" $((unit_pass + unit_fail))
+    if [ "$unit_fail" -eq 0 ]; then
+        echo "  Unit:        PASS"
+    else
+        echo "  Unit:        FAIL"
+    fi
     if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
         printf "  Integration: %d/%d passed\n" \
             "$int_pass" $((int_pass + int_fail))
@@ -176,9 +169,53 @@ PPPROMPT
     return "$rc"
 }
 
+cmd_unit() {
+    local pass=0 fail=0
+    echo "=== Unit tests ==="
+    echo ""
+    for f in "$SWARM_DIR"/test_*.sh; do
+        local name
+        name=$(basename "$f")
+        local count
+        count=$("$f" 2>&1 | grep -o '[0-9]* passed' | head -1 || true)
+        if "$f" > /dev/null 2>&1; then
+            printf "  PASS  %-24s (%s)\n" "$name" "${count:-?}"
+            pass=$((pass + 1))
+        else
+            printf "  FAIL  %-24s\n" "$name"
+            fail=$((fail + 1))
+        fi
+    done
+    echo ""
+    echo "  ${pass} passed, ${fail} failed"
+    [ "$fail" -eq 0 ]
+}
+
+cmd_help() {
+    cat <<'HELP'
+Usage: ./test.sh [OPTIONS]
+
+Run claude-swarm tests.
+
+Options:
+  (no args)         Single integration smoke test (needs Docker + API key).
+  --unit            Unit tests only (no Docker or API key needed).
+  --all             Unit tests, then full integration matrix.
+  --config FILE     Use a swarm.json for mixed-model testing.
+  --no-inject       Explicit git commands in prompt (backward compat test).
+  -h, --help        Show this help message.
+
+Environment:
+  ANTHROPIC_API_KEY  Required for integration tests.
+  TIMEOUT            Seconds to wait for agents (default: 600).
+  SWARM_MODEL        Model for env-var integration cases.
+HELP
+}
+
 CONFIG_FILE=""
 NO_INJECT=false
 RUN_ALL=false
+RUN_UNIT=false
 while [ $# -gt 0 ]; do
     case "$1" in
         --config)
@@ -190,9 +227,16 @@ while [ $# -gt 0 ]; do
             shift 2 ;;
         --no-inject) NO_INJECT=true; shift ;;
         --all) RUN_ALL=true; shift ;;
-        *) echo "Unknown option: $1" >&2; exit 1 ;;
+        --unit) RUN_UNIT=true; shift ;;
+        -h|--help) cmd_help; exit 0 ;;
+        *) echo "Unknown option: $1 (try --help)" >&2; exit 1 ;;
     esac
 done
+
+if $RUN_UNIT; then
+    cmd_unit
+    exit $?
+fi
 
 if $RUN_ALL; then
     run_all_tests
