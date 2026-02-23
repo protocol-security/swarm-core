@@ -50,17 +50,17 @@ Re-run `./dashboard.sh` to re-attach while agents run.
 ## Testing
 
 ```bash
-./test.sh --help               # Show all options.
-./test.sh --unit               # Unit tests only (no Docker/API key).
-./test.sh                      # Single integration smoke test.
-./test.sh --all                # Unit tests + full integration matrix.
-./test.sh --config swarm.json  # With a config file (mixed models).
-./test.sh --no-inject          # Explicit git in prompt (compat test).
+./tests/test.sh --help               # Show all options.
+./tests/test.sh --unit               # Unit tests only (no Docker/API key).
+./tests/test.sh                      # Single integration smoke test.
+./tests/test.sh --all                # Unit tests + full integration matrix.
+./tests/test.sh --config swarm.json  # With a config file (mixed models).
+./tests/test.sh --no-inject          # Explicit git in prompt (compat test).
 ```
 
-Flags combine freely: `./test.sh --config swarm.json --no-inject`.
+Flags combine freely: `./tests/test.sh --config swarm.json --no-inject`.
 
-`test.sh` always uses its own built-in prompt regardless of
+`tests/test.sh` always uses its own built-in prompt regardless of
 what the config file specifies. The prompt includes a
 reasoning step (sum computation) that exercises adaptive
 thinking at different effort levels.
@@ -91,16 +91,16 @@ Model column shows effort levels like `opus-4-6 [high]`).
 Unit tests (no Docker or API key needed):
 
 ```bash
-./test.sh --unit               # Run all unit test files.
+./tests/test.sh --unit               # Run all unit test files.
 
 # Or individually:
-./test_config.sh     # Config + effort parsing.
-./test_format.sh     # Formatting helpers.
-./test_launch.sh     # Launch logic + effort.
-./test_harness.sh    # Harness stat extraction.
-./test_costs.sh      # Cost aggregation + duration.
-./test_harvest.sh    # Harvest git ops.
-./test_setup.sh      # Setup wizard config.
+./tests/test_config.sh     # Config + effort parsing.
+./tests/test_format.sh     # Formatting helpers.
+./tests/test_launch.sh     # Launch logic + effort.
+./tests/test_harness.sh    # Harness stat extraction.
+./tests/test_costs.sh      # Cost aggregation + duration.
+./tests/test_harvest.sh    # Harvest git ops.
+./tests/test_setup.sh      # Setup wizard config.
 ```
 
 ## Post-processing
