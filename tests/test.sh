@@ -16,7 +16,8 @@ set -euo pipefail
 #                   explicit git commands (backward compat test).
 #   -h, --help      Show this help message.
 
-SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
+TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+SWARM_DIR="$(cd "$TESTS_DIR/.." && pwd)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT="$(basename "$REPO_ROOT")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
@@ -238,7 +239,7 @@ PPPROMPT
         ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
         SWARM_TITLE="$label" \
         TIMEOUT="${TIMEOUT}" \
-        "$SWARM_DIR/test.sh" "${args[@]+"${args[@]}"}" || rc=$?
+        "$TESTS_DIR/test.sh" "${args[@]+"${args[@]}"}" || rc=$?
 
     # Clean up temp configs and prompt files.
     rm -f /tmp/${PROJECT}-inttest.*.json
@@ -251,7 +252,7 @@ cmd_unit() {
     local pass=0 fail=0
     echo "=== Unit tests ==="
     echo ""
-    for f in "$SWARM_DIR"/test_*.sh; do
+    for f in "$TESTS_DIR"/test_*.sh; do
         local name rc output count
         name=$(basename "$f")
         rc=0
@@ -284,7 +285,7 @@ cmd_oauth() {
         SWARM_NUM_AGENTS="1" \
         SWARM_TITLE="1-agent-oauth" \
         TIMEOUT="${TIMEOUT}" \
-        "$SWARM_DIR/test.sh" || rc=$?
+        "$TESTS_DIR/test.sh" || rc=$?
     return "$rc"
 }
 

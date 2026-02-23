@@ -19,9 +19,9 @@ elective.
 
 ## Testing
 
-- All tests must pass (`./test.sh --all`).
-- `./test.sh --unit` runs unit tests only (no Docker/API key).
-- `./test.sh --help` shows available flags.
+- All tests must pass (`./tests/test.sh --all`).
+- `./tests/test.sh --unit` runs unit tests only (no Docker/API key).
+- `./tests/test.sh --help` shows available flags.
 - Integration matrix covers effort levels (`low`, `medium`, `high`)
   via env var and per-agent config.
 

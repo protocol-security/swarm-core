@@ -26,8 +26,8 @@ ENV PATH="/home/agent/.local/bin:${PATH}"
 RUN git config --global --add safe.directory '*' \
     && git config --global protocol.file.allow always
 
-COPY --chmod=755 harness.sh /harness.sh
-COPY --chmod=644 agent-system-prompt.md /agent-system-prompt.md
+COPY --chmod=755 lib/harness.sh /harness.sh
+COPY --chmod=644 lib/agent-system-prompt.md /agent-system-prompt.md
 
 WORKDIR /workspace
 
