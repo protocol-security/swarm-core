@@ -69,7 +69,8 @@ with `SWARM_CONFIG=/path/to/config.json`:
   "setup": "scripts/setup.sh",
   "max_idle": 3,
   "agents": [
-    { "count": 2, "model": "claude-opus-4-6", "effort": "high" },
+    { "count": 2, "model": "claude-opus-4-6", "effort": "high", "auth": "apikey" },
+    { "count": 1, "model": "claude-opus-4-6", "auth": "oauth" },
     { "count": 1, "model": "claude-sonnet-4-6", "effort": "medium" },
     {
       "count": 3,
@@ -95,6 +96,14 @@ host.
 The `effort` field controls Claude's adaptive reasoning depth
 (`low`, `medium`, `high`). Supported on Opus 4.6 and Sonnet 4.6.
 Omit it to use the model's default (`high`).
+
+The `auth` field selects which credential is passed into the
+container: `"apikey"` uses only `ANTHROPIC_API_KEY`, `"oauth"`
+uses only `CLAUDE_CODE_OAUTH_TOKEN` (subscription mode), and
+omitting it passes both (the CLI decides). Groups with a custom
+`api_key`/`base_url` ignore `auth` -- their own key is always
+used. The dashboard shows the active auth source per agent
+(e.g. `{oauth}`, `{apikey}`).
 
 By default, agents receive git coordination rules
 (commit/push/rebase workflow) appended to their system
