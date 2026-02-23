@@ -37,8 +37,10 @@ parse_pp_model()         { jq -r '.post_process.model // "claude-opus-4-6"' "$1"
 
 parse_agents_cfg() {
     jq -r '.agents[] | range(.count) as $i |
-        [.model, (.base_url // ""), (.api_key // ""), (.effort // "")] | join("|")' "$1"
+        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // "")] | join("|")' "$1"
 }
+
+parse_pp_auth() { jq -r '.post_process.auth // empty' "$1"; }
 
 parse_pp_effort() { jq -r '.post_process.effort // empty' "$1"; }
 
@@ -74,21 +76,22 @@ LINE3=$(echo "$TSV" | sed -n '3p')
 LINE4=$(echo "$TSV" | sed -n '4p')
 LINE6=$(echo "$TSV" | sed -n '6p')
 
-IFS='|' read -r m1 u1 k1 e1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 <<< "$LINE1"
 assert_eq "agent 1 model"   "claude-opus-4-6" "$m1"
 assert_eq "agent 1 base_url" ""               "$u1"
 assert_eq "agent 1 api_key"  ""               "$k1"
 assert_eq "agent 1 effort"   ""               "$e1"
+assert_eq "agent 1 auth"     ""               "$a1"
 
-IFS='|' read -r m3 u3 k3 e3 <<< "$LINE3"
+IFS='|' read -r m3 u3 k3 e3 a3 <<< "$LINE3"
 assert_eq "agent 3 model" "claude-sonnet-4-5" "$m3"
 
-IFS='|' read -r m4 u4 k4 e4 <<< "$LINE4"
+IFS='|' read -r m4 u4 k4 e4 a4 <<< "$LINE4"
 assert_eq "agent 4 model"    "openrouter/custom"                "$m4"
 assert_eq "agent 4 base_url" "https://openrouter.ai/api/v1"     "$u4"
 assert_eq "agent 4 api_key"  "sk-or-test"                       "$k4"
 
-IFS='|' read -r m6 u6 k6 e6 <<< "$LINE6"
+IFS='|' read -r m6 u6 k6 e6 a6 <<< "$LINE6"
 assert_eq "agent 6 model"    "openrouter/custom"                "$m6"
 assert_eq "agent 6 base_url" "https://openrouter.ai/api/v1"     "$u6"
 assert_eq "agent 6 api_key"  "sk-or-test"                       "$k6"
@@ -137,22 +140,23 @@ EFFORT_LEVEL="medium"
 NUM_AGENTS=3
 : > "$TMPDIR/env-agents.cfg"
 for _i in $(seq 1 "$NUM_AGENTS"); do
-    printf '%s|||%s\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
+    printf '%s|||%s|\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
 done
 
 assert_eq "line count" "3" "$(wc -l < "$TMPDIR/env-agents.cfg" | tr -d ' ')"
 
 AGENT_IDX=0
-while IFS='|' read -r m u k e; do
+while IFS='|' read -r m u k e a; do
     AGENT_IDX=$((AGENT_IDX + 1))
 done < "$TMPDIR/env-agents.cfg"
 assert_eq "agents iterated" "3" "$AGENT_IDX"
 
-IFS='|' read -r m u k e < "$TMPDIR/env-agents.cfg"
+IFS='|' read -r m u k e a < "$TMPDIR/env-agents.cfg"
 assert_eq "env model"    "claude-opus-4-6" "$m"
 assert_eq "env base_url" ""               "$u"
 assert_eq "env api_key"  ""               "$k"
 assert_eq "env effort"   "medium"         "$e"
+assert_eq "env auth"     ""               "$a"
 
 # ============================================================
 echo ""
@@ -290,13 +294,13 @@ LINE1=$(echo "$TSV" | sed -n '1p')
 LINE2=$(echo "$TSV" | sed -n '2p')
 LINE4=$(echo "$TSV" | sed -n '4p')
 
-IFS='|' read -r m1 u1 k1 e1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 <<< "$LINE1"
 assert_eq "opus effort"   "high"   "$e1"
 
-IFS='|' read -r m2 u2 k2 e2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 <<< "$LINE2"
 assert_eq "sonnet effort" "medium" "$e2"
 
-IFS='|' read -r m4 u4 k4 e4 <<< "$LINE4"
+IFS='|' read -r m4 u4 k4 e4 a4 <<< "$LINE4"
 assert_eq "haiku effort (empty)" "" "$e4"
 
 # ============================================================
@@ -316,6 +320,63 @@ EOF
 
 assert_eq "pp effort"        "low" "$(parse_pp_effort "$TMPDIR/pp_effort.json")"
 assert_eq "pp effort absent" ""    "$(parse_pp_effort "$TMPDIR/inject_default.json")"
+
+# ============================================================
+echo ""
+echo "=== 14. auth field in agents ==="
+
+cat > "$TMPDIR/auth.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6", "auth": "apikey" },
+    { "count": 1, "model": "claude-opus-4-6", "auth": "oauth" },
+    { "count": 1, "model": "MiniMax-M2.5", "base_url": "https://api.minimax.io", "api_key": "sk-mm" },
+    { "count": 1, "model": "claude-opus-4-6" }
+  ]
+}
+EOF
+
+TSV=$(parse_agents_cfg "$TMPDIR/auth.json")
+assert_eq "auth line count" "4" "$(echo "$TSV" | wc -l | tr -d ' ')"
+
+LINE1=$(echo "$TSV" | sed -n '1p')
+LINE2=$(echo "$TSV" | sed -n '2p')
+LINE3=$(echo "$TSV" | sed -n '3p')
+LINE4=$(echo "$TSV" | sed -n '4p')
+
+IFS='|' read -r m1 u1 k1 e1 a1 <<< "$LINE1"
+assert_eq "auth apikey"     "apikey" "$a1"
+assert_eq "apikey model"    "claude-opus-4-6" "$m1"
+
+IFS='|' read -r m2 u2 k2 e2 a2 <<< "$LINE2"
+assert_eq "auth oauth"      "oauth"  "$a2"
+
+IFS='|' read -r m3 u3 k3 e3 a3 <<< "$LINE3"
+assert_eq "auth custom"     ""       "$a3"
+assert_eq "custom base_url" "https://api.minimax.io" "$u3"
+assert_eq "custom api_key"  "sk-mm"  "$k3"
+
+IFS='|' read -r m4 u4 k4 e4 a4 <<< "$LINE4"
+assert_eq "auth default"    ""       "$a4"
+
+# ============================================================
+echo ""
+echo "=== 15. auth in post_process ==="
+
+cat > "$TMPDIR/pp_auth.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": {
+    "prompt": "review.md",
+    "auth": "oauth"
+  }
+}
+EOF
+
+assert_eq "pp auth"        "oauth" "$(parse_pp_auth "$TMPDIR/pp_auth.json")"
+assert_eq "pp auth absent" ""      "$(parse_pp_auth "$TMPDIR/inject_default.json")"
 
 # ============================================================
 echo ""
