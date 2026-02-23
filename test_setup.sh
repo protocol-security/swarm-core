@@ -179,6 +179,25 @@ assert_eq "agent count (oauth)" "3" \
 
 # ============================================================
 echo ""
+echo "=== 9. Auth field in agent objects ==="
+
+AGENT_APIKEY='{"count": 1, "model": "claude-opus-4-6", "auth": "apikey"}'
+AGENT_OAUTH='{"count": 1, "model": "claude-opus-4-6", "auth": "oauth"}'
+AGENT_DEFAULT='{"count": 1, "model": "claude-opus-4-6"}'
+AGENTS=$(echo "[]" | jq --argjson a1 "$AGENT_APIKEY" --argjson a2 "$AGENT_OAUTH" --argjson a3 "$AGENT_DEFAULT" \
+    '. + [$a1, $a2, $a3]')
+CONFIG=$(build_config "p.md" "" 3 "sa" "a@a" "$AGENTS")
+
+assert_eq "auth apikey" "apikey" "$(echo "$CONFIG" | jq -r '.agents[0].auth')"
+assert_eq "auth oauth"  "oauth"  "$(echo "$CONFIG" | jq -r '.agents[1].auth')"
+assert_eq "auth absent" "null"   "$(echo "$CONFIG" | jq -r '.agents[2].auth // "null"')"
+
+echo "$CONFIG" > "$TMPDIR/auth-config.json"
+assert_eq "auth config valid" "true" \
+    "$(jq empty "$TMPDIR/auth-config.json" 2>/dev/null && echo true || echo false)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
