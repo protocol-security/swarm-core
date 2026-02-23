@@ -39,6 +39,7 @@ else
     INJECT_GIT_RULES="${SWARM_INJECT_GIT_RULES:-true}"
     GIT_USER_NAME="${SWARM_GIT_USER_NAME:-swarm-agent}"
     GIT_USER_EMAIL="${SWARM_GIT_USER_EMAIL:-agent@claude-swarm.local}"
+    EFFORT_LEVEL="${SWARM_EFFORT:-}"
 fi
 
 cmd_start() {
@@ -108,16 +109,17 @@ cmd_start() {
         echo "-v ${mirror}:/mirrors/${name}:ro"
     done > /tmp/${PROJECT}-mirror-vols.txt
 
-    # Build per-agent config (model, base_url, api_key per line).
-    AGENTS_TSV="/tmp/${PROJECT}-agents.tsv"
+    # Build per-agent config (model|base_url|api_key|effort per line).
+    # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
+    AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
     if [ -n "$CONFIG_FILE" ]; then
         jq -r '.agents[] | range(.count) as $i |
-            [.model, (.base_url // ""), (.api_key // "")] | @tsv' \
-            "$CONFIG_FILE" > "$AGENTS_TSV"
+            [.model, (.base_url // ""), (.api_key // ""), (.effort // "")] | join("|")' \
+            "$CONFIG_FILE" > "$AGENTS_CFG"
     else
-        : > "$AGENTS_TSV"
+        : > "$AGENTS_CFG"
         for _i in $(seq 1 "$NUM_AGENTS"); do
-            printf '%s\t\t\n' "$CLAUDE_MODEL" >> "$AGENTS_TSV"
+            printf '%s|||%s\n' "$CLAUDE_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
         done
     fi
 
@@ -129,7 +131,7 @@ cmd_start() {
     done < /tmp/${PROJECT}-mirror-vols.txt
 
     AGENT_IDX=0
-    while IFS=$'\t' read -r agent_model agent_base_url agent_api_key; do
+    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort; do
         AGENT_IDX=$((AGENT_IDX + 1))
         NAME="${IMAGE_NAME}-${AGENT_IDX}"
         docker rm -f "$NAME" 2>/dev/null || true
@@ -139,7 +141,7 @@ cmd_start() {
         short_model="${short_model//\//-}"
         local agent_git_name="${GIT_USER_NAME} [${short_model}]"
 
-        echo "--- Launching ${NAME} (${agent_model}) ---"
+        echo "--- Launching ${NAME} (${agent_model}${agent_effort:+ effort=${agent_effort}}) ---"
         EXTRA_ENV=()
         if [ -n "$agent_base_url" ]; then
             EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${agent_base_url}")
@@ -148,6 +150,9 @@ cmd_start() {
         fi
         [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
             && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
+        local eff="${agent_effort:-${EFFORT_LEVEL:-}}"
+        [ -n "$eff" ] \
+            && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${eff}")
 
         docker run -d \
             --name "$NAME" \
@@ -164,9 +169,9 @@ cmd_start() {
             -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
             -e "AGENT_ID=${AGENT_IDX}" \
             "$IMAGE_NAME"
-    done < "$AGENTS_TSV"
+    done < "$AGENTS_CFG"
 
-    rm -f /tmp/${PROJECT}-mirror-vols.txt /tmp/${PROJECT}-agents.tsv
+    rm -f /tmp/${PROJECT}-mirror-vols.txt /tmp/${PROJECT}-agents.cfg
 
     # Write state file so a standalone dashboard can pick up config.
     local state_model_summary state_config_label
@@ -269,11 +274,12 @@ cmd_post_process() {
         exit 1
     fi
 
-    local pp_prompt pp_model pp_base_url pp_api_key
+    local pp_prompt pp_model pp_base_url pp_api_key pp_effort
     pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE")
     pp_model=$(jq -r '.post_process.model // "claude-opus-4-6"' "$CONFIG_FILE")
     pp_base_url=$(jq -r '.post_process.base_url // empty' "$CONFIG_FILE")
     pp_api_key=$(jq -r '.post_process.api_key // empty' "$CONFIG_FILE")
+    pp_effort=$(jq -r '.post_process.effort // empty' "$CONFIG_FILE")
 
     if [ -z "$pp_prompt" ]; then
         echo "ERROR: post_process.prompt is not set in ${CONFIG_FILE}." >&2
@@ -312,6 +318,8 @@ cmd_post_process() {
     fi
     [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
         && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
+    [ -n "$pp_effort" ] \
+        && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${pp_effort}")
 
     echo "--- Starting post-processing (${pp_model}) ---"
     docker run -d \

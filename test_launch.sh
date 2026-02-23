@@ -37,6 +37,12 @@ parse_pp_prompt()   { jq -r '.post_process.prompt // empty' "$1"; }
 parse_pp_model()    { jq -r '.post_process.model // "claude-opus-4-6"' "$1"; }
 parse_pp_base_url() { jq -r '.post_process.base_url // empty' "$1"; }
 parse_pp_api_key()  { jq -r '.post_process.api_key // empty' "$1"; }
+parse_pp_effort()   { jq -r '.post_process.effort // empty' "$1"; }
+
+parse_agents_cfg() {
+    jq -r '.agents[] | range(.count) as $i |
+        [.model, (.base_url // ""), (.api_key // ""), (.effort // "")] | join("|")' "$1"
+}
 
 # ============================================================
 echo "=== 1. Model name shortening ==="
@@ -53,18 +59,20 @@ echo ""
 echo "=== 2. TSV generation (env var path) ==="
 
 CLAUDE_MODEL="claude-opus-4-6"
+EFFORT_LEVEL="medium"
 NUM_AGENTS=3
-: > "$TMPDIR/env-agents.tsv"
+: > "$TMPDIR/env-agents.cfg"
 for _i in $(seq 1 "$NUM_AGENTS"); do
-    printf '%s\t\t\n' "$CLAUDE_MODEL" >> "$TMPDIR/env-agents.tsv"
+    printf '%s|||%s\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
 done
 
-assert_eq "line count" "3" "$(wc -l < "$TMPDIR/env-agents.tsv" | tr -d ' ')"
+assert_eq "line count" "3" "$(wc -l < "$TMPDIR/env-agents.cfg" | tr -d ' ')"
 
-IFS=$'\t' read -r m u k < "$TMPDIR/env-agents.tsv"
+IFS='|' read -r m u k e < "$TMPDIR/env-agents.cfg"
 assert_eq "model"    "claude-opus-4-6" "$m"
 assert_eq "base_url" ""               "$u"
 assert_eq "api_key"  ""               "$k"
+assert_eq "effort"   "medium"         "$e"
 
 # ============================================================
 echo ""
@@ -143,6 +151,65 @@ short_model="${agent_model/claude-/}"
 short_model="${short_model//\//-}"
 agent_git_name="${GIT_USER_NAME} [${short_model}]"
 assert_eq "custom name tag" "Nikos Baxevanis [MiniMax-M2.5]" "$agent_git_name"
+
+# ============================================================
+echo ""
+echo "=== 6. Effort in agent TSV (config path) ==="
+
+cat > "$TMPDIR/effort.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6", "effort": "high" },
+    { "count": 2, "model": "claude-sonnet-4-6", "effort": "medium" },
+    { "count": 1, "model": "claude-haiku-4-5" }
+  ]
+}
+EOF
+
+CFG=$(parse_agents_cfg "$TMPDIR/effort.json")
+LINE1=$(echo "$CFG" | sed -n '1p')
+LINE2=$(echo "$CFG" | sed -n '2p')
+LINE4=$(echo "$CFG" | sed -n '4p')
+
+IFS='|' read -r m1 u1 k1 e1 <<< "$LINE1"
+assert_eq "opus effort"  "high"   "$e1"
+
+IFS='|' read -r m2 u2 k2 e2 <<< "$LINE2"
+assert_eq "sonnet effort" "medium" "$e2"
+
+IFS='|' read -r m4 u4 k4 e4 <<< "$LINE4"
+assert_eq "haiku effort (empty)" "" "$e4"
+
+# ============================================================
+echo ""
+echo "=== 7. Effort in post-process ==="
+
+cat > "$TMPDIR/pp_effort.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": {
+    "prompt": "review.md",
+    "model": "claude-opus-4-6",
+    "effort": "low"
+  }
+}
+EOF
+
+assert_eq "pp effort"       "low" "$(parse_pp_effort "$TMPDIR/pp_effort.json")"
+assert_eq "pp effort absent" ""   "$(parse_pp_effort "$TMPDIR/no_pp.json")"
+
+# ============================================================
+echo ""
+echo "=== 8. Effort env var fallback (no effort set) ==="
+
+EFFORT_LEVEL=""
+: > "$TMPDIR/env-no-effort.cfg"
+printf '%s|||%s\n' "claude-opus-4-6" "$EFFORT_LEVEL" >> "$TMPDIR/env-no-effort.cfg"
+
+IFS='|' read -r m u k e < "$TMPDIR/env-no-effort.cfg"
+assert_eq "no effort" "" "$e"
 
 # ============================================================
 echo ""
