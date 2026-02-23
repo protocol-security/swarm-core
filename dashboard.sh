@@ -165,8 +165,8 @@ draw() {
     echo ""
 
     # Agent table header.
-    printf "  ${BOLD}%-3s %-16s %-10s %8s %9s %5s %7s${RESET}\n" \
-        "#" "Model" "Status" "Cost" "In/Out" "Turns" "Time"
+    printf "  ${BOLD}%-3s %-16s %-10s %8s %9s %6s %5s %7s${RESET}\n" \
+        "#" "Model" "Status" "Cost" "In/Out" "Cache" "Turns" "Time"
 
     local running_count=0 exited_count=0
     local total_cost=0 total_in=0 total_out=0 total_cache=0 total_dur=0 total_turns=0
@@ -233,14 +233,15 @@ draw() {
                 ;;
         esac
 
-        local cost_str in_out_str dur_str
+        local cost_str in_out_str cache_str dur_str
         cost_str=$(format_cost "$a_cost")
         in_out_str="$(format_tokens "$a_in")/$(format_tokens "$a_out")"
+        cache_str=$(format_tokens "$a_cache")
         dur_str=$(format_duration_ms "$a_dur")
 
         printf "  %-3s %-16s " "$i" "$short"
         printf "%b%-10s%b" "$status_color" "$status_text" "$RESET"
-        printf " %8s %9s %5s %7s\n" "$cost_str" "$in_out_str" "$a_turns" "$dur_str"
+        printf " %8s %9s %6s %5s %7s\n" "$cost_str" "$in_out_str" "$cache_str" "$a_turns" "$dur_str"
     done
 
     # Post-process row (if container exists).
@@ -254,11 +255,12 @@ draw() {
         pp_model="${pp_model:-unknown}"
         local pp_short="${pp_model/claude-/}"
 
-        local pp_stats pp_cost pp_in pp_out pp_dur pp_turns
+        local pp_stats pp_cost pp_in pp_out pp_cache pp_dur pp_turns
         pp_stats=$(read_agent_stats "$pp_name" "post")
         pp_cost=$(echo "$pp_stats" | awk '{print $1}')
         pp_in=$(echo "$pp_stats" | awk '{print $2}')
         pp_out=$(echo "$pp_stats" | awk '{print $3}')
+        pp_cache=$(echo "$pp_stats" | awk '{print $4}')
         pp_dur=$(echo "$pp_stats" | awk '{print $5}')
         pp_turns=$(echo "$pp_stats" | awk '{print $6}')
 
@@ -278,20 +280,22 @@ draw() {
         printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
         printf "  %-3s %-16s " "PP" "$pp_short"
         printf "%b%-10s%b" "$pp_status_color" "$pp_state" "$RESET"
-        printf " %8s %9s %5s %7s\n" \
+        printf " %8s %9s %6s %5s %7s\n" \
             "$(format_cost "$pp_cost")" \
             "$(format_tokens "$pp_in")/$(format_tokens "$pp_out")" \
+            "$(format_tokens "$pp_cache")" \
             "$pp_turns" "$(format_duration_ms "$pp_dur")"
     fi
 
     # Totals row.
     printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s─' $(seq 1 $((TERM_COLS - 4))))"
-    local t_cost_str t_inout_str t_dur_str
+    local t_cost_str t_inout_str t_cache_str t_dur_str
     t_cost_str=$(format_cost "$total_cost")
     t_inout_str="$(format_tokens "$total_in")/$(format_tokens "$total_out")"
+    t_cache_str=$(format_tokens "$total_cache")
     t_dur_str=$(format_duration_ms "$total_dur")
-    printf "  ${BOLD}%-3s %-16s %-10s %8s %9s %5s %7s${RESET}\n" \
-        "" "Total" "" "$t_cost_str" "$t_inout_str" "$total_turns" "$t_dur_str"
+    printf "  ${BOLD}%-3s %-16s %-10s %8s %9s %6s %5s %7s${RESET}\n" \
+        "" "Total" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" "$total_turns" "$t_dur_str"
 
     echo ""
 
