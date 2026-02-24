@@ -163,6 +163,10 @@ while true; do
             2) AGENT_OBJ+=", \"auth\": \"apikey\"" ;;
             3) AGENT_OBJ+=", \"auth\": \"oauth\"" ;;
         esac
+    elif [ -n "$OAUTH_TOKEN" ]; then
+        AGENT_OBJ+=", \"auth\": \"oauth\""
+    elif [ -n "$API_KEY" ]; then
+        AGENT_OBJ+=", \"auth\": \"apikey\""
     fi
 
     AGENT_OBJ+="}"

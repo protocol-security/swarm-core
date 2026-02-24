@@ -193,6 +193,80 @@ assert_eq "auth config valid" "true" \
 
 # ============================================================
 echo ""
+echo "=== 10. Auto auth from single credential ==="
+
+# Mirrors the agent-object auth logic from setup.sh lines 149-170:
+#   custom endpoint  → base_url/api_key (no auth field)
+#   both creds       → user picks (auto/apikey/oauth)
+#   oauth only       → auth: oauth
+#   apikey only      → auth: apikey
+build_agent_obj() {
+    local count="$1" model="$2" api_key="$3" oauth_token="$4"
+    local custom_endpoint="${5:-}" base_url="${6:-}" group_key="${7:-}"
+    local auth_choice="${8:-1}"
+
+    local obj="{\"count\": ${count}, \"model\": \"${model}\""
+
+    if [ "$custom_endpoint" = "yes" ]; then
+        obj+=", \"base_url\": \"${base_url}\""
+        if [ -n "$group_key" ]; then
+            obj+=", \"api_key\": \"${group_key}\""
+        fi
+    elif [ -n "$api_key" ] && [ -n "$oauth_token" ]; then
+        case "$auth_choice" in
+            2) obj+=", \"auth\": \"apikey\"" ;;
+            3) obj+=", \"auth\": \"oauth\"" ;;
+        esac
+    elif [ -n "$oauth_token" ]; then
+        obj+=", \"auth\": \"oauth\""
+    elif [ -n "$api_key" ]; then
+        obj+=", \"auth\": \"apikey\""
+    fi
+
+    obj+="}"
+    echo "$obj"
+}
+
+# OAuth only → auth must be "oauth"
+OBJ=$(build_agent_obj 3 "claude-opus-4-6" "" "sk-oat-tok")
+assert_eq "oauth-only sets auth"  "oauth"  "$(echo "$OBJ" | jq -r '.auth')"
+assert_eq "oauth-only valid JSON" "true"   "$(echo "$OBJ" | jq empty 2>/dev/null && echo true || echo false)"
+
+# API key only → auth must be "apikey"
+OBJ=$(build_agent_obj 2 "claude-opus-4-6" "sk-key" "")
+assert_eq "apikey-only sets auth" "apikey" "$(echo "$OBJ" | jq -r '.auth')"
+
+# Both creds, default choice (1=auto) → no auth field
+OBJ=$(build_agent_obj 1 "claude-opus-4-6" "sk-key" "sk-oat-tok" "" "" "" "1")
+assert_eq "both/auto no auth" "null" "$(echo "$OBJ" | jq -r '.auth // "null"')"
+
+# Both creds, choice 2 → apikey
+OBJ=$(build_agent_obj 1 "claude-opus-4-6" "sk-key" "sk-oat-tok" "" "" "" "2")
+assert_eq "both/choice=2 apikey" "apikey" "$(echo "$OBJ" | jq -r '.auth')"
+
+# Both creds, choice 3 → oauth
+OBJ=$(build_agent_obj 1 "claude-opus-4-6" "sk-key" "sk-oat-tok" "" "" "" "3")
+assert_eq "both/choice=3 oauth" "oauth" "$(echo "$OBJ" | jq -r '.auth')"
+
+# Custom endpoint → base_url + api_key, no auth field
+OBJ=$(build_agent_obj 2 "custom" "" "sk-oat-tok" "yes" "https://example.com" "sk-ep-key")
+assert_eq "custom ep base_url"  "https://example.com" "$(echo "$OBJ" | jq -r '.base_url')"
+assert_eq "custom ep api_key"   "sk-ep-key"           "$(echo "$OBJ" | jq -r '.api_key')"
+assert_eq "custom ep no auth"   "null"                 "$(echo "$OBJ" | jq -r '.auth // "null"')"
+
+# Full round-trip: oauth-only agent in a config
+AGENTS=$(echo "[]" | jq --argjson obj "$(build_agent_obj 3 "claude-opus-4-6" "" "sk-tok")" '. + [$obj]')
+CONFIG=$(build_config "task.md" "" 3 "swarm-agent" "agent@claude-swarm.local" "$AGENTS")
+assert_eq "config oauth auth"   "oauth"           "$(echo "$CONFIG" | jq -r '.agents[0].auth')"
+assert_eq "config no api_key"   "null"             "$(echo "$CONFIG" | jq -r '.agents[0].api_key // "null"')"
+assert_eq "config agent count"  "3"                "$(echo "$CONFIG" | jq '[.agents[].count] | add')"
+
+echo "$CONFIG" > "$TMPDIR/oauth-auto.json"
+assert_eq "config valid JSON" "true" \
+    "$(jq empty "$TMPDIR/oauth-auto.json" 2>/dev/null && echo true || echo false)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
