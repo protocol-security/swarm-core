@@ -146,6 +146,14 @@ while true; do
 
     AGENT_OBJ="{\"count\": ${COUNT}, \"model\": \"${MODEL}\""
 
+    echo "  Reasoning effort (low/medium/high, blank to skip):"
+    EFFORT=$(input "Effort level" "")
+    case "$EFFORT" in
+        low|medium|high) AGENT_OBJ+=", \"effort\": \"${EFFORT}\"" ;;
+        "") ;;
+        *) echo "  WARNING: unknown effort '${EFFORT}', skipping." ;;
+    esac
+
     if yesno "Custom endpoint for this group (e.g. OpenRouter)?"; then
         BASE_URL=$(input "Base URL" "https://openrouter.ai/api/v1")
         GROUP_KEY=$(password "API key for this endpoint")
@@ -198,9 +206,18 @@ fi
 POST_PROMPT=""
 POST_MODEL=""
 
+POST_EFFORT=""
+
 if yesno "Configure post-processing (runs after all agents finish)?"; then
     POST_PROMPT=$(input "Post-processing prompt file" "")
     POST_MODEL=$(input "Model for post-processing" "claude-opus-4-6")
+    echo "  Reasoning effort for post-processing (low/medium/high, blank to skip):"
+    POST_EFFORT=$(input "Effort level" "")
+    case "$POST_EFFORT" in
+        low|medium|high|"") ;;
+        *) echo "  WARNING: unknown effort '${POST_EFFORT}', skipping."
+           POST_EFFORT="" ;;
+    esac
 fi
 
 # ---- Build config ----
@@ -224,7 +241,9 @@ if [ -n "$POST_PROMPT" ]; then
     CONFIG=$(echo "$CONFIG" | jq \
         --arg pp_prompt "$POST_PROMPT" \
         --arg pp_model "$POST_MODEL" \
-        '. + { post_process: { prompt: $pp_prompt, model: $pp_model } }')
+        --arg pp_effort "$POST_EFFORT" \
+        '. + { post_process: { prompt: $pp_prompt, model: $pp_model } }
+        | if $pp_effort != "" then .post_process.effort = $pp_effort else . end')
 fi
 
 # ---- Review and write ----

@@ -267,6 +267,76 @@ assert_eq "config valid JSON" "true" \
 
 # ============================================================
 echo ""
+echo "=== 11. Effort field in agent objects ==="
+
+# Mirrors the effort prompt logic from setup.sh.
+build_agent_with_effort() {
+    local count="$1" model="$2" effort="$3"
+    local obj="{\"count\": ${count}, \"model\": \"${model}\""
+    case "$effort" in
+        low|medium|high) obj+=", \"effort\": \"${effort}\"" ;;
+    esac
+    obj+="}"
+    echo "$obj"
+}
+
+OBJ=$(build_agent_with_effort 2 "claude-opus-4-6" "high")
+assert_eq "effort high"       "high"  "$(echo "$OBJ" | jq -r '.effort')"
+assert_eq "effort high JSON"  "true"  "$(echo "$OBJ" | jq empty 2>/dev/null && echo true || echo false)"
+
+OBJ=$(build_agent_with_effort 1 "claude-sonnet-4-6" "medium")
+assert_eq "effort medium"     "medium" "$(echo "$OBJ" | jq -r '.effort')"
+
+OBJ=$(build_agent_with_effort 1 "claude-sonnet-4-6" "low")
+assert_eq "effort low"        "low"    "$(echo "$OBJ" | jq -r '.effort')"
+
+OBJ=$(build_agent_with_effort 3 "claude-opus-4-6" "")
+assert_eq "effort blank"      "null"   "$(echo "$OBJ" | jq -r '.effort // "null"')"
+
+OBJ=$(build_agent_with_effort 1 "m" "bogus")
+assert_eq "effort invalid"    "null"   "$(echo "$OBJ" | jq -r '.effort // "null"')"
+
+# Full round-trip: effort in config
+AGENTS=$(echo "[]" \
+    | jq --argjson a1 "$(build_agent_with_effort 2 "claude-opus-4-6" "high")" \
+         --argjson a2 "$(build_agent_with_effort 1 "claude-sonnet-4-6" "")" \
+    '. + [$a1, $a2]')
+CONFIG=$(build_config "p.md" "" 3 "sa" "a@a" "$AGENTS")
+assert_eq "config effort[0]"  "high"  "$(echo "$CONFIG" | jq -r '.agents[0].effort')"
+assert_eq "config effort[1]"  "null"  "$(echo "$CONFIG" | jq -r '.agents[1].effort // "null"')"
+
+# ============================================================
+echo ""
+echo "=== 12. Effort in post-processing ==="
+
+# Mirrors the post-process effort logic from setup.sh.
+add_post_process_with_effort() {
+    local config="$1" pp_prompt="$2" pp_model="$3" pp_effort="$4"
+    echo "$config" | jq \
+        --arg pp_prompt "$pp_prompt" \
+        --arg pp_model "$pp_model" \
+        --arg pp_effort "$pp_effort" \
+        '. + { post_process: { prompt: $pp_prompt, model: $pp_model } }
+        | if $pp_effort != "" then .post_process.effort = $pp_effort else . end'
+}
+
+AGENTS=$(build_agents_json 1 "m")
+CONFIG=$(build_config "p.md" "" 3 "sa" "a@a" "$AGENTS")
+
+PP=$(add_post_process_with_effort "$CONFIG" "review.md" "claude-opus-4-6" "low")
+assert_eq "pp effort low"     "low"    "$(echo "$PP" | jq -r '.post_process.effort')"
+
+PP=$(add_post_process_with_effort "$CONFIG" "review.md" "claude-opus-4-6" "high")
+assert_eq "pp effort high"    "high"   "$(echo "$PP" | jq -r '.post_process.effort')"
+
+PP=$(add_post_process_with_effort "$CONFIG" "review.md" "claude-opus-4-6" "")
+assert_eq "pp effort blank"   "null"   "$(echo "$PP" | jq -r '.post_process.effort // "null"')"
+
+echo "$PP" > "$TMPDIR/pp-effort.json"
+assert_eq "pp effort JSON"    "true"   "$(jq empty "$TMPDIR/pp-effort.json" 2>/dev/null && echo true || echo false)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
