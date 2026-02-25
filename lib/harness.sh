@@ -42,6 +42,7 @@ git config --global user.email "$GIT_USER_EMAIL"
 
 # Capture CLI version once for the prepare-commit-msg hook.
 CLAUDE_VERSION=$(claude --version 2>/dev/null || echo "unknown")
+CLAUDE_VERSION="${CLAUDE_VERSION%% *}"
 export CLAUDE_VERSION
 
 echo "[harness:${AGENT_ID}] Starting (model=${CLAUDE_MODEL}, prompt=${AGENT_PROMPT})..."
