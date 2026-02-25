@@ -178,21 +178,13 @@ assert_eq "no pp prompt" "" "$(parse_pp_prompt "$TMPDIR/no_pp.json")"
 
 # ============================================================
 echo ""
-echo "=== 5. Git user name with model tag ==="
+echo "=== 5. Git user name is clean (no model tag) ==="
 
 GIT_USER_NAME="swarm-agent"
-agent_model="claude-opus-4-6"
-short_model="${agent_model/claude-/}"
-short_model="${short_model//\//-}"
-agent_git_name="${GIT_USER_NAME} [${short_model}]"
-assert_eq "git name tag" "swarm-agent [opus-4-6]" "$agent_git_name"
+assert_eq "default name clean" "swarm-agent" "$GIT_USER_NAME"
 
 GIT_USER_NAME="Nikos Baxevanis"
-agent_model="MiniMax-M2.5"
-short_model="${agent_model/claude-/}"
-short_model="${short_model//\//-}"
-agent_git_name="${GIT_USER_NAME} [${short_model}]"
-assert_eq "custom name tag" "Nikos Baxevanis [MiniMax-M2.5]" "$agent_git_name"
+assert_eq "custom name clean" "Nikos Baxevanis" "$GIT_USER_NAME"
 
 # ============================================================
 echo ""

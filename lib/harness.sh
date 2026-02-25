@@ -40,6 +40,10 @@ GIT_USER_EMAIL="${GIT_USER_EMAIL:-agent@claude-swarm.local}"
 git config --global user.name "$GIT_USER_NAME"
 git config --global user.email "$GIT_USER_EMAIL"
 
+# Capture CLI version once for the prepare-commit-msg hook.
+CLAUDE_VERSION=$(claude --version 2>/dev/null || echo "unknown")
+export CLAUDE_VERSION
+
 echo "[harness:${AGENT_ID}] Starting (model=${CLAUDE_MODEL}, prompt=${AGENT_PROMPT})..."
 
 if [ ! -d "/workspace/.git" ]; then
@@ -69,6 +73,23 @@ if [ ! -d "/workspace/.git" ]; then
         echo "[harness:${AGENT_ID}] Running ${AGENT_SETUP}..."
         sudo bash "$AGENT_SETUP"
     fi
+
+    # Disable Claude Code's Co-Authored-By trailer; the hook-injected
+    # trailers (Model/Agent) are the single source of truth.
+    mkdir -p .claude
+    printf '{"attribution":{"commit":"","pr":""}}\n' > .claude/settings.local.json
+
+    # Install prepare-commit-msg hook to append provenance trailers.
+    # Fires on every commit including git commit -m.
+    mkdir -p .git/hooks
+    cat > .git/hooks/prepare-commit-msg <<'HOOK'
+#!/bin/bash
+if ! grep -q '^Model:' "$1"; then
+    printf '\nModel: %s\nAgent: Claude Code %s\n' \
+        "$CLAUDE_MODEL" "$CLAUDE_VERSION" >> "$1"
+fi
+HOOK
+    chmod +x .git/hooks/prepare-commit-msg
 
     mkdir -p agent_logs
     echo "[harness:${AGENT_ID}] Setup complete."

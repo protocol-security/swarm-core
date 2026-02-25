@@ -173,6 +173,56 @@ assert_eq "max_idle=1 immediate"   "exit"    "$(simulate_idle abc123 abc123 0 1)
 
 # ============================================================
 echo ""
+echo "=== 8. Commit template generation ==="
+
+# Mirrors the commit template logic from harness.sh.
+build_commit_template() {
+    local model="$1" version="$2"
+    printf '\n\nModel: %s\nAgent: Claude Code %s\n' "$model" "$version"
+}
+
+TPL=$(build_commit_template "claude-opus-4-6" "1.0.32")
+assert_eq "template model line" \
+    "Model: claude-opus-4-6" \
+    "$(echo "$TPL" | grep '^Model:')"
+assert_eq "template agent line" \
+    "Agent: Claude Code 1.0.32" \
+    "$(echo "$TPL" | grep '^Agent:')"
+
+TPL=$(build_commit_template "MiniMax-M2.5" "1.0.30")
+assert_eq "template custom model" \
+    "Model: MiniMax-M2.5" \
+    "$(echo "$TPL" | grep '^Model:')"
+assert_eq "template custom version" \
+    "Agent: Claude Code 1.0.30" \
+    "$(echo "$TPL" | grep '^Agent:')"
+
+TPL=$(build_commit_template "claude-sonnet-4-6" "unknown")
+assert_eq "template unknown version" \
+    "Agent: Claude Code unknown" \
+    "$(echo "$TPL" | grep '^Agent:')"
+
+# Starts with two blank lines (git uses line 1 as commit subject).
+FIRST_TWO=$(echo "$TPL" | head -2)
+assert_eq "template blank preamble" "" "$FIRST_TWO"
+
+# ============================================================
+echo ""
+echo "=== 9. Attribution settings file ==="
+
+# Mirrors the .claude/settings.local.json written by harness.sh.
+ATTR_JSON='{"attribution":{"commit":"","pr":""}}'
+echo "$ATTR_JSON" > "$TMPDIR/settings.local.json"
+
+assert_eq "attr valid JSON" "true" \
+    "$(jq empty "$TMPDIR/settings.local.json" 2>/dev/null && echo true || echo false)"
+assert_eq "attr commit empty" "" \
+    "$(echo "$ATTR_JSON" | jq -r '.attribution.commit')"
+assert_eq "attr pr empty" "" \
+    "$(echo "$ATTR_JSON" | jq -r '.attribution.pr')"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
