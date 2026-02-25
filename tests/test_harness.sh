@@ -187,24 +187,24 @@ mkdir -p "$HOOK_REPO/.git/hooks"
 cat > "$HOOK_REPO/.git/hooks/prepare-commit-msg" <<'HOOK'
 #!/bin/bash
 if ! grep -q '^Model:' "$1"; then
-    printf '\nModel: %s\nAgent: Claude Code %s\n' \
-        "$CLAUDE_MODEL" "$CLAUDE_VERSION" >> "$1"
+    printf '\nModel: %s\nTools: claude-swarm %s, Claude Code %s\n' \
+        "$CLAUDE_MODEL" "$SWARM_VERSION" "$CLAUDE_VERSION" >> "$1"
 fi
 HOOK
 chmod +x "$HOOK_REPO/.git/hooks/prepare-commit-msg"
 
 touch "$HOOK_REPO/file.txt"
 git -C "$HOOK_REPO" add file.txt
-CLAUDE_MODEL="claude-opus-4-6" CLAUDE_VERSION="1.0.32" \
+CLAUDE_MODEL="claude-opus-4-6" CLAUDE_VERSION="1.0.32" SWARM_VERSION="0.1.0" \
     git -C "$HOOK_REPO" commit -m "test commit" --quiet
 
 MSG=$(git -C "$HOOK_REPO" log -1 --format='%B')
 assert_eq "hook model trailer" \
     "Model: claude-opus-4-6" \
     "$(echo "$MSG" | grep '^Model:')"
-assert_eq "hook agent trailer" \
-    "Agent: Claude Code 1.0.32" \
-    "$(echo "$MSG" | grep '^Agent:')"
+assert_eq "hook tools trailer" \
+    "Tools: claude-swarm 0.1.0, Claude Code 1.0.32" \
+    "$(echo "$MSG" | grep '^Tools:')"
 assert_eq "hook subject preserved" \
     "test commit" \
     "$(echo "$MSG" | head -1)"
@@ -212,21 +212,21 @@ assert_eq "hook subject preserved" \
 # Second commit with different model — trailers update.
 echo "x" > "$HOOK_REPO/file2.txt"
 git -C "$HOOK_REPO" add file2.txt
-CLAUDE_MODEL="MiniMax-M2.5" CLAUDE_VERSION="1.0.30" \
+CLAUDE_MODEL="MiniMax-M2.5" CLAUDE_VERSION="1.0.30" SWARM_VERSION="0.1.0" \
     git -C "$HOOK_REPO" commit -m "second commit" --quiet
 
 MSG2=$(git -C "$HOOK_REPO" log -1 --format='%B')
 assert_eq "hook model trailer 2" \
     "Model: MiniMax-M2.5" \
     "$(echo "$MSG2" | grep '^Model:')"
-assert_eq "hook agent trailer 2" \
-    "Agent: Claude Code 1.0.30" \
-    "$(echo "$MSG2" | grep '^Agent:')"
+assert_eq "hook tools trailer 2" \
+    "Tools: claude-swarm 0.1.0, Claude Code 1.0.30" \
+    "$(echo "$MSG2" | grep '^Tools:')"
 
 # Idempotent: if trailers already present, hook does not duplicate.
 echo "y" > "$HOOK_REPO/file3.txt"
 git -C "$HOOK_REPO" add file3.txt
-CLAUDE_MODEL="claude-opus-4-6" CLAUDE_VERSION="1.0.32" \
+CLAUDE_MODEL="claude-opus-4-6" CLAUDE_VERSION="1.0.32" SWARM_VERSION="0.1.0" \
     git -C "$HOOK_REPO" commit -m "$(printf 'manual trailers\n\nModel: already-set')" --quiet
 
 MSG3=$(git -C "$HOOK_REPO" log -1 --format='%B')

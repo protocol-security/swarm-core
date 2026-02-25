@@ -82,12 +82,14 @@ if [ ! -d "/workspace/.git" ]; then
 
     # Install prepare-commit-msg hook to append provenance trailers.
     # Fires on every commit including git commit -m.
+    SWARM_VERSION=$(cat VERSION 2>/dev/null || echo "unknown")
+    export SWARM_VERSION
     mkdir -p .git/hooks
     cat > .git/hooks/prepare-commit-msg <<'HOOK'
 #!/bin/bash
 if ! grep -q '^Model:' "$1"; then
-    printf '\nModel: %s\nAgent: Claude Code %s\n' \
-        "$CLAUDE_MODEL" "$CLAUDE_VERSION" >> "$1"
+    printf '\nModel: %s\nTools: claude-swarm %s, Claude Code %s\n' \
+        "$CLAUDE_MODEL" "$SWARM_VERSION" "$CLAUDE_VERSION" >> "$1"
 fi
 HOOK
     chmod +x .git/hooks/prepare-commit-msg
