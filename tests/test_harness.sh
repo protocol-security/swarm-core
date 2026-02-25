@@ -173,6 +173,94 @@ assert_eq "max_idle=1 immediate"   "exit"    "$(simulate_idle abc123 abc123 0 1)
 
 # ============================================================
 echo ""
+echo "=== 8. prepare-commit-msg hook appends trailers ==="
+
+# Mirrors the hook installed by harness.sh. Exercises it against
+# a real git repo so we test actual commit behaviour.
+HOOK_REPO="$TMPDIR/hook-repo"
+mkdir -p "$HOOK_REPO"
+git init -q "$HOOK_REPO"
+git -C "$HOOK_REPO" config user.name "test"
+git -C "$HOOK_REPO" config user.email "test@test"
+
+mkdir -p "$HOOK_REPO/.git/hooks"
+cat > "$HOOK_REPO/.git/hooks/prepare-commit-msg" <<'HOOK'
+#!/bin/bash
+if ! grep -q '^Model:' "$1"; then
+    printf '\nModel: %s\nTools: claude-swarm %s, Claude Code %s\n' \
+        "$CLAUDE_MODEL" "$SWARM_VERSION" "$CLAUDE_VERSION" >> "$1"
+fi
+HOOK
+chmod +x "$HOOK_REPO/.git/hooks/prepare-commit-msg"
+
+touch "$HOOK_REPO/file.txt"
+git -C "$HOOK_REPO" add file.txt
+CLAUDE_MODEL="claude-opus-4-6" CLAUDE_VERSION="1.0.32" SWARM_VERSION="0.1.0" \
+    git -C "$HOOK_REPO" commit -m "test commit" --quiet
+
+MSG=$(git -C "$HOOK_REPO" log -1 --format='%B')
+assert_eq "hook model trailer" \
+    "Model: claude-opus-4-6" \
+    "$(echo "$MSG" | grep '^Model:')"
+assert_eq "hook tools trailer" \
+    "Tools: claude-swarm 0.1.0, Claude Code 1.0.32" \
+    "$(echo "$MSG" | grep '^Tools:')"
+assert_eq "hook subject preserved" \
+    "test commit" \
+    "$(echo "$MSG" | head -1)"
+
+# Second commit with different model — trailers update.
+echo "x" > "$HOOK_REPO/file2.txt"
+git -C "$HOOK_REPO" add file2.txt
+CLAUDE_MODEL="MiniMax-M2.5" CLAUDE_VERSION="1.0.30" SWARM_VERSION="0.1.0" \
+    git -C "$HOOK_REPO" commit -m "second commit" --quiet
+
+MSG2=$(git -C "$HOOK_REPO" log -1 --format='%B')
+assert_eq "hook model trailer 2" \
+    "Model: MiniMax-M2.5" \
+    "$(echo "$MSG2" | grep '^Model:')"
+assert_eq "hook tools trailer 2" \
+    "Tools: claude-swarm 0.1.0, Claude Code 1.0.30" \
+    "$(echo "$MSG2" | grep '^Tools:')"
+
+# Idempotent: if trailers already present, hook does not duplicate.
+echo "y" > "$HOOK_REPO/file3.txt"
+git -C "$HOOK_REPO" add file3.txt
+CLAUDE_MODEL="claude-opus-4-6" CLAUDE_VERSION="1.0.32" SWARM_VERSION="0.1.0" \
+    git -C "$HOOK_REPO" commit -m "$(printf 'manual trailers\n\nModel: already-set')" --quiet
+
+MSG3=$(git -C "$HOOK_REPO" log -1 --format='%B')
+MODEL_COUNT=$(echo "$MSG3" | grep -c '^Model:' || true)
+assert_eq "hook no duplicate" "1" "$MODEL_COUNT"
+
+# ============================================================
+echo ""
+echo "=== 9. Version string stripping ==="
+
+# Mirrors the CLAUDE_VERSION="${CLAUDE_VERSION%% *}" in harness.sh.
+strip_version() { local v="$1"; echo "${v%% *}"; }
+
+assert_eq "strip suffix"   "2.1.52"  "$(strip_version '2.1.52 (Claude Code)')"
+assert_eq "no suffix"      "2.1.52"  "$(strip_version '2.1.52')"
+assert_eq "unknown"         "unknown" "$(strip_version 'unknown')"
+
+# ============================================================
+echo ""
+echo "=== 10. Attribution settings file ==="
+
+# Mirrors the .claude/settings.local.json written by harness.sh.
+ATTR_JSON='{"attribution":{"commit":"","pr":""}}'
+echo "$ATTR_JSON" > "$TMPDIR/settings.local.json"
+
+assert_eq "attr valid JSON" "true" \
+    "$(jq empty "$TMPDIR/settings.local.json" 2>/dev/null && echo true || echo false)"
+assert_eq "attr commit empty" "" \
+    "$(echo "$ATTR_JSON" | jq -r '.attribution.commit')"
+assert_eq "attr pr empty" "" \
+    "$(echo "$ATTR_JSON" | jq -r '.attribution.pr')"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
