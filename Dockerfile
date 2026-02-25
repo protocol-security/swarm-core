@@ -28,6 +28,7 @@ RUN git config --global --add safe.directory '*' \
 
 COPY --chmod=755 lib/harness.sh /harness.sh
 COPY --chmod=644 lib/agent-system-prompt.md /agent-system-prompt.md
+COPY --chmod=644 VERSION /swarm-version
 
 WORKDIR /workspace
 

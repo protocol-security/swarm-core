@@ -85,7 +85,7 @@ if [ ! -d "/workspace/.git" ]; then
 
     # Install prepare-commit-msg hook to append provenance trailers.
     # Fires on every commit including git commit -m.
-    SWARM_VERSION=$(cat VERSION 2>/dev/null || echo "unknown")
+    SWARM_VERSION=$(cat /swarm-version 2>/dev/null || echo "unknown")
     export SWARM_VERSION
     mkdir -p .git/hooks
     cat > .git/hooks/prepare-commit-msg <<'HOOK'
