@@ -44,6 +44,9 @@ git config --global user.email "$GIT_USER_EMAIL"
 CLAUDE_VERSION=$(claude --version 2>/dev/null || echo "unknown")
 CLAUDE_VERSION="${CLAUDE_VERSION%% *}"
 export CLAUDE_VERSION
+export SWARM_RUN_CONTEXT="${SWARM_RUN_CONTEXT:-unknown}"
+export SWARM_CFG_PROMPT="${SWARM_CFG_PROMPT:-${AGENT_PROMPT}}"
+export SWARM_CFG_SETUP="${SWARM_CFG_SETUP:-${AGENT_SETUP}}"
 
 echo "[harness:${AGENT_ID}] Starting (model=${CLAUDE_MODEL}, prompt=${AGENT_PROMPT})..."
 
@@ -90,6 +93,10 @@ if [ ! -d "/workspace/.git" ]; then
 if ! grep -q '^Model:' "$1"; then
     printf '\nModel: %s\nTools: claude-swarm %s, Claude Code %s\n' \
         "$CLAUDE_MODEL" "$SWARM_VERSION" "$CLAUDE_VERSION" >> "$1"
+    printf '> Run: %s\n' "$SWARM_RUN_CONTEXT" >> "$1"
+    cfg="$SWARM_CFG_PROMPT"
+    [ -n "$SWARM_CFG_SETUP" ] && cfg="${cfg}, ${SWARM_CFG_SETUP}"
+    printf '> Cfg: %s\n' "$cfg" >> "$1"
 fi
 HOOK
     chmod +x .git/hooks/prepare-commit-msg

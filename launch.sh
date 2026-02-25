@@ -7,6 +7,9 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT="$(basename "$REPO_ROOT")"
+SWARM_RUN_HASH="$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo "unknown")"
+SWARM_RUN_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
+SWARM_RUN_CONTEXT="${PROJECT}@${SWARM_RUN_HASH} (${SWARM_RUN_BRANCH})"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
 CONFIG_FILE="${SWARM_CONFIG:-}"
@@ -186,6 +189,9 @@ cmd_start() {
             -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
             -e "AGENT_ID=${AGENT_IDX}" \
             -e "SWARM_AUTH_MODE=${agent_auth}" \
+            -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
+            -e "SWARM_CFG_PROMPT=${AGENT_PROMPT}" \
+            -e "SWARM_CFG_SETUP=${AGENT_SETUP}" \
             "$IMAGE_NAME"
     done < "$AGENTS_CFG"
 
@@ -377,6 +383,9 @@ cmd_post_process() {
         -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
         -e "AGENT_ID=post" \
         -e "SWARM_AUTH_MODE=${pp_auth}" \
+        -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
+        -e "SWARM_CFG_PROMPT=${pp_prompt}" \
+        -e "SWARM_CFG_SETUP=${AGENT_SETUP:-}" \
         "$IMAGE_NAME"
 
     echo "Post-processing agent launched: ${NAME}"
