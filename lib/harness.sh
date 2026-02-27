@@ -106,6 +106,7 @@ HOOK
 fi
 
 cd /workspace
+STATS_FILE="/workspace/${STATS_FILE}"
 
 IDLE_COUNT=0
 
@@ -149,6 +150,7 @@ while true; do
     cache_rd="${cache_rd:-0}"
     cache_cr=$(jq -r '.usage.cache_creation_input_tokens // 0' "$LOGFILE" 2>/dev/null || true)
     cache_cr="${cache_cr:-0}"
+    mkdir -p "$(dirname "$STATS_FILE")"
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
         "$(date +%s)" "$cost" "$tok_in" "$tok_out" \
         "$cache_rd" "$cache_cr" "$dur" "$api_ms" "$turns" \
