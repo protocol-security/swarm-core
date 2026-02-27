@@ -25,6 +25,18 @@ REVIEW_DIR="/tmp/${PROJECT}-test-review"
 INJECT_DIR="/tmp/${PROJECT}-test-inject"
 TIMEOUT="${TIMEOUT:-600}"
 
+# Docker containers may leave files owned by a different UID.
+rm_docker_dir() {
+    local dir="$1"
+    [ -d "$dir" ] || return 0
+    local parent base
+    parent="$(dirname "$dir")"
+    base="$(basename "$dir")"
+    docker run --rm -v "${parent}:${parent}" alpine \
+        rm -rf "${parent}/${base}" 2>/dev/null \
+        || rm -rf "$dir" 2>/dev/null || true
+}
+
 # ---- --all: full test suite runner ----
 
 run_all_tests() {
@@ -524,7 +536,8 @@ cleanup() {
             SWARM_NUM_AGENTS="${NUM_AGENTS}" \
             "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
     fi
-    rm -rf "$REVIEW_DIR" "$INJECT_DIR" "/tmp/${PROJECT}-upstream.git"
+    rm -rf "$REVIEW_DIR" "$INJECT_DIR"
+    rm_docker_dir "/tmp/${PROJECT}-upstream.git"
     rm -f "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$SETUP_FILE"
 }
 trap cleanup EXIT

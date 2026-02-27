@@ -15,12 +15,12 @@ Clones the bare repo, runs optional setup, then loops claude
 sessions until the agent is idle for MAX_IDLE cycles.
 
 Required environment:
-  AGENT_PROMPT   Path to prompt file (relative to repo root).
+  SWARM_PROMPT   Path to prompt file (relative to repo root).
   CLAUDE_MODEL   Model to use for claude sessions.
 
 Optional environment:
   AGENT_ID       Agent identifier (default: unnamed).
-  AGENT_SETUP    Setup script to run before first session.
+  SWARM_SETUP    Setup script to run before first session.
   MAX_IDLE       Idle sessions before exit (default: 3).
   INJECT_GIT_RULES  Inject git coordination rules (default: true).
 HELP
@@ -29,8 +29,8 @@ fi
 
 AGENT_ID="${AGENT_ID:-unnamed}"
 CLAUDE_MODEL="${CLAUDE_MODEL:-claude-opus-4-6}"
-AGENT_PROMPT="${AGENT_PROMPT:?AGENT_PROMPT is required.}"
-AGENT_SETUP="${AGENT_SETUP:-}"
+SWARM_PROMPT="${SWARM_PROMPT:?SWARM_PROMPT is required.}"
+SWARM_SETUP="${SWARM_SETUP:-}"
 MAX_IDLE="${MAX_IDLE:-3}"
 INJECT_GIT_RULES="${INJECT_GIT_RULES:-true}"
 STATS_FILE="agent_logs/stats_agent_${AGENT_ID}.tsv"
@@ -45,10 +45,10 @@ CLAUDE_VERSION=$(claude --version 2>/dev/null || echo "unknown")
 CLAUDE_VERSION="${CLAUDE_VERSION%% *}"
 export CLAUDE_VERSION
 export SWARM_RUN_CONTEXT="${SWARM_RUN_CONTEXT:-unknown}"
-export SWARM_CFG_PROMPT="${SWARM_CFG_PROMPT:-${AGENT_PROMPT}}"
-export SWARM_CFG_SETUP="${SWARM_CFG_SETUP:-${AGENT_SETUP}}"
+export SWARM_CFG_PROMPT="${SWARM_CFG_PROMPT:-${SWARM_PROMPT}}"
+export SWARM_CFG_SETUP="${SWARM_CFG_SETUP:-${SWARM_SETUP}}"
 
-echo "[harness:${AGENT_ID}] Starting (model=${CLAUDE_MODEL}, prompt=${AGENT_PROMPT})..."
+echo "[harness:${AGENT_ID}] Starting (model=${CLAUDE_MODEL}, prompt=${SWARM_PROMPT})..."
 
 if [ ! -d "/workspace/.git" ]; then
     echo "[harness:${AGENT_ID}] Cloning upstream to /workspace..."
@@ -73,9 +73,9 @@ if [ ! -d "/workspace/.git" ]; then
     git checkout agent-work
 
     # Run project-specific setup if provided.
-    if [ -n "$AGENT_SETUP" ] && [ -f "$AGENT_SETUP" ]; then
-        echo "[harness:${AGENT_ID}] Running ${AGENT_SETUP}..."
-        sudo bash "$AGENT_SETUP"
+    if [ -n "$SWARM_SETUP" ] && [ -f "$SWARM_SETUP" ]; then
+        echo "[harness:${AGENT_ID}] Running ${SWARM_SETUP}..."
+        sudo bash "$SWARM_SETUP"
     fi
 
     # Disable Claude Code's Co-Authored-By trailer; the hook-injected
@@ -106,6 +106,7 @@ HOOK
 fi
 
 cd /workspace
+STATS_FILE="/workspace/${STATS_FILE}"
 
 IDLE_COUNT=0
 
@@ -127,7 +128,7 @@ while true; do
     fi
 
     claude --dangerously-skip-permissions \
-           -p "$(cat "$AGENT_PROMPT")" \
+           -p "$(cat "$SWARM_PROMPT")" \
            --model "$CLAUDE_MODEL" \
            "${APPEND_ARGS[@]+"${APPEND_ARGS[@]}"}" \
            --output-format json > "$LOGFILE" 2>"${LOGFILE}.err" || true
@@ -149,6 +150,7 @@ while true; do
     cache_rd="${cache_rd:-0}"
     cache_cr=$(jq -r '.usage.cache_creation_input_tokens // 0' "$LOGFILE" 2>/dev/null || true)
     cache_cr="${cache_cr:-0}"
+    mkdir -p "$(dirname "$STATS_FILE")"
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
         "$(date +%s)" "$cost" "$tok_in" "$tok_out" \
         "$cache_rd" "$cache_cr" "$dur" "$api_ms" "$turns" \
