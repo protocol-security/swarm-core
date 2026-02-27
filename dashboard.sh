@@ -56,7 +56,7 @@ if [ -n "$CONFIG_FILE" ]; then
     if [ -n "$local_title" ]; then
         DASHBOARD_TITLE="$local_title"
     fi
-    AGENT_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
+    SWARM_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
     MODEL_SUMMARY=$(jq -r \
         '[.agents[] | "\(.count)x \(.model | split("/") | .[-1])"] | join(", ")' \
@@ -71,7 +71,7 @@ else
         NUM_AGENTS="${NUM_AGENTS:-0}"
         [ "$NUM_AGENTS" -eq 0 ] && NUM_AGENTS=3
     fi
-    AGENT_PROMPT="${SWARM_PROMPT:-}"
+    SWARM_PROMPT="${SWARM_PROMPT:-}"
     CLAUDE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
     MODEL_SUMMARY="${NUM_AGENTS}x ${CLAUDE_MODEL}"
     CONFIG_LABEL="env vars"
@@ -164,7 +164,7 @@ draw() {
         source "$STATE_FILE"
         DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-claude-swarm}}"
         NUM_AGENTS="${SWARM_NUM_AGENTS:-$NUM_AGENTS}"
-        AGENT_PROMPT="${SWARM_PROMPT:-$AGENT_PROMPT}"
+        SWARM_PROMPT="${SWARM_PROMPT:-$SWARM_PROMPT}"
         MODEL_SUMMARY="${SWARM_MODEL_SUMMARY:-$MODEL_SUMMARY}"
         CONFIG_LABEL="${SWARM_CONFIG_LABEL:-$CONFIG_LABEL}"
     fi
@@ -182,7 +182,7 @@ draw() {
     local title_len=${#DASHBOARD_TITLE}
     local right="${DIM}uptime: ${uptime_str}${RESET}"
     printf "%b%*s%b\n" "$title" $((TERM_COLS - title_len - 2 - ${#uptime_str} - 10)) "" "$right"
-    printf " ${DIM}config: %s | prompt: %s${RESET}\n" "$CONFIG_LABEL" "$AGENT_PROMPT"
+    printf " ${DIM}config: %s | prompt: %s${RESET}\n" "$CONFIG_LABEL" "$SWARM_PROMPT"
     printf " ${DIM}agents: %s (%s)${RESET}\n" "$NUM_AGENTS" "$MODEL_SUMMARY"
     echo ""
 

@@ -15,7 +15,7 @@ RUN useradd -m -s /bin/bash agent \
     && echo "agent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/agent
 USER agent
 
-# Language toolchains are installed by AGENT_SETUP, not here.
+# Language toolchains are installed by SWARM_SETUP, not here.
 
 RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
     && bash /tmp/claude-install.sh \

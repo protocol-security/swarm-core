@@ -42,8 +42,8 @@ if [ -n "$CONFIG_FILE" ]; then
         echo "ERROR: jq is required to parse config files." >&2
         exit 1
     fi
-    AGENT_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
-    AGENT_SETUP=$(jq -r '.setup // empty' "$CONFIG_FILE")
+    SWARM_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
+    SWARM_SETUP=$(jq -r '.setup // empty' "$CONFIG_FILE")
     MAX_IDLE=$(jq -r '.max_idle // 3' "$CONFIG_FILE")
     INJECT_GIT_RULES=$(jq -r 'if has("inject_git_rules") then .inject_git_rules else true end' "$CONFIG_FILE")
     GIT_USER_NAME=$(jq -r '.git_user.name // "swarm-agent"' "$CONFIG_FILE")
@@ -52,8 +52,8 @@ if [ -n "$CONFIG_FILE" ]; then
 else
     NUM_AGENTS="${SWARM_NUM_AGENTS:-3}"
     CLAUDE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
-    AGENT_PROMPT="${SWARM_PROMPT:-}"
-    AGENT_SETUP="${SWARM_SETUP:-}"
+    SWARM_PROMPT="${SWARM_PROMPT:-}"
+    SWARM_SETUP="${SWARM_SETUP:-}"
     MAX_IDLE="${SWARM_MAX_IDLE:-3}"
     INJECT_GIT_RULES="${SWARM_INJECT_GIT_RULES:-true}"
     GIT_USER_NAME="${SWARM_GIT_USER_NAME:-swarm-agent}"
@@ -72,7 +72,7 @@ cmd_start() {
         exit 1
     fi
 
-    if [ -z "$AGENT_PROMPT" ]; then
+    if [ -z "$SWARM_PROMPT" ]; then
         if [ -n "$CONFIG_FILE" ]; then
             echo "ERROR: 'prompt' is missing in ${CONFIG_FILE}." >&2
         else
@@ -81,8 +81,8 @@ cmd_start() {
         exit 1
     fi
 
-    if [ ! -f "$REPO_ROOT/$AGENT_PROMPT" ]; then
-        echo "ERROR: ${AGENT_PROMPT} not found." >&2
+    if [ ! -f "$REPO_ROOT/$SWARM_PROMPT" ]; then
+        echo "ERROR: ${SWARM_PROMPT} not found." >&2
         exit 1
     fi
 
@@ -197,8 +197,8 @@ cmd_start() {
             -e "ANTHROPIC_API_KEY=${resolved_api_key}" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
             -e "CLAUDE_MODEL=${agent_model}" \
-            -e "AGENT_PROMPT=${AGENT_PROMPT}" \
-            -e "AGENT_SETUP=${AGENT_SETUP}" \
+            -e "SWARM_PROMPT=${SWARM_PROMPT}" \
+            -e "SWARM_SETUP=${SWARM_SETUP}" \
             -e "MAX_IDLE=${MAX_IDLE}" \
             -e "GIT_USER_NAME=${GIT_USER_NAME}" \
             -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
@@ -206,8 +206,8 @@ cmd_start() {
             -e "AGENT_ID=${AGENT_IDX}" \
             -e "SWARM_AUTH_MODE=${agent_auth}" \
             -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
-            -e "SWARM_CFG_PROMPT=${AGENT_PROMPT}" \
-            -e "SWARM_CFG_SETUP=${AGENT_SETUP}" \
+            -e "SWARM_CFG_PROMPT=${SWARM_PROMPT}" \
+            -e "SWARM_CFG_SETUP=${SWARM_SETUP}" \
             "$IMAGE_NAME"
     done < "$AGENTS_CFG"
 
@@ -226,7 +226,7 @@ cmd_start() {
     fi
     cat > "/tmp/${PROJECT}-swarm.env" <<ENVEOF
 SWARM_TITLE="${SWARM_TITLE:-}"
-SWARM_PROMPT="${AGENT_PROMPT}"
+SWARM_PROMPT="${SWARM_PROMPT}"
 SWARM_NUM_AGENTS="${NUM_AGENTS}"
 SWARM_MODEL_SUMMARY="${state_model_summary}"
 SWARM_CONFIG_LABEL="${state_config_label}"
@@ -391,8 +391,8 @@ cmd_post_process() {
         -e "ANTHROPIC_API_KEY=${pp_resolved_api_key}" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
         -e "CLAUDE_MODEL=${pp_model}" \
-        -e "AGENT_PROMPT=${pp_prompt}" \
-        -e "AGENT_SETUP=${AGENT_SETUP:-}" \
+        -e "SWARM_PROMPT=${pp_prompt}" \
+        -e "SWARM_SETUP=${SWARM_SETUP:-}" \
         -e "MAX_IDLE=${MAX_IDLE}" \
         -e "GIT_USER_NAME=${GIT_USER_NAME}" \
         -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
@@ -401,7 +401,7 @@ cmd_post_process() {
         -e "SWARM_AUTH_MODE=${pp_auth}" \
         -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
         -e "SWARM_CFG_PROMPT=${pp_prompt}" \
-        -e "SWARM_CFG_SETUP=${AGENT_SETUP:-}" \
+        -e "SWARM_CFG_SETUP=${SWARM_SETUP:-}" \
         "$IMAGE_NAME"
 
     echo "Post-processing agent launched: ${NAME}"
