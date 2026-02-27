@@ -138,6 +138,15 @@ format_cost() {
     printf '$%.2f' "${1:-0}"
 }
 
+format_tps() {
+    local tokens=${1:-0} ms=${2:-0}
+    if [ "$ms" -le 0 ] || [ "$tokens" -le 0 ]; then
+        printf '%s' '--'
+        return
+    fi
+    printf '%.1f' "$(echo "$tokens * 1000 / $ms" | bc -l)"
+}
+
 read_agent_stats() {
     local name=$1 agent_id=$2
     local stats_file="agent_logs/stats_agent_${agent_id}.tsv"
@@ -145,14 +154,14 @@ read_agent_stats() {
     docker cp "${name}:/workspace/${stats_file}" "$tmpf" 2>/dev/null || true
     if [ ! -s "$tmpf" ]; then
         rm -f "$tmpf"
-        echo "0 0 0 0 0 0"
+        echo "0 0 0 0 0 0 0"
         return
     fi
     awk -F'\t' '{
         cost += $2; tok_in += $3; tok_out += $4;
-        cache += $5; dur += $7; turns += $9
+        cache += $5; dur += $7; api_ms += $8; turns += $9
     } END {
-        printf "%s %d %d %d %d %d\n", cost, tok_in, tok_out, cache, dur, turns
+        printf "%s %d %d %d %d %d %d\n", cost, tok_in, tok_out, cache, dur, api_ms, turns
     }' "$tmpf"
     rm -f "$tmpf"
 }
@@ -187,11 +196,11 @@ draw() {
     echo ""
 
     # Agent table header.
-    printf "  ${BOLD}%-3s %-16s %-6s %-10s %8s %9s %6s %5s %7s${RESET}\n" \
-        "#" "Model" "Auth" "Status" "Cost" "In/Out" "Cache" "Turns" "Time"
+    printf "  ${BOLD}%-3s %-16s %-6s %-10s %8s %9s %6s %5s %6s %7s${RESET}\n" \
+        "#" "Model" "Auth" "Status" "Cost" "In/Out" "Cache" "Turns" "Tok/s" "Time"
 
     local running_count=0 exited_count=0
-    local total_cost=0 total_in=0 total_out=0 total_cache=0 total_dur=0 total_turns=0
+    local total_cost=0 total_in=0 total_out=0 total_cache=0 total_dur=0 total_api_ms=0 total_turns=0
 
     for i in $(seq 1 "$NUM_AGENTS"); do
         local name="${IMAGE_NAME}-${i}"
@@ -234,20 +243,22 @@ draw() {
         fi
 
         # Read cumulative stats from the container.
-        local agent_stats a_cost a_in a_out a_cache a_dur a_turns
+        local agent_stats a_cost a_in a_out a_cache a_dur a_api_ms a_turns
         agent_stats=$(read_agent_stats "$name" "$i")
         a_cost=$(echo "$agent_stats" | awk '{print $1}')
         a_in=$(echo "$agent_stats" | awk '{print $2}')
         a_out=$(echo "$agent_stats" | awk '{print $3}')
         a_cache=$(echo "$agent_stats" | awk '{print $4}')
         a_dur=$(echo "$agent_stats" | awk '{print $5}')
-        a_turns=$(echo "$agent_stats" | awk '{print $6}')
+        a_api_ms=$(echo "$agent_stats" | awk '{print $6}')
+        a_turns=$(echo "$agent_stats" | awk '{print $7}')
 
         total_cost=$(echo "$total_cost + $a_cost" | bc)
         total_in=$((total_in + a_in))
         total_out=$((total_out + a_out))
         total_cache=$((total_cache + a_cache))
         total_dur=$((total_dur + a_dur))
+        total_api_ms=$((total_api_ms + a_api_ms))
         total_turns=$((total_turns + a_turns))
 
         local status_text status_color
@@ -273,15 +284,16 @@ draw() {
                 ;;
         esac
 
-        local cost_str in_out_str cache_str dur_str
+        local cost_str in_out_str cache_str tps_str dur_str
         cost_str=$(format_cost "$a_cost")
         in_out_str="$(format_tokens "$a_in")/$(format_tokens "$a_out")"
         cache_str=$(format_tokens "$a_cache")
+        tps_str=$(format_tps "$a_out" "$a_api_ms")
         dur_str=$(format_duration_ms "$a_dur")
 
         printf "  %-3s %-16s %-6s " "$i" "$short" "$auth_mode"
         printf "%b%-10s%b" "$status_color" "$status_text" "$RESET"
-        printf " %8s %9s %6s %5s %7s\n" "$cost_str" "$in_out_str" "$cache_str" "$a_turns" "$dur_str"
+        printf " %8s %9s %6s %5s %6s %7s\n" "$cost_str" "$in_out_str" "$cache_str" "$a_turns" "$tps_str" "$dur_str"
     done
 
     # Post-process row (if container exists).
@@ -313,19 +325,21 @@ draw() {
             pp_short="${pp_short} [${pp_eff_tag^^}]"
         fi
 
-        local pp_stats pp_cost pp_in pp_out pp_cache pp_dur pp_turns
+        local pp_stats pp_cost pp_in pp_out pp_cache pp_dur pp_api_ms pp_turns
         pp_stats=$(read_agent_stats "$pp_name" "post")
         pp_cost=$(echo "$pp_stats" | awk '{print $1}')
         pp_in=$(echo "$pp_stats" | awk '{print $2}')
         pp_out=$(echo "$pp_stats" | awk '{print $3}')
         pp_cache=$(echo "$pp_stats" | awk '{print $4}')
         pp_dur=$(echo "$pp_stats" | awk '{print $5}')
-        pp_turns=$(echo "$pp_stats" | awk '{print $6}')
+        pp_api_ms=$(echo "$pp_stats" | awk '{print $6}')
+        pp_turns=$(echo "$pp_stats" | awk '{print $7}')
 
         total_cost=$(echo "$total_cost + $pp_cost" | bc)
         total_in=$((total_in + pp_in))
         total_out=$((total_out + pp_out))
         total_dur=$((total_dur + pp_dur))
+        total_api_ms=$((total_api_ms + pp_api_ms))
         total_turns=$((total_turns + pp_turns))
 
         local pp_status_color
@@ -338,22 +352,24 @@ draw() {
         printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
         printf "  %-3s %-16s %-6s " "PP" "$pp_short" "$pp_auth_mode"
         printf "%b%-10s%b" "$pp_status_color" "$pp_state" "$RESET"
-        printf " %8s %9s %6s %5s %7s\n" \
+        printf " %8s %9s %6s %5s %6s %7s\n" \
             "$(format_cost "$pp_cost")" \
             "$(format_tokens "$pp_in")/$(format_tokens "$pp_out")" \
             "$(format_tokens "$pp_cache")" \
-            "$pp_turns" "$(format_duration_ms "$pp_dur")"
+            "$pp_turns" "$(format_tps "$pp_out" "$pp_api_ms")" \
+            "$(format_duration_ms "$pp_dur")"
     fi
 
     # Totals row.
     printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s─' $(seq 1 $((TERM_COLS - 4))))"
-    local t_cost_str t_inout_str t_cache_str t_dur_str
+    local t_cost_str t_inout_str t_cache_str t_tps_str t_dur_str
     t_cost_str=$(format_cost "$total_cost")
     t_inout_str="$(format_tokens "$total_in")/$(format_tokens "$total_out")"
     t_cache_str=$(format_tokens "$total_cache")
+    t_tps_str=$(format_tps "$total_out" "$total_api_ms")
     t_dur_str=$(format_duration_ms "$total_dur")
-    printf "  ${BOLD}%-3s %-16s %-6s %-10s %8s %9s %6s %5s %7s${RESET}\n" \
-        "" "Total" "" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" "$total_turns" "$t_dur_str"
+    printf "  ${BOLD}%-3s %-16s %-6s %-10s %8s %9s %6s %5s %6s %7s${RESET}\n" \
+        "" "Total" "" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" "$total_turns" "$t_tps_str" "$t_dur_str"
 
     echo ""
 
