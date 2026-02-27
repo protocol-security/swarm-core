@@ -12,6 +12,22 @@ SWARM_RUN_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null 
 SWARM_RUN_CONTEXT="${PROJECT}@${SWARM_RUN_HASH} (${SWARM_RUN_BRANCH})"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
+
+# Docker containers may create files owned by a different UID inside
+# bind-mounted host directories.  Plain rm -rf fails without root.
+# Use a throwaway Alpine container (Docker is already required) so
+# we never need sudo/su -c.
+rm_docker_dir() {
+    local dir="$1"
+    [ -d "$dir" ] || return 0
+    local parent base
+    parent="$(dirname "$dir")"
+    base="$(basename "$dir")"
+    docker run --rm -v "${parent}:${parent}" alpine \
+        rm -rf "${parent}/${base}" 2>/dev/null \
+        || rm -rf "$dir" 2>/dev/null || true
+}
+
 CONFIG_FILE="${SWARM_CONFIG:-}"
 if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
     CONFIG_FILE="$REPO_ROOT/swarm.json"
@@ -83,7 +99,7 @@ cmd_start() {
     fi
 
     echo "--- Creating bare repo ---"
-    rm -rf "$BARE_REPO"
+    rm_docker_dir "$BARE_REPO"
     git clone --bare "$REPO_ROOT" "$BARE_REPO"
 
     git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
