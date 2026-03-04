@@ -23,26 +23,34 @@ assert_eq() {
     fi
 }
 
-# --- Helpers: same jq expressions used in harness.sh ---
+# --- Helpers: same extraction logic used in harness.sh ---
+# The harness now uses stream-json (JSONL) output. Stats come from
+# the "result" line. For backward compat the helper also accepts
+# plain JSON (single object, no "type" field).
 
 extract_stats() {
     local logfile="$1"
+    local RESULT_LINE
+    RESULT_LINE=$(grep '"type"[[:space:]]*:[[:space:]]*"result"' "$logfile" 2>/dev/null | tail -1 || true)
+    if [ -z "$RESULT_LINE" ]; then
+        RESULT_LINE=$(cat "$logfile" 2>/dev/null || true)
+    fi
     local cost dur api_ms turns tok_in tok_out cache_rd cache_cr
-    cost=$(jq -r '.total_cost_usd // 0' "$logfile" 2>/dev/null || true)
+    cost=$(echo "$RESULT_LINE" | jq -r '.total_cost_usd // 0' 2>/dev/null || true)
     cost="${cost:-0}"
-    dur=$(jq -r '.duration_ms // 0' "$logfile" 2>/dev/null || true)
+    dur=$(echo "$RESULT_LINE" | jq -r '.duration_ms // 0' 2>/dev/null || true)
     dur="${dur:-0}"
-    api_ms=$(jq -r '.duration_api_ms // 0' "$logfile" 2>/dev/null || true)
+    api_ms=$(echo "$RESULT_LINE" | jq -r '.duration_api_ms // 0' 2>/dev/null || true)
     api_ms="${api_ms:-0}"
-    turns=$(jq -r '.num_turns // 0' "$logfile" 2>/dev/null || true)
+    turns=$(echo "$RESULT_LINE" | jq -r '.num_turns // 0' 2>/dev/null || true)
     turns="${turns:-0}"
-    tok_in=$(jq -r '.usage.input_tokens // 0' "$logfile" 2>/dev/null || true)
+    tok_in=$(echo "$RESULT_LINE" | jq -r '.usage.input_tokens // 0' 2>/dev/null || true)
     tok_in="${tok_in:-0}"
-    tok_out=$(jq -r '.usage.output_tokens // 0' "$logfile" 2>/dev/null || true)
+    tok_out=$(echo "$RESULT_LINE" | jq -r '.usage.output_tokens // 0' 2>/dev/null || true)
     tok_out="${tok_out:-0}"
-    cache_rd=$(jq -r '.usage.cache_read_input_tokens // 0' "$logfile" 2>/dev/null || true)
+    cache_rd=$(echo "$RESULT_LINE" | jq -r '.usage.cache_read_input_tokens // 0' 2>/dev/null || true)
     cache_rd="${cache_rd:-0}"
-    cache_cr=$(jq -r '.usage.cache_creation_input_tokens // 0' "$logfile" 2>/dev/null || true)
+    cache_cr=$(echo "$RESULT_LINE" | jq -r '.usage.cache_creation_input_tokens // 0' 2>/dev/null || true)
     cache_cr="${cache_cr:-0}"
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" \
         "$(date +%s)" "$cost" "$tok_in" "$tok_out" \
@@ -124,7 +132,30 @@ assert_eq "turns empty" "0" "$turns"
 
 # ============================================================
 echo ""
-echo "=== 5. TSV line format ==="
+echo "=== 5. Stream-JSON (JSONL) output parsing ==="
+
+cat > "$TMPDIR/stream.jsonl" <<'EOF'
+{"type":"system","subtype":"init","session_id":"s01","tools":["Bash","Read","Write"],"model":"claude-opus-4-6"}
+{"type":"assistant","session_id":"s01","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls -la"}}]}}
+{"type":"user","session_id":"s01","message":{"id":"msg_2","type":"message","role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"README.md\nsrc\n"}]}}
+{"type":"result","subtype":"success","session_id":"s01","total_cost_usd":0.0823,"is_error":false,"duration_ms":25000,"duration_api_ms":20000,"num_turns":4,"result":"Done.","usage":{"input_tokens":500,"output_tokens":300,"cache_read_input_tokens":80000,"cache_creation_input_tokens":2000}}
+EOF
+
+LINE=$(extract_stats "$TMPDIR/stream.jsonl")
+IFS=$'\t' read -r ts cost tok_in tok_out cache_rd cache_cr dur api_ms turns <<< "$LINE"
+
+assert_eq "jsonl cost"     "0.0823"  "$cost"
+assert_eq "jsonl tok_in"   "500"     "$tok_in"
+assert_eq "jsonl tok_out"  "300"     "$tok_out"
+assert_eq "jsonl cache_rd" "80000"   "$cache_rd"
+assert_eq "jsonl cache_cr" "2000"    "$cache_cr"
+assert_eq "jsonl dur"      "25000"   "$dur"
+assert_eq "jsonl api_ms"   "20000"   "$api_ms"
+assert_eq "jsonl turns"    "4"       "$turns"
+
+# ============================================================
+echo ""
+echo "=== 6. TSV line format ==="
 
 LINE=$(extract_stats "$TMPDIR/full.json")
 FIELD_COUNT=$(echo "$LINE" | awk -F'\t' '{print NF}')
@@ -132,7 +163,7 @@ assert_eq "9 tab-separated fields" "9" "$FIELD_COUNT"
 
 # ============================================================
 echo ""
-echo "=== 6. INJECT_GIT_RULES logic ==="
+echo "=== 7. INJECT_GIT_RULES logic ==="
 
 build_append_args() {
     local inject="$1" file_exists="$2"
@@ -150,7 +181,7 @@ assert_eq "inject=false, file=false" "0" "$(build_append_args false false)"
 
 # ============================================================
 echo ""
-echo "=== 7. Idle counter logic ==="
+echo "=== 8. Idle counter logic ==="
 
 simulate_idle() {
     local before="$1" after="$2" idle_count="$3" max_idle="$4"
@@ -173,7 +204,7 @@ assert_eq "max_idle=1 immediate"   "exit"    "$(simulate_idle abc123 abc123 0 1)
 
 # ============================================================
 echo ""
-echo "=== 8. prepare-commit-msg hook appends trailers ==="
+echo "=== 9. prepare-commit-msg hook appends trailers ==="
 
 # Mirrors the hook installed by harness.sh. Exercises it against
 # a real git repo so we test actual commit behaviour.
@@ -258,7 +289,7 @@ assert_eq "hook no duplicate" "1" "$MODEL_COUNT"
 
 # ============================================================
 echo ""
-echo "=== 9. Version string stripping ==="
+echo "=== 10. Version string stripping ==="
 
 # Mirrors the CLAUDE_VERSION="${CLAUDE_VERSION%% *}" in harness.sh.
 strip_version() { local v="$1"; echo "${v%% *}"; }
@@ -269,7 +300,7 @@ assert_eq "unknown"         "unknown" "$(strip_version 'unknown')"
 
 # ============================================================
 echo ""
-echo "=== 10. Attribution settings file ==="
+echo "=== 11. Attribution settings file ==="
 
 # Mirrors the .claude/settings.local.json written by harness.sh.
 ATTR_JSON='{"attribution":{"commit":"","pr":""}}'

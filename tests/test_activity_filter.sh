@@ -1,0 +1,185 @@
+#!/bin/bash
+# shellcheck disable=SC2034
+set -euo pipefail
+
+# Unit tests for lib/activity-filter.sh.
+# No Docker or API key required.
+
+PASS=0
+FAIL=0
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+FILTER="$TESTS_DIR/../lib/activity-filter.sh"
+
+assert_eq() {
+    local label="$1" expected="$2" actual="$3"
+    if [ "$expected" = "$actual" ]; then
+        echo "  PASS: ${label}"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: ${label}"
+        echo "        expected: ${expected}"
+        echo "        actual:   ${actual}"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_contains() {
+    local label="$1" needle="$2" haystack="$3"
+    if echo "$haystack" | grep -qF "$needle"; then
+        echo "  PASS: ${label}"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: ${label}"
+        echo "        expected to contain: ${needle}"
+        echo "        actual:              ${haystack}"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+run_filter() {
+    AGENT_ID="${1:-1}" "$FILTER" <<< "$2"
+}
+
+# ============================================================
+echo "=== 1. Bash tool use ==="
+
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"npm test"}}]}}')
+assert_eq "bash tool" "[agent:1] Shell: npm test" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 2. Read tool use ==="
+
+OUT=$(run_filter 2 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"src/main.ts"}}]}}')
+assert_eq "read tool" "[agent:2] Read src/main.ts" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 3. Write tool use ==="
+
+OUT=$(run_filter 3 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"out/result.json"}}]}}')
+assert_eq "write tool" "[agent:3] Write out/result.json" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 4. Edit tool use ==="
+
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"lib/utils.py"}}]}}')
+assert_eq "edit tool" "[agent:1] Edit lib/utils.py" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 5. Long command truncation ==="
+
+LONG_CMD="echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa very long"
+OUT=$(run_filter 1 "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{\"command\":\"$LONG_CMD\"}}]}}")
+assert_contains "truncated" "..." "$OUT"
+# The line should be at most [agent:1] Shell: (17) + 80 chars = 97
+LINE_LEN=${#OUT}
+if [ "$LINE_LEN" -le 97 ]; then
+    echo "  PASS: line length <= 97 (got ${LINE_LEN})"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: line length <= 97 (got ${LINE_LEN})"
+    FAIL=$((FAIL + 1))
+fi
+
+# ============================================================
+echo ""
+echo "=== 6. Multi-line command uses first line ==="
+
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo hello\necho world"}}]}}')
+assert_eq "first line only" "[agent:1] Shell: echo hello" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 7. Non-tool events are silent ==="
+
+OUT=$(run_filter 1 '{"type":"system","subtype":"init","session_id":"s","tools":["Bash"]}')
+assert_eq "system event silent" "" "$OUT"
+
+OUT=$(run_filter 1 '{"type":"result","subtype":"success","session_id":"s","total_cost_usd":0.01}')
+assert_eq "result event silent" "" "$OUT"
+
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"Thinking..."}]}}')
+assert_eq "text event silent" "" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 8. Multiple tool uses in one message ==="
+
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.ts"}},{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"b.ts"}}]}}')
+LINES=$(echo "$OUT" | wc -l | tr -d ' ')
+assert_eq "two lines" "2" "$LINES"
+assert_contains "first file" "Read a.ts" "$OUT"
+assert_contains "second file" "Read b.ts" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 9. Invalid JSON is silently skipped ==="
+
+OUT=$(run_filter 1 'not json at all')
+assert_eq "garbage skipped" "" "$OUT"
+
+OUT=$(run_filter 1 '{"partial": true')
+assert_eq "partial json skipped" "" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 10. Multi-line JSONL stream ==="
+
+cat > "$TMPDIR/stream.jsonl" <<'EOF'
+{"type":"system","subtype":"init","session_id":"s","tools":["Bash","Read"]}
+{"type":"assistant","session_id":"s","message":{"id":"m1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"README.md"}}]}}
+{"type":"user","session_id":"s","message":{"id":"m2","type":"message","role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"# Hello"}]}}
+{"type":"assistant","session_id":"s","message":{"id":"m3","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"make build"}}]}}
+{"type":"result","subtype":"success","session_id":"s","total_cost_usd":0.05}
+EOF
+
+OUT=$(AGENT_ID=5 "$FILTER" < "$TMPDIR/stream.jsonl")
+LINES=$(echo "$OUT" | wc -l | tr -d ' ')
+assert_eq "two activity lines" "2" "$LINES"
+assert_contains "read event" "[agent:5] Read README.md" "$OUT"
+assert_contains "shell event" "[agent:5] Shell: make build" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 11. Glob and Grep tools ==="
+
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Glob","input":{"pattern":"**/*.ts"}}]}}')
+assert_eq "glob tool" "[agent:1] Glob **/*.ts" "$OUT"
+
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Grep","input":{"pattern":"TODO"}}]}}')
+assert_eq "grep tool" "[agent:1] Grep TODO" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 12. Task tool ==="
+
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Task","input":{"description":"Fix lint errors"}}]}}')
+assert_eq "task tool" "[agent:1] Task: Fix lint errors" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 13. Unknown tool ==="
+
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"WebSearch","input":{"query":"test"}}]}}')
+assert_eq "unknown tool fallback" "[agent:1] WebSearch" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 14. Default AGENT_ID ==="
+
+OUT=$(AGENT_ID="" "$FILTER" <<< '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}')
+assert_contains "empty id uses default" "[agent:?] Shell: pwd" "$OUT"
+
+# ============================================================
+echo ""
+echo "==============================="
+echo "  ${PASS} passed, ${FAIL} failed"
+echo "==============================="
+
+[ "$FAIL" -eq 0 ]
