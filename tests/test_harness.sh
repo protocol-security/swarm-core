@@ -260,16 +260,21 @@ if ! grep -q '^Model:' "$1"; then
     cfg="$SWARM_CFG_PROMPT"
     [ -n "$SWARM_CFG_SETUP" ] && cfg="${cfg}, ${SWARM_CFG_SETUP}"
     printf '> Cfg: %s\n' "$cfg" >> "$1"
+    ctx_label="$SWARM_CONTEXT"
+    [ "$ctx_label" = "none" ] && ctx_label="bare"
+    [ "$SWARM_CONTEXT" != "full" ] && \
+        printf '> Ctx: %s\n' "$ctx_label" >> "$1" || true
 fi
 HOOK
 chmod +x "$HOOK_REPO/.git/hooks/prepare-commit-msg"
 
-# Commit with prompt + setup.
+# Commit with prompt + setup (full context = no context trailer).
 touch "$HOOK_REPO/file.txt"
 git -C "$HOOK_REPO" add file.txt
 CLAUDE_MODEL="claude-opus-4-6" CLAUDE_VERSION="1.0.32" SWARM_VERSION="0.1.0" \
     SWARM_RUN_CONTEXT="netherfuzz@a3f8c21 (main)" \
     SWARM_CFG_PROMPT="prompts/task.md" SWARM_CFG_SETUP="scripts/setup.sh" \
+    SWARM_CONTEXT="full" \
     git -C "$HOOK_REPO" commit -m "test commit" --quiet
 
 MSG=$(git -C "$HOOK_REPO" log -1 --format='%B')
@@ -285,16 +290,20 @@ assert_eq "hook run trailer" \
 assert_eq "hook cfg trailer" \
     "> Cfg: prompts/task.md, scripts/setup.sh" \
     "$(echo "$MSG" | grep '^> Cfg:')"
+assert_eq "hook no ctx trailer (full)" \
+    "0" \
+    "$(echo "$MSG" | grep -c '> Ctx:' || true)"
 assert_eq "hook subject preserved" \
     "test commit" \
     "$(echo "$MSG" | head -1)"
 
-# Second commit with different model, no setup script.
+# Second commit with bare context (context=none trailer should appear).
 echo "x" > "$HOOK_REPO/file2.txt"
 git -C "$HOOK_REPO" add file2.txt
 CLAUDE_MODEL="MiniMax-M2.5" CLAUDE_VERSION="1.0.30" SWARM_VERSION="0.1.0" \
     SWARM_RUN_CONTEXT="gethfuzz@b4e9d12 (develop)" \
     SWARM_CFG_PROMPT="prompts/fuzz.md" SWARM_CFG_SETUP="" \
+    SWARM_CONTEXT="none" \
     git -C "$HOOK_REPO" commit -m "second commit" --quiet
 
 MSG2=$(git -C "$HOOK_REPO" log -1 --format='%B')
@@ -310,6 +319,9 @@ assert_eq "hook run trailer 2" \
 assert_eq "hook cfg no setup" \
     "> Cfg: prompts/fuzz.md" \
     "$(echo "$MSG2" | grep '^> Cfg:')"
+assert_eq "hook ctx trailer (none)" \
+    "> Ctx: bare" \
+    "$(echo "$MSG2" | grep '^> Ctx:')"
 
 # Idempotent: if trailers already present, hook does not duplicate.
 echo "y" > "$HOOK_REPO/file3.txt"
@@ -317,6 +329,7 @@ git -C "$HOOK_REPO" add file3.txt
 CLAUDE_MODEL="claude-opus-4-6" CLAUDE_VERSION="1.0.32" SWARM_VERSION="0.1.0" \
     SWARM_RUN_CONTEXT="test@abc1234 (main)" \
     SWARM_CFG_PROMPT="p.md" SWARM_CFG_SETUP="" \
+    SWARM_CONTEXT="full" \
     git -C "$HOOK_REPO" commit -m "$(printf 'manual trailers\n\nModel: already-set')" --quiet
 
 MSG3=$(git -C "$HOOK_REPO" log -1 --format='%B')
