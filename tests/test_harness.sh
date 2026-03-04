@@ -23,26 +23,49 @@ assert_eq() {
     fi
 }
 
-# --- Helpers: same jq expressions used in harness.sh ---
+assert_contains() {
+    local label="$1" needle="$2" haystack="$3"
+    if echo "$haystack" | grep -qF "$needle"; then
+        echo "  PASS: ${label}"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: ${label}"
+        echo "        expected to contain: ${needle}"
+        echo "        actual:              ${haystack}"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
+
+# --- Helpers: same extraction logic used in harness.sh ---
+# The harness now uses stream-json (JSONL) output. Stats come from
+# the "result" line. For backward compat the helper also accepts
+# plain JSON (single object, no "type" field).
 
 extract_stats() {
     local logfile="$1"
+    local RESULT_LINE
+    RESULT_LINE=$(grep '"type"[[:space:]]*:[[:space:]]*"result"' "$logfile" 2>/dev/null | tail -1 || true)
+    if [ -z "$RESULT_LINE" ]; then
+        RESULT_LINE=$(cat "$logfile" 2>/dev/null || true)
+    fi
     local cost dur api_ms turns tok_in tok_out cache_rd cache_cr
-    cost=$(jq -r '.total_cost_usd // 0' "$logfile" 2>/dev/null || true)
+    cost=$(echo "$RESULT_LINE" | jq -r '.total_cost_usd // 0' 2>/dev/null || true)
     cost="${cost:-0}"
-    dur=$(jq -r '.duration_ms // 0' "$logfile" 2>/dev/null || true)
+    dur=$(echo "$RESULT_LINE" | jq -r '.duration_ms // 0' 2>/dev/null || true)
     dur="${dur:-0}"
-    api_ms=$(jq -r '.duration_api_ms // 0' "$logfile" 2>/dev/null || true)
+    api_ms=$(echo "$RESULT_LINE" | jq -r '.duration_api_ms // 0' 2>/dev/null || true)
     api_ms="${api_ms:-0}"
-    turns=$(jq -r '.num_turns // 0' "$logfile" 2>/dev/null || true)
+    turns=$(echo "$RESULT_LINE" | jq -r '.num_turns // 0' 2>/dev/null || true)
     turns="${turns:-0}"
-    tok_in=$(jq -r '.usage.input_tokens // 0' "$logfile" 2>/dev/null || true)
+    tok_in=$(echo "$RESULT_LINE" | jq -r '.usage.input_tokens // 0' 2>/dev/null || true)
     tok_in="${tok_in:-0}"
-    tok_out=$(jq -r '.usage.output_tokens // 0' "$logfile" 2>/dev/null || true)
+    tok_out=$(echo "$RESULT_LINE" | jq -r '.usage.output_tokens // 0' 2>/dev/null || true)
     tok_out="${tok_out:-0}"
-    cache_rd=$(jq -r '.usage.cache_read_input_tokens // 0' "$logfile" 2>/dev/null || true)
+    cache_rd=$(echo "$RESULT_LINE" | jq -r '.usage.cache_read_input_tokens // 0' 2>/dev/null || true)
     cache_rd="${cache_rd:-0}"
-    cache_cr=$(jq -r '.usage.cache_creation_input_tokens // 0' "$logfile" 2>/dev/null || true)
+    cache_cr=$(echo "$RESULT_LINE" | jq -r '.usage.cache_creation_input_tokens // 0' 2>/dev/null || true)
     cache_cr="${cache_cr:-0}"
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" \
         "$(date +%s)" "$cost" "$tok_in" "$tok_out" \
@@ -124,7 +147,30 @@ assert_eq "turns empty" "0" "$turns"
 
 # ============================================================
 echo ""
-echo "=== 5. TSV line format ==="
+echo "=== 5. Stream-JSON (JSONL) output parsing ==="
+
+cat > "$TMPDIR/stream.jsonl" <<'EOF'
+{"type":"system","subtype":"init","session_id":"s01","tools":["Bash","Read","Write"],"model":"claude-opus-4-6"}
+{"type":"assistant","session_id":"s01","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls -la"}}]}}
+{"type":"user","session_id":"s01","message":{"id":"msg_2","type":"message","role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"README.md\nsrc\n"}]}}
+{"type":"result","subtype":"success","session_id":"s01","total_cost_usd":0.0823,"is_error":false,"duration_ms":25000,"duration_api_ms":20000,"num_turns":4,"result":"Done.","usage":{"input_tokens":500,"output_tokens":300,"cache_read_input_tokens":80000,"cache_creation_input_tokens":2000}}
+EOF
+
+LINE=$(extract_stats "$TMPDIR/stream.jsonl")
+IFS=$'\t' read -r ts cost tok_in tok_out cache_rd cache_cr dur api_ms turns <<< "$LINE"
+
+assert_eq "jsonl cost"     "0.0823"  "$cost"
+assert_eq "jsonl tok_in"   "500"     "$tok_in"
+assert_eq "jsonl tok_out"  "300"     "$tok_out"
+assert_eq "jsonl cache_rd" "80000"   "$cache_rd"
+assert_eq "jsonl cache_cr" "2000"    "$cache_cr"
+assert_eq "jsonl dur"      "25000"   "$dur"
+assert_eq "jsonl api_ms"   "20000"   "$api_ms"
+assert_eq "jsonl turns"    "4"       "$turns"
+
+# ============================================================
+echo ""
+echo "=== 6. TSV line format ==="
 
 LINE=$(extract_stats "$TMPDIR/full.json")
 FIELD_COUNT=$(echo "$LINE" | awk -F'\t' '{print NF}')
@@ -132,7 +178,7 @@ assert_eq "9 tab-separated fields" "9" "$FIELD_COUNT"
 
 # ============================================================
 echo ""
-echo "=== 6. INJECT_GIT_RULES logic ==="
+echo "=== 7. INJECT_GIT_RULES logic ==="
 
 build_append_args() {
     local inject="$1" file_exists="$2"
@@ -150,7 +196,7 @@ assert_eq "inject=false, file=false" "0" "$(build_append_args false false)"
 
 # ============================================================
 echo ""
-echo "=== 7. Idle counter logic ==="
+echo "=== 8. Idle counter logic ==="
 
 simulate_idle() {
     local before="$1" after="$2" idle_count="$3" max_idle="$4"
@@ -173,7 +219,28 @@ assert_eq "max_idle=1 immediate"   "exit"    "$(simulate_idle abc123 abc123 0 1)
 
 # ============================================================
 echo ""
-echo "=== 8. prepare-commit-msg hook appends trailers ==="
+echo "=== 8b. Prompt file guard ==="
+
+# Mirrors the guard in harness.sh: skip session if prompt missing.
+check_prompt() {
+    local prompt_file="$1"
+    if [ ! -f "$prompt_file" ]; then
+        echo "skip"
+    else
+        echo "run"
+    fi
+}
+
+assert_eq "missing prompt skips" "skip" \
+    "$(check_prompt "$TMPDIR/nonexistent.md")"
+
+touch "$TMPDIR/exists.md"
+assert_eq "present prompt runs" "run" \
+    "$(check_prompt "$TMPDIR/exists.md")"
+
+# ============================================================
+echo ""
+echo "=== 9. prepare-commit-msg hook appends trailers ==="
 
 # Mirrors the hook installed by harness.sh. Exercises it against
 # a real git repo so we test actual commit behaviour.
@@ -258,7 +325,7 @@ assert_eq "hook no duplicate" "1" "$MODEL_COUNT"
 
 # ============================================================
 echo ""
-echo "=== 9. Version string stripping ==="
+echo "=== 10. Version string stripping ==="
 
 # Mirrors the CLAUDE_VERSION="${CLAUDE_VERSION%% *}" in harness.sh.
 strip_version() { local v="$1"; echo "${v%% *}"; }
@@ -269,7 +336,7 @@ assert_eq "unknown"         "unknown" "$(strip_version 'unknown')"
 
 # ============================================================
 echo ""
-echo "=== 10. Attribution settings file ==="
+echo "=== 11. Attribution settings file ==="
 
 # Mirrors the .claude/settings.local.json written by harness.sh.
 ATTR_JSON='{"attribution":{"commit":"","pr":""}}'
@@ -281,6 +348,75 @@ assert_eq "attr commit empty" "" \
     "$(echo "$ATTR_JSON" | jq -r '.attribution.commit')"
 assert_eq "attr pr empty" "" \
     "$(echo "$ATTR_JSON" | jq -r '.attribution.pr')"
+
+# ============================================================
+echo ""
+echo "=== 12. hlog output format ==="
+
+# Mirrors the log functions from harness.sh.
+GREEN=$'\033[32m'
+RED=$'\033[31m'
+RST=$'\033[0m'
+
+hlog() {
+    printf '%s%s harness[%s] %s%s\n' \
+        "$GREEN" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+}
+
+hlog_err() {
+    printf '%s%s harness[%s] %s%s\n' \
+        "$RED" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+}
+
+hlog_pipe() {
+    while IFS= read -r line; do
+        printf '%s%s harness[%s] %s%s\n' \
+            "$GREEN" "$(date +%H:%M:%S)" "$AGENT_ID" "$line" "$RST"
+    done
+}
+
+AGENT_ID=3
+OUT=$(hlog "test message")
+PLAIN=$(echo "$OUT" | strip_ansi)
+
+assert_contains "hlog timestamp" \
+    "$(date +%H:%M:%S)" "$PLAIN"
+assert_contains "hlog prefix" "harness[3]" "$PLAIN"
+assert_contains "hlog body" "test message" "$PLAIN"
+
+# Green wrapping.
+assert_contains "hlog green" $'\033[32m' "$OUT"
+assert_contains "hlog reset" $'\033[0m' "$OUT"
+
+# key=value style preserved.
+AGENT_ID=1
+OUT2=$(hlog "session end cost=\$0.18 in=777 out=691 turns=5 time=21s")
+PLAIN2=$(echo "$OUT2" | strip_ansi)
+assert_contains "hlog kv cost" "cost=\$0.18" "$PLAIN2"
+assert_contains "hlog kv in" "in=777" "$PLAIN2"
+assert_contains "hlog kv turns" "turns=5" "$PLAIN2"
+
+# Idle message preserves dashboard-parseable pattern.
+AGENT_ID=2
+OUT3=$(hlog "no commits (idle 1/3)")
+IDLE_MATCH=$(echo "$OUT3" | grep -o 'idle [0-9]*/[0-9]*' || true)
+assert_eq "hlog idle pattern" "idle 1/3" "$IDLE_MATCH"
+
+# hlog_err uses red.
+OUT_ERR=$(hlog_err "prompt file not found")
+assert_contains "hlog_err red" $'\033[31m' "$OUT_ERR"
+assert_contains "hlog_err reset" $'\033[0m' "$OUT_ERR"
+PLAIN_ERR=$(echo "$OUT_ERR" | strip_ansi)
+assert_contains "hlog_err body" "prompt file not found" "$PLAIN_ERR"
+
+# hlog_pipe timestamps and colors each line.
+PIPE_OUT=$(printf 'line one\nline two\n' | AGENT_ID=7 hlog_pipe)
+PIPE_PLAIN=$(echo "$PIPE_OUT" | strip_ansi)
+PIPE_LINES=$(echo "$PIPE_PLAIN" | wc -l | tr -d ' ')
+assert_eq "hlog_pipe two lines" "2" "$PIPE_LINES"
+assert_contains "hlog_pipe line1" "harness[7] line one" "$PIPE_PLAIN"
+assert_contains "hlog_pipe line2" "harness[7] line two" "$PIPE_PLAIN"
+assert_contains "hlog_pipe green" $'\033[32m' "$PIPE_OUT"
 
 # ============================================================
 echo ""

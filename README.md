@@ -47,7 +47,11 @@ Each container runs `lib/harness.sh`:
 2. Points submodule URLs at local read-only mirrors.
 3. Runs an optional setup hook (`SWARM_SETUP`).
 4. Loops: reset to `origin/agent-work`, run one Claude
-   session.
+   session with `--output-format stream-json`.
+
+Agent activity (tool calls, file edits, shell commands)
+streams to Docker logs in real time via `lib/activity-filter.sh`.
+Press `[1-9]` in the dashboard to watch what an agent is doing.
 
 Agents stop after `SWARM_MAX_IDLE` consecutive idle sessions.
 A session is one `claude` invocation. After it exits the

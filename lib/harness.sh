@@ -35,6 +35,27 @@ MAX_IDLE="${MAX_IDLE:-3}"
 INJECT_GIT_RULES="${INJECT_GIT_RULES:-true}"
 STATS_FILE="agent_logs/stats_agent_${AGENT_ID}.tsv"
 
+GREEN=$'\033[32m'
+RED=$'\033[31m'
+RST=$'\033[0m'
+
+hlog() {
+    printf '%s%s harness[%s] %s%s\n' \
+        "$GREEN" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+}
+
+hlog_err() {
+    printf '%s%s harness[%s] %s%s\n' \
+        "$RED" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+}
+
+hlog_pipe() {
+    while IFS= read -r line; do
+        printf '%s%s harness[%s] %s%s\n' \
+            "$GREEN" "$(date +%H:%M:%S)" "$AGENT_ID" "$line" "$RST"
+    done
+}
+
 GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-agent@claude-swarm.local}"
 git config --global user.name "$GIT_USER_NAME"
@@ -48,11 +69,11 @@ export SWARM_RUN_CONTEXT="${SWARM_RUN_CONTEXT:-unknown}"
 export SWARM_CFG_PROMPT="${SWARM_CFG_PROMPT:-${SWARM_PROMPT}}"
 export SWARM_CFG_SETUP="${SWARM_CFG_SETUP:-${SWARM_SETUP}}"
 
-echo "[harness:${AGENT_ID}] Starting (model=${CLAUDE_MODEL}, prompt=${SWARM_PROMPT})..."
+hlog "starting model=${CLAUDE_MODEL} prompt=${SWARM_PROMPT}"
 
 if [ ! -d "/workspace/.git" ]; then
-    echo "[harness:${AGENT_ID}] Cloning upstream to /workspace..."
-    git clone /upstream /workspace
+    hlog "cloning upstream"
+    git clone -q /upstream /workspace
     cd /workspace
 
     # Init only submodules whose mirrors were mounted into the
@@ -65,16 +86,16 @@ if [ ! -d "/workspace/.git" ]; then
             name="${name%.path}"
             if [ -d "/mirrors/${name}" ]; then
                 git config "submodule.${name}.url" "/mirrors/${name}"
-                git submodule update --init -- "$path"
+                git submodule update --init -q -- "$path"
             fi
         done
     fi
 
-    git checkout agent-work
+    git checkout -q agent-work
 
     # Run project-specific setup if provided.
     if [ -n "$SWARM_SETUP" ] && [ -f "$SWARM_SETUP" ]; then
-        echo "[harness:${AGENT_ID}] Running ${SWARM_SETUP}..."
+        hlog "running setup ${SWARM_SETUP}"
         sudo bash "$SWARM_SETUP"
     fi
 
@@ -102,7 +123,7 @@ HOOK
     chmod +x .git/hooks/prepare-commit-msg
 
     mkdir -p agent_logs
-    echo "[harness:${AGENT_ID}] Setup complete."
+    hlog "setup complete"
 fi
 
 cd /workspace
@@ -112,15 +133,21 @@ IDLE_COUNT=0
 
 while true; do
     # Reset to latest. Do not re-init submodules; setup changes would be lost.
-    git fetch origin
-    git reset --hard origin/agent-work
+    git fetch origin 2>&1 | hlog_pipe
+    git reset --hard origin/agent-work 2>&1 | hlog_pipe
 
     BEFORE=$(git rev-parse origin/agent-work)
     COMMIT=$(git rev-parse --short=6 HEAD)
     LOGFILE="agent_logs/agent_${AGENT_ID}_${COMMIT}_$(date +%s).log"
     mkdir -p agent_logs
 
-    echo "[harness:${AGENT_ID}] Starting session at ${COMMIT}..."
+    hlog "session start at=${COMMIT}"
+
+    if [ ! -f "$SWARM_PROMPT" ]; then
+        hlog_err "prompt file not found: ${SWARM_PROMPT}, skipping"
+        sleep 2
+        continue
+    fi
 
     APPEND_ARGS=()
     if [ "$INJECT_GIT_RULES" = "true" ] && [ -f /agent-system-prompt.md ]; then
@@ -131,44 +158,47 @@ while true; do
            -p "$(cat "$SWARM_PROMPT")" \
            --model "$CLAUDE_MODEL" \
            "${APPEND_ARGS[@]+"${APPEND_ARGS[@]}"}" \
-           --output-format json > "$LOGFILE" 2>"${LOGFILE}.err" || true
+           --output-format stream-json --verbose 2>"${LOGFILE}.err" \
+        | stdbuf -oL tee "$LOGFILE" \
+        | /activity-filter.sh || true
 
-    # Extract usage stats from JSON output.
-    cost=$(jq -r '.total_cost_usd // 0' "$LOGFILE" 2>/dev/null || true)
+    # Extract usage stats from the result line in the JSONL stream.
+    RESULT_LINE=$(grep '"type"[[:space:]]*:[[:space:]]*"result"' "$LOGFILE" 2>/dev/null | tail -1 || true)
+    cost=$(echo "$RESULT_LINE" | jq -r '.total_cost_usd // 0' 2>/dev/null || true)
     cost="${cost:-0}"
-    dur=$(jq -r '.duration_ms // 0' "$LOGFILE" 2>/dev/null || true)
+    dur=$(echo "$RESULT_LINE" | jq -r '.duration_ms // 0' 2>/dev/null || true)
     dur="${dur:-0}"
-    api_ms=$(jq -r '.duration_api_ms // 0' "$LOGFILE" 2>/dev/null || true)
+    api_ms=$(echo "$RESULT_LINE" | jq -r '.duration_api_ms // 0' 2>/dev/null || true)
     api_ms="${api_ms:-0}"
-    turns=$(jq -r '.num_turns // 0' "$LOGFILE" 2>/dev/null || true)
+    turns=$(echo "$RESULT_LINE" | jq -r '.num_turns // 0' 2>/dev/null || true)
     turns="${turns:-0}"
-    tok_in=$(jq -r '.usage.input_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    tok_in=$(echo "$RESULT_LINE" | jq -r '.usage.input_tokens // 0' 2>/dev/null || true)
     tok_in="${tok_in:-0}"
-    tok_out=$(jq -r '.usage.output_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    tok_out=$(echo "$RESULT_LINE" | jq -r '.usage.output_tokens // 0' 2>/dev/null || true)
     tok_out="${tok_out:-0}"
-    cache_rd=$(jq -r '.usage.cache_read_input_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    cache_rd=$(echo "$RESULT_LINE" | jq -r '.usage.cache_read_input_tokens // 0' 2>/dev/null || true)
     cache_rd="${cache_rd:-0}"
-    cache_cr=$(jq -r '.usage.cache_creation_input_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    cache_cr=$(echo "$RESULT_LINE" | jq -r '.usage.cache_creation_input_tokens // 0' 2>/dev/null || true)
     cache_cr="${cache_cr:-0}"
     mkdir -p "$(dirname "$STATS_FILE")"
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
         "$(date +%s)" "$cost" "$tok_in" "$tok_out" \
         "$cache_rd" "$cache_cr" "$dur" "$api_ms" "$turns" \
         >> "$STATS_FILE"
-    echo "[harness:${AGENT_ID}] Session cost=\$${cost} tokens=${tok_in}/${tok_out} turns=${turns} duration=${dur}ms"
+    hlog "session end cost=\$${cost} in=${tok_in} out=${tok_out} turns=${turns} time=${dur}ms"
 
-    git fetch origin
+    git fetch origin 2>&1 | hlog_pipe
     AFTER=$(git rev-parse origin/agent-work)
 
     if [ "$BEFORE" = "$AFTER" ]; then
         IDLE_COUNT=$((IDLE_COUNT + 1))
-        echo "[harness:${AGENT_ID}] No commits pushed (idle ${IDLE_COUNT}/${MAX_IDLE})."
+        hlog "no commits (idle ${IDLE_COUNT}/${MAX_IDLE})"
         if [ "$IDLE_COUNT" -ge "$MAX_IDLE" ]; then
-            echo "[harness:${AGENT_ID}] Idle limit reached, exiting."
+            hlog "idle limit reached, exiting"
             exit 0
         fi
     else
         IDLE_COUNT=0
-        echo "[harness:${AGENT_ID}] Session ended. Restarting..."
+        hlog "session end, restarting"
     fi
 done
