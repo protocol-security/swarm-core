@@ -41,13 +41,13 @@ Agent activity streams to Docker logs in real time. Press
 `[1-9]` in the dashboard (or `./launch.sh logs N`) to see
 what an agent is doing:
 
-    [harness:1] Starting session at abc123...
-    [agent:1] Read src/main.ts
-    [agent:1] Edit src/main.ts
-    [agent:1] Shell: npm test
-    [agent:1] Shell: git add -A && git commit -m "fix tests"
-    [agent:1] Shell: git push origin agent-work
-    [harness:1] Session cost=$0.12 tokens=800/644 turns=6 duration=19000ms
+    12:34:56 harness[1] session start at=abc123
+    12:35:01   agent[1] Read src/main.ts
+    12:35:03   agent[1] Edit src/main.ts
+    12:35:08   agent[1] Shell: npm test
+    12:35:12   agent[1] Shell: git add -A && git commit -m "fix tests"
+    12:35:15   agent[1] Shell: git push origin agent-work
+    12:35:18 harness[1] session end cost=$0.12 in=800 out=644 turns=6 time=19s
 
 The filter (`lib/activity-filter.sh`) parses `stream-json`
 events from the Claude CLI and prints one line per tool call.
@@ -129,6 +129,19 @@ Disable with `"inject_git_rules": false` in `swarm.json` or
 
 Stats collected per session inside each container
 (`agent_logs/stats_agent_*.tsv`), read on demand.
+
+Dashboard columns:
+
+- **Cost** — cumulative API cost in USD.
+- **In/Out** — input and output tokens.
+- **Cache** — prompt cache read tokens. Higher means the API
+  is reusing cached context instead of reprocessing it,
+  reducing cost and latency. Cache creation tokens (the
+  one-time cost of populating the cache) are recorded in
+  the TSV but not shown separately.
+- **Turns** — number of assistant turns across all sessions.
+- **Tok/s** — output tokens per second of API time.
+- **Time** — cumulative wall-clock duration.
 
 ## Cleanup
 
