@@ -24,8 +24,8 @@
 
     ./dashboard.sh
 
-Per-agent model, auth source, status, cost, tokens, cache,
-turns, and duration. Updates every 2s.
+Per-agent context mode, model, auth source, status, cost,
+tokens, cache, turns, and duration. Updates every 2s.
 
 | Key | Action |
 |-----|--------|
@@ -81,6 +81,8 @@ Integration matrix (`--all`):
 | `1-agent-effort-env` | 1 | effort via env |
 | `2-agents-effort-cfg` | 2 | effort via config |
 | `2-agents-postprocess` | 2 | + post-process |
+| `2-agents-context-bare` | 2 | 1 full + 1 bare |
+| `2-agents-context-slim` | 2 | 1 full + 1 slim |
 
 Unit tests (no Docker or API key):
 
@@ -113,6 +115,38 @@ or automatically via `./launch.sh wait`.
 The post-process agent clones the same bare repo, sees all
 commits on `agent-work`, runs its prompt, and pushes.
 
+## Context modes
+
+Motivated by [Evaluating AGENTS.md](https://arxiv.org/abs/2602.11988)
+(Gloaguen et al.), which found that repository-level context files
+can reduce agent success rates while increasing inference cost by
+over 20%. This feature enables A/B comparisons within a single
+swarm.
+
+Control how much of `.claude/` each agent group sees:
+
+| Mode | Behavior |
+|------|----------|
+| `full` | Keep `.claude/` as-is (default). |
+| `slim` | Keep only `.claude/CLAUDE.md`, strip agents/skills. |
+| `none` | Remove entire `.claude/` directory (bare agent). |
+
+Set per group in `swarm.json`:
+
+```json
+{
+  "agents": [
+    { "count": 2, "model": "claude-opus-4-6" },
+    { "count": 1, "model": "claude-opus-4-6", "context": "none" }
+  ]
+}
+```
+
+Bare agents do exploratory work unconstrained by repo context
+while other agents use skills and rules for structured output.
+Non-default modes appear in the dashboard Ctx column and in
+commit trailers (`> Ctx: bare`, `> Ctx: slim`).
+
 ## Git coordination
 
 Agents receive git rules (commit/push/rebase) via a system
@@ -132,6 +166,8 @@ Stats collected per session inside each container
 
 Dashboard columns:
 
+- **Ctx** — context mode: `bare` (no `.claude/`), `slim`
+  (only `CLAUDE.md`), or blank for full context.
 - **Cost** — cumulative API cost in USD.
 - **In/Out** — input and output tokens.
 - **Cache** — prompt cache read tokens. Higher means the API
