@@ -70,6 +70,8 @@ run_all_tests() {
             "1-agent-effort-env|1|effort-env|"
             "2-agents-effort-cfg|2|config-effort|"
             "2-agents-postprocess|2|config-pp|"
+            "2-agents-context-bare|2|config-context-none|"
+            "2-agents-context-slim|2|config-context-slim|"
         )
 
         for entry in "${cases[@]}"; do
@@ -230,6 +232,26 @@ PPPROMPT
                 '{prompt: "unused", agents: [
                     {count: 1, model: $m, auth: "apikey"},
                     {count: 1, model: $m, auth: "oauth"}
+                ]}' > "$cfg"
+            args+=(--config "$cfg")
+            ;;
+        config-context-none)
+            local cfg
+            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
+            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
+                '{prompt: "unused", agents: [
+                    {count: 1, model: $m},
+                    {count: 1, model: $m, context: "none"}
+                ]}' > "$cfg"
+            args+=(--config "$cfg")
+            ;;
+        config-context-slim)
+            local cfg
+            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
+            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
+                '{prompt: "unused", agents: [
+                    {count: 1, model: $m},
+                    {count: 1, model: $m, context: "slim"}
                 ]}' > "$cfg"
             args+=(--config "$cfg")
             ;;

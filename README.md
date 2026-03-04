@@ -72,8 +72,8 @@ with `SWARM_CONFIG=/path/to/config.json`:
   "max_idle": 3,
   "agents": [
     { "count": 2, "model": "claude-opus-4-6", "effort": "high", "auth": "apikey" },
-    { "count": 1, "model": "claude-opus-4-6", "auth": "oauth" },
-    { "count": 1, "model": "claude-sonnet-4-6", "effort": "medium" },
+    { "count": 1, "model": "claude-opus-4-6", "context": "none" },
+    { "count": 1, "model": "claude-sonnet-4-6", "effort": "medium", "context": "slim" },
     {
       "count": 3,
       "model": "openrouter/custom",
@@ -99,6 +99,7 @@ agents = sum of `count` fields. Requires `jq`.
 | Field | Values | Notes |
 |-------|--------|-------|
 | `effort` | `low`, `medium`, `high` | Adaptive reasoning depth. Opus/Sonnet 4.6+. |
+| `context` | `full`, `slim`, `none` | How much of `.claude/` to keep (default: `full`). |
 | `auth` | `apikey`, `oauth`, omit | Which credential to inject. Omit = both. |
 | `inject_git_rules` | `true`, `false` | Append git coordination rules to system prompt. |
 

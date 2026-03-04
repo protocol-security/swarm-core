@@ -42,7 +42,7 @@ parse_pp_effort()   { jq -r '.post_process.effort // empty' "$1"; }
 
 parse_agents_cfg() {
     jq -r '.agents[] | range(.count) as $i |
-        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // "")] | join("|")' "$1"
+        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // "")] | join("|")' "$1"
 }
 
 # Mirrors the per-agent credential selection in launch.sh.
@@ -104,17 +104,18 @@ EFFORT_LEVEL="medium"
 NUM_AGENTS=3
 : > "$TMPDIR/env-agents.cfg"
 for _i in $(seq 1 "$NUM_AGENTS"); do
-    printf '%s|||%s|\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
+    printf '%s|||%s||\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
 done
 
 assert_eq "line count" "3" "$(wc -l < "$TMPDIR/env-agents.cfg" | tr -d ' ')"
 
-IFS='|' read -r m u k e a < "$TMPDIR/env-agents.cfg"
+IFS='|' read -r m u k e a c < "$TMPDIR/env-agents.cfg"
 assert_eq "model"    "claude-opus-4-6" "$m"
 assert_eq "base_url" ""               "$u"
 assert_eq "api_key"  ""               "$k"
 assert_eq "effort"   "medium"         "$e"
 assert_eq "auth"     ""               "$a"
+assert_eq "context"  ""               "$c"
 
 # ============================================================
 echo ""
@@ -206,13 +207,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE4=$(echo "$CFG" | sed -n '4p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 c1 <<< "$LINE1"
 assert_eq "opus effort"  "high"   "$e1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 c2 <<< "$LINE2"
 assert_eq "sonnet effort" "medium" "$e2"
 
-IFS='|' read -r m4 u4 k4 e4 a4 <<< "$LINE4"
+IFS='|' read -r m4 u4 k4 e4 a4 c4 <<< "$LINE4"
 assert_eq "haiku effort (empty)" "" "$e4"
 
 # ============================================================
@@ -240,9 +241,9 @@ echo "=== 8. Effort env var fallback (no effort set) ==="
 
 EFFORT_LEVEL=""
 : > "$TMPDIR/env-no-effort.cfg"
-printf '%s|||%s|\n' "claude-opus-4-6" "$EFFORT_LEVEL" >> "$TMPDIR/env-no-effort.cfg"
+printf '%s|||%s||\n' "claude-opus-4-6" "$EFFORT_LEVEL" >> "$TMPDIR/env-no-effort.cfg"
 
-IFS='|' read -r m u k e a < "$TMPDIR/env-no-effort.cfg"
+IFS='|' read -r m u k e a c < "$TMPDIR/env-no-effort.cfg"
 assert_eq "no effort" "" "$e"
 
 # ============================================================
@@ -285,14 +286,14 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 c1 <<< "$LINE1"
 assert_eq "auth apikey"  "apikey"  "$a1"
 assert_eq "auth apikey model" "claude-opus-4-6" "$m1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 c2 <<< "$LINE2"
 assert_eq "auth oauth"   "oauth"   "$a2"
 
-IFS='|' read -r m3 u3 k3 e3 a3 <<< "$LINE3"
+IFS='|' read -r m3 u3 k3 e3 a3 c3 <<< "$LINE3"
 assert_eq "auth custom (empty)" "" "$a3"
 assert_eq "auth custom key" "sk-mm" "$k3"
 
@@ -323,6 +324,35 @@ RESULT=$(resolve_agent_creds "" "" "sk-global" "")
 IFS='|' read -r rk re <<< "$RESULT"
 assert_eq "no oauth: api_key set" "sk-global" "$rk"
 assert_eq "no oauth: no token"    ""           "$re"
+
+# ============================================================
+echo ""
+echo "=== 13. Context field in agent TSV ==="
+
+cat > "$TMPDIR/context.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6", "effort": "high" },
+    { "count": 1, "model": "claude-opus-4-6", "context": "none" },
+    { "count": 1, "model": "claude-sonnet-4-6", "context": "slim" }
+  ]
+}
+EOF
+
+CFG=$(parse_agents_cfg "$TMPDIR/context.json")
+LINE1=$(echo "$CFG" | sed -n '1p')
+LINE2=$(echo "$CFG" | sed -n '2p')
+LINE3=$(echo "$CFG" | sed -n '3p')
+
+IFS='|' read -r m1 u1 k1 e1 a1 c1 <<< "$LINE1"
+assert_eq "context default (empty)" "" "$c1"
+
+IFS='|' read -r m2 u2 k2 e2 a2 c2 <<< "$LINE2"
+assert_eq "context none" "none" "$c2"
+
+IFS='|' read -r m3 u3 k3 e3 a3 c3 <<< "$LINE3"
+assert_eq "context slim" "slim" "$c3"
 
 # ============================================================
 echo ""

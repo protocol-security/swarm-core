@@ -42,6 +42,14 @@
   handlers) info-level notices are acceptable.
 - `claude-lint run.sh` to check `.claude/CLAUDE.md` formatting.
 
+## Documentation
+
+- Every feature change must update relevant `.md` files
+  (README.md, USAGE.md, CLAUDE.md).
+- Check thoroughly: add new fields to tables, update
+  examples, add test cases to matrices, remove stale
+  references.
+
 ## Quality bars
 
 - Wrap to 79 chars.

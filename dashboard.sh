@@ -59,7 +59,10 @@ if [ -n "$CONFIG_FILE" ]; then
     SWARM_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
     MODEL_SUMMARY=$(jq -r \
-        '[.agents[] | "\(.count)x \(.model | split("/") | .[-1])"] | join(", ")' \
+        '[.agents[] | "\(.count)x \(.model | split("/") | .[-1])" +
+          (if .context == "none" then " ctx:bare"
+           elif .context == "slim" then " ctx:slim"
+           else "" end)] | join(", ")' \
         "$CONFIG_FILE")
     CONFIG_LABEL="$(basename "$CONFIG_FILE")"
 else
@@ -196,8 +199,8 @@ draw() {
     echo ""
 
     # Agent table header.
-    printf "  ${BOLD}%-3s %-16s %-6s %-10s %8s %9s %6s %5s %6s %7s${RESET}\n" \
-        "#" "Model" "Auth" "Status" "Cost" "In/Out" "Cache" "Turns" "Tok/s" "Time"
+    printf "  ${BOLD}%-4s %-3s %-16s %-6s %-10s %8s %9s %6s %5s %6s %7s${RESET}\n" \
+        "Ctx" "#" "Model" "Auth" "Status" "Cost" "In/Out" "Cache" "Turns" "Tok/s" "Time"
 
     local running_count=0 exited_count=0
     local total_cost=0 total_in=0 total_out=0 total_cache=0 total_dur=0 total_api_ms=0 total_turns=0
@@ -208,7 +211,7 @@ draw() {
         local state
         state=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo "not found")
 
-        local model="unknown" effort="" auth_mode=""
+        local model="unknown" effort="" auth_mode="" context_mode=""
         if [ "$state" != "not found" ]; then
             local env_dump
             env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
@@ -216,6 +219,7 @@ draw() {
             model=$(printf '%s' "$env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
             model="${model:-unknown}"
             effort=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
+            context_mode=$(printf '%s' "$env_dump" | grep '^SWARM_CONTEXT=' | head -1 | cut -d= -f2- || true)
             auth_mode=$(printf '%s' "$env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
             # Auto-detect auth source when not explicitly set.
             if [ -z "$auth_mode" ]; then
@@ -234,6 +238,11 @@ draw() {
             local eff_tag="${effort:0:1}"
             short="${short} [${eff_tag^^}]"
         fi
+        local ctx_short=""
+        case "$context_mode" in
+            none) ctx_short="bare" ;;
+            slim) ctx_short="slim" ;;
+        esac
 
         local idle_str=""
         if [ "$state" != "not found" ]; then
@@ -291,7 +300,7 @@ draw() {
         tps_str=$(format_tps "$a_out" "$a_api_ms")
         dur_str=$(format_duration_ms "$a_dur")
 
-        printf "  %-3s %-16s %-6s " "$i" "$short" "$auth_mode"
+        printf "  %-4s %-3s %-16s %-6s " "$ctx_short" "$i" "$short" "$auth_mode"
         printf "%b%-10s%b" "$status_color" "$status_text" "$RESET"
         printf " %8s %9s %6s %5s %6s %7s\n" "$cost_str" "$in_out_str" "$cache_str" "$a_turns" "$tps_str" "$dur_str"
     done
@@ -301,13 +310,14 @@ draw() {
     local pp_state
     pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || true)
     if [ -n "$pp_state" ] && [ "$pp_state" != "none" ]; then
-        local pp_model pp_effort pp_auth_mode
+        local pp_model pp_effort pp_auth_mode pp_context_mode
         local pp_env_dump
         pp_env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
             "$pp_name" 2>/dev/null || true)
         pp_model=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
         pp_model="${pp_model:-unknown}"
         pp_effort=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
+        pp_context_mode=$(printf '%s' "$pp_env_dump" | grep '^SWARM_CONTEXT=' | head -1 | cut -d= -f2- || true)
         pp_auth_mode=$(printf '%s' "$pp_env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
         if [ -z "$pp_auth_mode" ]; then
             local pp_has_apikey pp_has_oauth
@@ -324,6 +334,11 @@ draw() {
             local pp_eff_tag="${pp_effort:0:1}"
             pp_short="${pp_short} [${pp_eff_tag^^}]"
         fi
+        local pp_ctx_short=""
+        case "$pp_context_mode" in
+            none) pp_ctx_short="bare" ;;
+            slim) pp_ctx_short="slim" ;;
+        esac
 
         local pp_stats pp_cost pp_in pp_out pp_cache pp_dur pp_api_ms pp_turns
         pp_stats=$(read_agent_stats "$pp_name" "post")
@@ -350,7 +365,7 @@ draw() {
         esac
 
         printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
-        printf "  %-3s %-16s %-6s " "PP" "$pp_short" "$pp_auth_mode"
+        printf "  %-4s %-3s %-16s %-6s " "$pp_ctx_short" "PP" "$pp_short" "$pp_auth_mode"
         printf "%b%-10s%b" "$pp_status_color" "$pp_state" "$RESET"
         printf " %8s %9s %6s %5s %6s %7s\n" \
             "$(format_cost "$pp_cost")" \
@@ -368,8 +383,8 @@ draw() {
     t_cache_str=$(format_tokens "$total_cache")
     t_tps_str=$(format_tps "$total_out" "$total_api_ms")
     t_dur_str=$(format_duration_ms "$total_dur")
-    printf "  ${BOLD}%-3s %-16s %-6s %-10s %8s %9s %6s %5s %6s %7s${RESET}\n" \
-        "" "Total" "" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" "$total_turns" "$t_tps_str" "$t_dur_str"
+    printf "  ${BOLD}%-4s %-3s %-16s %-6s %-10s %8s %9s %6s %5s %6s %7s${RESET}\n" \
+        "" "" "Total" "" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" "$total_turns" "$t_tps_str" "$t_dur_str"
 
     echo ""
 

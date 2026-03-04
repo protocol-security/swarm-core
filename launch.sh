@@ -126,17 +126,17 @@ cmd_start() {
         echo "-v ${mirror}:/mirrors/${name}:ro"
     done > "/tmp/${PROJECT}-mirror-vols.txt"
 
-    # Build per-agent config (model|base_url|api_key|effort|auth per line).
+    # Build per-agent config (model|base_url|api_key|effort|auth|context per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
     AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
     if [ -n "$CONFIG_FILE" ]; then
         jq -r '.agents[] | range(.count) as $i |
-            [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // "")] | join("|")' \
+            [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // "")] | join("|")' \
             "$CONFIG_FILE" > "$AGENTS_CFG"
     else
         : > "$AGENTS_CFG"
         for _i in $(seq 1 "$NUM_AGENTS"); do
-            printf '%s|||%s|\n' "$CLAUDE_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
+            printf '%s|||%s||\n' "$CLAUDE_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
         done
     fi
 
@@ -148,12 +148,15 @@ cmd_start() {
     done < "/tmp/${PROJECT}-mirror-vols.txt"
 
     AGENT_IDX=0
-    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth; do
+    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context; do
         AGENT_IDX=$((AGENT_IDX + 1))
         NAME="${IMAGE_NAME}-${AGENT_IDX}"
         docker rm -f "$NAME" 2>/dev/null || true
+        agent_context="${agent_context:-full}"
 
-        echo "--- Launching ${NAME} (${agent_model}${agent_effort:+ effort=${agent_effort}}${agent_auth:+ auth=${agent_auth}}) ---"
+        local ctx_label=""
+        [ "$agent_context" != "full" ] && ctx_label=" context=${agent_context}"
+        echo "--- Launching ${NAME} (${agent_model}${agent_effort:+ effort=${agent_effort}}${agent_auth:+ auth=${agent_auth}}${ctx_label}) ---"
         EXTRA_ENV=()
         if [ -n "$agent_base_url" ]; then
             EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${agent_base_url}")
@@ -205,6 +208,7 @@ cmd_start() {
             -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
             -e "AGENT_ID=${AGENT_IDX}" \
             -e "SWARM_AUTH_MODE=${agent_auth}" \
+            -e "SWARM_CONTEXT=${agent_context}" \
             -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
             -e "SWARM_CFG_PROMPT=${SWARM_PROMPT}" \
             -e "SWARM_CFG_SETUP=${SWARM_SETUP}" \
@@ -217,7 +221,10 @@ cmd_start() {
     local state_model_summary state_config_label
     if [ -n "$CONFIG_FILE" ]; then
         state_model_summary=$(jq -r \
-            '[.agents[] | "\(.count)x \(.model | split("/") | .[-1])"] | join(", ")' \
+            '[.agents[] | "\(.count)x \(.model | split("/") | .[-1])" +
+              (if .context == "none" then " ctx:bare"
+               elif .context == "slim" then " ctx:slim"
+               else "" end)] | join(", ")' \
             "$CONFIG_FILE")
         state_config_label=$(basename "$CONFIG_FILE")
     else
