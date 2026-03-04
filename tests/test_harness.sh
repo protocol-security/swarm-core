@@ -23,6 +23,21 @@ assert_eq() {
     fi
 }
 
+assert_contains() {
+    local label="$1" needle="$2" haystack="$3"
+    if echo "$haystack" | grep -qF "$needle"; then
+        echo "  PASS: ${label}"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: ${label}"
+        echo "        expected to contain: ${needle}"
+        echo "        actual:              ${haystack}"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
+
 # --- Helpers: same extraction logic used in harness.sh ---
 # The harness now uses stream-json (JSONL) output. Stats come from
 # the "result" line. For backward compat the helper also accepts
@@ -312,6 +327,45 @@ assert_eq "attr commit empty" "" \
     "$(echo "$ATTR_JSON" | jq -r '.attribution.commit')"
 assert_eq "attr pr empty" "" \
     "$(echo "$ATTR_JSON" | jq -r '.attribution.pr')"
+
+# ============================================================
+echo ""
+echo "=== 12. hlog output format ==="
+
+# Mirrors the hlog() function from harness.sh.
+DIM=$'\033[2m'
+RST=$'\033[0m'
+hlog() {
+    printf '%s%s harness[%s] %s%s\n' \
+        "$DIM" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+}
+
+AGENT_ID=3
+OUT=$(hlog "test message")
+PLAIN=$(echo "$OUT" | strip_ansi)
+
+assert_contains "hlog timestamp" \
+    "$(date +%H:%M:%S)" "$PLAIN"
+assert_contains "hlog prefix" "harness[3]" "$PLAIN"
+assert_contains "hlog body" "test message" "$PLAIN"
+
+# DIM/RST wrapping.
+assert_contains "hlog starts with DIM" $'\033[2m' "$OUT"
+assert_contains "hlog ends with RST" $'\033[0m' "$OUT"
+
+# key=value style preserved.
+AGENT_ID=1
+OUT2=$(hlog "session end cost=\$0.18 in=777 out=691 turns=5 time=21s")
+PLAIN2=$(echo "$OUT2" | strip_ansi)
+assert_contains "hlog kv cost" "cost=\$0.18" "$PLAIN2"
+assert_contains "hlog kv in" "in=777" "$PLAIN2"
+assert_contains "hlog kv turns" "turns=5" "$PLAIN2"
+
+# Idle message preserves dashboard-parseable pattern.
+AGENT_ID=2
+OUT3=$(hlog "no commits (idle 1/3)")
+IDLE_MATCH=$(echo "$OUT3" | grep -o 'idle [0-9]*/[0-9]*' || true)
+assert_eq "hlog idle pattern" "idle 1/3" "$IDLE_MATCH"
 
 # ============================================================
 echo ""

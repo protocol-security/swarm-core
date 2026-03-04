@@ -35,6 +35,14 @@ MAX_IDLE="${MAX_IDLE:-3}"
 INJECT_GIT_RULES="${INJECT_GIT_RULES:-true}"
 STATS_FILE="agent_logs/stats_agent_${AGENT_ID}.tsv"
 
+DIM=$'\033[2m'
+RST=$'\033[0m'
+
+hlog() {
+    printf '%s%s harness[%s] %s%s\n' \
+        "$DIM" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+}
+
 GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-agent@claude-swarm.local}"
 git config --global user.name "$GIT_USER_NAME"
@@ -48,10 +56,10 @@ export SWARM_RUN_CONTEXT="${SWARM_RUN_CONTEXT:-unknown}"
 export SWARM_CFG_PROMPT="${SWARM_CFG_PROMPT:-${SWARM_PROMPT}}"
 export SWARM_CFG_SETUP="${SWARM_CFG_SETUP:-${SWARM_SETUP}}"
 
-echo "[harness:${AGENT_ID}] Starting (model=${CLAUDE_MODEL}, prompt=${SWARM_PROMPT})..."
+hlog "starting model=${CLAUDE_MODEL} prompt=${SWARM_PROMPT}"
 
 if [ ! -d "/workspace/.git" ]; then
-    echo "[harness:${AGENT_ID}] Cloning upstream to /workspace..."
+    hlog "cloning upstream"
     git clone /upstream /workspace
     cd /workspace
 
@@ -74,7 +82,7 @@ if [ ! -d "/workspace/.git" ]; then
 
     # Run project-specific setup if provided.
     if [ -n "$SWARM_SETUP" ] && [ -f "$SWARM_SETUP" ]; then
-        echo "[harness:${AGENT_ID}] Running ${SWARM_SETUP}..."
+        hlog "running setup ${SWARM_SETUP}"
         sudo bash "$SWARM_SETUP"
     fi
 
@@ -102,7 +110,7 @@ HOOK
     chmod +x .git/hooks/prepare-commit-msg
 
     mkdir -p agent_logs
-    echo "[harness:${AGENT_ID}] Setup complete."
+    hlog "setup complete"
 fi
 
 cd /workspace
@@ -120,7 +128,7 @@ while true; do
     LOGFILE="agent_logs/agent_${AGENT_ID}_${COMMIT}_$(date +%s).log"
     mkdir -p agent_logs
 
-    echo "[harness:${AGENT_ID}] Starting session at ${COMMIT}..."
+    hlog "session start at=${COMMIT}"
 
     APPEND_ARGS=()
     if [ "$INJECT_GIT_RULES" = "true" ] && [ -f /agent-system-prompt.md ]; then
@@ -158,20 +166,20 @@ while true; do
         "$(date +%s)" "$cost" "$tok_in" "$tok_out" \
         "$cache_rd" "$cache_cr" "$dur" "$api_ms" "$turns" \
         >> "$STATS_FILE"
-    echo "[harness:${AGENT_ID}] Session cost=\$${cost} tokens=${tok_in}/${tok_out} turns=${turns} duration=${dur}ms"
+    hlog "session end cost=\$${cost} in=${tok_in} out=${tok_out} turns=${turns} time=${dur}ms"
 
     git fetch origin
     AFTER=$(git rev-parse origin/agent-work)
 
     if [ "$BEFORE" = "$AFTER" ]; then
         IDLE_COUNT=$((IDLE_COUNT + 1))
-        echo "[harness:${AGENT_ID}] No commits pushed (idle ${IDLE_COUNT}/${MAX_IDLE})."
+        hlog "no commits (idle ${IDLE_COUNT}/${MAX_IDLE})"
         if [ "$IDLE_COUNT" -ge "$MAX_IDLE" ]; then
-            echo "[harness:${AGENT_ID}] Idle limit reached, exiting."
+            hlog "idle limit reached, exiting"
             exit 0
         fi
     else
         IDLE_COUNT=0
-        echo "[harness:${AGENT_ID}] Session ended. Restarting..."
+        hlog "session end, restarting"
     fi
 done
