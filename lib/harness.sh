@@ -127,6 +127,12 @@ while true; do
 
     hlog "session start at=${COMMIT}"
 
+    if [ ! -f "$SWARM_PROMPT" ]; then
+        hlog "prompt file not found: ${SWARM_PROMPT}, skipping"
+        sleep 2
+        continue
+    fi
+
     APPEND_ARGS=()
     if [ "$INJECT_GIT_RULES" = "true" ] && [ -f /agent-system-prompt.md ]; then
         APPEND_ARGS+=(--append-system-prompt-file /agent-system-prompt.md)

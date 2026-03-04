@@ -219,6 +219,27 @@ assert_eq "max_idle=1 immediate"   "exit"    "$(simulate_idle abc123 abc123 0 1)
 
 # ============================================================
 echo ""
+echo "=== 8b. Prompt file guard ==="
+
+# Mirrors the guard in harness.sh: skip session if prompt missing.
+check_prompt() {
+    local prompt_file="$1"
+    if [ ! -f "$prompt_file" ]; then
+        echo "skip"
+    else
+        echo "run"
+    fi
+}
+
+assert_eq "missing prompt skips" "skip" \
+    "$(check_prompt "$TMPDIR/nonexistent.md")"
+
+touch "$TMPDIR/exists.md"
+assert_eq "present prompt runs" "run" \
+    "$(check_prompt "$TMPDIR/exists.md")"
+
+# ============================================================
+echo ""
 echo "=== 9. prepare-commit-msg hook appends trailers ==="
 
 # Mirrors the hook installed by harness.sh. Exercises it against
