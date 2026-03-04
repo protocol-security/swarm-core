@@ -35,9 +35,25 @@ MAX_IDLE="${MAX_IDLE:-3}"
 INJECT_GIT_RULES="${INJECT_GIT_RULES:-true}"
 STATS_FILE="agent_logs/stats_agent_${AGENT_ID}.tsv"
 
+GREEN=$'\033[32m'
+RED=$'\033[31m'
+RST=$'\033[0m'
+
 hlog() {
-    printf '%s harness[%s] %s\n' \
-        "$(date +%H:%M:%S)" "$AGENT_ID" "$*"
+    printf '%s%s harness[%s] %s%s\n' \
+        "$GREEN" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+}
+
+hlog_err() {
+    printf '%s%s harness[%s] %s%s\n' \
+        "$RED" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+}
+
+hlog_pipe() {
+    while IFS= read -r line; do
+        printf '%s%s harness[%s] %s%s\n' \
+            "$GREEN" "$(date +%H:%M:%S)" "$AGENT_ID" "$line" "$RST"
+    done
 }
 
 GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"
@@ -117,8 +133,8 @@ IDLE_COUNT=0
 
 while true; do
     # Reset to latest. Do not re-init submodules; setup changes would be lost.
-    git fetch origin
-    git reset --hard origin/agent-work
+    git fetch origin 2>&1 | hlog_pipe
+    git reset --hard origin/agent-work 2>&1 | hlog_pipe
 
     BEFORE=$(git rev-parse origin/agent-work)
     COMMIT=$(git rev-parse --short=6 HEAD)
@@ -128,7 +144,7 @@ while true; do
     hlog "session start at=${COMMIT}"
 
     if [ ! -f "$SWARM_PROMPT" ]; then
-        hlog "prompt file not found: ${SWARM_PROMPT}, skipping"
+        hlog_err "prompt file not found: ${SWARM_PROMPT}, skipping"
         sleep 2
         continue
     fi
@@ -171,7 +187,7 @@ while true; do
         >> "$STATS_FILE"
     hlog "session end cost=\$${cost} in=${tok_in} out=${tok_out} turns=${turns} time=${dur}ms"
 
-    git fetch origin
+    git fetch origin 2>&1 | hlog_pipe
     AFTER=$(git rev-parse origin/agent-work)
 
     if [ "$BEFORE" = "$AFTER" ]; then

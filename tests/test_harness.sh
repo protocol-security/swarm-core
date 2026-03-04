@@ -353,32 +353,70 @@ assert_eq "attr pr empty" "" \
 echo ""
 echo "=== 12. hlog output format ==="
 
-# Mirrors the hlog() function from harness.sh.
+# Mirrors the log functions from harness.sh.
+GREEN=$'\033[32m'
+RED=$'\033[31m'
+RST=$'\033[0m'
+
 hlog() {
-    printf '%s harness[%s] %s\n' \
-        "$(date +%H:%M:%S)" "$AGENT_ID" "$*"
+    printf '%s%s harness[%s] %s%s\n' \
+        "$GREEN" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+}
+
+hlog_err() {
+    printf '%s%s harness[%s] %s%s\n' \
+        "$RED" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+}
+
+hlog_pipe() {
+    while IFS= read -r line; do
+        printf '%s%s harness[%s] %s%s\n' \
+            "$GREEN" "$(date +%H:%M:%S)" "$AGENT_ID" "$line" "$RST"
+    done
 }
 
 AGENT_ID=3
 OUT=$(hlog "test message")
+PLAIN=$(echo "$OUT" | strip_ansi)
 
 assert_contains "hlog timestamp" \
-    "$(date +%H:%M:%S)" "$OUT"
-assert_contains "hlog prefix" "harness[3]" "$OUT"
-assert_contains "hlog body" "test message" "$OUT"
+    "$(date +%H:%M:%S)" "$PLAIN"
+assert_contains "hlog prefix" "harness[3]" "$PLAIN"
+assert_contains "hlog body" "test message" "$PLAIN"
+
+# Green wrapping.
+assert_contains "hlog green" $'\033[32m' "$OUT"
+assert_contains "hlog reset" $'\033[0m' "$OUT"
 
 # key=value style preserved.
 AGENT_ID=1
 OUT2=$(hlog "session end cost=\$0.18 in=777 out=691 turns=5 time=21s")
-assert_contains "hlog kv cost" "cost=\$0.18" "$OUT2"
-assert_contains "hlog kv in" "in=777" "$OUT2"
-assert_contains "hlog kv turns" "turns=5" "$OUT2"
+PLAIN2=$(echo "$OUT2" | strip_ansi)
+assert_contains "hlog kv cost" "cost=\$0.18" "$PLAIN2"
+assert_contains "hlog kv in" "in=777" "$PLAIN2"
+assert_contains "hlog kv turns" "turns=5" "$PLAIN2"
 
 # Idle message preserves dashboard-parseable pattern.
 AGENT_ID=2
 OUT3=$(hlog "no commits (idle 1/3)")
 IDLE_MATCH=$(echo "$OUT3" | grep -o 'idle [0-9]*/[0-9]*' || true)
 assert_eq "hlog idle pattern" "idle 1/3" "$IDLE_MATCH"
+
+# hlog_err uses red.
+OUT_ERR=$(hlog_err "prompt file not found")
+assert_contains "hlog_err red" $'\033[31m' "$OUT_ERR"
+assert_contains "hlog_err reset" $'\033[0m' "$OUT_ERR"
+PLAIN_ERR=$(echo "$OUT_ERR" | strip_ansi)
+assert_contains "hlog_err body" "prompt file not found" "$PLAIN_ERR"
+
+# hlog_pipe timestamps and colors each line.
+PIPE_OUT=$(printf 'line one\nline two\n' | AGENT_ID=7 hlog_pipe)
+PIPE_PLAIN=$(echo "$PIPE_OUT" | strip_ansi)
+PIPE_LINES=$(echo "$PIPE_PLAIN" | wc -l | tr -d ' ')
+assert_eq "hlog_pipe two lines" "2" "$PIPE_LINES"
+assert_contains "hlog_pipe line1" "harness[7] line one" "$PIPE_PLAIN"
+assert_contains "hlog_pipe line2" "harness[7] line two" "$PIPE_PLAIN"
+assert_contains "hlog_pipe green" $'\033[32m' "$PIPE_OUT"
 
 # ============================================================
 echo ""
