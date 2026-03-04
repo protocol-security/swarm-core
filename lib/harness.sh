@@ -120,8 +120,8 @@ IDLE_COUNT=0
 
 while true; do
     # Reset to latest. Do not re-init submodules; setup changes would be lost.
-    git fetch -q origin
-    git reset --hard -q origin/agent-work
+    git fetch origin
+    git reset --hard origin/agent-work
 
     BEFORE=$(git rev-parse origin/agent-work)
     COMMIT=$(git rev-parse --short=6 HEAD)
@@ -168,7 +168,7 @@ while true; do
         >> "$STATS_FILE"
     hlog "session end cost=\$${cost} in=${tok_in} out=${tok_out} turns=${turns} time=${dur}ms"
 
-    git fetch -q origin
+    git fetch origin
     AFTER=$(git rev-parse origin/agent-work)
 
     if [ "$BEFORE" = "$AFTER" ]; then
