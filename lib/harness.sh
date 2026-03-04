@@ -35,12 +35,9 @@ MAX_IDLE="${MAX_IDLE:-3}"
 INJECT_GIT_RULES="${INJECT_GIT_RULES:-true}"
 STATS_FILE="agent_logs/stats_agent_${AGENT_ID}.tsv"
 
-DIM=$'\033[2m'
-RST=$'\033[0m'
-
 hlog() {
-    printf '%s%s harness[%s] %s%s\n' \
-        "$DIM" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+    printf '%s harness[%s] %s\n' \
+        "$(date +%H:%M:%S)" "$AGENT_ID" "$*"
 }
 
 GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"

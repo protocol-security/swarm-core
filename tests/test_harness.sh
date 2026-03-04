@@ -333,33 +333,25 @@ echo ""
 echo "=== 12. hlog output format ==="
 
 # Mirrors the hlog() function from harness.sh.
-DIM=$'\033[2m'
-RST=$'\033[0m'
 hlog() {
-    printf '%s%s harness[%s] %s%s\n' \
-        "$DIM" "$(date +%H:%M:%S)" "$AGENT_ID" "$*" "$RST"
+    printf '%s harness[%s] %s\n' \
+        "$(date +%H:%M:%S)" "$AGENT_ID" "$*"
 }
 
 AGENT_ID=3
 OUT=$(hlog "test message")
-PLAIN=$(echo "$OUT" | strip_ansi)
 
 assert_contains "hlog timestamp" \
-    "$(date +%H:%M:%S)" "$PLAIN"
-assert_contains "hlog prefix" "harness[3]" "$PLAIN"
-assert_contains "hlog body" "test message" "$PLAIN"
-
-# DIM/RST wrapping.
-assert_contains "hlog starts with DIM" $'\033[2m' "$OUT"
-assert_contains "hlog ends with RST" $'\033[0m' "$OUT"
+    "$(date +%H:%M:%S)" "$OUT"
+assert_contains "hlog prefix" "harness[3]" "$OUT"
+assert_contains "hlog body" "test message" "$OUT"
 
 # key=value style preserved.
 AGENT_ID=1
 OUT2=$(hlog "session end cost=\$0.18 in=777 out=691 turns=5 time=21s")
-PLAIN2=$(echo "$OUT2" | strip_ansi)
-assert_contains "hlog kv cost" "cost=\$0.18" "$PLAIN2"
-assert_contains "hlog kv in" "in=777" "$PLAIN2"
-assert_contains "hlog kv turns" "turns=5" "$PLAIN2"
+assert_contains "hlog kv cost" "cost=\$0.18" "$OUT2"
+assert_contains "hlog kv in" "in=777" "$OUT2"
+assert_contains "hlog kv turns" "turns=5" "$OUT2"
 
 # Idle message preserves dashboard-parseable pattern.
 AGENT_ID=2
