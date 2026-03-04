@@ -7,11 +7,11 @@ set -euo pipefail
 #   claude ... --output-format stream-json | tee "$LOG" | activity-filter.sh
 #
 # Each tool_use content block becomes one line:
-#   12:34:56 agent[1] Read src/main.ts
-#   12:34:57 agent[1] Write src/main.ts
-#   12:34:58 agent[1] Edit src/main.ts
-#   12:35:01 agent[1] Shell: npm test
-#   12:35:02 agent[1] Glob *.ts
+#   12:34:56   agent[1] Read src/main.ts
+#   12:34:57   agent[1] Write src/main.ts
+#   12:34:58   agent[1] Edit src/main.ts
+#   12:35:01   agent[1] Shell: npm test
+#   12:35:02   agent[1] Glob *.ts
 #
 # Uses a single jq invocation for efficiency (no per-line fork).
 
@@ -28,7 +28,7 @@ exec jq --unbuffered --raw-input --arg id "$AGENT_ID" -r '
     now | strftime("%H:%M:%S");
 
   def prefix:
-    "\(ts) agent[\($id)]";
+    "\(ts)   agent[\($id)]";
 
   fromjson? // empty |
   select(.type == "assistant") |

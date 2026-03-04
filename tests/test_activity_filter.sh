@@ -39,7 +39,7 @@ assert_contains() {
     fi
 }
 
-strip_ts() { sed 's/^[0-9][0-9]:[0-9][0-9]:[0-9][0-9] //'; }
+strip_ts() { sed 's/^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]   //'; }
 
 run_filter_raw() {
     AGENT_ID="${1:-1}" "$FILTER" <<< "$2"
@@ -197,6 +197,11 @@ else
     FAIL=$((FAIL + 1))
 fi
 assert_contains "ts prefix format" "agent[1]" "$RAW"
+
+# Verify 2-space padding aligns agent with harness (10 chars each).
+AFTER_TS="${RAW#????????}"
+PAD_SPACES="${AFTER_TS%%agent*}"
+assert_eq "agent padded 3 spaces" "   " "$PAD_SPACES"
 
 # ============================================================
 echo ""
