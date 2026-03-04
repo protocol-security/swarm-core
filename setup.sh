@@ -165,6 +165,11 @@ while true; do
         *) echo "  WARNING: unknown context '${CONTEXT}', skipping." ;;
     esac
 
+    GPROMPT=$(input "Custom prompt for this group (blank for default)" "")
+    if [ -n "$GPROMPT" ]; then
+        AGENT_OBJ+=", \"prompt\": \"${GPROMPT}\""
+    fi
+
     if yesno "Custom endpoint for this group (e.g. OpenRouter)?"; then
         BASE_URL=$(input "Base URL" "https://openrouter.ai/api/v1")
         GROUP_KEY=$(password "API key for this endpoint")
