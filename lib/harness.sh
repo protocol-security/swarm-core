@@ -131,7 +131,7 @@ while true; do
            -p "$(cat "$SWARM_PROMPT")" \
            --model "$CLAUDE_MODEL" \
            "${APPEND_ARGS[@]+"${APPEND_ARGS[@]}"}" \
-           --output-format stream-json 2>"${LOGFILE}.err" \
+           --output-format stream-json --verbose 2>"${LOGFILE}.err" \
         | stdbuf -oL tee "$LOGFILE" \
         | /activity-filter.sh || true
 
