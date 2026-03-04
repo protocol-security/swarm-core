@@ -72,6 +72,7 @@ run_all_tests() {
             "2-agents-postprocess|2|config-pp|"
             "2-agents-context-bare|2|config-context-none|"
             "2-agents-context-slim|2|config-context-slim|"
+            "2-agents-per-prompt|2|config-per-prompt|"
         )
 
         for entry in "${cases[@]}"; do
@@ -252,6 +253,18 @@ PPPROMPT
                 '{prompt: "unused", agents: [
                     {count: 1, model: $m},
                     {count: 1, model: $m, context: "slim"}
+                ]}' > "$cfg"
+            args+=(--config "$cfg")
+            ;;
+        config-per-prompt)
+            local cfg alt_prompt
+            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
+            alt_prompt=".claude-swarm-smoke-alt.md"
+            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
+                --arg ap "$alt_prompt" \
+                '{prompt: "unused", agents: [
+                    {count: 1, model: $m},
+                    {count: 1, model: $m, prompt: $ap}
                 ]}' > "$cfg"
             args+=(--config "$cfg")
             ;;
@@ -528,6 +541,10 @@ SETUP
 # check passes. Files are injected into the bare repo after launch.
 write_prompt "$REPO_ROOT"
 
+# Alt prompt for per-group prompt tests (same content, different name).
+ALT_PROMPT_FILE=".claude-swarm-smoke-alt.md"
+cp "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$ALT_PROMPT_FILE"
+
 TEMP_CONFIG=""
 if [ -n "$CONFIG_FILE" ]; then
     TEMP_CONFIG=$(mktemp "/tmp/${PROJECT}-test-config.XXXXXX.json")
@@ -560,7 +577,8 @@ cleanup() {
     fi
     rm -rf "$REVIEW_DIR" "$INJECT_DIR"
     rm_docker_dir "/tmp/${PROJECT}-upstream.git"
-    rm -f "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$SETUP_FILE"
+    rm -f "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$SETUP_FILE" \
+        "$REPO_ROOT/$ALT_PROMPT_FILE"
 }
 trap cleanup EXIT
 
@@ -600,7 +618,8 @@ git clone --quiet "$BARE_REPO" "$INJECT_DIR"
 cd "$INJECT_DIR"
 git checkout --quiet agent-work
 write_prompt "$INJECT_DIR"
-git add "$PROMPT_FILE" "$SETUP_FILE"
+cp "$INJECT_DIR/$PROMPT_FILE" "$INJECT_DIR/$ALT_PROMPT_FILE"
+git add "$PROMPT_FILE" "$SETUP_FILE" "$ALT_PROMPT_FILE"
 git -c user.name="test" -c user.email="test@test" \
     commit --quiet -m "tmp: smoke test prompt"
 git push --quiet origin agent-work
@@ -608,7 +627,8 @@ rm -rf "$INJECT_DIR"
 cd "$REPO_ROOT"
 
 # Clean uncommitted files from working tree.
-rm -f "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$SETUP_FILE"
+rm -f "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$SETUP_FILE" \
+    "$REPO_ROOT/$ALT_PROMPT_FILE"
 
 echo ""
 echo "--- Waiting for agents (timeout ${TIMEOUT}s) ---"
