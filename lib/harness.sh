@@ -23,6 +23,7 @@ Optional environment:
   SWARM_SETUP    Setup script to run before first session.
   MAX_IDLE       Idle sessions before exit (default: 3).
   INJECT_GIT_RULES  Inject git coordination rules (default: true).
+  SWARM_CONTEXT  Context mode: full (default), slim, or none.
 HELP
     exit 0
 fi
@@ -33,6 +34,7 @@ SWARM_PROMPT="${SWARM_PROMPT:?SWARM_PROMPT is required.}"
 SWARM_SETUP="${SWARM_SETUP:-}"
 MAX_IDLE="${MAX_IDLE:-3}"
 INJECT_GIT_RULES="${INJECT_GIT_RULES:-true}"
+SWARM_CONTEXT="${SWARM_CONTEXT:-full}"
 STATS_FILE="agent_logs/stats_agent_${AGENT_ID}.tsv"
 
 GREEN=$'\033[32m'
@@ -69,7 +71,7 @@ export SWARM_RUN_CONTEXT="${SWARM_RUN_CONTEXT:-unknown}"
 export SWARM_CFG_PROMPT="${SWARM_CFG_PROMPT:-${SWARM_PROMPT}}"
 export SWARM_CFG_SETUP="${SWARM_CFG_SETUP:-${SWARM_SETUP}}"
 
-hlog "starting model=${CLAUDE_MODEL} prompt=${SWARM_PROMPT}"
+hlog "starting model=${CLAUDE_MODEL} prompt=${SWARM_PROMPT} context=${SWARM_CONTEXT}"
 
 if [ ! -d "/workspace/.git" ]; then
     hlog "cloning upstream"
@@ -92,6 +94,22 @@ if [ ! -d "/workspace/.git" ]; then
     fi
 
     git checkout -q agent-work
+
+    # Strip .claude context per the context mode setting.
+    # See: "Evaluating AGENTS.md" (arXiv:2602.11988) for motivation.
+    if [ -d .claude ]; then
+        case "$SWARM_CONTEXT" in
+            none)
+                hlog "context=none: removing .claude/"
+                rm -rf .claude
+                ;;
+            slim)
+                hlog "context=slim: keeping only .claude/CLAUDE.md"
+                find .claude -mindepth 1 -maxdepth 1 ! -name CLAUDE.md \
+                    -exec rm -rf {} +
+                ;;
+        esac
+    fi
 
     # Run project-specific setup if provided.
     if [ -n "$SWARM_SETUP" ] && [ -f "$SWARM_SETUP" ]; then
@@ -118,6 +136,10 @@ if ! grep -q '^Model:' "$1"; then
     cfg="$SWARM_CFG_PROMPT"
     [ -n "$SWARM_CFG_SETUP" ] && cfg="${cfg}, ${SWARM_CFG_SETUP}"
     printf '> Cfg: %s\n' "$cfg" >> "$1"
+    ctx_label="$SWARM_CONTEXT"
+    [ "$ctx_label" = "none" ] && ctx_label="bare"
+    [ "$SWARM_CONTEXT" != "full" ] && \
+        printf '> Ctx: %s\n' "$ctx_label" >> "$1" || true
 fi
 HOOK
     chmod +x .git/hooks/prepare-commit-msg
