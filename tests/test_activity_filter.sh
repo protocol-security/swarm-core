@@ -39,36 +39,42 @@ assert_contains() {
     fi
 }
 
-run_filter() {
+strip_ts() { sed 's/^[0-9][0-9]:[0-9][0-9]:[0-9][0-9] //'; }
+
+run_filter_raw() {
     AGENT_ID="${1:-1}" "$FILTER" <<< "$2"
+}
+
+run_filter() {
+    run_filter_raw "$@" | strip_ts
 }
 
 # ============================================================
 echo "=== 1. Bash tool use ==="
 
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"npm test"}}]}}')
-assert_eq "bash tool" "[agent:1] Shell: npm test" "$OUT"
+assert_eq "bash tool" "agent[1] Shell: npm test" "$OUT"
 
 # ============================================================
 echo ""
 echo "=== 2. Read tool use ==="
 
 OUT=$(run_filter 2 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"src/main.ts"}}]}}')
-assert_eq "read tool" "[agent:2] Read src/main.ts" "$OUT"
+assert_eq "read tool" "agent[2] Read src/main.ts" "$OUT"
 
 # ============================================================
 echo ""
 echo "=== 3. Write tool use ==="
 
 OUT=$(run_filter 3 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"out/result.json"}}]}}')
-assert_eq "write tool" "[agent:3] Write out/result.json" "$OUT"
+assert_eq "write tool" "agent[3] Write out/result.json" "$OUT"
 
 # ============================================================
 echo ""
 echo "=== 4. Edit tool use ==="
 
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"lib/utils.py"}}]}}')
-assert_eq "edit tool" "[agent:1] Edit lib/utils.py" "$OUT"
+assert_eq "edit tool" "agent[1] Edit lib/utils.py" "$OUT"
 
 # ============================================================
 echo ""
@@ -77,13 +83,13 @@ echo "=== 5. Long command truncation ==="
 LONG_CMD="echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa very long"
 OUT=$(run_filter 1 "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{\"command\":\"$LONG_CMD\"}}]}}")
 assert_contains "truncated" "..." "$OUT"
-# The line should be at most [agent:1] Shell: (17) + 80 chars = 97
+# After strip_ts: agent[1] Shell: (16) + 80 chars = 96.
 LINE_LEN=${#OUT}
-if [ "$LINE_LEN" -le 97 ]; then
-    echo "  PASS: line length <= 97 (got ${LINE_LEN})"
+if [ "$LINE_LEN" -le 96 ]; then
+    echo "  PASS: line length <= 96 (got ${LINE_LEN})"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL: line length <= 97 (got ${LINE_LEN})"
+    echo "  FAIL: line length <= 96 (got ${LINE_LEN})"
     FAIL=$((FAIL + 1))
 fi
 
@@ -92,7 +98,7 @@ echo ""
 echo "=== 6. Multi-line command uses first line ==="
 
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo hello\necho world"}}]}}')
-assert_eq "first line only" "[agent:1] Shell: echo hello" "$OUT"
+assert_eq "first line only" "agent[1] Shell: echo hello" "$OUT"
 
 # ============================================================
 echo ""
@@ -139,42 +145,58 @@ cat > "$TMPDIR/stream.jsonl" <<'EOF'
 {"type":"result","subtype":"success","session_id":"s","total_cost_usd":0.05}
 EOF
 
-OUT=$(AGENT_ID=5 "$FILTER" < "$TMPDIR/stream.jsonl")
+OUT=$(AGENT_ID=5 "$FILTER" < "$TMPDIR/stream.jsonl" | strip_ts)
 LINES=$(echo "$OUT" | wc -l | tr -d ' ')
 assert_eq "two activity lines" "2" "$LINES"
-assert_contains "read event" "[agent:5] Read README.md" "$OUT"
-assert_contains "shell event" "[agent:5] Shell: make build" "$OUT"
+assert_contains "read event" "agent[5] Read README.md" "$OUT"
+assert_contains "shell event" "agent[5] Shell: make build" "$OUT"
 
 # ============================================================
 echo ""
 echo "=== 11. Glob and Grep tools ==="
 
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Glob","input":{"pattern":"**/*.ts"}}]}}')
-assert_eq "glob tool" "[agent:1] Glob **/*.ts" "$OUT"
+assert_eq "glob tool" "agent[1] Glob **/*.ts" "$OUT"
 
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Grep","input":{"pattern":"TODO"}}]}}')
-assert_eq "grep tool" "[agent:1] Grep TODO" "$OUT"
+assert_eq "grep tool" "agent[1] Grep TODO" "$OUT"
 
 # ============================================================
 echo ""
 echo "=== 12. Task tool ==="
 
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Task","input":{"description":"Fix lint errors"}}]}}')
-assert_eq "task tool" "[agent:1] Task: Fix lint errors" "$OUT"
+assert_eq "task tool" "agent[1] Task: Fix lint errors" "$OUT"
 
 # ============================================================
 echo ""
 echo "=== 13. Unknown tool ==="
 
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"WebSearch","input":{"query":"test"}}]}}')
-assert_eq "unknown tool fallback" "[agent:1] WebSearch" "$OUT"
+assert_eq "unknown tool fallback" "agent[1] WebSearch" "$OUT"
 
 # ============================================================
 echo ""
 echo "=== 14. Default AGENT_ID ==="
 
-OUT=$(AGENT_ID="" "$FILTER" <<< '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}')
-assert_contains "empty id uses default" "[agent:?] Shell: pwd" "$OUT"
+OUT=$(AGENT_ID="" "$FILTER" <<< '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}' | strip_ts)
+assert_contains "empty id uses default" "agent[?] Shell: pwd" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 15. Timestamp prefix format ==="
+
+RAW=$(run_filter_raw 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}')
+TS_MATCH=$(echo "$RAW" | grep -oP '^\d{2}:\d{2}:\d{2}' || true)
+if [ -n "$TS_MATCH" ]; then
+    echo "  PASS: has HH:MM:SS timestamp"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: has HH:MM:SS timestamp"
+    echo "        actual: ${RAW}"
+    FAIL=$((FAIL + 1))
+fi
+assert_contains "ts prefix format" "agent[1]" "$RAW"
 
 # ============================================================
 echo ""

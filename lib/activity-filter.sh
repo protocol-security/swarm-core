@@ -7,11 +7,11 @@ set -euo pipefail
 #   claude ... --output-format stream-json | tee "$LOG" | activity-filter.sh
 #
 # Each tool_use content block becomes one line:
-#   [agent:1] Read src/main.ts
-#   [agent:1] Write src/main.ts
-#   [agent:1] Edit src/main.ts
-#   [agent:1] Shell: npm test
-#   [agent:1] Glob *.ts
+#   12:34:56 agent[1] Read src/main.ts
+#   12:34:57 agent[1] Write src/main.ts
+#   12:34:58 agent[1] Edit src/main.ts
+#   12:35:01 agent[1] Shell: npm test
+#   12:35:02 agent[1] Glob *.ts
 #
 # Uses a single jq invocation for efficiency (no per-line fork).
 
@@ -24,18 +24,24 @@ exec jq --unbuffered --raw-input --arg id "$AGENT_ID" -r '
   def first_line:
     split("\n")[0] // .;
 
+  def ts:
+    now | strftime("%H:%M:%S");
+
+  def prefix:
+    "\(ts) agent[\($id)]";
+
   fromjson? // empty |
   select(.type == "assistant") |
   .message.content[]? |
   select(.type == "tool_use") |
-  if   .name == "Bash"  then "[agent:\($id)] Shell: " + ((.input.command // "") | first_line | truncate(80))
-  elif .name == "Read"  then "[agent:\($id)] Read "  + (.input.file_path // .input.path // "")
-  elif .name == "Write" then "[agent:\($id)] Write " + (.input.file_path // .input.path // "")
-  elif .name == "Edit"  then "[agent:\($id)] Edit "  + (.input.file_path // .input.path // "")
-  elif .name == "MultiEdit" then "[agent:\($id)] MultiEdit " + (.input.file_path // .input.path // "")
-  elif .name == "Glob"  then "[agent:\($id)] Glob "  + (.input.pattern // "")
-  elif .name == "Grep"  then "[agent:\($id)] Grep "  + (.input.pattern // "")
-  elif .name == "Task"  then "[agent:\($id)] Task: " + ((.input.description // .input.prompt // "") | first_line | truncate(60))
-  else "[agent:\($id)] " + .name
+  if   .name == "Bash"  then "\(prefix) Shell: " + ((.input.command // "") | first_line | truncate(80))
+  elif .name == "Read"  then "\(prefix) Read "  + (.input.file_path // .input.path // "")
+  elif .name == "Write" then "\(prefix) Write " + (.input.file_path // .input.path // "")
+  elif .name == "Edit"  then "\(prefix) Edit "  + (.input.file_path // .input.path // "")
+  elif .name == "MultiEdit" then "\(prefix) MultiEdit " + (.input.file_path // .input.path // "")
+  elif .name == "Glob"  then "\(prefix) Glob "  + (.input.pattern // "")
+  elif .name == "Grep"  then "\(prefix) Grep "  + (.input.pattern // "")
+  elif .name == "Task"  then "\(prefix) Task: " + ((.input.description // .input.prompt // "") | first_line | truncate(60))
+  else "\(prefix) " + .name
   end
 '
