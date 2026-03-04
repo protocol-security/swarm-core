@@ -35,6 +35,23 @@ turns, and duration. Updates every 2s.
 | `s` | Stop all agents. |
 | `p` | Post-process. |
 
+## Activity streaming
+
+Agent activity streams to Docker logs in real time. Press
+`[1-9]` in the dashboard (or `./launch.sh logs N`) to see
+what an agent is doing:
+
+    [harness:1] Starting session at abc123...
+    [agent:1] Read src/main.ts
+    [agent:1] Edit src/main.ts
+    [agent:1] Shell: npm test
+    [agent:1] Shell: git add -A && git commit -m "fix tests"
+    [agent:1] Shell: git push origin agent-work
+    [harness:1] Session cost=$0.12 tokens=800/644 turns=6 duration=19000ms
+
+The filter (`lib/activity-filter.sh`) parses `stream-json`
+events from the Claude CLI and prints one line per tool call.
+
 ## Testing
 
     ./tests/test.sh --help               # All options.
