@@ -131,24 +131,27 @@ while true; do
            -p "$(cat "$SWARM_PROMPT")" \
            --model "$CLAUDE_MODEL" \
            "${APPEND_ARGS[@]+"${APPEND_ARGS[@]}"}" \
-           --output-format json > "$LOGFILE" 2>"${LOGFILE}.err" || true
+           --output-format stream-json 2>"${LOGFILE}.err" \
+        | stdbuf -oL tee "$LOGFILE" \
+        | /activity-filter.sh || true
 
-    # Extract usage stats from JSON output.
-    cost=$(jq -r '.total_cost_usd // 0' "$LOGFILE" 2>/dev/null || true)
+    # Extract usage stats from the result line in the JSONL stream.
+    RESULT_LINE=$(grep '"type"[[:space:]]*:[[:space:]]*"result"' "$LOGFILE" 2>/dev/null | tail -1 || true)
+    cost=$(echo "$RESULT_LINE" | jq -r '.total_cost_usd // 0' 2>/dev/null || true)
     cost="${cost:-0}"
-    dur=$(jq -r '.duration_ms // 0' "$LOGFILE" 2>/dev/null || true)
+    dur=$(echo "$RESULT_LINE" | jq -r '.duration_ms // 0' 2>/dev/null || true)
     dur="${dur:-0}"
-    api_ms=$(jq -r '.duration_api_ms // 0' "$LOGFILE" 2>/dev/null || true)
+    api_ms=$(echo "$RESULT_LINE" | jq -r '.duration_api_ms // 0' 2>/dev/null || true)
     api_ms="${api_ms:-0}"
-    turns=$(jq -r '.num_turns // 0' "$LOGFILE" 2>/dev/null || true)
+    turns=$(echo "$RESULT_LINE" | jq -r '.num_turns // 0' 2>/dev/null || true)
     turns="${turns:-0}"
-    tok_in=$(jq -r '.usage.input_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    tok_in=$(echo "$RESULT_LINE" | jq -r '.usage.input_tokens // 0' 2>/dev/null || true)
     tok_in="${tok_in:-0}"
-    tok_out=$(jq -r '.usage.output_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    tok_out=$(echo "$RESULT_LINE" | jq -r '.usage.output_tokens // 0' 2>/dev/null || true)
     tok_out="${tok_out:-0}"
-    cache_rd=$(jq -r '.usage.cache_read_input_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    cache_rd=$(echo "$RESULT_LINE" | jq -r '.usage.cache_read_input_tokens // 0' 2>/dev/null || true)
     cache_rd="${cache_rd:-0}"
-    cache_cr=$(jq -r '.usage.cache_creation_input_tokens // 0' "$LOGFILE" 2>/dev/null || true)
+    cache_cr=$(echo "$RESULT_LINE" | jq -r '.usage.cache_creation_input_tokens // 0' 2>/dev/null || true)
     cache_cr="${cache_cr:-0}"
     mkdir -p "$(dirname "$STATS_FILE")"
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
