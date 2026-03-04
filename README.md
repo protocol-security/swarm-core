@@ -73,7 +73,7 @@ with `SWARM_CONFIG=/path/to/config.json`:
   "agents": [
     { "count": 2, "model": "claude-opus-4-6", "effort": "high", "auth": "apikey" },
     { "count": 1, "model": "claude-opus-4-6", "context": "none" },
-    { "count": 1, "model": "claude-sonnet-4-6", "effort": "medium", "context": "slim" },
+    { "count": 1, "model": "claude-sonnet-4-6", "effort": "low", "prompt": "prompts/review.md" },
     {
       "count": 3,
       "model": "openrouter/custom",
@@ -98,6 +98,7 @@ agents = sum of `count` fields. Requires `jq`.
 
 | Field | Values | Notes |
 |-------|--------|-------|
+| `prompt` | file path | Per-group prompt override (default: top-level `prompt`). |
 | `effort` | `low`, `medium`, `high` | Adaptive reasoning depth. Opus/Sonnet 4.6+. |
 | `context` | `full`, `slim`, `none` | How much of `.claude/` to keep (default: `full`). |
 | `auth` | `apikey`, `oauth`, omit | Which credential to inject. Omit = both. |
