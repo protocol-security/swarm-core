@@ -154,6 +154,17 @@ while true; do
         *) echo "  WARNING: unknown effort '${EFFORT}', skipping." ;;
     esac
 
+    echo "  Context mode (full/slim/none, blank for full):"
+    echo "    full = keep .claude/ as-is"
+    echo "    slim = keep only CLAUDE.md, strip skills/agents"
+    echo "    none = remove entire .claude/ (bare agent)"
+    CONTEXT=$(input "Context mode" "")
+    case "$CONTEXT" in
+        slim|none) AGENT_OBJ+=", \"context\": \"${CONTEXT}\"" ;;
+        full|"") ;;
+        *) echo "  WARNING: unknown context '${CONTEXT}', skipping." ;;
+    esac
+
     if yesno "Custom endpoint for this group (e.g. OpenRouter)?"; then
         BASE_URL=$(input "Base URL" "https://openrouter.ai/api/v1")
         GROUP_KEY=$(password "API key for this endpoint")
