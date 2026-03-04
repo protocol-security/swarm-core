@@ -60,7 +60,7 @@ hlog "starting model=${CLAUDE_MODEL} prompt=${SWARM_PROMPT}"
 
 if [ ! -d "/workspace/.git" ]; then
     hlog "cloning upstream"
-    git clone /upstream /workspace
+    git clone -q /upstream /workspace
     cd /workspace
 
     # Init only submodules whose mirrors were mounted into the
@@ -73,12 +73,12 @@ if [ ! -d "/workspace/.git" ]; then
             name="${name%.path}"
             if [ -d "/mirrors/${name}" ]; then
                 git config "submodule.${name}.url" "/mirrors/${name}"
-                git submodule update --init -- "$path"
+                git submodule update --init -q -- "$path"
             fi
         done
     fi
 
-    git checkout agent-work
+    git checkout -q agent-work
 
     # Run project-specific setup if provided.
     if [ -n "$SWARM_SETUP" ] && [ -f "$SWARM_SETUP" ]; then
@@ -120,8 +120,8 @@ IDLE_COUNT=0
 
 while true; do
     # Reset to latest. Do not re-init submodules; setup changes would be lost.
-    git fetch origin
-    git reset --hard origin/agent-work
+    git fetch -q origin
+    git reset --hard -q origin/agent-work
 
     BEFORE=$(git rev-parse origin/agent-work)
     COMMIT=$(git rev-parse --short=6 HEAD)
@@ -168,7 +168,7 @@ while true; do
         >> "$STATS_FILE"
     hlog "session end cost=\$${cost} in=${tok_in} out=${tok_out} turns=${turns} time=${dur}ms"
 
-    git fetch origin
+    git fetch -q origin
     AFTER=$(git rev-parse origin/agent-work)
 
     if [ "$BEFORE" = "$AFTER" ]; then
