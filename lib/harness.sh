@@ -155,7 +155,7 @@ IDLE_COUNT=0
 
 while true; do
     # Reset to latest. Do not re-init submodules; setup changes would be lost.
-    git fetch origin 2>&1 | hlog_pipe
+    git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
     git reset --hard origin/agent-work 2>&1 | hlog_pipe
 
     BEFORE=$(git rev-parse origin/agent-work)
@@ -209,7 +209,7 @@ while true; do
         >> "$STATS_FILE"
     hlog "session end cost=\$${cost} in=${tok_in} out=${tok_out} turns=${turns} time=${dur}ms"
 
-    git fetch origin 2>&1 | hlog_pipe
+    git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
     AFTER=$(git rev-parse origin/agent-work)
 
     if [ "$BEFORE" = "$AFTER" ]; then
