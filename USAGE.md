@@ -83,6 +83,7 @@ Integration matrix (`--all`):
 | `2-agents-postprocess` | 2 | + post-process |
 | `2-agents-context-bare` | 2 | 1 full + 1 bare |
 | `2-agents-context-slim` | 2 | 1 full + 1 slim |
+| `2-agents-per-prompt` | 2 | per-group prompt override |
 
 Unit tests (no Docker or API key):
 
@@ -146,6 +147,26 @@ Bare agents do exploratory work unconstrained by repo context
 while other agents use skills and rules for structured output.
 Non-default modes appear in the dashboard Ctx column and in
 commit trailers (`> Ctx: bare`, `> Ctx: slim`).
+
+## Per-group prompts
+
+Each agent group can run a different prompt file:
+
+```json
+{
+  "prompt": "tasks/hunt.md",
+  "agents": [
+    { "count": 2, "model": "claude-opus-4-6" },
+    { "count": 1, "model": "claude-sonnet-4-6",
+      "prompt": "tasks/review.md" }
+  ]
+}
+```
+
+Groups without `prompt` inherit the top-level value. Combined
+with context modes, this enables divergent exploration: hunting
+agents run one prompt with full skills, a reconciliation agent
+runs a different prompt to validate and normalize findings.
 
 ## Git coordination
 
