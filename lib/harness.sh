@@ -115,6 +115,9 @@ if [ ! -d "/workspace/.git" ]; then
     if [ -n "$SWARM_SETUP" ] && [ -f "$SWARM_SETUP" ]; then
         hlog "running setup ${SWARM_SETUP}"
         sudo bash "$SWARM_SETUP"
+        # Setup runs as root; reclaim ownership so the agent user
+        # (and git reset on restart) can modify all workspace files.
+        sudo chown -R "$(id -u):$(id -g)" /workspace
     fi
 
     # Disable Claude Code's Co-Authored-By trailer; the hook-injected
