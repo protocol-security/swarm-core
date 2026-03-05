@@ -171,6 +171,24 @@ git commit --amend --no-verify --no-edit -m "${msg}${trailer}" \
 HOOK
     chmod +x .git/hooks/post-rewrite
 
+    # pre-commit hook: prevent accidental submodule pointer changes.
+    cat > .git/hooks/pre-commit <<'HOOK'
+#!/bin/bash
+# Silently unstage submodule pointer changes so agents can't
+# accidentally commit a submodule bump via broad `git add`.
+changed_subs=$(git diff --cached --diff-filter=M --name-only | while read -r path; do
+    if git ls-tree HEAD -- "$path" 2>/dev/null | grep -q '^160000 '; then
+        echo "$path"
+    fi
+done)
+if [ -n "$changed_subs" ]; then
+    echo "$changed_subs" | while read -r sub; do
+        git reset -q HEAD -- "$sub" 2>/dev/null || true
+    done
+fi
+HOOK
+    chmod +x .git/hooks/pre-commit
+
     mkdir -p agent_logs
     hlog "setup complete"
 fi
