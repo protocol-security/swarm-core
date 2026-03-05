@@ -147,6 +147,30 @@ fi
 HOOK
     chmod +x .git/hooks/prepare-commit-msg
 
+    # post-rewrite hook: re-inject trailers lost during rebase/amend.
+    # Not affected by --no-verify, so acts as a safety net.
+    cat > .git/hooks/post-rewrite <<'HOOK'
+#!/bin/bash
+# Amend HEAD if provenance trailers were lost during rebase/amend.
+msg=$(git log -1 --format='%B' HEAD 2>/dev/null) || exit 0
+if printf '%s' "$msg" | grep -q '^Model:'; then
+    exit 0
+fi
+trailer=$(printf '\nModel: %s\nTools: claude-swarm %s, Claude Code %s\n' \
+    "$CLAUDE_MODEL" "$SWARM_VERSION" "$CLAUDE_VERSION")
+trailer+=$(printf '> Run: %s\n' "$SWARM_RUN_CONTEXT")
+cfg="$SWARM_CFG_PROMPT"
+[ -n "$SWARM_CFG_SETUP" ] && cfg="${cfg}, ${SWARM_CFG_SETUP}"
+trailer+=$(printf '> Cfg: %s\n' "$cfg")
+ctx_label="$SWARM_CONTEXT"
+[ "$ctx_label" = "none" ] && ctx_label="bare"
+[ "$SWARM_CONTEXT" != "full" ] && \
+    trailer+=$(printf '> Ctx: %s\n' "$ctx_label") || true
+git commit --amend --no-verify --no-edit -m "${msg}${trailer}" \
+    --allow-empty >/dev/null 2>&1 || true
+HOOK
+    chmod +x .git/hooks/post-rewrite
+
     mkdir -p agent_logs
     hlog "setup complete"
 fi
