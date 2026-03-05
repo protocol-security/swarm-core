@@ -237,9 +237,15 @@ cmd_start() {
     local state_model_summary state_config_label
     if [ -n "$CONFIG_FILE" ]; then
         state_model_summary=$(jq -r \
-            '[.agents[] | "\(.count)x \(.model | split("/") | .[-1])" +
+            '.prompt as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
+            [.agents[] |
+              "\(.count)x \(.model | split("/") | .[-1])" +
               (if .context == "none" then " ctx:bare"
                elif .context == "slim" then " ctx:slim"
+               else "" end) +
+              (if .prompt and .prompt != $dp then
+                ":" + (.prompt | split("/") | .[-1] | rtrimstr(".md") |
+                  if startswith($dp_stem + "-") then .[$dp_stem | length + 1:] else . end)
                else "" end)] | join(", ")' \
             "$CONFIG_FILE")
         state_config_label=$(basename "$CONFIG_FILE")

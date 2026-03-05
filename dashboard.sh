@@ -59,9 +59,15 @@ if [ -n "$CONFIG_FILE" ]; then
     SWARM_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
     MODEL_SUMMARY=$(jq -r \
-        '[.agents[] | "\(.count)x \(.model | split("/") | .[-1])" +
+        '.prompt as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
+        [.agents[] |
+          "\(.count)x \(.model | split("/") | .[-1])" +
           (if .context == "none" then " ctx:bare"
            elif .context == "slim" then " ctx:slim"
+           else "" end) +
+          (if .prompt and .prompt != $dp then
+            ":" + (.prompt | split("/") | .[-1] | rtrimstr(".md") |
+              if startswith($dp_stem + "-") then .[$dp_stem | length + 1:] else . end)
            else "" end)] | join(", ")' \
         "$CONFIG_FILE")
     CONFIG_LABEL="$(basename "$CONFIG_FILE")"
@@ -195,12 +201,24 @@ draw() {
     local right="${DIM}uptime: ${uptime_str}${RESET}"
     printf "%b%*s%b\n" "$title" $((TERM_COLS - title_len - 2 - ${#uptime_str} - 10)) "" "$right"
     printf " ${DIM}config: %s | prompt: %s${RESET}\n" "$CONFIG_LABEL" "$SWARM_PROMPT"
-    printf " ${DIM}agents: %s (%s)${RESET}\n" "$NUM_AGENTS" "$MODEL_SUMMARY"
+    printf " ${DIM}agents: %s${RESET}\n" "$NUM_AGENTS"
+    IFS=',' read -ra _groups <<< "$MODEL_SUMMARY"
+    local total_groups=${#_groups[@]}
+    local idx=0
+    for agent_line in "${_groups[@]}"; do
+        agent_line="${agent_line# }"
+        idx=$((idx + 1))
+        if [ "$idx" -lt "$total_groups" ]; then
+            printf " ${DIM}  ├ %s${RESET}\n" "$agent_line"
+        else
+            printf " ${DIM}  └ %s${RESET}\n" "$agent_line"
+        fi
+    done
     echo ""
 
     # Agent table header.
-    printf "  ${BOLD}%-4s %-3s %-16s %-6s %-10s %8s %9s %6s %5s %6s %7s${RESET}\n" \
-        "Ctx" "#" "Model" "Auth" "Status" "Cost" "In/Out" "Cache" "Turns" "Tok/s" "Time"
+    printf "  ${BOLD}%-3s %-16s %-6s %-10s %9s %10s %7s %6s %6s %8s${RESET}\n" \
+        "#" "Model" "Auth" "Status" "Cost" "In/Out" "Cache" "Turns" "Tok/s" "Time"
 
     local running_count=0 exited_count=0
     local total_cost=0 total_in=0 total_out=0 total_cache=0 total_dur=0 total_api_ms=0 total_turns=0
@@ -238,17 +256,12 @@ draw() {
             local eff_tag="${effort:0:1}"
             short="${short} [${eff_tag^^}]"
         fi
-        local ctx_short=""
-        case "$context_mode" in
-            none) ctx_short="bare" ;;
-            slim) ctx_short="slim" ;;
-        esac
 
         local idle_str=""
         if [ "$state" != "not found" ]; then
             local logs
             logs=$(docker logs "$name" 2>&1 || true)
-            idle_str=$(printf '%s' "$logs" | grep -o 'idle [0-9]*/[0-9]*' | tail -1 || true)
+            idle_str=$(printf '%s' "$logs" | grep -o 'idle [0-9]*' | tail -1 || true)
         fi
 
         # Read cumulative stats from the container.
@@ -300,9 +313,9 @@ draw() {
         tps_str=$(format_tps "$a_out" "$a_api_ms")
         dur_str=$(format_duration_ms "$a_dur")
 
-        printf "  %-4s %-3s %-16s %-6s " "$ctx_short" "$i" "$short" "$auth_mode"
+        printf "  %-3s %-16s %-6s " "$i" "$short" "$auth_mode"
         printf "%b%-10s%b" "$status_color" "$status_text" "$RESET"
-        printf " %8s %9s %6s %5s %6s %7s\n" "$cost_str" "$in_out_str" "$cache_str" "$a_turns" "$tps_str" "$dur_str"
+        printf " %9s %10s %7s %6s %6s %8s\n" "$cost_str" "$in_out_str" "$cache_str" "$a_turns" "$tps_str" "$dur_str"
     done
 
     # Post-process row (if container exists).
@@ -334,11 +347,7 @@ draw() {
             local pp_eff_tag="${pp_effort:0:1}"
             pp_short="${pp_short} [${pp_eff_tag^^}]"
         fi
-        local pp_ctx_short=""
-        case "$pp_context_mode" in
-            none) pp_ctx_short="bare" ;;
-            slim) pp_ctx_short="slim" ;;
-        esac
+        local _pp_ctx="$pp_context_mode"  # available for future use
 
         local pp_stats pp_cost pp_in pp_out pp_cache pp_dur pp_api_ms pp_turns
         pp_stats=$(read_agent_stats "$pp_name" "post")
@@ -365,9 +374,9 @@ draw() {
         esac
 
         printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
-        printf "  %-4s %-3s %-16s %-6s " "$pp_ctx_short" "PP" "$pp_short" "$pp_auth_mode"
+        printf "  %-3s %-16s %-6s " "PP" "$pp_short" "$pp_auth_mode"
         printf "%b%-10s%b" "$pp_status_color" "$pp_state" "$RESET"
-        printf " %8s %9s %6s %5s %6s %7s\n" \
+        printf " %9s %10s %7s %6s %6s %8s\n" \
             "$(format_cost "$pp_cost")" \
             "$(format_tokens "$pp_in")/$(format_tokens "$pp_out")" \
             "$(format_tokens "$pp_cache")" \
@@ -383,8 +392,8 @@ draw() {
     t_cache_str=$(format_tokens "$total_cache")
     t_tps_str=$(format_tps "$total_out" "$total_api_ms")
     t_dur_str=$(format_duration_ms "$total_dur")
-    printf "  ${BOLD}%-4s %-3s %-16s %-6s %-10s %8s %9s %6s %5s %6s %7s${RESET}\n" \
-        "" "" "Total" "" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" "$total_turns" "$t_tps_str" "$t_dur_str"
+    printf "  ${BOLD}%-3s %-16s %-6s %-10s %9s %10s %7s %6s %6s %8s${RESET}\n" \
+        "" "Total" "" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" "$total_turns" "$t_tps_str" "$t_dur_str"
 
     echo ""
 
