@@ -217,7 +217,7 @@ draw() {
     echo ""
 
     # Agent table header.
-    printf "  ${BOLD}%-3s %-16s %-6s %-10s %9s %10s %7s %6s %6s %8s${RESET}\n" \
+    printf "  ${BOLD}%-3s %-20s %-6s %-8s %7s %10s %7s %6s %6s %8s${RESET}\n" \
         "#" "Model" "Auth" "Status" "Cost" "In/Out" "Cache" "Turns" "Tok/s" "Time"
 
     local running_count=0 exited_count=0
@@ -313,9 +313,9 @@ draw() {
         tps_str=$(format_tps "$a_out" "$a_api_ms")
         dur_str=$(format_duration_ms "$a_dur")
 
-        printf "  %-3s %-16s %-6s " "$i" "$short" "$auth_mode"
-        printf "%b%-10s%b" "$status_color" "$status_text" "$RESET"
-        printf " %9s %10s %7s %6s %6s %8s\n" "$cost_str" "$in_out_str" "$cache_str" "$a_turns" "$tps_str" "$dur_str"
+        printf "  %-3s %-20s %-6s " "$i" "$short" "$auth_mode"
+        printf "%b%-8s%b" "$status_color" "$status_text" "$RESET"
+        printf " %7s %10s %7s %6s %6s %8s\n" "$cost_str" "$in_out_str" "$cache_str" "$a_turns" "$tps_str" "$dur_str"
     done
 
     # Post-process row (if container exists).
@@ -374,9 +374,9 @@ draw() {
         esac
 
         printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
-        printf "  %-3s %-16s %-6s " "PP" "$pp_short" "$pp_auth_mode"
-        printf "%b%-10s%b" "$pp_status_color" "$pp_state" "$RESET"
-        printf " %9s %10s %7s %6s %6s %8s\n" \
+        printf "  %-3s %-20s %-6s " "PP" "$pp_short" "$pp_auth_mode"
+        printf "%b%-8s%b" "$pp_status_color" "$pp_state" "$RESET"
+        printf " %7s %10s %7s %6s %6s %8s\n" \
             "$(format_cost "$pp_cost")" \
             "$(format_tokens "$pp_in")/$(format_tokens "$pp_out")" \
             "$(format_tokens "$pp_cache")" \
@@ -392,7 +392,7 @@ draw() {
     t_cache_str=$(format_tokens "$total_cache")
     t_tps_str=$(format_tps "$total_out" "$total_api_ms")
     t_dur_str=$(format_duration_ms "$total_dur")
-    printf "  ${BOLD}%-3s %-16s %-6s %-10s %9s %10s %7s %6s %6s %8s${RESET}\n" \
+    printf "  ${BOLD}%-3s %-20s %-6s %-8s %7s %10s %7s %6s %6s %8s${RESET}\n" \
         "" "Total" "" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" "$total_turns" "$t_tps_str" "$t_dur_str"
 
     echo ""
