@@ -115,6 +115,9 @@ if [ ! -d "/workspace/.git" ]; then
     if [ -n "$SWARM_SETUP" ] && [ -f "$SWARM_SETUP" ]; then
         hlog "running setup ${SWARM_SETUP}"
         sudo bash "$SWARM_SETUP"
+        # Setup runs as root; reclaim ownership so the agent user
+        # (and git reset on restart) can modify all workspace files.
+        sudo chown -R "$(id -u):$(id -g)" /workspace
     fi
 
     # Disable Claude Code's Co-Authored-By trailer; the hook-injected
@@ -144,6 +147,48 @@ fi
 HOOK
     chmod +x .git/hooks/prepare-commit-msg
 
+    # post-rewrite hook: re-inject trailers lost during rebase/amend.
+    # Not affected by --no-verify, so acts as a safety net.
+    cat > .git/hooks/post-rewrite <<'HOOK'
+#!/bin/bash
+# Amend HEAD if provenance trailers were lost during rebase/amend.
+msg=$(git log -1 --format='%B' HEAD 2>/dev/null) || exit 0
+if printf '%s' "$msg" | grep -q '^Model:'; then
+    exit 0
+fi
+trailer=$(printf '\nModel: %s\nTools: claude-swarm %s, Claude Code %s\n' \
+    "$CLAUDE_MODEL" "$SWARM_VERSION" "$CLAUDE_VERSION")
+trailer+=$(printf '> Run: %s\n' "$SWARM_RUN_CONTEXT")
+cfg="$SWARM_CFG_PROMPT"
+[ -n "$SWARM_CFG_SETUP" ] && cfg="${cfg}, ${SWARM_CFG_SETUP}"
+trailer+=$(printf '> Cfg: %s\n' "$cfg")
+ctx_label="$SWARM_CONTEXT"
+[ "$ctx_label" = "none" ] && ctx_label="bare"
+[ "$SWARM_CONTEXT" != "full" ] && \
+    trailer+=$(printf '> Ctx: %s\n' "$ctx_label") || true
+git commit --amend --no-verify --no-edit -m "${msg}${trailer}" \
+    --allow-empty >/dev/null 2>&1 || true
+HOOK
+    chmod +x .git/hooks/post-rewrite
+
+    # pre-commit hook: prevent accidental submodule pointer changes.
+    cat > .git/hooks/pre-commit <<'HOOK'
+#!/bin/bash
+# Silently unstage submodule pointer changes so agents can't
+# accidentally commit a submodule bump via broad `git add`.
+changed_subs=$(git diff --cached --diff-filter=M --name-only | while read -r path; do
+    if git ls-tree HEAD -- "$path" 2>/dev/null | grep -q '^160000 '; then
+        echo "$path"
+    fi
+done)
+if [ -n "$changed_subs" ]; then
+    echo "$changed_subs" | while read -r sub; do
+        git reset -q HEAD -- "$sub" 2>/dev/null || true
+    done
+fi
+HOOK
+    chmod +x .git/hooks/pre-commit
+
     mkdir -p agent_logs
     hlog "setup complete"
 fi
@@ -155,7 +200,7 @@ IDLE_COUNT=0
 
 while true; do
     # Reset to latest. Do not re-init submodules; setup changes would be lost.
-    git fetch origin 2>&1 | hlog_pipe
+    git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
     git reset --hard origin/agent-work 2>&1 | hlog_pipe
 
     BEFORE=$(git rev-parse origin/agent-work)
@@ -209,7 +254,7 @@ while true; do
         >> "$STATS_FILE"
     hlog "session end cost=\$${cost} in=${tok_in} out=${tok_out} turns=${turns} time=${dur}ms"
 
-    git fetch origin 2>&1 | hlog_pipe
+    git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
     AFTER=$(git rev-parse origin/agent-work)
 
     if [ "$BEFORE" = "$AFTER" ]; then
