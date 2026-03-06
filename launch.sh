@@ -153,17 +153,17 @@ cmd_start() {
         echo "-v ${mirror}:/mirrors/${name}:ro"
     done > "/tmp/${PROJECT}-mirror-vols.txt"
 
-    # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt per line).
+    # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
     AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
     if [ -n "$CONFIG_FILE" ]; then
         jq -r '.agents[] | range(.count) as $i |
-            [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // "")] | join("|")' \
+            [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // "")] | join("|")' \
             "$CONFIG_FILE" > "$AGENTS_CFG"
     else
         : > "$AGENTS_CFG"
         for _i in $(seq 1 "$NUM_AGENTS"); do
-            printf '%s|||%s|||\n' "$CLAUDE_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
+            printf '%s|||%s||||\n' "$CLAUDE_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
         done
     fi
 
@@ -175,11 +175,12 @@ cmd_start() {
     done < "/tmp/${PROJECT}-mirror-vols.txt"
 
     AGENT_IDX=0
-    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt; do
+    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt agent_auth_token; do
         AGENT_IDX=$((AGENT_IDX + 1))
         NAME="${IMAGE_NAME}-${AGENT_IDX}"
         docker rm -f "$NAME" 2>/dev/null || true
         agent_api_key="$(expand_env_ref "$agent_api_key")"
+        agent_auth_token="$(expand_env_ref "$agent_auth_token")"
         agent_context="${agent_context:-full}"
         local effective_prompt="${agent_prompt:-$SWARM_PROMPT}"
 
@@ -196,28 +197,38 @@ cmd_start() {
         [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
             && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
 
-        # Auto-tag agents with a custom api_key as "apikey" for the dashboard.
-        if [ -z "$agent_auth" ] && [ -n "$agent_api_key" ]; then
+        # Auto-tag agents with a custom api_key or auth_token as "apikey"
+        # for the dashboard.
+        if [ -z "$agent_auth" ] && { [ -n "$agent_api_key" ] || [ -n "$agent_auth_token" ]; }; then
             agent_auth="apikey"
         fi
 
         # Per-agent auth source: "oauth" = subscription only,
         # "apikey" = API key only, "" = pass both (CLI decides).
+        #
+        # auth_token mode (OpenRouter-style): the key goes into
+        # ANTHROPIC_AUTH_TOKEN (Bearer header) and ANTHROPIC_API_KEY
+        # is explicitly empty so Claude Code enters third-party mode.
         local resolved_api_key
-        case "${agent_auth}" in
-            oauth)
-                resolved_api_key=""
-                EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}")
-                ;;
-            apikey)
-                resolved_api_key="${agent_api_key:-${ANTHROPIC_API_KEY:-}}"
-                ;;
-            *)
-                resolved_api_key="${agent_api_key:-${ANTHROPIC_API_KEY:-}}"
-                [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
-                    && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
-                ;;
-        esac
+        if [ -n "$agent_auth_token" ]; then
+            resolved_api_key=""
+            EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${agent_auth_token}")
+        else
+            case "${agent_auth}" in
+                oauth)
+                    resolved_api_key=""
+                    EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}")
+                    ;;
+                apikey)
+                    resolved_api_key="${agent_api_key:-${ANTHROPIC_API_KEY:-}}"
+                    ;;
+                *)
+                    resolved_api_key="${agent_api_key:-${ANTHROPIC_API_KEY:-}}"
+                    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
+                        && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
+                    ;;
+            esac
+        fi
 
         local eff="${agent_effort:-${EFFORT_LEVEL:-}}"
         [ -n "$eff" ] \
@@ -357,12 +368,14 @@ cmd_post_process() {
         exit 1
     fi
 
-    local pp_prompt pp_model pp_base_url pp_api_key pp_effort pp_auth
+    local pp_prompt pp_model pp_base_url pp_api_key pp_effort pp_auth pp_auth_token
     pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE")
     pp_model=$(jq -r '.post_process.model // "claude-opus-4-6"' "$CONFIG_FILE")
     pp_base_url=$(jq -r '.post_process.base_url // empty' "$CONFIG_FILE")
     pp_api_key=$(jq -r '.post_process.api_key // empty' "$CONFIG_FILE")
     pp_api_key="$(expand_env_ref "$pp_api_key")"
+    pp_auth_token=$(jq -r '.post_process.auth_token // empty' "$CONFIG_FILE")
+    pp_auth_token="$(expand_env_ref "$pp_auth_token")"
     pp_effort=$(jq -r '.post_process.effort // empty' "$CONFIG_FILE")
     pp_auth=$(jq -r '.post_process.auth // empty' "$CONFIG_FILE")
 
@@ -395,7 +408,7 @@ cmd_post_process() {
     done < "/tmp/${PROJECT}-pp-vols.txt"
     rm -f "/tmp/${PROJECT}-pp-vols.txt"
 
-    if [ -z "$pp_auth" ] && [ -n "$pp_api_key" ]; then
+    if [ -z "$pp_auth" ] && { [ -n "$pp_api_key" ] || [ -n "$pp_auth_token" ]; }; then
         pp_auth="apikey"
     fi
 
@@ -409,20 +422,25 @@ cmd_post_process() {
         && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
 
     local pp_resolved_api_key
-    case "${pp_auth}" in
-        oauth)
-            pp_resolved_api_key=""
-            EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}")
-            ;;
-        apikey)
-            pp_resolved_api_key="${pp_api_key:-${ANTHROPIC_API_KEY:-}}"
-            ;;
-        *)
-            pp_resolved_api_key="${pp_api_key:-${ANTHROPIC_API_KEY:-}}"
-            [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
-                && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
-            ;;
-    esac
+    if [ -n "$pp_auth_token" ]; then
+        pp_resolved_api_key=""
+        EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${pp_auth_token}")
+    else
+        case "${pp_auth}" in
+            oauth)
+                pp_resolved_api_key=""
+                EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}")
+                ;;
+            apikey)
+                pp_resolved_api_key="${pp_api_key:-${ANTHROPIC_API_KEY:-}}"
+                ;;
+            *)
+                pp_resolved_api_key="${pp_api_key:-${ANTHROPIC_API_KEY:-}}"
+                [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
+                    && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
+                ;;
+        esac
+    fi
 
     [ -n "$pp_effort" ] \
         && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${pp_effort}")

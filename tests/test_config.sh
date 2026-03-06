@@ -38,7 +38,7 @@ parse_pp_model()         { jq -r '.post_process.model // "claude-opus-4-6"' "$1"
 
 parse_agents_cfg() {
     jq -r '.agents[] | range(.count) as $i |
-        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // "")] | join("|")' "$1"
+        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // "")] | join("|")' "$1"
 }
 
 parse_pp_auth() { jq -r '.post_process.auth // empty' "$1"; }
@@ -141,24 +141,25 @@ EFFORT_LEVEL="medium"
 NUM_AGENTS=3
 : > "$TMPDIR/env-agents.cfg"
 for _i in $(seq 1 "$NUM_AGENTS"); do
-    printf '%s|||%s|||\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
+    printf '%s|||%s||||\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
 done
 
 assert_eq "line count" "3" "$(wc -l < "$TMPDIR/env-agents.cfg" | tr -d ' ')"
 
 AGENT_IDX=0
-while IFS='|' read -r m u k e a c p; do
+while IFS='|' read -r m u k e a c p t; do
     AGENT_IDX=$((AGENT_IDX + 1))
 done < "$TMPDIR/env-agents.cfg"
 assert_eq "agents iterated" "3" "$AGENT_IDX"
 
-IFS='|' read -r m u k e a c p < "$TMPDIR/env-agents.cfg"
-assert_eq "env model"    "claude-opus-4-6" "$m"
-assert_eq "env base_url" ""               "$u"
-assert_eq "env api_key"  ""               "$k"
-assert_eq "env effort"   "medium"         "$e"
-assert_eq "env auth"     ""               "$a"
-assert_eq "env context"  ""               "$c"
+IFS='|' read -r m u k e a c p t < "$TMPDIR/env-agents.cfg"
+assert_eq "env model"      "claude-opus-4-6" "$m"
+assert_eq "env base_url"   ""               "$u"
+assert_eq "env api_key"    ""               "$k"
+assert_eq "env effort"     "medium"         "$e"
+assert_eq "env auth"       ""               "$a"
+assert_eq "env context"    ""               "$c"
+assert_eq "env auth_token" ""               "$t"
 
 # ============================================================
 echo ""
@@ -450,6 +451,41 @@ assert_eq "context with prompt" "none" "$c3"
 
 IFS='|' read -r m4 u4 k4 e4 a4 c4 p4 <<< "$LINE4"
 assert_eq "prompt same group" "tasks/explore.md" "$p4"
+
+# ============================================================
+echo ""
+echo "=== 18. auth_token field (OpenRouter-style Bearer auth) ==="
+
+cat > "$TMPDIR/auth_token.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "count": 1, "model": "openai/gpt-5.4", "base_url": "https://openrouter.ai/api", "auth_token": "sk-or-test" },
+    { "count": 1, "model": "MiniMax-M2.5", "base_url": "https://api.minimax.io/anthropic", "api_key": "sk-mm" },
+    { "count": 1, "model": "claude-opus-4-6", "auth": "oauth" }
+  ]
+}
+EOF
+
+TSV=$(parse_agents_cfg "$TMPDIR/auth_token.json")
+assert_eq "auth_token line count" "3" "$(echo "$TSV" | wc -l | tr -d ' ')"
+
+LINE1=$(echo "$TSV" | sed -n '1p')
+LINE2=$(echo "$TSV" | sed -n '2p')
+LINE3=$(echo "$TSV" | sed -n '3p')
+
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 <<< "$LINE1"
+assert_eq "or model"      "openai/gpt-5.4"          "$m1"
+assert_eq "or base_url"   "https://openrouter.ai/api" "$u1"
+assert_eq "or api_key"    ""                          "$k1"
+assert_eq "or auth_token" "sk-or-test"                "$t1"
+
+IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 <<< "$LINE2"
+assert_eq "mm api_key"    "sk-mm" "$k2"
+assert_eq "mm auth_token" ""      "$t2"
+
+IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 <<< "$LINE3"
+assert_eq "oauth auth_token" "" "$t3"
 
 # ============================================================
 echo ""
