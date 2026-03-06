@@ -489,6 +489,221 @@ assert_eq "oauth auth_token" "" "$t3"
 
 # ============================================================
 echo ""
+echo "=== 19. Kitchen sink — every auth, model, effort, context, prompt combination ==="
+
+cat > "$TMPDIR/kitchen_sink.json" <<'EOF'
+{
+  "prompt": "prompts/task.md",
+  "setup": "scripts/setup.sh",
+  "max_idle": 1234567,
+  "agents": [
+    { "count": 1, "model": "openai/gpt-5.4",     "base_url": "https://openrouter.ai/api",       "auth_token": "$OPENROUTER_API_KEY" },
+    { "count": 1, "model": "openai/gpt-5.4-pro",  "base_url": "https://openrouter.ai/api",       "auth_token": "$OPENROUTER_API_KEY" },
+    { "count": 1, "model": "MiniMax-M2.5",         "base_url": "https://api.minimax.io/anthropic", "api_key": "$MINIMAX_API_KEY" },
+    { "count": 1, "model": "claude-sonnet-4-6",    "effort": "high",   "auth": "oauth" },
+    { "count": 1, "model": "claude-opus-4-6",      "effort": "high",   "auth": "oauth", "context": "none" },
+    { "count": 1, "model": "claude-opus-4-6",      "effort": "high",   "auth": "oauth", "context": "slim" },
+    { "count": 1, "model": "claude-opus-4-6",      "effort": "medium", "auth": "apikey" },
+    { "count": 1, "model": "claude-opus-4-6",      "auth": "apikey" },
+    { "count": 1, "model": "claude-sonnet-4-6",    "effort": "low",    "auth": "oauth", "prompt": "prompts/reconcile.md" },
+    { "count": 1, "model": "claude-sonnet-4-6" },
+    { "count": 1, "model": "claude-opus-4-6",      "effort": "high",   "auth": "oauth", "prompt": "prompts/review.md" },
+    { "count": 1, "model": "openai/gpt-5.4",       "base_url": "https://openrouter.ai/api", "auth_token": "$OPENROUTER_API_KEY", "effort": "low", "prompt": "prompts/explore.md" }
+  ],
+  "post_process": {
+    "prompt": "prompts/post.md",
+    "model": "claude-sonnet-4-6",
+    "effort": "high",
+    "auth": "oauth"
+  }
+}
+EOF
+
+assert_eq "ks prompt"     "prompts/task.md"  "$(parse_prompt "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks setup"      "scripts/setup.sh" "$(parse_setup "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks max_idle"   "1234567"            "$(parse_max_idle "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks total"      "12"                 "$(parse_num_agents "$TMPDIR/kitchen_sink.json")"
+
+TSV=$(parse_agents_cfg "$TMPDIR/kitchen_sink.json")
+assert_eq "ks line count" "12" "$(echo "$TSV" | wc -l | tr -d ' ')"
+
+# Agent 1: OpenRouter GPT-5.4 via auth_token
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '1p')"
+assert_eq "ks1 model"      "openai/gpt-5.4"            "$m"
+assert_eq "ks1 base_url"   "https://openrouter.ai/api"  "$u"
+assert_eq "ks1 api_key"    ""                            "$k"
+assert_eq "ks1 effort"     ""                            "$e"
+assert_eq "ks1 auth"       ""                            "$a"
+assert_eq "ks1 context"    ""                            "$c"
+assert_eq "ks1 prompt"     ""                            "$p"
+assert_eq "ks1 auth_token" "\$OPENROUTER_API_KEY"        "$t"
+
+# Agent 2: OpenRouter GPT-5.4-pro via auth_token
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '2p')"
+assert_eq "ks2 model"      "openai/gpt-5.4-pro"         "$m"
+assert_eq "ks2 base_url"   "https://openrouter.ai/api"  "$u"
+assert_eq "ks2 api_key"    ""                            "$k"
+assert_eq "ks2 auth_token" "\$OPENROUTER_API_KEY"        "$t"
+
+# Agent 3: MiniMax via api_key
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '3p')"
+assert_eq "ks3 model"      "MiniMax-M2.5"                         "$m"
+assert_eq "ks3 base_url"   "https://api.minimax.io/anthropic"     "$u"
+assert_eq "ks3 api_key"    "\$MINIMAX_API_KEY"                     "$k"
+assert_eq "ks3 auth_token" ""                                      "$t"
+
+# Agent 4: Claude Sonnet, oauth, high effort
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '4p')"
+assert_eq "ks4 model"      "claude-sonnet-4-6" "$m"
+assert_eq "ks4 base_url"   ""                  "$u"
+assert_eq "ks4 api_key"    ""                  "$k"
+assert_eq "ks4 effort"     "high"              "$e"
+assert_eq "ks4 auth"       "oauth"             "$a"
+assert_eq "ks4 context"    ""                  "$c"
+assert_eq "ks4 prompt"     ""                  "$p"
+assert_eq "ks4 auth_token" ""                  "$t"
+
+# Agent 5: Claude Opus, oauth, high effort, context=none
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '5p')"
+assert_eq "ks5 model"   "claude-opus-4-6" "$m"
+assert_eq "ks5 effort"  "high"            "$e"
+assert_eq "ks5 auth"    "oauth"           "$a"
+assert_eq "ks5 context" "none"            "$c"
+assert_eq "ks5 prompt"  ""                "$p"
+
+# Agent 6: Claude Opus, oauth, high effort, context=slim
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '6p')"
+assert_eq "ks6 model"   "claude-opus-4-6" "$m"
+assert_eq "ks6 effort"  "high"            "$e"
+assert_eq "ks6 auth"    "oauth"           "$a"
+assert_eq "ks6 context" "slim"            "$c"
+
+# Agent 7: Claude Opus, apikey, medium effort
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '7p')"
+assert_eq "ks7 model"  "claude-opus-4-6" "$m"
+assert_eq "ks7 effort" "medium"          "$e"
+assert_eq "ks7 auth"   "apikey"          "$a"
+assert_eq "ks7 context" ""               "$c"
+
+# Agent 8: Claude Opus, apikey, no effort
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '8p')"
+assert_eq "ks8 model"  "claude-opus-4-6" "$m"
+assert_eq "ks8 effort" ""                "$e"
+assert_eq "ks8 auth"   "apikey"          "$a"
+
+# Agent 9: Claude Sonnet, oauth, low effort, per-group reconcile prompt
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '9p')"
+assert_eq "ks9 model"  "claude-sonnet-4-6"              "$m"
+assert_eq "ks9 effort" "low"                             "$e"
+assert_eq "ks9 auth"   "oauth"                           "$a"
+assert_eq "ks9 prompt" "prompts/reconcile.md"            "$p"
+
+# Agent 10: Claude Sonnet, all defaults (no auth, no effort, no context)
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '10p')"
+assert_eq "ks10 model"      "claude-sonnet-4-6" "$m"
+assert_eq "ks10 base_url"   ""                  "$u"
+assert_eq "ks10 api_key"    ""                  "$k"
+assert_eq "ks10 effort"     ""                  "$e"
+assert_eq "ks10 auth"       ""                  "$a"
+assert_eq "ks10 context"    ""                  "$c"
+assert_eq "ks10 prompt"     ""                  "$p"
+assert_eq "ks10 auth_token" ""                  "$t"
+
+# Agent 11: Claude Opus, oauth, high effort, per-group alt prompt
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '11p')"
+assert_eq "ks11 model"  "claude-opus-4-6" "$m"
+assert_eq "ks11 effort" "high"            "$e"
+assert_eq "ks11 auth"   "oauth"           "$a"
+assert_eq "ks11 prompt" "prompts/review.md" "$p"
+
+# Agent 12: OpenRouter GPT-5.4 + auth_token + effort + per-group prompt
+IFS='|' read -r m u k e a c p t <<< "$(echo "$TSV" | sed -n '12p')"
+assert_eq "ks12 model"      "openai/gpt-5.4"            "$m"
+assert_eq "ks12 base_url"   "https://openrouter.ai/api"  "$u"
+assert_eq "ks12 effort"     "low"                         "$e"
+assert_eq "ks12 auth_token" "\$OPENROUTER_API_KEY"        "$t"
+assert_eq "ks12 prompt"     "prompts/explore.md"          "$p"
+
+# Post-process section
+assert_eq "ks pp prompt" "prompts/post.md"         "$(parse_pp_prompt "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp model"  "claude-sonnet-4-6"       "$(parse_pp_model "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp effort" "high"                    "$(parse_pp_effort "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp auth"   "oauth"                   "$(parse_pp_auth "$TMPDIR/kitchen_sink.json")"
+
+# ============================================================
+echo ""
+echo "=== 20. Post-process auth variants ==="
+
+# pp with auth_token (OpenRouter-style)
+cat > "$TMPDIR/pp_auth_token.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": {
+    "prompt": "review.md",
+    "model": "openai/gpt-5.4",
+    "base_url": "https://openrouter.ai/api",
+    "auth_token": "$OPENROUTER_API_KEY"
+  }
+}
+EOF
+
+assert_eq "pp or model"      "openai/gpt-5.4"          "$(parse_pp_model "$TMPDIR/pp_auth_token.json")"
+assert_eq "pp or auth_token" "\$OPENROUTER_API_KEY"     "$(jq -r '.post_process.auth_token // empty' "$TMPDIR/pp_auth_token.json")"
+assert_eq "pp or base_url"   "https://openrouter.ai/api" "$(jq -r '.post_process.base_url // empty' "$TMPDIR/pp_auth_token.json")"
+assert_eq "pp or api_key"    ""                         "$(jq -r '.post_process.api_key // empty' "$TMPDIR/pp_auth_token.json")"
+
+# pp with api_key (MiniMax-style)
+cat > "$TMPDIR/pp_apikey_custom.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": {
+    "prompt": "review.md",
+    "model": "MiniMax-M2.5",
+    "base_url": "https://api.minimax.io/anthropic",
+    "api_key": "$MINIMAX_API_KEY"
+  }
+}
+EOF
+
+assert_eq "pp mm model"    "MiniMax-M2.5"                     "$(parse_pp_model "$TMPDIR/pp_apikey_custom.json")"
+assert_eq "pp mm api_key"  "\$MINIMAX_API_KEY"                 "$(jq -r '.post_process.api_key // empty' "$TMPDIR/pp_apikey_custom.json")"
+assert_eq "pp mm base_url" "https://api.minimax.io/anthropic" "$(jq -r '.post_process.base_url // empty' "$TMPDIR/pp_apikey_custom.json")"
+
+# pp with apikey auth (Claude API key)
+cat > "$TMPDIR/pp_apikey.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": {
+    "prompt": "review.md",
+    "model": "claude-opus-4-6",
+    "auth": "apikey"
+  }
+}
+EOF
+
+assert_eq "pp apikey auth"  "apikey"          "$(parse_pp_auth "$TMPDIR/pp_apikey.json")"
+assert_eq "pp apikey model" "claude-opus-4-6" "$(parse_pp_model "$TMPDIR/pp_apikey.json")"
+
+# pp with default auth (no auth field)
+cat > "$TMPDIR/pp_default.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": {
+    "prompt": "review.md",
+    "model": "claude-sonnet-4-6"
+  }
+}
+EOF
+
+assert_eq "pp default auth"  ""                 "$(parse_pp_auth "$TMPDIR/pp_default.json")"
+assert_eq "pp default model" "claude-sonnet-4-6" "$(parse_pp_model "$TMPDIR/pp_default.json")"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
