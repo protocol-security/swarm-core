@@ -254,6 +254,17 @@ while true; do
         >> "$STATS_FILE"
     hlog "session end cost=\$${cost} in=${tok_in} out=${tok_out} turns=${turns} time=${dur}ms"
 
+    # Detect fatal errors (model not found, auth failure) and exit
+    # immediately rather than spinning in a tight loop.
+    SESSION_ERROR=$(grep '"error"[[:space:]]*:' "$LOGFILE" 2>/dev/null \
+        | jq -r 'select(.error) | .error' 2>/dev/null | head -1 || true)
+    if [ -n "$SESSION_ERROR" ] && [ "$tok_in" = "0" ] && [ "$tok_out" = "0" ]; then
+        SESSION_MSG=$(echo "$RESULT_LINE" | jq -r '.result // empty' 2>/dev/null || true)
+        hlog_err "fatal: ${SESSION_ERROR}: ${SESSION_MSG}"
+        hlog_err "exiting due to unrecoverable error"
+        exit 1
+    fi
+
     git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
     AFTER=$(git rev-parse origin/agent-work)
 
