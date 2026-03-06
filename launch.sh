@@ -13,6 +13,19 @@ SWARM_RUN_CONTEXT="${PROJECT}@${SWARM_RUN_HASH} (${SWARM_RUN_BRANCH})"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
 
+# Expand a single $VAR reference from the host environment.
+# Supports "$VAR" (entire value is a reference) only -- not inline
+# interpolation.  Returns the original string if no match.
+expand_env_ref() {
+    local val="$1"
+    if [[ "$val" =~ ^\$([A-Za-z_][A-Za-z_0-9]*)$ ]]; then
+        local varname="${BASH_REMATCH[1]}"
+        printf '%s' "${!varname:-}"
+    else
+        printf '%s' "$val"
+    fi
+}
+
 # Docker containers may create files owned by a different UID inside
 # bind-mounted host directories.  Plain rm -rf fails without root.
 # Use a throwaway Alpine container (Docker is already required) so
@@ -166,6 +179,7 @@ cmd_start() {
         AGENT_IDX=$((AGENT_IDX + 1))
         NAME="${IMAGE_NAME}-${AGENT_IDX}"
         docker rm -f "$NAME" 2>/dev/null || true
+        agent_api_key="$(expand_env_ref "$agent_api_key")"
         agent_context="${agent_context:-full}"
         local effective_prompt="${agent_prompt:-$SWARM_PROMPT}"
 
@@ -348,6 +362,7 @@ cmd_post_process() {
     pp_model=$(jq -r '.post_process.model // "claude-opus-4-6"' "$CONFIG_FILE")
     pp_base_url=$(jq -r '.post_process.base_url // empty' "$CONFIG_FILE")
     pp_api_key=$(jq -r '.post_process.api_key // empty' "$CONFIG_FILE")
+    pp_api_key="$(expand_env_ref "$pp_api_key")"
     pp_effort=$(jq -r '.post_process.effort // empty' "$CONFIG_FILE")
     pp_auth=$(jq -r '.post_process.auth // empty' "$CONFIG_FILE")
 
