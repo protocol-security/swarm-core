@@ -2,37 +2,43 @@
 
 ## Quick start
 
-    # Interactive setup (generates swarm.json).
-    ./setup.sh
+```bash
+# Interactive setup (generates swarm.json).
+./setup.sh
 
-    # Or configure via CLI flags.
-    ANTHROPIC_API_KEY="sk-ant-..." \
-    ./launch.sh start --prompt path/to/prompt.md
+# Or configure via CLI flags.
+ANTHROPIC_API_KEY="sk-ant-..." \
+./launch.sh start --prompt path/to/prompt.md
 
-    # Or configure via environment.
-    ANTHROPIC_API_KEY="sk-ant-..." \
-    SWARM_PROMPT="path/to/prompt.md" \
-    ./launch.sh start
+# Or configure via environment.
+ANTHROPIC_API_KEY="sk-ant-..." \
+SWARM_PROMPT="path/to/prompt.md" \
+./launch.sh start
+```
 
 ## Commands
 
-    ./launch.sh start [OPTIONS]    # Launch agents.
-    ./launch.sh stop               # Stop all agents.
-    ./launch.sh status             # Show containers.
-    ./launch.sh logs N             # Tail agent N logs.
-    ./launch.sh wait               # Block, harvest, post-process.
-    ./launch.sh post-process       # Run post-process agent.
+```bash
+./launch.sh start [OPTIONS]    # Launch agents.
+./launch.sh stop               # Stop all agents.
+./launch.sh status             # Show containers.
+./launch.sh logs N             # Tail agent N logs.
+./launch.sh wait               # Block, harvest, post-process.
+./launch.sh post-process       # Run post-process agent.
+```
 
 Start options (override env vars; config file sets agents):
 
-    --prompt FILE           Prompt file path.
-    --model MODEL           Model name (default: claude-opus-4-6).
-    --agents N              Agent count (default: 3).
-    --max-idle N            Idle sessions before exit (default: 3).
-    --effort LEVEL          Reasoning effort: low, medium, high.
-    --setup SCRIPT          Setup script path.
-    --no-inject-git-rules   Disable git coordination rules.
-    --dashboard             Open the TUI dashboard after launch.
+```
+--prompt FILE           Prompt file path.
+--model MODEL           Model name (default: claude-opus-4-6).
+--agents N              Agent count (default: 3).
+--max-idle N            Idle sessions before exit (default: 3).
+--effort LEVEL          Reasoning effort: low, medium, high.
+--setup SCRIPT          Setup script path.
+--no-inject-git-rules   Disable git coordination rules.
+--dashboard             Open the TUI dashboard after launch.
+```
 
 Priority: CLI flags > config file > environment variables.
 Credentials stay as env vars (not in shell history).
@@ -82,7 +88,9 @@ Top-level fields: `prompt`, `setup`, `max_idle`, `inject_git_rules`,
 
 ## Dashboard
 
-    ./dashboard.sh
+```bash
+./dashboard.sh
+```
 
 Per-agent model, auth source, status, cost, tokens, cache,
 turns, throughput, and duration.  Updates every 2-3s.  The
@@ -102,13 +110,15 @@ Agent activity streams to Docker logs in real time. Press
 `[1-9]` in the dashboard (or `./launch.sh logs N`) to see
 what an agent is doing:
 
-    12:34:56 harness[1] session start at=abc123
-    12:35:01   agent[1] Read src/main.ts
-    12:35:03   agent[1] Edit src/main.ts
-    12:35:08   agent[1] Shell: npm test
-    12:35:12   agent[1] Shell: git add -A && git commit -m "fix tests"
-    12:35:15   agent[1] Shell: git push origin agent-work
-    12:35:18 harness[1] session end cost=$0.12 in=800 out=644 turns=6 time=19s
+```
+12:34:56 harness[1] session start at=abc123
+12:35:01   agent[1] Read src/main.ts
+12:35:03   agent[1] Edit src/main.ts
+12:35:08   agent[1] Shell: npm test
+12:35:12   agent[1] Shell: git add -A && git commit -m "fix tests"
+12:35:15   agent[1] Shell: git push origin agent-work
+12:35:18 harness[1] session end cost=$0.12 in=800 out=644 turns=6 time=19s
+```
 
 The filter (`lib/activity-filter.sh`) parses `stream-json`
 events from the Claude CLI and prints one line per tool call.
@@ -117,13 +127,15 @@ The timestamp and agent ID are colored in ANSI yellow
 
 ## Testing
 
-    ./tests/test.sh --help               # All options.
-    ./tests/test.sh --unit               # Unit tests only.
-    ./tests/test.sh                      # Single smoke test.
-    ./tests/test.sh --all                # Full matrix.
-    ./tests/test.sh --config swarm.json  # Custom config.
-    ./tests/test.sh --no-inject          # Explicit git prompt.
-    ./tests/test.sh -- --model m --agents 2  # CLI flags.
+```bash
+./tests/test.sh --help               # All options.
+./tests/test.sh --unit               # Unit tests only.
+./tests/test.sh                      # Single smoke test.
+./tests/test.sh --all                # Full matrix.
+./tests/test.sh --config swarm.json  # Custom config.
+./tests/test.sh --no-inject          # Explicit git prompt.
+./tests/test.sh -- --model m --agents 2  # CLI flags.
+```
 
 Flags combine: `./tests/test.sh --config f.json --no-inject`.
 Use `--` to forward flags to `launch.sh start` (e.g. `--model`,
@@ -154,14 +166,16 @@ Integration matrix (`--all`):
 
 Unit tests (no Docker or API key):
 
-    ./tests/test.sh --unit         # All unit tests.
-    ./tests/test_config.sh         # Config parsing.
-    ./tests/test_format.sh         # Formatting helpers.
-    ./tests/test_launch.sh         # Launch logic.
-    ./tests/test_harness.sh        # Stat extraction.
-    ./tests/test_costs.sh          # Cost aggregation.
-    ./tests/test_harvest.sh        # Harvest git ops.
-    ./tests/test_setup.sh          # Setup wizard.
+```bash
+./tests/test.sh --unit         # All unit tests.
+./tests/test_config.sh         # Config parsing.
+./tests/test_format.sh         # Formatting helpers.
+./tests/test_launch.sh         # Launch logic.
+./tests/test_harness.sh        # Stat extraction.
+./tests/test_costs.sh          # Cost aggregation.
+./tests/test_harvest.sh        # Harvest git ops.
+./tests/test_setup.sh          # Setup wizard.
+```
 
 ## Post-processing
 
@@ -278,8 +292,10 @@ Disable with `"inject_git_rules": false` in `swarm.json` or
 
 ## Cost tracking
 
-    ./costs.sh          # Table.
-    ./costs.sh --json   # JSON.
+```bash
+./costs.sh          # Table.
+./costs.sh --json   # JSON.
+```
 
 Stats collected per session inside each container
 (`agent_logs/stats_agent_*.tsv`), read on demand.
@@ -304,13 +320,17 @@ Dashboard columns:
 
 ## Cleanup
 
-    rm -rf /tmp/<project>-upstream.git
+```bash
+rm -rf /tmp/<project>-upstream.git
+```
 
 ## Verify image
 
-    docker run --rm --entrypoint bash \
-        -e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" \
-        $(basename $(pwd))-agent \
-        -c 'claude --dangerously-skip-permissions \
-            -p "What model are you? Reply with model id only." \
-            --model claude-opus-4-6 2>&1'
+```bash
+docker run --rm --entrypoint bash \
+    -e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" \
+    $(basename $(pwd))-agent \
+    -c 'claude --dangerously-skip-permissions \
+        -p "What model are you? Reply with model id only." \
+        --model claude-opus-4-6 2>&1'
+```

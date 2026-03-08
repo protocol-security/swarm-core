@@ -16,11 +16,15 @@ Based on the agent-team pattern from
 
 Add as a submodule:
 
-    git submodule add https://github.com/moodmosaic/claude-swarm.git tools/claude-swarm
+```bash
+git submodule add https://github.com/moodmosaic/claude-swarm.git tools/claude-swarm
+```
 
 Or clone standalone and run from your project directory:
 
-    ./path/to/claude-swarm/launch.sh start --prompt tasks/task.md
+```bash
+./path/to/claude-swarm/launch.sh start --prompt tasks/task.md
+```
 
 ## How it works
 
@@ -49,15 +53,17 @@ see the changes on the next fetch.
 
 ## Quick start
 
-    # Interactive setup (generates swarm.json).
-    ./setup.sh
+```bash
+# Interactive setup (generates swarm.json).
+./setup.sh
 
-    # Or launch directly.
-    ANTHROPIC_API_KEY="sk-ant-..." \
-    ./launch.sh start --prompt tasks/task.md --agents 3
+# Or launch directly.
+ANTHROPIC_API_KEY="sk-ant-..." \
+./launch.sh start --prompt tasks/task.md --agents 3
 
-    # Monitor.
-    ./dashboard.sh
+# Monitor.
+./dashboard.sh
+```
 
 See [USAGE.md](USAGE.md) for all commands, CLI flags,
 dashboard keys, and testing.
