@@ -208,7 +208,7 @@ assert_eq "agent padded 3 spaces" "   " "$PAD_SPACES"
 
 # ============================================================
 echo ""
-echo "=== 16. ANSI color in prefix ==="
+echo "=== 16. ANSI color — full line yellow ==="
 
 RAW=$(run_filter_raw 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}')
 
@@ -221,7 +221,7 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# Reset (\033[0m) should appear after the agent ID.
+# Reset (\033[0m) should appear after the tool content.
 if printf '%s' "$RAW" | grep -qP '\x1b\[0m'; then
     echo "  PASS: has ANSI reset"
     PASS=$((PASS + 1))
@@ -230,9 +230,9 @@ else
     FAIL=$((FAIL + 1))
 fi
 
-# The tool name should be outside the colored region.
-AFTER_RESET=$(printf '%s' "$RAW" | sed 's/.*\x1b\[0m//')
-assert_contains "tool after reset" "Shell: pwd" "$AFTER_RESET"
+# The tool name should be inside the colored region (before reset).
+BEFORE_RESET=$(printf '%s' "$RAW" | sed 's/\x1b\[0m.*//')
+assert_contains "tool before reset" "Shell: pwd" "$BEFORE_RESET"
 
 # ============================================================
 echo ""
