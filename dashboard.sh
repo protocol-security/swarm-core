@@ -201,19 +201,7 @@ draw() {
     local right="${DIM}uptime: ${uptime_str}${RESET}"
     printf "%b%*s%b\n" "$title" $((TERM_COLS - title_len - 2 - ${#uptime_str} - 10)) "" "$right"
     printf " ${DIM}config: %s | prompt: %s${RESET}\n" "$CONFIG_LABEL" "$SWARM_PROMPT"
-    printf " ${DIM}agents: %s${RESET}\n" "$NUM_AGENTS"
-    IFS=',' read -ra _groups <<< "$MODEL_SUMMARY"
-    local total_groups=${#_groups[@]}
-    local idx=0
-    for agent_line in "${_groups[@]}"; do
-        agent_line="${agent_line# }"
-        idx=$((idx + 1))
-        if [ "$idx" -lt "$total_groups" ]; then
-            printf " ${DIM}  ├ %s${RESET}\n" "$agent_line"
-        else
-            printf " ${DIM}  └ %s${RESET}\n" "$agent_line"
-        fi
-    done
+    printf " ${DIM}agents: %s — %s${RESET}\n" "$NUM_AGENTS" "$MODEL_SUMMARY"
     echo ""
 
     # Agent table header.
