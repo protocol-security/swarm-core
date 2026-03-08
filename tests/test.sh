@@ -306,7 +306,7 @@ PPPROMPT
 }
 
 cmd_unit() {
-    local pass=0 fail=0
+    local pass=0 fail=0 total_tests=0
     echo "=== Unit tests ==="
     echo ""
     for f in "$TESTS_DIR"/test_*.sh; do
@@ -318,6 +318,8 @@ cmd_unit() {
         if [ "$rc" -eq 0 ]; then
             printf "  PASS  %-24s (%s)\n" "$name" "${count:-?}"
             pass=$((pass + 1))
+            local n="${count%% *}"
+            [ -n "$n" ] && total_tests=$((total_tests + n))
         else
             printf "  FAIL  %-24s\n" "$name"
             printf '%s\n' "$output" | tail -20 | sed 's/^/        /'
@@ -325,7 +327,7 @@ cmd_unit() {
         fi
     done
     echo ""
-    echo "  ${pass} passed, ${fail} failed"
+    echo "  ${pass} files passed (${total_tests} tests), ${fail} failed"
     [ "$fail" -eq 0 ]
 }
 
