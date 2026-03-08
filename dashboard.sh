@@ -245,13 +245,6 @@ draw() {
             short="${short} [${eff_tag^^}]"
         fi
 
-        local idle_str=""
-        if [ "$state" != "not found" ]; then
-            local logs
-            logs=$(docker logs "$name" 2>&1 || true)
-            idle_str=$(printf '%s' "$logs" | grep -o 'idle [0-9]*' | tail -1 || true)
-        fi
-
         # Read cumulative stats from the container.
         local agent_stats a_cost a_in a_out a_cache a_dur a_api_ms a_turns
         agent_stats=$(read_agent_stats "$name" "$i")
@@ -275,13 +268,8 @@ draw() {
         case "$state" in
             running)
                 running_count=$((running_count + 1))
-                if [ -n "$idle_str" ]; then
-                    status_text="$idle_str"
-                    status_color="$YELLOW"
-                else
-                    status_text="running"
-                    status_color="$GREEN"
-                fi
+                status_text="running"
+                status_color="$GREEN"
                 ;;
             exited)
                 exited_count=$((exited_count + 1))
