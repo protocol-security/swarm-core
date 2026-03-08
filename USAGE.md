@@ -37,6 +37,49 @@ Start options (override env vars; config file sets agents):
 Priority: CLI flags > config file > environment variables.
 Credentials stay as env vars (not in shell history).
 
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ANTHROPIC_API_KEY` | | API key (or use `CLAUDE_CODE_OAUTH_TOKEN`). |
+| `CLAUDE_CODE_OAUTH_TOKEN` | | OAuth token via `claude setup-token`. |
+| `SWARM_PROMPT` | (required) | Prompt file path. |
+| `SWARM_CONFIG` | | Config file path. |
+| `SWARM_SETUP` | | Setup script path. |
+| `SWARM_MODEL` | `claude-opus-4-6` | Model. |
+| `SWARM_NUM_AGENTS` | `3` | Container count. |
+| `SWARM_MAX_IDLE` | `3` | Idle sessions before exit. |
+| `SWARM_EFFORT` | | Reasoning effort. |
+| `SWARM_INJECT_GIT_RULES` | `true` | Inject git rules. |
+| `SWARM_GIT_USER_NAME` | `swarm-agent` | Git author name. |
+| `SWARM_GIT_USER_EMAIL` | `agent@claude-swarm.local` | Git email. |
+| `ANTHROPIC_BASE_URL` | | Override API URL. |
+| `ANTHROPIC_AUTH_TOKEN` | | Override auth token. |
+
+Any Anthropic-compatible endpoint works globally via
+`ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`, or per-group
+via `base_url`/`api_key` in `swarm.json`.
+
+## Config file fields
+
+Per-group fields in `swarm.json` `agents` array:
+
+| Field | Values | Notes |
+|-------|--------|-------|
+| `model` | model name | Required. |
+| `count` | integer | Number of agents in this group. |
+| `effort` | `low`, `medium`, `high` | Adaptive reasoning depth. |
+| `context` | `full`, `slim`, `none` | How much of `.claude/` to keep (default: `full`). |
+| `prompt` | file path | Per-group prompt override (default: top-level). |
+| `auth` | `apikey`, `oauth`, omit | Which host credential to inject (see [Auth modes](#auth-modes)). |
+| `api_key` | key or `$VAR` | Per-group API key for third-party endpoints. |
+| `auth_token` | key or `$VAR` | Per-group Bearer token (OpenRouter-style). |
+| `base_url` | URL | Per-group API endpoint. |
+| `inject_git_rules` | `true`, `false` | Append git coordination rules to system prompt. |
+
+Top-level fields: `prompt`, `setup`, `max_idle`, `inject_git_rules`,
+`post_process`.
+
 ## Dashboard
 
     ./dashboard.sh
@@ -107,6 +150,7 @@ Integration matrix (`--all`):
 | `2-agents-context-bare` | 2 | 1 full + 1 bare |
 | `2-agents-context-slim` | 2 | 1 full + 1 slim |
 | `2-agents-per-prompt` | 2 | per-group prompt override |
+| `1-agent-cli-flags` | 1 | CLI flags via `--` |
 
 Unit tests (no Docker or API key):
 
@@ -210,6 +254,10 @@ Three credential mechanisms serve different purposes:
   that use `ANTHROPIC_AUTH_TOKEN` (OpenRouter-style).  Clears
   `ANTHROPIC_API_KEY` so Claude Code enters third-party mode.
   Supports `$VAR` references.
+
+For subscription auth (Pro/Max/Teams/Enterprise), generate
+an OAuth token with `claude setup-token` and export
+`CLAUDE_CODE_OAUTH_TOKEN`.
 
 Groups with `api_key` or `auth_token` ignore the `auth`
 field; their custom credential is always used.  When neither
