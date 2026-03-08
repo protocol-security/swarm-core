@@ -212,6 +212,10 @@ Groups with `api_key` or `auth_token` ignore the `auth`
 field; their custom credential is always used.  When neither
 is set, `auth` determines which host credential to inject.
 
+The dashboard **Auth** column reflects the actual credential
+source: `key`, `oauth`, `token`, or `auto` (see Dashboard
+columns).
+
 ## Git coordination
 
 Agents receive git rules (commit/push/rebase) via a system
@@ -231,6 +235,9 @@ Stats collected per session inside each container
 
 Dashboard columns:
 
+- **Auth** — credential source: `key` (API key), `oauth`
+  (subscription token), `token` (Bearer / OpenRouter-style),
+  `auto` (both key + OAuth present, CLI decides).
 - **Ctx** — context mode: `bare` (no `.claude/`), `slim`
   (only `CLAUDE.md`), or blank for full context.
 - **Cost** — cumulative API cost in USD.

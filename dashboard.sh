@@ -227,15 +227,20 @@ draw() {
             effort=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
             context_mode=$(printf '%s' "$env_dump" | grep '^SWARM_CONTEXT=' | head -1 | cut -d= -f2- || true)
             auth_mode=$(printf '%s' "$env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
-            # Auto-detect auth source when not explicitly set.
+            # Fallback: detect credential source from container env.
             if [ -z "$auth_mode" ]; then
-                local has_apikey has_oauth
+                local has_apikey has_oauth has_authtoken
                 has_apikey=$(printf '%s' "$env_dump" | grep '^ANTHROPIC_API_KEY=' | head -1 | cut -d= -f2- || true)
                 has_oauth=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_OAUTH_TOKEN=' | head -1 | cut -d= -f2- || true)
-                if [ -n "$has_oauth" ] && [ -z "$has_apikey" ]; then
+                has_authtoken=$(printf '%s' "$env_dump" | grep '^ANTHROPIC_AUTH_TOKEN=' | head -1 | cut -d= -f2- || true)
+                if [ -n "$has_authtoken" ] && [ -z "$has_apikey" ]; then
+                    auth_mode="token"
+                elif [ -n "$has_oauth" ] && [ -z "$has_apikey" ]; then
                     auth_mode="oauth"
-                elif [ -n "$has_apikey" ] && [ -z "$has_oauth" ]; then
-                    auth_mode="apikey"
+                elif [ -n "$has_apikey" ] && [ -n "$has_oauth" ]; then
+                    auth_mode="auto"
+                elif [ -n "$has_apikey" ]; then
+                    auth_mode="key"
                 fi
             fi
         fi

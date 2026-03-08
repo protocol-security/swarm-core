@@ -67,6 +67,30 @@ resolve_agent_creds() {
     echo "${resolved_key}|${oauth_env}"
 }
 
+# Mirrors the auth_label computation in launch.sh (after credential resolution).
+# Args: agent_auth agent_api_key agent_auth_token resolved_api_key global_oauth
+resolve_auth_label() {
+    local agent_auth="$1" agent_api_key="$2" agent_auth_token="$3"
+    local resolved_api_key="$4" global_oauth="$5"
+    local auth_label=""
+    if [ -n "$agent_auth_token" ]; then
+        auth_label="token"
+    elif [ "$agent_auth" = "oauth" ]; then
+        auth_label="oauth"
+    elif [ "$agent_auth" = "apikey" ]; then
+        auth_label="key"
+    elif [ -n "$agent_api_key" ]; then
+        auth_label="key"
+    elif [ -n "$resolved_api_key" ] && [ -n "$global_oauth" ]; then
+        auth_label="auto"
+    elif [ -n "$resolved_api_key" ]; then
+        auth_label="key"
+    elif [ -n "$global_oauth" ]; then
+        auth_label="oauth"
+    fi
+    echo "$auth_label"
+}
+
 # Mirrors the validation guard in cmd_start().
 check_auth() {
     local api_key="$1" oauth_token="$2" config_file="$3"
@@ -482,6 +506,60 @@ assert_eq "combo effort"  "low"   "$EFFORT_LEVEL"
 assert_eq "combo setup"   "x.sh"  "$SWARM_SETUP"
 assert_eq "combo inject"  "false" "$INJECT_GIT_RULES"
 assert_eq "combo dash"    "true"  "$OPEN_DASHBOARD"
+
+# ============================================================
+echo ""
+echo "=== 20. Auth label — credential source labels ==="
+
+# auth_token set → "token"
+assert_eq "auth_token → token" \
+    "token" \
+    "$(resolve_auth_label "" "" "sk-or-key" "" "")"
+
+# auth_token set with auth field → still "token" (takes priority)
+assert_eq "auth_token + auth:apikey → token" \
+    "token" \
+    "$(resolve_auth_label "apikey" "" "sk-or-key" "" "")"
+
+# auth: "oauth" → "oauth"
+assert_eq "auth:oauth → oauth" \
+    "oauth" \
+    "$(resolve_auth_label "oauth" "" "" "" "sk-oat-tok")"
+
+# custom api_key (no auth field) → "key"
+assert_eq "custom api_key → key" \
+    "key" \
+    "$(resolve_auth_label "" "sk-custom" "" "" "")"
+
+# auth: "apikey" with resolved key → "key"
+assert_eq "auth:apikey → key" \
+    "key" \
+    "$(resolve_auth_label "apikey" "" "" "sk-global" "")"
+
+# auth: "apikey" with both host creds → still "key" (OAuth not forwarded)
+assert_eq "auth:apikey + host oauth → key" \
+    "key" \
+    "$(resolve_auth_label "apikey" "" "" "sk-global" "sk-oat-tok")"
+
+# default with both key + OAuth → "auto"
+assert_eq "default key+oauth → auto" \
+    "auto" \
+    "$(resolve_auth_label "" "" "" "sk-global" "sk-oat-tok")"
+
+# default with key only → "key"
+assert_eq "default key only → key" \
+    "key" \
+    "$(resolve_auth_label "" "" "" "sk-global" "")"
+
+# default with OAuth only → "oauth"
+assert_eq "default oauth only → oauth" \
+    "oauth" \
+    "$(resolve_auth_label "" "" "" "" "sk-oat-tok")"
+
+# nothing at all → empty
+assert_eq "no creds → empty" \
+    "" \
+    "$(resolve_auth_label "" "" "" "" "")"
 
 # ============================================================
 echo ""
