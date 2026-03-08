@@ -9,6 +9,7 @@ PASS=0
 FAIL=0
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
+TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
@@ -383,6 +384,104 @@ assert_eq "prompt override" "tasks/review.md" "$p2"
 IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 <<< "$LINE3"
 assert_eq "prompt + context" "tasks/explore.md" "$p3"
 assert_eq "context preserved" "none" "$c3"
+
+# ============================================================
+echo ""
+echo "=== 15. parse_start_args — basic flags ==="
+
+# Source the function from launch.sh without executing the
+# case statement.  We extract it with sed to avoid side effects
+# (git rev-parse, docker, etc.).
+_LAUNCH="$TESTS_DIR/../launch.sh"
+eval "$(sed -n '/^parse_start_args()/,/^}/p' "$_LAUNCH")"
+
+# Reset variables to known state before each sub-test.
+reset_vars() {
+    SWARM_PROMPT="orig.md"
+    CLAUDE_MODEL="orig-model"
+    NUM_AGENTS=1
+    MAX_IDLE=3
+    EFFORT_LEVEL=""
+    SWARM_SETUP=""
+    INJECT_GIT_RULES="true"
+    OPEN_DASHBOARD=false
+}
+
+reset_vars
+parse_start_args --prompt new.md --model new-model --agents 5
+assert_eq "cli prompt"  "new.md"    "$SWARM_PROMPT"
+assert_eq "cli model"   "new-model" "$CLAUDE_MODEL"
+assert_eq "cli agents"  "5"         "$NUM_AGENTS"
+
+reset_vars
+parse_start_args --max-idle 7 --effort high --setup s.sh
+assert_eq "cli max-idle" "7"    "$MAX_IDLE"
+assert_eq "cli effort"   "high" "$EFFORT_LEVEL"
+assert_eq "cli setup"    "s.sh" "$SWARM_SETUP"
+
+reset_vars
+parse_start_args --no-inject-git-rules
+assert_eq "cli no-inject" "false" "$INJECT_GIT_RULES"
+
+reset_vars
+parse_start_args --dashboard
+assert_eq "cli dashboard" "true" "$OPEN_DASHBOARD"
+
+# ============================================================
+echo ""
+echo "=== 16. parse_start_args — no args leaves defaults ==="
+
+reset_vars
+parse_start_args
+assert_eq "default prompt"  "orig.md"    "$SWARM_PROMPT"
+assert_eq "default model"   "orig-model" "$CLAUDE_MODEL"
+assert_eq "default agents"  "1"          "$NUM_AGENTS"
+assert_eq "default idle"    "3"          "$MAX_IDLE"
+assert_eq "default effort"  ""           "$EFFORT_LEVEL"
+assert_eq "default inject"  "true"       "$INJECT_GIT_RULES"
+assert_eq "default dash"    "false"      "$OPEN_DASHBOARD"
+
+# ============================================================
+echo ""
+echo "=== 17. parse_start_args — CLI overrides env vars ==="
+
+SWARM_PROMPT="env.md"
+CLAUDE_MODEL="env-model"
+NUM_AGENTS=2
+parse_start_args --prompt cli.md --model cli-model --agents 8
+assert_eq "cli > env prompt" "cli.md"    "$SWARM_PROMPT"
+assert_eq "cli > env model"  "cli-model" "$CLAUDE_MODEL"
+assert_eq "cli > env agents" "8"         "$NUM_AGENTS"
+
+# ============================================================
+echo ""
+echo "=== 18. parse_start_args — unknown flag errors ==="
+
+reset_vars
+if (parse_start_args --bogus 2>/dev/null); then
+    echo "  FAIL: unknown flag should error"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: unknown flag rejected"
+    PASS=$((PASS + 1))
+fi
+
+# ============================================================
+echo ""
+echo "=== 19. parse_start_args — combined flags ==="
+
+reset_vars
+parse_start_args --prompt p.md --model m --agents 4 \
+    --max-idle 2 --effort low --setup x.sh \
+    --no-inject-git-rules --dashboard
+assert_eq "combo prompt"  "p.md"  "$SWARM_PROMPT"
+assert_eq "combo model"   "m"     "$CLAUDE_MODEL"
+assert_eq "combo agents"  "4"     "$NUM_AGENTS"
+assert_eq "combo idle"    "2"     "$MAX_IDLE"
+assert_eq "combo effort"  "low"   "$EFFORT_LEVEL"
+assert_eq "combo setup"   "x.sh"  "$SWARM_SETUP"
+assert_eq "combo inject"  "false" "$INJECT_GIT_RULES"
+assert_eq "combo dash"    "true"  "$OPEN_DASHBOARD"
 
 # ============================================================
 echo ""
