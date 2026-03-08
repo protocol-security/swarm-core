@@ -16,7 +16,11 @@ Based on the agent-team pattern from
 
 Add as a submodule:
 
-    git submodule add <url> tools/claude-swarm
+    git submodule add https://github.com/moodmosaic/claude-swarm.git tools/claude-swarm
+
+Or clone standalone and run from your project directory:
+
+    ./path/to/claude-swarm/launch.sh start --prompt tasks/task.md
 
 ## How it works
 
@@ -38,32 +42,29 @@ Host                         /tmp (bare repos)
            (agent-work)           (agent-work)
 ```
 
-All containers mount the same bare repo. When one agent
-pushes, others see the changes on the next fetch.
+All containers mount the same bare repo. Each runs
+`lib/harness.sh` which loops: reset to `origin/agent-work`,
+run one Claude session, push. When one agent pushes, others
+see the changes on the next fetch.
 
-Each container runs `lib/harness.sh`:
+## Quick start
 
-1. Clones `/upstream` to `/workspace`.
-2. Points submodule URLs at local read-only mirrors.
-3. Runs an optional setup hook (`SWARM_SETUP`).
-4. Loops: reset to `origin/agent-work`, run one Claude
-   session with `--output-format stream-json`.
+    # Interactive setup (generates swarm.json).
+    ./setup.sh
 
-Agent activity (tool calls, file edits, shell commands)
-streams to Docker logs in real time via `lib/activity-filter.sh`.
-Press `[1-9]` in the dashboard to watch what an agent is doing.
+    # Or launch directly.
+    ANTHROPIC_API_KEY="sk-ant-..." \
+    ./launch.sh start --prompt tasks/task.md --agents 3
 
-Agents stop after `SWARM_MAX_IDLE` consecutive idle sessions.
-A session is one `claude` invocation. After it exits the
-harness checks whether `agent-work` advanced. If not, the
-idle counter increments. Any push resets it.
+    # Monitor.
+    ./dashboard.sh
+
+See [USAGE.md](USAGE.md) for all commands, CLI flags,
+dashboard keys, and testing.
 
 ## Configuration
 
-### Config file (recommended)
-
-Place a `swarm.json` in your repo root, or point to one
-with `SWARM_CONFIG=/path/to/config.json`:
+Place a `swarm.json` in your repo root:
 
 ```json
 {
@@ -71,9 +72,9 @@ with `SWARM_CONFIG=/path/to/config.json`:
   "setup": "scripts/setup.sh",
   "max_idle": 3,
   "agents": [
-    { "count": 2, "model": "claude-opus-4-6", "effort": "high", "auth": "apikey" },
+    { "count": 2, "model": "claude-opus-4-6", "effort": "high" },
     { "count": 1, "model": "claude-opus-4-6", "context": "none" },
-    { "count": 1, "model": "claude-sonnet-4-6", "effort": "low", "prompt": "prompts/review.md" },
+    { "count": 1, "model": "claude-sonnet-4-6", "prompt": "prompts/review.md" },
     {
       "count": 3,
       "model": "openrouter/custom",
@@ -81,104 +82,20 @@ with `SWARM_CONFIG=/path/to/config.json`:
       "api_key": "sk-or-..."
     }
   ],
-  "inject_git_rules": true,
   "post_process": {
     "prompt": "prompts/review.md",
-    "model": "claude-opus-4-6",
-    "effort": "low"
+    "model": "claude-opus-4-6"
   }
 }
 ```
 
 Groups without `api_key` use `ANTHROPIC_API_KEY` or
-`CLAUDE_CODE_OAUTH_TOKEN` from the environment. Total
-agents = sum of `count` fields. Requires `jq`.
+`CLAUDE_CODE_OAUTH_TOKEN` from the environment.
 
-**Fields:**
-
-| Field | Values | Notes |
-|-------|--------|-------|
-| `prompt` | file path | Per-group prompt override (default: top-level `prompt`). |
-| `effort` | `low`, `medium`, `high` | Adaptive reasoning depth. Opus/Sonnet 4.6+. |
-| `context` | `full`, `slim`, `none` | How much of `.claude/` to keep (default: `full`). |
-| `auth` | `apikey`, `oauth`, omit | Which host credential to inject. Omit = both. |
-| `api_key` | key or `$VAR` | Per-group API key for third-party endpoints. |
-| `auth_token` | key or `$VAR` | Per-group Bearer token (OpenRouter-style). |
-| `inject_git_rules` | `true`, `false` | Append git coordination rules to system prompt. |
-
-`auth` controls which host credential (`ANTHROPIC_API_KEY` vs
-`CLAUDE_CODE_OAUTH_TOKEN`) is forwarded to a container.
-Groups with `api_key`/`auth_token`/`base_url` use their own
-credentials and ignore `auth`.  See [USAGE.md](USAGE.md)
-for details on auth modes.
-
-### CLI flags
-
-Most settings can be passed as flags to `launch.sh start`:
-
-    ./launch.sh start \
-      --prompt tasks/task.md \
-      --model claude-opus-4-6 \
-      --agents 3 \
-      --max-idle 3 \
-      --effort high \
-      --setup scripts/setup.sh \
-      --no-inject-git-rules \
-      --dashboard
+**Per-group fields:** `model`, `count`, `effort`, `context`,
+`prompt`, `auth`, `api_key`, `auth_token`, `base_url`,
+`inject_git_rules`. See [USAGE.md](USAGE.md) for field
+reference, environment variables, auth modes, context modes,
+and per-group prompts.
 
 Priority: CLI flags > config file > environment variables.
-Credentials (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`)
-remain env-var-only.
-
-### Environment variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ANTHROPIC_API_KEY` | | API key (or `CLAUDE_CODE_OAUTH_TOKEN`). |
-| `CLAUDE_CODE_OAUTH_TOKEN` | | OAuth token via `claude setup-token`. |
-| `SWARM_PROMPT` | (required) | Prompt file path. |
-| `SWARM_CONFIG` | | Config file path. |
-| `SWARM_SETUP` | | Setup script path. |
-| `SWARM_MODEL` | `claude-opus-4-6` | Model. |
-| `SWARM_NUM_AGENTS` | `3` | Container count. |
-| `SWARM_MAX_IDLE` | `3` | Idle sessions before exit. |
-| `SWARM_EFFORT` | | Reasoning effort. |
-| `SWARM_INJECT_GIT_RULES` | `true` | Inject git rules. |
-| `SWARM_GIT_USER_NAME` | `swarm-agent` | Git author name. |
-| `SWARM_GIT_USER_EMAIL` | `agent@claude-swarm.local` | Git email. |
-| `ANTHROPIC_BASE_URL` | | Override API URL. |
-| `ANTHROPIC_AUTH_TOKEN` | | Override auth token. |
-
-Config file takes precedence over env vars.  CLI flags take
-precedence over both.
-
-### Third-party models
-
-Any Anthropic-compatible endpoint works. Per-group via
-`base_url`/`api_key`, or globally:
-
-    ANTHROPIC_API_KEY="sk-..." \
-    ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic" \
-    SWARM_MODEL="MiniMax-M2.5" \
-    SWARM_PROMPT="tasks/task.md" \
-    ./launch.sh start
-
-### Subscription auth (Pro/Max/Teams/Enterprise)
-
-Generate an OAuth token on the host:
-
-    claude setup-token
-
-Then launch with it:
-
-    CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..." \
-    SWARM_PROMPT="tasks/task.md" \
-    ./launch.sh start
-
-Both credentials can coexist; the CLI decides which to use.
-Per-agent `api_key` in `swarm.json` still works for the
-API-key flow.
-
-## Commands and usage
-
-See [USAGE.md](USAGE.md).
