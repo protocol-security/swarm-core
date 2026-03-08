@@ -6,12 +6,10 @@ set -euo pipefail
 #
 #   claude ... --output-format stream-json | tee "$LOG" | activity-filter.sh
 #
-# Each tool_use content block becomes one line:
-#   12:34:56   agent[1] Read src/main.ts
-#   12:34:57   agent[1] Write src/main.ts
-#   12:34:58   agent[1] Edit src/main.ts
-#   12:35:01   agent[1] Shell: npm test
-#   12:35:02   agent[1] Glob *.ts
+# Each tool_use content block becomes one line with the
+# timestamp and agent ID in ANSI yellow (git-hash color):
+#   \033[33m12:34:56   agent[1]\033[0m Read src/main.ts
+#   \033[33m12:35:01   agent[1]\033[0m Shell: npm test
 #
 # Uses a single jq invocation for efficiency (no per-line fork).
 
@@ -28,7 +26,7 @@ exec jq --unbuffered --raw-input --arg id "$AGENT_ID" -r '
     now | strftime("%H:%M:%S");
 
   def prefix:
-    "\(ts)   agent[\($id)]";
+    "\u001b[33m\(ts)   agent[\($id)]\u001b[0m";
 
   fromjson? // empty |
   select(.type == "assistant") |
