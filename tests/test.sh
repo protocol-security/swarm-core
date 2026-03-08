@@ -75,14 +75,16 @@ run_all_tests() {
             "2-agents-per-prompt|2|config-per-prompt|"
         )
 
+        local int_total=${#cases[@]} int_idx=0
         for entry in "${cases[@]}"; do
+            int_idx=$((int_idx + 1))
             IFS='|' read -r label num_agents model_or_cfg extra_flag <<< "$entry"
             local t_start t_elapsed
             t_start=$(date +%s)
 
             local rc=0
-            run_integration_case "$label" "$num_agents" \
-                "$model_or_cfg" "$extra_flag" || rc=$?
+            run_integration_case "[${int_idx}/${int_total}] ${label}" \
+                "$num_agents" "$model_or_cfg" "$extra_flag" || rc=$?
 
             t_elapsed=$(( $(date +%s) - t_start ))
             if [ "$rc" -eq 0 ]; then
@@ -112,16 +114,19 @@ run_all_tests() {
             oauth_cases+=("2-agents-mixed-auth|2|config-mixed-auth|")
         fi
 
+        local oauth_total=${#oauth_cases[@]} oauth_idx=0
         for entry in "${oauth_cases[@]}"; do
+            oauth_idx=$((oauth_idx + 1))
             IFS='|' read -r label num_agents model_or_cfg extra_flag <<< "$entry"
+            local title="[${oauth_idx}/${oauth_total}] ${label}"
             local t_start t_elapsed
             t_start=$(date +%s)
 
             local rc=0
             if [ "$model_or_cfg" = "oauth-only" ]; then
-                cmd_oauth || rc=$?
+                SWARM_TITLE="$title" cmd_oauth || rc=$?
             else
-                run_integration_case "$label" "$num_agents" \
+                run_integration_case "$title" "$num_agents" \
                     "$model_or_cfg" "$extra_flag" || rc=$?
             fi
 
@@ -331,7 +336,7 @@ cmd_oauth() {
     env ANTHROPIC_API_KEY="" \
         CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN}" \
         SWARM_NUM_AGENTS="1" \
-        SWARM_TITLE="1-agent-oauth" \
+        SWARM_TITLE="${SWARM_TITLE:-1-agent-oauth}" \
         TIMEOUT="${TIMEOUT}" \
         "$TESTS_DIR/test.sh" || rc=$?
     return "$rc"
