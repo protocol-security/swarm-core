@@ -74,6 +74,44 @@ else
     EFFORT_LEVEL="${SWARM_EFFORT:-}"
 fi
 
+# CLI overrides for `start`.  Applied after config/env defaults.
+# Extracted as a function for testability.
+parse_start_args() {
+    OPEN_DASHBOARD=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --prompt)
+                SWARM_PROMPT="${2:?--prompt requires a value}"
+                shift 2 ;;
+            --model)
+                CLAUDE_MODEL="${2:?--model requires a value}"
+                shift 2 ;;
+            --agents)
+                NUM_AGENTS="${2:?--agents requires a value}"
+                shift 2 ;;
+            --max-idle)
+                MAX_IDLE="${2:?--max-idle requires a value}"
+                shift 2 ;;
+            --effort)
+                EFFORT_LEVEL="${2:?--effort requires a value}"
+                shift 2 ;;
+            --setup)
+                SWARM_SETUP="${2:?--setup requires a value}"
+                shift 2 ;;
+            --no-inject-git-rules)
+                INJECT_GIT_RULES="false"
+                shift ;;
+            --dashboard)
+                OPEN_DASHBOARD=true
+                shift ;;
+            *)
+                echo "Unknown start option: $1" >&2
+                echo "Try '$0 --help' for more." >&2
+                exit 1 ;;
+        esac
+    done
+}
+
 cmd_start() {
     if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "$CONFIG_FILE" ]; then
         echo "ERROR: ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN must be set." >&2
@@ -187,7 +225,7 @@ cmd_start() {
         local ctx_label="" prompt_label=""
         [ "$agent_context" != "full" ] && ctx_label=" context=${agent_context}"
         [ -n "$agent_prompt" ] && prompt_label=" prompt=${agent_prompt}"
-        echo "--- Launching ${NAME} (${agent_model}${agent_effort:+ effort=${agent_effort}}${agent_auth:+ auth=${agent_auth}}${ctx_label}${prompt_label}) ---"
+        echo "--- Launching ${NAME} (${agent_model}${agent_effort:+ effort=${agent_effort}}${ctx_label}${prompt_label}) ---"
         EXTRA_ENV=()
         if [ -n "$agent_base_url" ]; then
             EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${agent_base_url}")
@@ -196,12 +234,6 @@ cmd_start() {
         fi
         [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
             && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
-
-        # Auto-tag agents with a custom api_key or auth_token as "apikey"
-        # for the dashboard.
-        if [ -z "$agent_auth" ] && { [ -n "$agent_api_key" ] || [ -n "$agent_auth_token" ]; }; then
-            agent_auth="apikey"
-        fi
 
         # Per-agent auth source: "oauth" = subscription only,
         # "apikey" = API key only, "" = pass both (CLI decides).
@@ -230,6 +262,24 @@ cmd_start() {
             esac
         fi
 
+        # Dashboard auth label: describes the actual credential source.
+        local auth_label=""
+        if [ -n "$agent_auth_token" ]; then
+            auth_label="token"
+        elif [ "$agent_auth" = "oauth" ]; then
+            auth_label="oauth"
+        elif [ "$agent_auth" = "apikey" ]; then
+            auth_label="key"
+        elif [ -n "$agent_api_key" ]; then
+            auth_label="key"
+        elif [ -n "$resolved_api_key" ] && [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            auth_label="auto"
+        elif [ -n "$resolved_api_key" ]; then
+            auth_label="key"
+        elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            auth_label="oauth"
+        fi
+
         local eff="${agent_effort:-${EFFORT_LEVEL:-}}"
         [ -n "$eff" ] \
             && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${eff}")
@@ -248,7 +298,7 @@ cmd_start() {
             -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
             -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
             -e "AGENT_ID=${AGENT_IDX}" \
-            -e "SWARM_AUTH_MODE=${agent_auth}" \
+            -e "SWARM_AUTH_MODE=${auth_label}" \
             -e "SWARM_CONTEXT=${agent_context}" \
             -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
             -e "SWARM_CFG_PROMPT=${effective_prompt}" \
@@ -408,10 +458,6 @@ cmd_post_process() {
     done < "/tmp/${PROJECT}-pp-vols.txt"
     rm -f "/tmp/${PROJECT}-pp-vols.txt"
 
-    if [ -z "$pp_auth" ] && { [ -n "$pp_api_key" ] || [ -n "$pp_auth_token" ]; }; then
-        pp_auth="apikey"
-    fi
-
     local EXTRA_ENV=()
     if [ -n "$pp_base_url" ]; then
         EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${pp_base_url}")
@@ -442,6 +488,23 @@ cmd_post_process() {
         esac
     fi
 
+    local pp_auth_label=""
+    if [ -n "$pp_auth_token" ]; then
+        pp_auth_label="token"
+    elif [ "$pp_auth" = "oauth" ]; then
+        pp_auth_label="oauth"
+    elif [ "$pp_auth" = "apikey" ]; then
+        pp_auth_label="key"
+    elif [ -n "$pp_api_key" ]; then
+        pp_auth_label="key"
+    elif [ -n "$pp_resolved_api_key" ] && [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        pp_auth_label="auto"
+    elif [ -n "$pp_resolved_api_key" ]; then
+        pp_auth_label="key"
+    elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        pp_auth_label="oauth"
+    fi
+
     [ -n "$pp_effort" ] \
         && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${pp_effort}")
 
@@ -460,7 +523,7 @@ cmd_post_process() {
         -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
         -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
         -e "AGENT_ID=post" \
-        -e "SWARM_AUTH_MODE=${pp_auth}" \
+        -e "SWARM_AUTH_MODE=${pp_auth_label}" \
         -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
         -e "SWARM_CFG_PROMPT=${pp_prompt}" \
         -e "SWARM_CFG_SETUP=${SWARM_SETUP:-}" \
@@ -494,23 +557,32 @@ Usage: $0 COMMAND [OPTIONS]
 Orchestrate Claude Code agents in Docker containers.
 
 Commands:
-  start [--dashboard]  Build image, create bare repo, launch agents.
-                       With --dashboard, open the TUI after launch.
+  start [OPTIONS]      Build image, create bare repo, launch agents.
   stop                 Stop all running agent containers.
   logs N               Tail logs for agent N (default: 1).
   status               Show running/stopped state for each agent.
   wait                 Block until all agents exit, then harvest.
   post-process         Run the post-processing agent from the config.
 
-Environment:
-  ANTHROPIC_API_KEY         API key (required unless OAuth token or config).
-  CLAUDE_CODE_OAUTH_TOKEN   OAuth token for subscription-based auth.
+Start options (override env vars; ignored when config sets agents):
+  --prompt FILE        Prompt file path.
+  --model MODEL        Model name (default: claude-opus-4-6).
+  --agents N           Agent count (default: 3).
+  --max-idle N         Idle sessions before exit (default: 3).
+  --effort LEVEL       Reasoning effort: low, medium, high.
+  --setup SCRIPT       Setup script path.
+  --no-inject-git-rules  Disable git coordination rules.
+  --dashboard          Open the TUI dashboard after launch.
+
+Environment (lowest priority, after CLI args and config file):
+  ANTHROPIC_API_KEY         API key (required unless OAuth).
+  CLAUDE_CODE_OAUTH_TOKEN   OAuth token for subscription auth.
   SWARM_CONFIG              Path to swarm.json config file.
-  SWARM_PROMPT              Prompt file path (env-var mode).
-  SWARM_MODEL               Model name (default: claude-opus-4-6).
-  SWARM_NUM_AGENTS          Agent count (default: 3).
-  SWARM_MAX_IDLE            Idle sessions before exit (default: 3).
-  SWARM_EFFORT              Reasoning effort: low, medium, high.
+  SWARM_PROMPT              Prompt file path.
+  SWARM_MODEL               Model name.
+  SWARM_NUM_AGENTS          Agent count.
+  SWARM_MAX_IDLE            Idle sessions before exit.
+  SWARM_EFFORT              Reasoning effort.
   SWARM_TITLE               Dashboard title override.
 HELP
 }
@@ -518,8 +590,10 @@ HELP
 case "${1:-start}" in
     -h|--help)     cmd_help ;;
     start)
+        shift
+        parse_start_args "$@"
         cmd_start
-        if [ "${2:-}" = "--dashboard" ]; then
+        if $OPEN_DASHBOARD; then
             exec "$SWARM_DIR/dashboard.sh"
         fi
         ;;

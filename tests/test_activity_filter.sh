@@ -39,7 +39,9 @@ assert_contains() {
     fi
 }
 
-strip_ts() { sed 's/^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]   //'; }
+# Strip ANSI escape codes and the HH:MM:SS timestamp prefix.
+strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
+strip_ts() { strip_ansi | sed 's/^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]   //'; }
 
 run_filter_raw() {
     AGENT_ID="${1:-1}" "$FILTER" <<< "$2"
@@ -187,21 +189,50 @@ echo ""
 echo "=== 15. Timestamp prefix format ==="
 
 RAW=$(run_filter_raw 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}')
-TS_MATCH=$(echo "$RAW" | grep -oP '^\d{2}:\d{2}:\d{2}' || true)
+PLAIN=$(echo "$RAW" | strip_ansi)
+TS_MATCH=$(echo "$PLAIN" | grep -oP '^\d{2}:\d{2}:\d{2}' || true)
 if [ -n "$TS_MATCH" ]; then
     echo "  PASS: has HH:MM:SS timestamp"
     PASS=$((PASS + 1))
 else
     echo "  FAIL: has HH:MM:SS timestamp"
-    echo "        actual: ${RAW}"
+    echo "        actual: ${PLAIN}"
     FAIL=$((FAIL + 1))
 fi
-assert_contains "ts prefix format" "agent[1]" "$RAW"
+assert_contains "ts prefix format" "agent[1]" "$PLAIN"
 
-# Verify 2-space padding aligns agent with harness (10 chars each).
-AFTER_TS="${RAW#????????}"
+# Verify 3-space padding aligns agent with harness.
+AFTER_TS="${PLAIN#????????}"
 PAD_SPACES="${AFTER_TS%%agent*}"
 assert_eq "agent padded 3 spaces" "   " "$PAD_SPACES"
+
+# ============================================================
+echo ""
+echo "=== 16. ANSI color in prefix ==="
+
+RAW=$(run_filter_raw 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}')
+
+# Yellow open (\033[33m) should appear before the timestamp.
+if printf '%s' "$RAW" | grep -qP '\x1b\[33m'; then
+    echo "  PASS: has yellow ANSI open"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: has yellow ANSI open"
+    FAIL=$((FAIL + 1))
+fi
+
+# Reset (\033[0m) should appear after the agent ID.
+if printf '%s' "$RAW" | grep -qP '\x1b\[0m'; then
+    echo "  PASS: has ANSI reset"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: has ANSI reset"
+    FAIL=$((FAIL + 1))
+fi
+
+# The tool name should be outside the colored region.
+AFTER_RESET=$(printf '%s' "$RAW" | sed 's/.*\x1b\[0m//')
+assert_contains "tool after reset" "Shell: pwd" "$AFTER_RESET"
 
 # ============================================================
 echo ""

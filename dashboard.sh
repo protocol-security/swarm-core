@@ -201,19 +201,7 @@ draw() {
     local right="${DIM}uptime: ${uptime_str}${RESET}"
     printf "%b%*s%b\n" "$title" $((TERM_COLS - title_len - 2 - ${#uptime_str} - 10)) "" "$right"
     printf " ${DIM}config: %s | prompt: %s${RESET}\n" "$CONFIG_LABEL" "$SWARM_PROMPT"
-    printf " ${DIM}agents: %s${RESET}\n" "$NUM_AGENTS"
-    IFS=',' read -ra _groups <<< "$MODEL_SUMMARY"
-    local total_groups=${#_groups[@]}
-    local idx=0
-    for agent_line in "${_groups[@]}"; do
-        agent_line="${agent_line# }"
-        idx=$((idx + 1))
-        if [ "$idx" -lt "$total_groups" ]; then
-            printf " ${DIM}  ├ %s${RESET}\n" "$agent_line"
-        else
-            printf " ${DIM}  └ %s${RESET}\n" "$agent_line"
-        fi
-    done
+    printf " ${DIM}agents: %s — %s${RESET}\n" "$NUM_AGENTS" "$MODEL_SUMMARY"
     echo ""
 
     # Agent table header.
@@ -239,15 +227,20 @@ draw() {
             effort=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
             context_mode=$(printf '%s' "$env_dump" | grep '^SWARM_CONTEXT=' | head -1 | cut -d= -f2- || true)
             auth_mode=$(printf '%s' "$env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
-            # Auto-detect auth source when not explicitly set.
+            # Fallback: detect credential source from container env.
             if [ -z "$auth_mode" ]; then
-                local has_apikey has_oauth
+                local has_apikey has_oauth has_authtoken
                 has_apikey=$(printf '%s' "$env_dump" | grep '^ANTHROPIC_API_KEY=' | head -1 | cut -d= -f2- || true)
                 has_oauth=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_OAUTH_TOKEN=' | head -1 | cut -d= -f2- || true)
-                if [ -n "$has_oauth" ] && [ -z "$has_apikey" ]; then
+                has_authtoken=$(printf '%s' "$env_dump" | grep '^ANTHROPIC_AUTH_TOKEN=' | head -1 | cut -d= -f2- || true)
+                if [ -n "$has_authtoken" ] && [ -z "$has_apikey" ]; then
+                    auth_mode="token"
+                elif [ -n "$has_oauth" ] && [ -z "$has_apikey" ]; then
                     auth_mode="oauth"
-                elif [ -n "$has_apikey" ] && [ -z "$has_oauth" ]; then
-                    auth_mode="apikey"
+                elif [ -n "$has_apikey" ] && [ -n "$has_oauth" ]; then
+                    auth_mode="auto"
+                elif [ -n "$has_apikey" ]; then
+                    auth_mode="key"
                 fi
             fi
         fi
@@ -255,13 +248,6 @@ draw() {
         if [ -n "$effort" ]; then
             local eff_tag="${effort:0:1}"
             short="${short} [${eff_tag^^}]"
-        fi
-
-        local idle_str=""
-        if [ "$state" != "not found" ]; then
-            local logs
-            logs=$(docker logs "$name" 2>&1 || true)
-            idle_str=$(printf '%s' "$logs" | grep -o 'idle [0-9]*' | tail -1 || true)
         fi
 
         # Read cumulative stats from the container.
@@ -287,13 +273,8 @@ draw() {
         case "$state" in
             running)
                 running_count=$((running_count + 1))
-                if [ -n "$idle_str" ]; then
-                    status_text="$idle_str"
-                    status_color="$YELLOW"
-                else
-                    status_text="running"
-                    status_color="$GREEN"
-                fi
+                status_text="running"
+                status_color="$GREEN"
                 ;;
             exited)
                 exited_count=$((exited_count + 1))
