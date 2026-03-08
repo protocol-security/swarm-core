@@ -5,6 +5,10 @@
     # Interactive setup (generates swarm.json).
     ./setup.sh
 
+    # Or configure via CLI flags.
+    ANTHROPIC_API_KEY="sk-ant-..." \
+    ./launch.sh start --prompt path/to/prompt.md
+
     # Or configure via environment.
     ANTHROPIC_API_KEY="sk-ant-..." \
     SWARM_PROMPT="path/to/prompt.md" \
@@ -12,20 +16,34 @@
 
 ## Commands
 
-    ./launch.sh start              # Launch agents.
-    ./launch.sh start --dashboard  # Launch + open TUI.
+    ./launch.sh start [OPTIONS]    # Launch agents.
     ./launch.sh stop               # Stop all agents.
     ./launch.sh status             # Show containers.
     ./launch.sh logs N             # Tail agent N logs.
     ./launch.sh wait               # Block, harvest, post-process.
     ./launch.sh post-process       # Run post-process agent.
 
+Start options (override env vars; config file sets agents):
+
+    --prompt FILE           Prompt file path.
+    --model MODEL           Model name (default: claude-opus-4-6).
+    --agents N              Agent count (default: 3).
+    --max-idle N            Idle sessions before exit (default: 3).
+    --effort LEVEL          Reasoning effort: low, medium, high.
+    --setup SCRIPT          Setup script path.
+    --no-inject-git-rules   Disable git coordination rules.
+    --dashboard             Open the TUI dashboard after launch.
+
+Priority: CLI flags > config file > environment variables.
+Credentials stay as env vars (not in shell history).
+
 ## Dashboard
 
     ./dashboard.sh
 
-Per-agent context mode, model, auth source, status, cost,
-tokens, cache, turns, and duration. Updates every 2s.
+Per-agent model, auth source, status, cost, tokens, cache,
+turns, throughput, and duration.  Updates every 2-3s.  The
+header shows a compact model summary on a single line.
 
 | Key | Action |
 |-----|--------|
@@ -51,6 +69,8 @@ what an agent is doing:
 
 The filter (`lib/activity-filter.sh`) parses `stream-json`
 events from the Claude CLI and prints one line per tool call.
+The timestamp and agent ID are colored in ANSI yellow
+(matching git's commit-hash color) for readability.
 
 ## Testing
 
@@ -167,6 +187,30 @@ Groups without `prompt` inherit the top-level value. Combined
 with context modes, this enables divergent exploration: hunting
 agents run one prompt with full skills, a reconciliation agent
 runs a different prompt to validate and normalize findings.
+
+## Auth modes
+
+Three credential mechanisms serve different purposes:
+
+- **`auth`** — Controls which host credential
+  (`ANTHROPIC_API_KEY` vs `CLAUDE_CODE_OAUTH_TOKEN`) is
+  forwarded to the container.  Use when both credentials are
+  set on the host and you want per-group billing control
+  (e.g. some agents on API, others on subscription).
+  Values: `apikey`, `oauth`, or omit (pass both).
+
+- **`api_key`** — Per-group API key for third-party endpoints
+  (MiniMax, etc.).  Passed as `ANTHROPIC_API_KEY` inside the
+  container.  Supports `$VAR` references to host env vars.
+
+- **`auth_token`** — Per-group Bearer token for endpoints
+  that use `ANTHROPIC_AUTH_TOKEN` (OpenRouter-style).  Clears
+  `ANTHROPIC_API_KEY` so Claude Code enters third-party mode.
+  Supports `$VAR` references.
+
+Groups with `api_key` or `auth_token` ignore the `auth`
+field; their custom credential is always used.  When neither
+is set, `auth` determines which host credential to inject.
 
 ## Git coordination
 

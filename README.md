@@ -101,11 +101,34 @@ agents = sum of `count` fields. Requires `jq`.
 | `prompt` | file path | Per-group prompt override (default: top-level `prompt`). |
 | `effort` | `low`, `medium`, `high` | Adaptive reasoning depth. Opus/Sonnet 4.6+. |
 | `context` | `full`, `slim`, `none` | How much of `.claude/` to keep (default: `full`). |
-| `auth` | `apikey`, `oauth`, omit | Which credential to inject. Omit = both. |
+| `auth` | `apikey`, `oauth`, omit | Which host credential to inject. Omit = both. |
+| `api_key` | key or `$VAR` | Per-group API key for third-party endpoints. |
+| `auth_token` | key or `$VAR` | Per-group Bearer token (OpenRouter-style). |
 | `inject_git_rules` | `true`, `false` | Append git coordination rules to system prompt. |
 
-Groups with `api_key`/`base_url` ignore `auth`; their own
-key is always used. The dashboard shows auth per agent.
+`auth` controls which host credential (`ANTHROPIC_API_KEY` vs
+`CLAUDE_CODE_OAUTH_TOKEN`) is forwarded to a container.
+Groups with `api_key`/`auth_token`/`base_url` use their own
+credentials and ignore `auth`.  See [USAGE.md](USAGE.md)
+for details on auth modes.
+
+### CLI flags
+
+Most settings can be passed as flags to `launch.sh start`:
+
+    ./launch.sh start \
+      --prompt tasks/task.md \
+      --model claude-opus-4-6 \
+      --agents 3 \
+      --max-idle 3 \
+      --effort high \
+      --setup scripts/setup.sh \
+      --no-inject-git-rules \
+      --dashboard
+
+Priority: CLI flags > config file > environment variables.
+Credentials (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`)
+remain env-var-only.
 
 ### Environment variables
 
@@ -126,7 +149,8 @@ key is always used. The dashboard shows auth per agent.
 | `ANTHROPIC_BASE_URL` | | Override API URL. |
 | `ANTHROPIC_AUTH_TOKEN` | | Override auth token. |
 
-Config file takes precedence when present.
+Config file takes precedence over env vars.  CLI flags take
+precedence over both.
 
 ### Third-party models
 
