@@ -73,6 +73,7 @@ run_all_tests() {
             "2-agents-context-bare|2|config-context-none|"
             "2-agents-context-slim|2|config-context-slim|"
             "2-agents-per-prompt|2|config-per-prompt|"
+            "1-agent-cli-flags|1|cli-flags|"
         )
 
         local int_total=${#cases[@]} int_idx=0
@@ -273,6 +274,9 @@ PPPROMPT
                 ]}' > "$cfg"
             args+=(--config "$cfg")
             ;;
+        cli-flags)
+            args+=(-- --model "${SWARM_MODEL:-claude-opus-4-6}" --agents "$num_agents")
+            ;;
         "")
             env_prefix=(SWARM_NUM_AGENTS="$num_agents")
             ;;
@@ -356,6 +360,7 @@ Options:
                     (needs Docker + OAuth token).
   --config FILE     Use a swarm.json for mixed-model testing.
   --no-inject       Explicit git commands in prompt (backward compat test).
+  -- FLAGS          Forward FLAGS to launch.sh start (e.g. --model, --agents).
   -h, --help        Show this help message.
 
 Environment:
@@ -371,6 +376,7 @@ NO_INJECT=false
 RUN_ALL=false
 RUN_UNIT=false
 RUN_OAUTH=false
+LAUNCH_FLAGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --config)
@@ -385,6 +391,7 @@ while [ $# -gt 0 ]; do
         --unit) RUN_UNIT=true; shift ;;
         --oauth) RUN_OAUTH=true; shift ;;
         -h|--help) cmd_help; exit 0 ;;
+        --) shift; LAUNCH_FLAGS=("$@"); break ;;
         *) echo "Unknown option: $1 (try --help)" >&2; exit 1 ;;
     esac
 done
@@ -411,6 +418,14 @@ fi
 
 if [ -n "$CONFIG_FILE" ]; then
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
+elif [ ${#LAUNCH_FLAGS[@]} -gt 0 ]; then
+    NUM_AGENTS=2
+    for ((i=0; i<${#LAUNCH_FLAGS[@]}; i++)); do
+        if [ "${LAUNCH_FLAGS[i]}" = "--agents" ]; then
+            NUM_AGENTS="${LAUNCH_FLAGS[i+1]}"
+            break
+        fi
+    done
 else
     NUM_AGENTS="${SWARM_NUM_AGENTS:-2}"
 fi
@@ -603,6 +618,12 @@ if [ -n "$TEMP_CONFIG" ]; then
         ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
         CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
         "$SWARM_DIR/launch.sh" start
+elif [ ${#LAUNCH_FLAGS[@]} -gt 0 ]; then
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
+        CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
+        "$SWARM_DIR/launch.sh" start \
+        --prompt "$PROMPT_FILE" --setup "$SETUP_FILE" \
+        "${LAUNCH_FLAGS[@]}"
 else
     SWARM_PROMPT="$PROMPT_FILE" \
         SWARM_SETUP="$SETUP_FILE" \

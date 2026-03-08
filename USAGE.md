@@ -80,8 +80,11 @@ The timestamp and agent ID are colored in ANSI yellow
     ./tests/test.sh --all                # Full matrix.
     ./tests/test.sh --config swarm.json  # Custom config.
     ./tests/test.sh --no-inject          # Explicit git prompt.
+    ./tests/test.sh -- --model m --agents 2  # CLI flags.
 
 Flags combine: `./tests/test.sh --config f.json --no-inject`.
+Use `--` to forward flags to `launch.sh start` (e.g. `--model`,
+`--agents`) instead of using env vars or a config file.
 
 The test harness uses its own built-in prompt (counting +
 reasoning) regardless of config. The reasoning step exercises
