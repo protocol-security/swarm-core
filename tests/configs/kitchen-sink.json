@@ -1,0 +1,48 @@
+{
+  "prompt": "unused",
+  "agents": [
+    {
+      "count": 1,
+      "model": "claude-opus-4-6",
+      "effort": "high",
+      "auth": "oauth",
+      "tag": "deep"
+    },
+    {
+      "count": 1,
+      "model": "claude-opus-4-6",
+      "effort": "high",
+      "auth": "oauth",
+      "context": "none",
+      "tag": "bare"
+    },
+    {
+      "count": 1,
+      "model": "claude-opus-4-6",
+      "effort": "medium",
+      "auth": "apikey",
+      "tag": "fast"
+    },
+    {
+      "count": 1,
+      "model": "claude-sonnet-4-6",
+      "effort": "high",
+      "auth": "oauth",
+      "tag": "wide"
+    },
+    {
+      "count": 1,
+      "model": "openai/gpt-5.4",
+      "base_url": "https://openrouter.ai/api",
+      "auth_token": "$OPENROUTER_API_KEY",
+      "tag": "openai"
+    },
+    {
+      "count": 1,
+      "model": "MiniMax-M2.5",
+      "base_url": "https://api.minimax.io/anthropic",
+      "api_key": "$MINIMAX_API_KEY",
+      "tag": "minimax"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "prompt": "unused",
+  "agents": [
+    {
+      "count": 1,
+      "model": "claude-opus-4-6",
+      "effort": "high",
+      "auth": "oauth",
+      "tag": "full"
+    },
+    {
+      "count": 1,
+      "model": "claude-opus-4-6",
+      "effort": "high",
+      "auth": "oauth",
+      "context": "none",
+      "tag": "bare"
+    },
+    {
+      "count": 1,
+      "model": "claude-opus-4-6",
+      "effort": "high",
+      "auth": "oauth",
+      "context": "slim",
+      "tag": "slim"
+    }
+  ]
+}

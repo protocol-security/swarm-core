@@ -191,17 +191,17 @@ cmd_start() {
         echo "-v ${mirror}:/mirrors/${name}:ro"
     done > "/tmp/${PROJECT}-mirror-vols.txt"
 
-    # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token per line).
+    # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
     AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
     if [ -n "$CONFIG_FILE" ]; then
         jq -r '.agents[] | range(.count) as $i |
-            [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // "")] | join("|")' \
+            [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // "")] | join("|")' \
             "$CONFIG_FILE" > "$AGENTS_CFG"
     else
         : > "$AGENTS_CFG"
         for _i in $(seq 1 "$NUM_AGENTS"); do
-            printf '%s|||%s||||\n' "$CLAUDE_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
+            printf '%s|||%s|||||\n' "$CLAUDE_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
         done
     fi
 
@@ -213,7 +213,7 @@ cmd_start() {
     done < "/tmp/${PROJECT}-mirror-vols.txt"
 
     AGENT_IDX=0
-    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt agent_auth_token; do
+    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt agent_auth_token agent_tag; do
         AGENT_IDX=$((AGENT_IDX + 1))
         NAME="${IMAGE_NAME}-${AGENT_IDX}"
         docker rm -f "$NAME" 2>/dev/null || true
@@ -299,6 +299,7 @@ cmd_start() {
             -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
             -e "AGENT_ID=${AGENT_IDX}" \
             -e "SWARM_AUTH_MODE=${auth_label}" \
+            -e "SWARM_TAG=${agent_tag}" \
             -e "SWARM_CONTEXT=${agent_context}" \
             -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
             -e "SWARM_CFG_PROMPT=${effective_prompt}" \
@@ -331,6 +332,7 @@ cmd_start() {
     cat > "/tmp/${PROJECT}-swarm.env" <<ENVEOF
 SWARM_TITLE="${SWARM_TITLE:-}"
 SWARM_PROMPT="${SWARM_PROMPT}"
+SWARM_CONFIG="${CONFIG_FILE}"
 SWARM_NUM_AGENTS="${NUM_AGENTS}"
 SWARM_MODEL_SUMMARY="${state_model_summary}"
 SWARM_CONFIG_LABEL="${state_config_label}"
@@ -418,7 +420,7 @@ cmd_post_process() {
         exit 1
     fi
 
-    local pp_prompt pp_model pp_base_url pp_api_key pp_effort pp_auth pp_auth_token
+    local pp_prompt pp_model pp_base_url pp_api_key pp_effort pp_auth pp_auth_token pp_tag
     pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE")
     pp_model=$(jq -r '.post_process.model // "claude-opus-4-6"' "$CONFIG_FILE")
     pp_base_url=$(jq -r '.post_process.base_url // empty' "$CONFIG_FILE")
@@ -428,6 +430,7 @@ cmd_post_process() {
     pp_auth_token="$(expand_env_ref "$pp_auth_token")"
     pp_effort=$(jq -r '.post_process.effort // empty' "$CONFIG_FILE")
     pp_auth=$(jq -r '.post_process.auth // empty' "$CONFIG_FILE")
+    pp_tag=$(jq -r '.post_process.tag // empty' "$CONFIG_FILE")
 
     if [ -z "$pp_prompt" ]; then
         echo "ERROR: post_process.prompt is not set in ${CONFIG_FILE}." >&2
@@ -524,6 +527,7 @@ cmd_post_process() {
         -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
         -e "AGENT_ID=post" \
         -e "SWARM_AUTH_MODE=${pp_auth_label}" \
+        -e "SWARM_TAG=${pp_tag}" \
         -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
         -e "SWARM_CFG_PROMPT=${pp_prompt}" \
         -e "SWARM_CFG_SETUP=${SWARM_SETUP:-}" \
