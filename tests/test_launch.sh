@@ -43,7 +43,7 @@ parse_pp_effort()   { jq -r '.post_process.effort // empty' "$1"; }
 
 parse_agents_cfg() {
     jq -r '.agents[] | range(.count) as $i |
-        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // "")] | join("|")' "$1"
+        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // "")] | join("|")' "$1"
 }
 
 # Mirrors the per-agent credential selection in launch.sh.
@@ -129,12 +129,12 @@ EFFORT_LEVEL="medium"
 NUM_AGENTS=3
 : > "$TMPDIR/env-agents.cfg"
 for _i in $(seq 1 "$NUM_AGENTS"); do
-    printf '%s|||%s|||\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
+    printf '%s|||%s|||||\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
 done
 
 assert_eq "line count" "3" "$(wc -l < "$TMPDIR/env-agents.cfg" | tr -d ' ')"
 
-IFS='|' read -r m u k e a c p < "$TMPDIR/env-agents.cfg"
+IFS='|' read -r m u k e a c p t g < "$TMPDIR/env-agents.cfg"
 assert_eq "model"    "claude-opus-4-6" "$m"
 assert_eq "base_url" ""               "$u"
 assert_eq "api_key"  ""               "$k"
@@ -232,13 +232,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE4=$(echo "$CFG" | sed -n '4p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 <<< "$LINE1"
 assert_eq "opus effort"  "high"   "$e1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 <<< "$LINE2"
 assert_eq "sonnet effort" "medium" "$e2"
 
-IFS='|' read -r m4 u4 k4 e4 a4 c4 p4 <<< "$LINE4"
+IFS='|' read -r m4 u4 k4 e4 a4 c4 p4 t4 g4 <<< "$LINE4"
 assert_eq "haiku effort (empty)" "" "$e4"
 
 # ============================================================
@@ -266,9 +266,9 @@ echo "=== 8. Effort env var fallback (no effort set) ==="
 
 EFFORT_LEVEL=""
 : > "$TMPDIR/env-no-effort.cfg"
-printf '%s|||%s|||\n' "claude-opus-4-6" "$EFFORT_LEVEL" >> "$TMPDIR/env-no-effort.cfg"
+printf '%s|||%s|||||\n' "claude-opus-4-6" "$EFFORT_LEVEL" >> "$TMPDIR/env-no-effort.cfg"
 
-IFS='|' read -r m u k e a c p < "$TMPDIR/env-no-effort.cfg"
+IFS='|' read -r m u k e a c p t g < "$TMPDIR/env-no-effort.cfg"
 assert_eq "no effort" "" "$e"
 
 # ============================================================
@@ -311,14 +311,14 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 <<< "$LINE1"
 assert_eq "auth apikey"  "apikey"  "$a1"
 assert_eq "auth apikey model" "claude-opus-4-6" "$m1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 <<< "$LINE2"
 assert_eq "auth oauth"   "oauth"   "$a2"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 <<< "$LINE3"
+IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 <<< "$LINE3"
 assert_eq "auth custom (empty)" "" "$a3"
 assert_eq "auth custom key" "sk-mm" "$k3"
 
@@ -370,13 +370,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 <<< "$LINE1"
 assert_eq "context default (empty)" "" "$c1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 <<< "$LINE2"
 assert_eq "context none" "none" "$c2"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 <<< "$LINE3"
+IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 <<< "$LINE3"
 assert_eq "context slim" "slim" "$c3"
 
 # ============================================================
@@ -399,19 +399,48 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 <<< "$LINE1"
 assert_eq "prompt default (empty)" "" "$p1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 <<< "$LINE2"
 assert_eq "prompt override" "tasks/review.md" "$p2"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 <<< "$LINE3"
+IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 <<< "$LINE3"
 assert_eq "prompt + context" "tasks/explore.md" "$p3"
 assert_eq "context preserved" "none" "$c3"
 
 # ============================================================
 echo ""
-echo "=== 15. parse_start_args — basic flags ==="
+echo "=== 15. Tag field in agent TSV ==="
+
+cat > "$TMPDIR/tagged.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "count": 2, "model": "claude-opus-4-6", "tag": "explore" },
+    { "count": 1, "model": "claude-sonnet-4-6", "tag": "review" },
+    { "count": 1, "model": "claude-haiku-4-5" }
+  ]
+}
+EOF
+
+CFG=$(parse_agents_cfg "$TMPDIR/tagged.json")
+LINE1=$(echo "$CFG" | sed -n '1p')
+LINE3=$(echo "$CFG" | sed -n '3p')
+LINE4=$(echo "$CFG" | sed -n '4p')
+
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 <<< "$LINE1"
+assert_eq "tag explore" "explore" "$g1"
+
+IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 <<< "$LINE3"
+assert_eq "tag review" "review" "$g3"
+
+IFS='|' read -r m4 u4 k4 e4 a4 c4 p4 t4 g4 <<< "$LINE4"
+assert_eq "tag empty" "" "$g4"
+
+# ============================================================
+echo ""
+echo "=== 16. parse_start_args — basic flags ==="
 
 # Source the function from launch.sh without executing the
 # case statement.  We extract it with sed to avoid side effects
@@ -453,7 +482,7 @@ assert_eq "cli dashboard" "true" "$OPEN_DASHBOARD"
 
 # ============================================================
 echo ""
-echo "=== 16. parse_start_args — no args leaves defaults ==="
+echo "=== 17. parse_start_args — no args leaves defaults ==="
 
 reset_vars
 parse_start_args
@@ -467,7 +496,7 @@ assert_eq "default dash"    "false"      "$OPEN_DASHBOARD"
 
 # ============================================================
 echo ""
-echo "=== 17. parse_start_args — CLI overrides env vars ==="
+echo "=== 18. parse_start_args — CLI overrides env vars ==="
 
 SWARM_PROMPT="env.md"
 CLAUDE_MODEL="env-model"
@@ -479,7 +508,7 @@ assert_eq "cli > env agents" "8"         "$NUM_AGENTS"
 
 # ============================================================
 echo ""
-echo "=== 18. parse_start_args — unknown flag errors ==="
+echo "=== 19. parse_start_args — unknown flag errors ==="
 
 reset_vars
 if (parse_start_args --bogus 2>/dev/null); then
@@ -492,7 +521,7 @@ fi
 
 # ============================================================
 echo ""
-echo "=== 19. parse_start_args — combined flags ==="
+echo "=== 20. parse_start_args — combined flags ==="
 
 reset_vars
 parse_start_args --prompt p.md --model m --agents 4 \
@@ -509,7 +538,7 @@ assert_eq "combo dash"    "true"  "$OPEN_DASHBOARD"
 
 # ============================================================
 echo ""
-echo "=== 20. Auth label — credential source labels ==="
+echo "=== 21. Auth label — credential source labels ==="
 
 # auth_token set → "token"
 assert_eq "auth_token → token" \

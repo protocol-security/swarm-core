@@ -86,6 +86,27 @@ else
     CONFIG_LABEL="env vars"
 fi
 
+MODEL_COL_W=20
+if [ -n "$CONFIG_FILE" ]; then
+    MODEL_COL_W=$(jq -r '
+        [.agents[] | .model + if .effort then " (\(.effort[:1]))" else "" end] |
+        map(length) | max + 2
+    ' "$CONFIG_FILE" 2>/dev/null || echo 20)
+fi
+
+HAS_TAGS=false
+TAG_COL_W=12
+if [ -n "$CONFIG_FILE" ]; then
+    _tw=$(jq -r '[.agents[] | .tag // empty] | if length == 0 then 0
+        else map(length) | max end' "$CONFIG_FILE" 2>/dev/null || echo 0)
+    if [ "$_tw" -gt 0 ]; then
+        HAS_TAGS=true
+        TAG_COL_W="$_tw"
+        [ "$TAG_COL_W" -lt 3 ] && TAG_COL_W=3
+        [ "$TAG_COL_W" -gt 16 ] && TAG_COL_W=16
+    fi
+fi
+
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 GREEN=$'\033[32m'
@@ -156,6 +177,25 @@ format_tps() {
     printf '%.1f' "$(echo "$tokens * 1000 / $ms" | bc -l)"
 }
 
+format_model() {
+    local m="${1:-unknown}" effort="${2:-}"
+    if [ -n "$effort" ]; then
+        printf '%s (%s)' "$m" "${effort:0:1}"
+    else
+        printf '%s' "$m"
+    fi
+}
+
+truncate_str() {
+    local s="$1" max="${2:-16}"
+    if [ "${#s}" -le "$max" ]; then
+        printf '%s' "$s"
+        return
+    fi
+    local keep=$(( (max - 1) / 2 ))
+    printf '%s~%s' "${s:0:$keep}" "${s: -$keep}"
+}
+
 read_agent_stats() {
     local name=$1 agent_id=$2
     local stats_file="agent_logs/stats_agent_${agent_id}.tsv"
@@ -175,6 +215,41 @@ read_agent_stats() {
     rm -f "$tmpf"
 }
 
+emit_row() {
+    local id_str="$1" model_str="$2" auth_str="$3"
+    local status_color="$4" status_str="$5"
+    local cost_str="$6" inout_str="$7" cache_str="$8"
+    local turns_str="$9" tps_str="${10}" dur_str="${11}"
+    local tag_str="${12:-}" is_bold="${13:-}"
+
+    local open="" close=""
+    if [ "$is_bold" = "bold" ]; then open="$BOLD"; close="$RESET"; fi
+
+    printf "  ${open}%-3s %-${MODEL_COL_W}s" "$id_str" "$model_str"
+    if $SHOW_AUTH;  then printf " %-6s" "$auth_str"; fi
+    printf " %b%-8s%b %7s" "$status_color" "$status_str" "$RESET" "$cost_str"
+    if $SHOW_INOUT; then printf " %10s" "$inout_str"; fi
+    if $SHOW_CACHE; then printf " %7s" "$cache_str"; fi
+    if $SHOW_TURNS; then printf " %6s" "$turns_str"; fi
+    if $SHOW_TPS;   then printf " %6s" "$tps_str"; fi
+    printf " %8s" "$dur_str"
+    if $SHOW_TAG;   then printf "  %-${TAG_COL_W}s" "$tag_str"; fi
+    printf "${close}\n"
+}
+
+emit_header() {
+    printf "  ${BOLD}%-3s %-${MODEL_COL_W}s" "#" "Model"
+    if $SHOW_AUTH;  then printf " %-6s" "Auth"; fi
+    printf " %-8s %7s" "Status" "Cost"
+    if $SHOW_INOUT; then printf " %10s" "In/Out"; fi
+    if $SHOW_CACHE; then printf " %7s" "Cache"; fi
+    if $SHOW_TURNS; then printf " %6s" "Turns"; fi
+    if $SHOW_TPS;   then printf " %6s" "Tok/s"; fi
+    printf " %8s" "Time"
+    if $SHOW_TAG;   then printf "  %-${TAG_COL_W}s" "Tag"; fi
+    printf "${RESET}\n"
+}
+
 draw() {
     # Re-read state file so display updates between test cases.
     if [ -f "$STATE_FILE" ]; then
@@ -192,6 +267,18 @@ draw() {
     elapsed=$((now - START_TIME))
     uptime_str=$(format_duration "$elapsed")
 
+    # Adaptive column visibility based on terminal width.
+    # Base: # (3) + Model (MW+1) + Status (9) + Cost (8) + Time (9) + indent (2).
+    local base_w=$((MODEL_COL_W + 32))
+    SHOW_INOUT=false; SHOW_AUTH=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false
+    local avail=$((TERM_COLS - base_w))
+    if [ "$avail" -ge 11 ]; then SHOW_INOUT=true; avail=$((avail - 11)); fi
+    if [ "$avail" -ge 7 ];  then SHOW_AUTH=true;  avail=$((avail - 7)); fi
+    if [ "$avail" -ge 7 ];  then SHOW_TURNS=true; avail=$((avail - 7)); fi
+    if [ "$avail" -ge 7 ];  then SHOW_TPS=true;   avail=$((avail - 7)); fi
+    if [ "$avail" -ge 8 ];  then SHOW_CACHE=true;  avail=$((avail - 8)); fi
+    if $HAS_TAGS && [ "$avail" -ge $((TAG_COL_W + 2)) ]; then SHOW_TAG=true; fi
+
     tput cup 0 0 2>/dev/null || true
     tput ed 2>/dev/null || true
 
@@ -204,9 +291,7 @@ draw() {
     printf " ${DIM}agents: %s — %s${RESET}\n" "$NUM_AGENTS" "$MODEL_SUMMARY"
     echo ""
 
-    # Agent table header.
-    printf "  ${BOLD}%-3s %-20s %-6s %-8s %7s %10s %7s %6s %6s %8s${RESET}\n" \
-        "#" "Model" "Auth" "Status" "Cost" "In/Out" "Cache" "Turns" "Tok/s" "Time"
+    emit_header
 
     local running_count=0 exited_count=0
     local total_cost=0 total_in=0 total_out=0 total_cache=0 total_dur=0 total_api_ms=0 total_turns=0
@@ -217,7 +302,7 @@ draw() {
         local state
         state=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo "not found")
 
-        local model="unknown" effort="" auth_mode="" context_mode=""
+        local model="unknown" effort="" auth_mode="" agent_tag=""
         if [ "$state" != "not found" ]; then
             local env_dump
             env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
@@ -225,9 +310,8 @@ draw() {
             model=$(printf '%s' "$env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
             model="${model:-unknown}"
             effort=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
-            context_mode=$(printf '%s' "$env_dump" | grep '^SWARM_CONTEXT=' | head -1 | cut -d= -f2- || true)
+            agent_tag=$(printf '%s' "$env_dump" | grep '^SWARM_TAG=' | head -1 | cut -d= -f2- || true)
             auth_mode=$(printf '%s' "$env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
-            # Fallback: detect credential source from container env.
             if [ -z "$auth_mode" ]; then
                 local has_apikey has_oauth has_authtoken
                 has_apikey=$(printf '%s' "$env_dump" | grep '^ANTHROPIC_API_KEY=' | head -1 | cut -d= -f2- || true)
@@ -244,13 +328,10 @@ draw() {
                 fi
             fi
         fi
-        local short="${model/claude-/}"
-        if [ -n "$effort" ]; then
-            local eff_tag="${effort:0:1}"
-            short="${short} [${eff_tag^^}]"
-        fi
 
-        # Read cumulative stats from the container.
+        local model_label
+        model_label=$(format_model "$model" "$effort")
+
         local agent_stats a_cost a_in a_out a_cache a_dur a_api_ms a_turns
         agent_stats=$(read_agent_stats "$name" "$i")
         a_cost=$(echo "$agent_stats" | awk '{print $1}')
@@ -287,16 +368,13 @@ draw() {
                 ;;
         esac
 
-        local cost_str in_out_str cache_str tps_str dur_str
-        cost_str=$(format_cost "$a_cost")
-        in_out_str="$(format_tokens "$a_in")/$(format_tokens "$a_out")"
-        cache_str=$(format_tokens "$a_cache")
-        tps_str=$(format_tps "$a_out" "$a_api_ms")
-        dur_str=$(format_duration_ms "$a_dur")
-
-        printf "  %-3s %-20s %-6s " "$i" "$short" "$auth_mode"
-        printf "%b%-8s%b" "$status_color" "$status_text" "$RESET"
-        printf " %7s %10s %7s %6s %6s %8s\n" "$cost_str" "$in_out_str" "$cache_str" "$a_turns" "$tps_str" "$dur_str"
+        emit_row "$i" "$model_label" "$auth_mode" \
+            "$status_color" "$status_text" \
+            "$(format_cost "$a_cost")" \
+            "$(format_tokens "$a_in")/$(format_tokens "$a_out")" \
+            "$(format_tokens "$a_cache")" \
+            "$a_turns" "$(format_tps "$a_out" "$a_api_ms")" \
+            "$(format_duration_ms "$a_dur")" "$agent_tag"
     done
 
     # Post-process row (if container exists).
@@ -304,14 +382,14 @@ draw() {
     local pp_state
     pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || true)
     if [ -n "$pp_state" ] && [ "$pp_state" != "none" ]; then
-        local pp_model pp_effort pp_auth_mode pp_context_mode
+        local pp_model pp_effort pp_auth_mode pp_tag
         local pp_env_dump
         pp_env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
             "$pp_name" 2>/dev/null || true)
         pp_model=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
         pp_model="${pp_model:-unknown}"
         pp_effort=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
-        pp_context_mode=$(printf '%s' "$pp_env_dump" | grep '^SWARM_CONTEXT=' | head -1 | cut -d= -f2- || true)
+        pp_tag=$(printf '%s' "$pp_env_dump" | grep '^SWARM_TAG=' | head -1 | cut -d= -f2- || true)
         pp_auth_mode=$(printf '%s' "$pp_env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
         if [ -z "$pp_auth_mode" ]; then
             local pp_has_apikey pp_has_oauth
@@ -323,12 +401,9 @@ draw() {
                 pp_auth_mode="apikey"
             fi
         fi
-        local pp_short="${pp_model/claude-/}"
-        if [ -n "$pp_effort" ]; then
-            local pp_eff_tag="${pp_effort:0:1}"
-            pp_short="${pp_short} [${pp_eff_tag^^}]"
-        fi
-        local _pp_ctx="$pp_context_mode"  # available for future use
+
+        local pp_model_label
+        pp_model_label=$(format_model "$pp_model" "$pp_effort")
 
         local pp_stats pp_cost pp_in pp_out pp_cache pp_dur pp_api_ms pp_turns
         pp_stats=$(read_agent_stats "$pp_name" "post")
@@ -355,14 +430,13 @@ draw() {
         esac
 
         printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
-        printf "  %-3s %-20s %-6s " "PP" "$pp_short" "$pp_auth_mode"
-        printf "%b%-8s%b" "$pp_status_color" "$pp_state" "$RESET"
-        printf " %7s %10s %7s %6s %6s %8s\n" \
+        emit_row "PP" "$pp_model_label" "$pp_auth_mode" \
+            "$pp_status_color" "$pp_state" \
             "$(format_cost "$pp_cost")" \
             "$(format_tokens "$pp_in")/$(format_tokens "$pp_out")" \
             "$(format_tokens "$pp_cache")" \
             "$pp_turns" "$(format_tps "$pp_out" "$pp_api_ms")" \
-            "$(format_duration_ms "$pp_dur")"
+            "$(format_duration_ms "$pp_dur")" "$pp_tag"
     fi
 
     # Totals row.
@@ -373,8 +447,9 @@ draw() {
     t_cache_str=$(format_tokens "$total_cache")
     t_tps_str=$(format_tps "$total_out" "$total_api_ms")
     t_dur_str=$(format_duration_ms "$total_dur")
-    printf "  ${BOLD}%-3s %-20s %-6s %-8s %7s %10s %7s %6s %6s %8s${RESET}\n" \
-        "" "Total" "" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" "$total_turns" "$t_tps_str" "$t_dur_str"
+    emit_row "" "Total" "" \
+        "" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" \
+        "$total_turns" "$t_tps_str" "$t_dur_str" "" "bold"
 
     echo ""
 
