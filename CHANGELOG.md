@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.2 — 2026-03-10
+
+- Add CHANGELOG.md covering all releases (0.1.0 through 0.9.1).
+- Block execution when required tools are missing. A shared
+  `check_deps()` guard in `lib/check-deps.sh` checks for bash,
+  git, jq, bc, docker, and tput at startup.
+- Update README prerequisites with tput, whiptail (optional),
+  and shellcheck (development).
+
 ## 0.9.1 — 2026-03-10
 
 - Show idle state (`idle N/M`) in dashboard Status column via
