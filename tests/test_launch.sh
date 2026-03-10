@@ -591,6 +591,75 @@ assert_eq "no creds → empty" \
     "$(resolve_auth_label "" "" "" "" "")"
 
 # ============================================================
+# check_deps tests
+# ============================================================
+echo ""
+echo "--- check_deps ---"
+
+source "$TESTS_DIR/../lib/check-deps.sh"
+
+# Present tools should pass silently.
+out=$(check_deps bash git 2>&1) || true
+assert_eq "present deps succeed" "" "$out"
+
+# Missing tool should print error and list the tool name.
+out=$(check_deps __no_such_tool__ 2>&1) || true
+assert_eq "missing dep mentions tool" "true" \
+    "$([[ "$out" == *"__no_such_tool__"* ]] && echo true || echo false)"
+assert_eq "missing dep says ERROR" "true" \
+    "$([[ "$out" == *"ERROR"* ]] && echo true || echo false)"
+assert_eq "missing dep mentions README" "true" \
+    "$([[ "$out" == *"README"* ]] && echo true || echo false)"
+
+# Mixed present and missing reports only the missing one.
+out=$(check_deps bash __no_such_tool__ git 2>&1) || true
+assert_eq "mixed deps lists missing" "true" \
+    "$([[ "$out" == *"__no_such_tool__"* ]] && echo true || echo false)"
+assert_eq "mixed deps omits present" "false" \
+    "$([[ "$out" == *"bash"* ]] && echo true || echo false)"
+
+# ============================================================
+# Script-level dependency guard integration tests.
+# Build a minimal PATH with only basic utilities so that
+# jq, docker, bc, tput are genuinely absent.
+# ============================================================
+echo ""
+echo "--- check_deps integration ---"
+
+FAKE_BIN=$(mktemp -d)
+trap 'rm -rf "$FAKE_BIN"' EXIT
+for cmd in bash dirname basename cat date git; do
+    p=$(command -v "$cmd" 2>/dev/null) && ln -s "$p" "$FAKE_BIN/"
+done
+
+# launch.sh --help should exit 0 even without jq/docker.
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../launch.sh" --help 2>&1) \
+    && rc=0 || rc=$?
+assert_eq "launch --help exits 0 without jq" "0" "$rc"
+
+# dashboard.sh --help should exit 0 even without jq/docker/tput/bc.
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../dashboard.sh" --help 2>&1) \
+    && rc=0 || rc=$?
+assert_eq "dashboard --help exits 0 without jq" "0" "$rc"
+
+# launch.sh start should fail and mention missing tools.
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../launch.sh" start 2>&1) \
+    && rc=0 || rc=$?
+assert_eq "launch start exits nonzero without jq" "1" "$rc"
+assert_eq "launch start error mentions jq" "true" \
+    "$([[ "$out" == *"jq"* ]] && echo true || echo false)"
+
+# dashboard.sh (no args) should fail and mention missing tools.
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../dashboard.sh" 2>&1) \
+    && rc=0 || rc=$?
+assert_eq "dashboard exits nonzero without jq" "1" "$rc"
+assert_eq "dashboard error mentions jq" "true" \
+    "$([[ "$out" == *"jq"* ]] && echo true || echo false)"
+
+rm -rf "$FAKE_BIN"
+trap 'rm -rf "$TMPDIR"' EXIT
+
+# ============================================================
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"

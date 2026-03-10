@@ -8,9 +8,13 @@ Based on the agent-team pattern from
 
 ## Prerequisites
 
-- Docker
-- bash, git, jq, bc
+- [Docker](https://docs.docker.com/get-docker/)
+- bash (4.0+), git, jq, bc
+- tput (ncurses) — used by the dashboard
 - An Anthropic API key, OAuth token, or compatible endpoint
+
+Optional: `whiptail` for the interactive setup wizard TUI.
+For development: `shellcheck` for linting.
 
 ## Setup
 

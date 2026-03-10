@@ -4,10 +4,7 @@ set -euo pipefail
 # Print cost and usage summary for all swarm agents.
 # Usage: ./costs.sh [--json]
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-PROJECT="$(basename "$REPO_ROOT")"
-IMAGE_NAME="${PROJECT}-agent"
-JSON_MODE=false
+SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
@@ -24,6 +21,14 @@ docker cp. Requires Docker access.
 HELP
     exit 0
 fi
+
+source "$SWARM_DIR/lib/check-deps.sh"
+check_deps git jq docker bc
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+PROJECT="$(basename "$REPO_ROOT")"
+IMAGE_NAME="${PROJECT}-agent"
+JSON_MODE=false
 
 if [ "${1:-}" = "--json" ]; then
     JSON_MODE=true

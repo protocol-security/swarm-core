@@ -43,6 +43,8 @@
 
 - Every feature change must update relevant `.md` files
   (README.md, USAGE.md, CLAUDE.md).
+- Update CHANGELOG.md with a new entry under the current
+  version when adding features, fixes, or notable changes.
 - Check thoroughly: add new fields to tables, update
   examples, add test cases to matrices, remove stale
   references.
