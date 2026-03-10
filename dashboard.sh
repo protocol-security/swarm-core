@@ -86,13 +86,16 @@ else
     CONFIG_LABEL="env vars"
 fi
 
-MODEL_COL_W=20
+MODEL_COL_W=25
 if [ -n "$CONFIG_FILE" ]; then
     MODEL_COL_W=$(jq -r '
-        [.agents[] | .model + if .effort then " (\(.effort[:1]))" else "" end] |
+        [.agents[] | .model + if .effort then " (\(.effort[:1]))" else "" end] +
+        [.post_process // {} | select(.model) |
+         .model + if .effort then " (\(.effort[:1]))" else "" end] |
         map(length) | max + 2
-    ' "$CONFIG_FILE" 2>/dev/null || echo 20)
+    ' "$CONFIG_FILE" 2>/dev/null || echo 25)
 fi
+[ "$MODEL_COL_W" -lt 22 ] && MODEL_COL_W=22
 
 HAS_TAGS=false
 TAG_COL_W=12

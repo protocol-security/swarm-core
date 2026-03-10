@@ -78,7 +78,7 @@ echo ""
 echo "=== 3. row layout ==="
 
 BOLD=""; RESET=""; GREEN=""; RED=""; DIM=""
-MODEL_COL_W=22
+MODEL_COL_W=25
 TAG_COL_W=12
 HAS_TAGS=true
 
@@ -223,6 +223,75 @@ CFG=$(parse_agents_cfg "$TMPDIR/no_tags.json")
 LINE1=$(echo "$CFG" | sed -n '1p')
 IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 tag1 <<< "$LINE1"
 assert_eq "tag empty" "" "$tag1"
+
+# ============================================================
+echo ""
+echo "=== 6. MODEL_COL_W computation from config ==="
+
+compute_model_col_w() {
+    local w
+    w=$(jq -r '
+        [.agents[] | .model + if .effort then " (\(.effort[:1]))" else "" end] +
+        [.post_process // {} | select(.model) |
+         .model + if .effort then " (\(.effort[:1]))" else "" end] |
+        map(length) | max + 2
+    ' "$1" 2>/dev/null || echo 25)
+    [ "$w" -lt 22 ] && w=22
+    echo "$w"
+}
+
+cat > "$TMPDIR/short_models.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 2, "model": "gpt-4o" }]
+}
+EOF
+assert_eq "short model → floor 22" "22" "$(compute_model_col_w "$TMPDIR/short_models.json")"
+
+cat > "$TMPDIR/mixed_models.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6", "effort": "high" },
+    { "count": 1, "model": "claude-sonnet-4-6", "effort": "high" },
+    { "count": 1, "model": "openai/gpt-5.4" },
+    { "count": 1, "model": "MiniMax-M2.5" }
+  ]
+}
+EOF
+# claude-sonnet-4-6 (h) = 21 chars → 21 + 2 = 23
+assert_eq "mixed models width" "23" "$(compute_model_col_w "$TMPDIR/mixed_models.json")"
+
+cat > "$TMPDIR/pp_wider.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "gpt-4o" }],
+  "post_process": { "prompt": "r.md", "model": "claude-sonnet-4-6", "effort": "high" }
+}
+EOF
+# pp model claude-sonnet-4-6 (h) = 21 chars → 21 + 2 = 23, wider than agent
+assert_eq "pp model widens column" "23" "$(compute_model_col_w "$TMPDIR/pp_wider.json")"
+
+# ============================================================
+echo ""
+echo "=== 7. Model label fits within column ==="
+
+# Verify that common model labels don't overflow MODEL_COL_W=25.
+check_fits() {
+    local label="$1" col_w="$2"
+    if [ "${#label}" -le "$col_w" ]; then
+        echo "fits"
+    else
+        echo "overflow:${#label}"
+    fi
+}
+
+assert_eq "opus (h) fits"   "fits" "$(check_fits "claude-opus-4-6 (h)" 25)"
+assert_eq "sonnet (h) fits" "fits" "$(check_fits "claude-sonnet-4-6 (h)" 25)"
+assert_eq "haiku (h) fits"  "fits" "$(check_fits "claude-haiku-4-5 (h)" 25)"
+assert_eq "openai fits"     "fits" "$(check_fits "openai/gpt-5.4-pro (h)" 25)"
+assert_eq "minimax fits"    "fits" "$(check_fits "MiniMax-M2.5 (h)" 25)"
+assert_eq "bare model fits" "fits" "$(check_fits "claude-opus-4-6" 25)"
 
 # ============================================================
 echo ""
