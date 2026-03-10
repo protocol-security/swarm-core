@@ -591,6 +591,34 @@ assert_eq "no creds → empty" \
     "$(resolve_auth_label "" "" "" "" "")"
 
 # ============================================================
+# check_deps tests
+# ============================================================
+echo ""
+echo "--- check_deps ---"
+
+source "$TESTS_DIR/../lib/check-deps.sh"
+
+# Present tools should pass silently.
+out=$(check_deps bash git 2>&1) || true
+assert_eq "present deps succeed" "" "$out"
+
+# Missing tool should print error and list the tool name.
+out=$(check_deps __no_such_tool__ 2>&1) || true
+assert_eq "missing dep mentions tool" "true" \
+    "$([[ "$out" == *"__no_such_tool__"* ]] && echo true || echo false)"
+assert_eq "missing dep says ERROR" "true" \
+    "$([[ "$out" == *"ERROR"* ]] && echo true || echo false)"
+assert_eq "missing dep mentions README" "true" \
+    "$([[ "$out" == *"README"* ]] && echo true || echo false)"
+
+# Mixed present and missing reports only the missing one.
+out=$(check_deps bash __no_such_tool__ git 2>&1) || true
+assert_eq "mixed deps lists missing" "true" \
+    "$([[ "$out" == *"__no_such_tool__"* ]] && echo true || echo false)"
+assert_eq "mixed deps omits present" "false" \
+    "$([[ "$out" == *"bash"* ]] && echo true || echo false)"
+
+# ============================================================
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"

@@ -4,6 +4,10 @@ set -euo pipefail
 # Fetch agent-work from the bare repo, merge into current branch.
 # Usage: ./harvest.sh [--dry]
 
+SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SWARM_DIR/lib/check-deps.sh"
+check_deps git
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT="$(basename "$REPO_ROOT")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"

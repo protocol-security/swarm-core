@@ -6,9 +6,6 @@ set -euo pipefail
 # Uses whiptail for dialogs; falls back to read-based prompts.
 
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-OUTPUT="$REPO_ROOT/swarm.json"
-USE_WHIPTAIL=false
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
@@ -30,6 +27,13 @@ Environment (auto-detected if set):
 HELP
     exit 0
 fi
+
+source "$SWARM_DIR/lib/check-deps.sh"
+check_deps jq
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+OUTPUT="$REPO_ROOT/swarm.json"
+USE_WHIPTAIL=false
 
 if command -v whiptail &>/dev/null; then
     USE_WHIPTAIL=true

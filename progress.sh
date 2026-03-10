@@ -14,6 +14,10 @@ HELP
     exit 0
 fi
 
+SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SWARM_DIR/lib/check-deps.sh"
+check_deps git docker
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT="$(basename "$REPO_ROOT")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"

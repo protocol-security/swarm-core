@@ -5,11 +5,6 @@ set -euo pipefail
 # Pure bash with ANSI escape codes and tput.
 
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-PROJECT="$(basename "$REPO_ROOT")"
-BARE_REPO="/tmp/${PROJECT}-upstream.git"
-IMAGE_NAME="${PROJECT}-agent"
-START_TIME=$(date +%s)
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
@@ -32,6 +27,15 @@ Environment:
 HELP
     exit 0
 fi
+
+source "$SWARM_DIR/lib/check-deps.sh"
+check_deps git jq docker tput bc
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+PROJECT="$(basename "$REPO_ROOT")"
+BARE_REPO="/tmp/${PROJECT}-upstream.git"
+IMAGE_NAME="${PROJECT}-agent"
+START_TIME=$(date +%s)
 
 # Save user's explicit env var so it takes priority over state file.
 USER_TITLE="${SWARM_TITLE:-}"

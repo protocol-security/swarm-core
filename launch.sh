@@ -4,8 +4,11 @@ set -euo pipefail
 # Create bare repos, build image, launch N agent containers.
 # Usage: ./launch.sh {start|stop|logs N|status|wait|post-process}
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SWARM_DIR/lib/check-deps.sh"
+check_deps git jq docker
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT="$(basename "$REPO_ROOT")"
 SWARM_RUN_HASH="$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo "unknown")"
 SWARM_RUN_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
@@ -49,10 +52,6 @@ fi
 if [ -n "$CONFIG_FILE" ]; then
     if [ ! -f "$CONFIG_FILE" ]; then
         echo "ERROR: Config file ${CONFIG_FILE} not found." >&2
-        exit 1
-    fi
-    if ! command -v jq &>/dev/null; then
-        echo "ERROR: jq is required to parse config files." >&2
         exit 1
     fi
     SWARM_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
@@ -115,11 +114,6 @@ parse_start_args() {
 cmd_start() {
     if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "$CONFIG_FILE" ]; then
         echo "ERROR: ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN must be set." >&2
-        exit 1
-    fi
-
-    if ! command -v docker &>/dev/null; then
-        echo "ERROR: docker is not installed." >&2
         exit 1
     fi
 
