@@ -5,6 +5,45 @@ set -euo pipefail
 # Usage: ./launch.sh {start|stop|logs N|status|wait|post-process}
 
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+    cat <<HELP
+Usage: $0 COMMAND [OPTIONS]
+
+Orchestrate Claude Code agents in Docker containers.
+
+Commands:
+  start [OPTIONS]      Build image, create bare repo, launch agents.
+  stop                 Stop all running agent containers.
+  logs N               Tail logs for agent N (default: 1).
+  status               Show running/stopped state for each agent.
+  wait                 Block until all agents exit, then harvest.
+  post-process         Run the post-processing agent from the config.
+
+Start options (override env vars; ignored when config sets agents):
+  --prompt FILE        Prompt file path.
+  --model MODEL        Model name (default: claude-opus-4-6).
+  --agents N           Agent count (default: 3).
+  --max-idle N         Idle sessions before exit (default: 3).
+  --effort LEVEL       Reasoning effort: low, medium, high.
+  --setup SCRIPT       Setup script path.
+  --no-inject-git-rules  Disable git coordination rules.
+  --dashboard          Open the TUI dashboard after launch.
+
+Environment (lowest priority, after CLI args and config file):
+  ANTHROPIC_API_KEY         API key (required unless OAuth).
+  CLAUDE_CODE_OAUTH_TOKEN   OAuth token for subscription auth.
+  SWARM_CONFIG              Path to swarm.json config file.
+  SWARM_PROMPT              Prompt file path.
+  SWARM_MODEL               Model name.
+  SWARM_NUM_AGENTS          Agent count.
+  SWARM_MAX_IDLE            Idle sessions before exit.
+  SWARM_EFFORT              Reasoning effort.
+  SWARM_TITLE               Dashboard title override.
+HELP
+    exit 0
+fi
+
 source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq docker
 
@@ -548,45 +587,7 @@ cmd_post_process() {
     "$SWARM_DIR/harvest.sh"
 }
 
-cmd_help() {
-    cat <<HELP
-Usage: $0 COMMAND [OPTIONS]
-
-Orchestrate Claude Code agents in Docker containers.
-
-Commands:
-  start [OPTIONS]      Build image, create bare repo, launch agents.
-  stop                 Stop all running agent containers.
-  logs N               Tail logs for agent N (default: 1).
-  status               Show running/stopped state for each agent.
-  wait                 Block until all agents exit, then harvest.
-  post-process         Run the post-processing agent from the config.
-
-Start options (override env vars; ignored when config sets agents):
-  --prompt FILE        Prompt file path.
-  --model MODEL        Model name (default: claude-opus-4-6).
-  --agents N           Agent count (default: 3).
-  --max-idle N         Idle sessions before exit (default: 3).
-  --effort LEVEL       Reasoning effort: low, medium, high.
-  --setup SCRIPT       Setup script path.
-  --no-inject-git-rules  Disable git coordination rules.
-  --dashboard          Open the TUI dashboard after launch.
-
-Environment (lowest priority, after CLI args and config file):
-  ANTHROPIC_API_KEY         API key (required unless OAuth).
-  CLAUDE_CODE_OAUTH_TOKEN   OAuth token for subscription auth.
-  SWARM_CONFIG              Path to swarm.json config file.
-  SWARM_PROMPT              Prompt file path.
-  SWARM_MODEL               Model name.
-  SWARM_NUM_AGENTS          Agent count.
-  SWARM_MAX_IDLE            Idle sessions before exit.
-  SWARM_EFFORT              Reasoning effort.
-  SWARM_TITLE               Dashboard title override.
-HELP
-}
-
 case "${1:-start}" in
-    -h|--help)     cmd_help ;;
     start)
         shift
         parse_start_args "$@"
