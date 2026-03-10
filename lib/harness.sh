@@ -197,6 +197,7 @@ cd /workspace
 STATS_FILE="/workspace/${STATS_FILE}"
 
 IDLE_COUNT=0
+IDLE_FILE="/workspace/agent_logs/idle_agent_${AGENT_ID}"
 
 while true; do
     # Reset to latest. Do not re-init submodules; setup changes would be lost.
@@ -270,6 +271,7 @@ while true; do
 
     if [ "$BEFORE" = "$AFTER" ]; then
         IDLE_COUNT=$((IDLE_COUNT + 1))
+        printf '%s/%s\n' "$IDLE_COUNT" "$MAX_IDLE" > "$IDLE_FILE"
         hlog "no commits (idle ${IDLE_COUNT}/${MAX_IDLE})"
         if [ "$IDLE_COUNT" -ge "$MAX_IDLE" ]; then
             hlog "idle limit reached, exiting"
@@ -277,6 +279,7 @@ while true; do
         fi
     else
         IDLE_COUNT=0
+        rm -f "$IDLE_FILE"
         hlog "session end, restarting"
     fi
 done

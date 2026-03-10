@@ -218,6 +218,20 @@ read_agent_stats() {
     rm -f "$tmpf"
 }
 
+read_idle_state() {
+    local name=$1 agent_id=$2
+    local idle_file="agent_logs/idle_agent_${agent_id}"
+    local tmpf="/tmp/.swarm-idle-${name}"
+    docker cp "${name}:/workspace/${idle_file}" "$tmpf" 2>/dev/null || true
+    if [ -s "$tmpf" ]; then
+        cat "$tmpf"
+        rm -f "$tmpf"
+    else
+        rm -f "$tmpf"
+        echo ""
+    fi
+}
+
 emit_row() {
     local id_str="$1" model_str="$2" auth_str="$3"
     local status_color="$4" status_str="$5"
@@ -353,12 +367,22 @@ draw() {
         total_api_ms=$((total_api_ms + a_api_ms))
         total_turns=$((total_turns + a_turns))
 
+        local idle_state=""
+        if [ "$state" = "running" ]; then
+            idle_state=$(read_idle_state "$name" "$i")
+        fi
+
         local status_text status_color
         case "$state" in
             running)
                 running_count=$((running_count + 1))
-                status_text="running"
-                status_color="$GREEN"
+                if [ -n "$idle_state" ]; then
+                    status_text="idle ${idle_state}"
+                    status_color="$YELLOW"
+                else
+                    status_text="running"
+                    status_color="$GREEN"
+                fi
                 ;;
             exited)
                 exited_count=$((exited_count + 1))
