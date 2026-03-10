@@ -10,8 +10,6 @@
 - Do not guess, interpolate, or approximate unknown facts.
 - Separate observation from inference; label inference.
 - Prefer real code paths over synthetic examples.
-- Treat panics, resource exhaustion, undefined behavior, and
-  crashes as security-relevant until proven otherwise.
 
 ## Testing
 
@@ -40,7 +38,6 @@
 - `shellcheck -s bash` on all `.sh` files before committing.
 - Only SC2016 (intentional single-quote) and SC2317 (trap
   handlers) info-level notices are acceptable.
-- `claude-lint run.sh` to check `.claude/CLAUDE.md` formatting.
 
 ## Documentation
 
