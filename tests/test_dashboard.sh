@@ -151,6 +151,26 @@ empty_tag_line=$(emit_row "1" "claude-opus-4-6 (h)" "oauth" "" "running" \
     '$0' "0/0" "0" "0" "--" "0s" "")
 assert_eq "empty tag ok" "true" "$([ -n "$empty_tag_line" ] && echo true || echo false)"
 
+# Idle status in Status column.
+SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=false
+idle_line=$(emit_row "2" "claude-opus-4-6 (h)" "key" "" "idle 1/3" \
+    '$0.05' "1k/500" "50k" "3" "12.0" "30s" "")
+assert_eq "idle in status"  "true" "$(echo "$idle_line" | grep -q 'idle 1/3' && echo true || echo false)"
+assert_eq "idle has cost"   "true" "$(echo "$idle_line" | grep -q '0.05' && echo true || echo false)"
+
+# "idle 2/3" fits in 8-char status column.
+_s="idle 2/3";   assert_eq "idle 2/3 fits"   "true"  "$([ ${#_s} -le 8 ] && echo true || echo false)"
+_s="idle 10/10"; assert_eq "idle 10/10 fits" "false" "$([ ${#_s} -le 8 ] && echo true || echo false)"
+
+# Idle status aligns with running.
+running_line=$(emit_row "1" "claude-opus-4-6 (h)" "key" "" "running" \
+    '$0' "0/0" "0" "0" "--" "0s" "")
+idle_align_line=$(emit_row "2" "claude-opus-4-6 (h)" "key" "" "idle 1/3" \
+    '$0' "0/0" "0" "0" "--" "0s" "")
+cost_pos_run=$(echo "$running_line" | grep -bo '\$0' | head -1 | cut -d: -f1)
+cost_pos_idle=$(echo "$idle_align_line" | grep -bo '\$0' | head -1 | cut -d: -f1)
+assert_eq "idle cost aligns with running" "$cost_pos_run" "$cost_pos_idle"
+
 # ============================================================
 echo ""
 echo "=== 4. tag column width from config ==="

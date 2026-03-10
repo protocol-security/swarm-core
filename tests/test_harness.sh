@@ -219,7 +219,35 @@ assert_eq "max_idle=1 immediate"   "exit"    "$(simulate_idle abc123 abc123 0 1)
 
 # ============================================================
 echo ""
-echo "=== 8b. Prompt file guard ==="
+echo "=== 8b. Idle state file ==="
+
+# Mirrors the idle file write/clear logic in harness.sh.
+simulate_idle_file() {
+    local before="$1" after="$2" idle_count="$3" max_idle="$4"
+    local idle_file="$TMPDIR/idle_test"
+    if [ "$before" = "$after" ]; then
+        idle_count=$((idle_count + 1))
+        printf '%s/%s\n' "$idle_count" "$max_idle" > "$idle_file"
+    else
+        idle_count=0
+        rm -f "$idle_file"
+    fi
+    if [ -f "$idle_file" ]; then
+        cat "$idle_file"
+    else
+        echo "cleared"
+    fi
+}
+
+assert_eq "idle file written"    "1/3"     "$(simulate_idle_file abc123 abc123 0 3)"
+assert_eq "idle file increments" "2/3"     "$(simulate_idle_file abc123 abc123 1 3)"
+assert_eq "idle file at limit"   "3/3"     "$(simulate_idle_file abc123 abc123 2 3)"
+assert_eq "idle file cleared"    "cleared" "$(simulate_idle_file abc123 def456 2 3)"
+assert_eq "idle file max_idle=1" "1/1"     "$(simulate_idle_file abc123 abc123 0 1)"
+
+# ============================================================
+echo ""
+echo "=== 8c. Prompt file guard ==="
 
 # Mirrors the guard in harness.sh: skip session if prompt missing.
 check_prompt() {
