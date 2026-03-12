@@ -120,10 +120,14 @@ if [ ! -d "/workspace/.git" ]; then
         sudo chown -R "$(id -u):$(id -g)" /workspace
     fi
 
-    # Disable Claude Code's Co-Authored-By trailer; the hook-injected
-    # trailers (Model/Agent) are the single source of truth.
+    # Disable Claude Code's Co-Authored-By trailer (the hook-injected
+    # trailers are the single source of truth), suppress the attribution
+    # header that invalidates KV cache with local models, and turn off
+    # telemetry / nonessential traffic in headless containers.
     mkdir -p .claude
-    printf '{"attribution":{"commit":"","pr":""}}\n' > .claude/settings.local.json
+    cat > .claude/settings.local.json <<'SETTINGS'
+{"attribution":{"commit":"","pr":""},"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"0","CLAUDE_CODE_ENABLE_TELEMETRY":"0","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}
+SETTINGS
 
     # Install prepare-commit-msg hook to append provenance trailers.
     # Fires on every commit including git commit -m.

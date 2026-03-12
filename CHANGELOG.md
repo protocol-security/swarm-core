@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.3 — 2026-03-12
+
+- Set `CLAUDE_CODE_ATTRIBUTION_HEADER=0` in workspace settings to
+  prevent KV cache invalidation with local models (up to 10x
+  faster inference via llama.cpp / other local backends).
+- Disable telemetry and nonessential traffic in agent containers
+  (`CLAUDE_CODE_ENABLE_TELEMETRY=0`,
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`).
+
 ## 0.9.2 — 2026-03-10
 
 - Add CHANGELOG.md covering all releases (0.1.0 through 0.9.1).
