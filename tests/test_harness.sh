@@ -380,7 +380,7 @@ echo ""
 echo "=== 11. Attribution settings file ==="
 
 # Mirrors the .claude/settings.local.json written by harness.sh.
-ATTR_JSON='{"attribution":{"commit":"","pr":""}}'
+ATTR_JSON='{"attribution":{"commit":"","pr":""},"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"0","CLAUDE_CODE_ENABLE_TELEMETRY":"0","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}'
 echo "$ATTR_JSON" > "$TMPDIR/settings.local.json"
 
 assert_eq "attr valid JSON" "true" \
@@ -389,6 +389,12 @@ assert_eq "attr commit empty" "" \
     "$(echo "$ATTR_JSON" | jq -r '.attribution.commit')"
 assert_eq "attr pr empty" "" \
     "$(echo "$ATTR_JSON" | jq -r '.attribution.pr')"
+assert_eq "env attribution header" "0" \
+    "$(echo "$ATTR_JSON" | jq -r '.env.CLAUDE_CODE_ATTRIBUTION_HEADER')"
+assert_eq "env telemetry off" "0" \
+    "$(echo "$ATTR_JSON" | jq -r '.env.CLAUDE_CODE_ENABLE_TELEMETRY')"
+assert_eq "env nonessential off" "1" \
+    "$(echo "$ATTR_JSON" | jq -r '.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC')"
 
 # ============================================================
 echo ""
