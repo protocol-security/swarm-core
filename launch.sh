@@ -20,10 +20,10 @@ Commands:
   wait                 Block until all agents exit, then harvest.
   post-process         Run the post-processing agent from the config.
 
-Start options (override env vars; ignored when config sets agents):
+Start options (override env vars):
   --prompt FILE        Prompt file path.
   --model MODEL        Model name (default: claude-opus-4-6).
-  --agents N           Agent count (default: 3).
+  --agents N           Agent count (default: 3; conflicts with config groups).
   --max-idle N         Idle sessions before exit (default: 3).
   --effort LEVEL       Reasoning effort: low, medium, high.
   --setup SCRIPT       Setup script path.
@@ -116,6 +116,7 @@ fi
 # Extracted as a function for testability.
 parse_start_args() {
     OPEN_DASHBOARD=false
+    AGENTS_CLI_OVERRIDE=false
     while [ $# -gt 0 ]; do
         case "$1" in
             --prompt)
@@ -126,6 +127,7 @@ parse_start_args() {
                 shift 2 ;;
             --agents)
                 NUM_AGENTS="${2:?--agents requires a value}"
+                AGENTS_CLI_OVERRIDE=true
                 shift 2 ;;
             --max-idle)
                 MAX_IDLE="${2:?--max-idle requires a value}"
@@ -167,6 +169,12 @@ cmd_start() {
 
     if [ ! -f "$REPO_ROOT/$SWARM_PROMPT" ]; then
         echo "ERROR: ${SWARM_PROMPT} not found." >&2
+        exit 1
+    fi
+
+    if $AGENTS_CLI_OVERRIDE && [ -n "$CONFIG_FILE" ]; then
+        echo "ERROR: --agents cannot override agent groups defined in ${CONFIG_FILE}." >&2
+        echo "       Edit the 'count' fields in ${CONFIG_FILE} instead." >&2
         exit 1
     fi
 

@@ -458,6 +458,7 @@ reset_vars() {
     SWARM_SETUP=""
     INJECT_GIT_RULES="true"
     OPEN_DASHBOARD=false
+    AGENTS_CLI_OVERRIDE=false
 }
 
 reset_vars
@@ -538,7 +539,19 @@ assert_eq "combo dash"    "true"  "$OPEN_DASHBOARD"
 
 # ============================================================
 echo ""
-echo "=== 21. Auth label — credential source labels ==="
+echo "=== 21. --agents sets AGENTS_CLI_OVERRIDE flag ==="
+
+reset_vars
+parse_start_args --agents 5
+assert_eq "override flag set" "true" "$AGENTS_CLI_OVERRIDE"
+
+reset_vars
+parse_start_args --model m
+assert_eq "override flag unset" "false" "$AGENTS_CLI_OVERRIDE"
+
+# ============================================================
+echo ""
+echo "=== 22. Auth label — credential source labels ==="
 
 # auth_token set → "token"
 assert_eq "auth_token → token" \

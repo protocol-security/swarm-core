@@ -8,6 +8,8 @@
 - Disable telemetry and nonessential traffic in agent containers
   (`CLAUDE_CODE_ENABLE_TELEMETRY=0`,
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`).
+- Error out when `--agents` is used with a config file that defines
+  agent groups, instead of silently ignoring the flag.
 
 ## 0.9.2 — 2026-03-10
 

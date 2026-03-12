@@ -27,12 +27,12 @@ SWARM_PROMPT="path/to/prompt.md" \
 ./launch.sh post-process       # Run post-process agent.
 ```
 
-Start options (override env vars; config file sets agents):
+Start options (override env vars):
 
 ```
 --prompt FILE           Prompt file path.
 --model MODEL           Model name (default: claude-opus-4-6).
---agents N              Agent count (default: 3).
+--agents N              Agent count (default: 3; conflicts with config groups).
 --max-idle N            Idle sessions before exit (default: 3).
 --effort LEVEL          Reasoning effort: low, medium, high.
 --setup SCRIPT          Setup script path.
