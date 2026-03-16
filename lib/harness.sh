@@ -47,6 +47,17 @@ fi
 # shellcheck source=drivers/claude-code.sh
 source "$DRIVER_FILE"
 
+# Validate the driver implements all required interface functions.
+_required_fns=(agent_name agent_cmd agent_version agent_run
+               agent_settings agent_extract_stats agent_activity_jq)
+for _fn in "${_required_fns[@]}"; do
+    if ! type -t "$_fn" &>/dev/null; then
+        echo "ERROR: driver '${SWARM_DRIVER}' missing required function: ${_fn}" >&2
+        exit 1
+    fi
+done
+unset _required_fns _fn
+
 # Backward compat: export CLAUDE_MODEL so existing hooks and
 # dashboard env-parsing still work.
 export CLAUDE_MODEL="${SWARM_MODEL}"

@@ -287,6 +287,10 @@ cmd_start() {
         agent_auth_token="$(expand_env_ref "$agent_auth_token")"
         agent_context="${agent_context:-full}"
         agent_driver="${agent_driver:-${SWARM_DRIVER_DEFAULT}}"
+
+        # Source the driver to access agent_docker_env.
+        # shellcheck source=lib/drivers/claude-code.sh
+        source "$SWARM_DIR/lib/drivers/${agent_driver}.sh"
         local effective_prompt="${agent_prompt:-$SWARM_PROMPT}"
 
         local ctx_label="" prompt_label="" driver_label=""
@@ -349,8 +353,11 @@ cmd_start() {
         fi
 
         local eff="${agent_effort:-${EFFORT_LEVEL:-}}"
-        [ -n "$eff" ] \
-            && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${eff}")
+        if [ -n "$eff" ]; then
+            while IFS= read -r _de; do
+                [ -n "$_de" ] && EXTRA_ENV+=("$_de")
+            done < <(agent_docker_env "$eff")
+        fi
 
         docker run -d \
             --name "$NAME" \
@@ -359,6 +366,7 @@ cmd_start() {
             -e "ANTHROPIC_API_KEY=${resolved_api_key}" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
             -e "SWARM_MODEL=${agent_model}" \
+            -e "SWARM_EFFORT=${eff}" \
             -e "CLAUDE_MODEL=${agent_model}" \
             -e "SWARM_PROMPT=${effective_prompt}" \
             -e "SWARM_SETUP=${SWARM_SETUP}" \
@@ -579,8 +587,14 @@ cmd_post_process() {
         pp_auth_label="oauth"
     fi
 
-    [ -n "$pp_effort" ] \
-        && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${pp_effort}")
+    # Source the driver to access agent_docker_env.
+    # shellcheck source=lib/drivers/claude-code.sh
+    source "$SWARM_DIR/lib/drivers/${pp_driver}.sh"
+    if [ -n "$pp_effort" ]; then
+        while IFS= read -r _de; do
+            [ -n "$_de" ] && EXTRA_ENV+=("$_de")
+        done < <(agent_docker_env "$pp_effort")
+    fi
 
     echo "--- Starting post-processing (${pp_model}) ---"
     docker run -d \
@@ -590,6 +604,7 @@ cmd_post_process() {
         -e "ANTHROPIC_API_KEY=${pp_resolved_api_key}" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
         -e "SWARM_MODEL=${pp_model}" \
+        -e "SWARM_EFFORT=${pp_effort}" \
         -e "CLAUDE_MODEL=${pp_model}" \
         -e "SWARM_PROMPT=${pp_prompt}" \
         -e "SWARM_SETUP=${SWARM_SETUP:-}" \
