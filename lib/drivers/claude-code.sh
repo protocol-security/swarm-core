@@ -2,6 +2,9 @@
 # Agent driver: Claude Code
 # Implements the role interface for Anthropic's Claude Code CLI.
 
+# shellcheck source=_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
 agent_name()    { echo "Claude Code"; }
 agent_cmd()     { echo "claude"; }
 
@@ -43,34 +46,8 @@ SETTINGS
 }
 
 # Extract stats from a session log (JSONL or plain JSON).
-# Prints: cost tok_in tok_out cache_rd cache_cr dur api_ms turns
-agent_extract_stats() {
-    local logfile="$1"
-    local RESULT_LINE
-    RESULT_LINE=$(grep '"type"[[:space:]]*:[[:space:]]*"result"' "$logfile" 2>/dev/null | tail -1 || true)
-    if [ -z "$RESULT_LINE" ]; then
-        RESULT_LINE=$(cat "$logfile" 2>/dev/null || true)
-    fi
-    local cost dur api_ms turns tok_in tok_out cache_rd cache_cr
-    cost=$(echo "$RESULT_LINE" | jq -r '.total_cost_usd // 0' 2>/dev/null || true)
-    cost="${cost:-0}"
-    dur=$(echo "$RESULT_LINE" | jq -r '.duration_ms // 0' 2>/dev/null || true)
-    dur="${dur:-0}"
-    api_ms=$(echo "$RESULT_LINE" | jq -r '.duration_api_ms // 0' 2>/dev/null || true)
-    api_ms="${api_ms:-0}"
-    turns=$(echo "$RESULT_LINE" | jq -r '.num_turns // 0' 2>/dev/null || true)
-    turns="${turns:-0}"
-    tok_in=$(echo "$RESULT_LINE" | jq -r '.usage.input_tokens // 0' 2>/dev/null || true)
-    tok_in="${tok_in:-0}"
-    tok_out=$(echo "$RESULT_LINE" | jq -r '.usage.output_tokens // 0' 2>/dev/null || true)
-    tok_out="${tok_out:-0}"
-    cache_rd=$(echo "$RESULT_LINE" | jq -r '.usage.cache_read_input_tokens // 0' 2>/dev/null || true)
-    cache_rd="${cache_rd:-0}"
-    cache_cr=$(echo "$RESULT_LINE" | jq -r '.usage.cache_creation_input_tokens // 0' 2>/dev/null || true)
-    cache_cr="${cache_cr:-0}"
-    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" \
-        "$cost" "$tok_in" "$tok_out" "$cache_rd" "$cache_cr" "$dur" "$api_ms" "$turns"
-}
+# Delegates to the shared JSONL parser in _common.sh.
+agent_extract_stats() { _extract_jsonl_stats "$1"; }
 
 # Return the jq program for parsing activity from stream-json.
 agent_activity_jq() {
@@ -133,12 +110,13 @@ agent_detect_fatal() {
 }
 
 # Map generic config to agent-specific Docker env vars.
-# Args: <api_key> <effort>
-# Prints -e flags for docker run.
+# Args: <effort>
+# Prints -e flags for docker run (one flag per line).
 agent_docker_env() {
-    local api_key="${1:-}" effort="${2:-}"
-    [ -n "$api_key" ] && printf -- '-e\nANTHROPIC_API_KEY=%s\n' "$api_key"
-    [ -n "$effort" ]  && printf -- '-e\nCLAUDE_CODE_EFFORT_LEVEL=%s\n' "$effort"
+    local effort="${1:-}"
+    if [ -n "$effort" ]; then
+        printf -- '-e\nCLAUDE_CODE_EFFORT_LEVEL=%s\n' "$effort"
+    fi
 }
 
 # Dockerfile fragment to install this agent's CLI.
