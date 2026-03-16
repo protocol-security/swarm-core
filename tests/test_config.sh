@@ -704,6 +704,85 @@ assert_eq "pp default model" "claude-sonnet-4-6" "$(parse_pp_model "$TMPDIR/pp_d
 
 # ============================================================
 echo ""
+echo "=== 21. Driver field in agents ==="
+
+cat > "$TMPDIR/driver.json" <<'EOF'
+{
+  "prompt": "task.md",
+  "driver": "fake",
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6" },
+    { "count": 1, "model": "gemini-2.5-pro", "driver": "gemini-cli" },
+    { "count": 1, "model": "gpt-5.4", "driver": "codex-cli" }
+  ]
+}
+EOF
+
+TOP_DRIVER=$(jq -r '.driver // "claude-code"' "$TMPDIR/driver.json")
+assert_eq "top-level driver" "fake" "$TOP_DRIVER"
+
+TSV=$(parse_agents_cfg "$TMPDIR/driver.json")
+assert_eq "driver line count" "3" "$(echo "$TSV" | wc -l | tr -d ' ')"
+
+IFS='|' read -r m u k e a c p t g d <<< "$(echo "$TSV" | sed -n '1p')"
+assert_eq "agent1 inherits top driver" "fake" "$d"
+assert_eq "agent1 model"               "claude-opus-4-6" "$m"
+
+IFS='|' read -r m u k e a c p t g d <<< "$(echo "$TSV" | sed -n '2p')"
+assert_eq "agent2 per-agent driver" "gemini-cli" "$d"
+assert_eq "agent2 model"            "gemini-2.5-pro" "$m"
+
+IFS='|' read -r m u k e a c p t g d <<< "$(echo "$TSV" | sed -n '3p')"
+assert_eq "agent3 per-agent driver" "codex-cli" "$d"
+
+# No driver field: defaults to empty (harness treats as claude-code).
+cat > "$TMPDIR/no_driver.json" <<'EOF'
+{"prompt":"task.md","agents":[{"count":1,"model":"m"}]}
+EOF
+TSV=$(parse_agents_cfg "$TMPDIR/no_driver.json")
+IFS='|' read -r m u k e a c p t g d <<< "$TSV"
+assert_eq "default driver empty" "" "$d"
+
+# ============================================================
+echo ""
+echo "=== 22. Driver field in post_process ==="
+
+cat > "$TMPDIR/pp_driver.json" <<'EOF'
+{
+  "prompt": "task.md",
+  "driver": "fake",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": { "prompt": "review.md", "driver": "other-driver" }
+}
+EOF
+assert_eq "pp driver override" "other-driver" \
+    "$(jq -r '.post_process.driver // .driver // "claude-code"' "$TMPDIR/pp_driver.json")"
+
+# pp inherits top-level driver when not set.
+cat > "$TMPDIR/pp_driver_inherit.json" <<'EOF'
+{
+  "prompt": "task.md",
+  "driver": "fake",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": { "prompt": "review.md" }
+}
+EOF
+assert_eq "pp driver inherited" "fake" \
+    "$(jq -r '.post_process.driver // .driver // "claude-code"' "$TMPDIR/pp_driver_inherit.json")"
+
+# pp defaults to claude-code when neither pp nor top-level set.
+cat > "$TMPDIR/pp_driver_default.json" <<'EOF'
+{
+  "prompt": "task.md",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": { "prompt": "review.md" }
+}
+EOF
+assert_eq "pp driver default" "claude-code" \
+    "$(jq -r '.post_process.driver // .driver // "claude-code"' "$TMPDIR/pp_driver_default.json")"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

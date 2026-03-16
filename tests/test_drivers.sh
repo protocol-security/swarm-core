@@ -57,6 +57,8 @@ assert_eq "claude-code driver exists" "true" \
     "$([ -f "$DRIVERS_DIR/claude-code.sh" ] && echo true || echo false)"
 assert_eq "fake driver exists" "true" \
     "$([ -f "$DRIVERS_DIR/fake.sh" ] && echo true || echo false)"
+assert_eq "_common.sh exists" "true" \
+    "$([ -f "$DRIVERS_DIR/_common.sh" ] && echo true || echo false)"
 
 # ============================================================
 echo ""
@@ -288,6 +290,77 @@ source "$DRIVERS_DIR/fake.sh"
 
 FAKE_FATAL=$(agent_detect_fatal "$TMPDIR/fatal.jsonl" 1)
 assert_eq "fake driver never fatal" "" "$FAKE_FATAL"
+
+# ============================================================
+echo ""
+echo "=== 13. agent_docker_env — Claude Code driver ==="
+
+source "$DRIVERS_DIR/claude-code.sh"
+
+ENV_OUT=$(agent_docker_env "high")
+assert_not_empty "cc docker_env non-empty" "$ENV_OUT"
+assert_contains "cc docker_env has CLAUDE_CODE_EFFORT_LEVEL" \
+    "CLAUDE_CODE_EFFORT_LEVEL=high" "$ENV_OUT"
+
+ENV_EMPTY=$(agent_docker_env "")
+assert_eq "cc docker_env empty effort" "" "$ENV_EMPTY"
+
+# ============================================================
+echo ""
+echo "=== 14. agent_docker_env — Fake driver ==="
+
+source "$DRIVERS_DIR/fake.sh"
+
+FAKE_ENV=$(agent_docker_env "high")
+assert_eq "fake docker_env is no-op" "" "$FAKE_ENV"
+
+# ============================================================
+echo ""
+echo "=== 15. _common.sh — shared stats helper ==="
+
+source "$DRIVERS_DIR/_common.sh"
+
+cat > "$TMPDIR/common_test.jsonl" <<'EOF'
+{"type":"system","subtype":"init","session_id":"s01","tools":["Bash"],"model":"test"}
+{"type":"result","subtype":"success","session_id":"s01","total_cost_usd":0.42,"is_error":false,"duration_ms":5000,"duration_api_ms":4000,"num_turns":3,"result":"OK","usage":{"input_tokens":200,"output_tokens":100,"cache_read_input_tokens":3000,"cache_creation_input_tokens":500}}
+EOF
+
+STATS=$(_extract_jsonl_stats "$TMPDIR/common_test.jsonl")
+IFS=$'\t' read -r cost tok_in tok_out cache_rd cache_cr dur api_ms turns <<< "$STATS"
+assert_eq "common cost"     "0.42"  "$cost"
+assert_eq "common tok_in"   "200"   "$tok_in"
+assert_eq "common tok_out"  "100"   "$tok_out"
+assert_eq "common cache_rd" "3000"  "$cache_rd"
+assert_eq "common cache_cr" "500"   "$cache_cr"
+assert_eq "common dur"      "5000"  "$dur"
+assert_eq "common api_ms"   "4000"  "$api_ms"
+assert_eq "common turns"    "3"     "$turns"
+
+# Empty file: all zeroes.
+: > "$TMPDIR/common_empty.jsonl"
+STATS=$(_extract_jsonl_stats "$TMPDIR/common_empty.jsonl")
+IFS=$'\t' read -r cost tok_in tok_out cache_rd cache_cr dur api_ms turns <<< "$STATS"
+assert_eq "common empty cost"  "0" "$cost"
+assert_eq "common empty turns" "0" "$turns"
+
+# ============================================================
+echo ""
+echo "=== 16. Driver interface completeness ==="
+
+_required_fns=(agent_name agent_cmd agent_version agent_run
+               agent_settings agent_extract_stats agent_activity_jq)
+
+source "$DRIVERS_DIR/claude-code.sh"
+for fn in "${_required_fns[@]}"; do
+    assert_eq "cc has $fn" "true" \
+        "$(type -t "$fn" &>/dev/null && echo true || echo false)"
+done
+
+source "$DRIVERS_DIR/fake.sh"
+for fn in "${_required_fns[@]}"; do
+    assert_eq "fake has $fn" "true" \
+        "$(type -t "$fn" &>/dev/null && echo true || echo false)"
+done
 
 # ============================================================
 echo ""
