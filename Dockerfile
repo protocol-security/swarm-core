@@ -17,7 +17,11 @@ USER agent
 
 # Language toolchains are installed by SWARM_SETUP, not here.
 
-# Default driver: Claude Code. Override with SWARM_DRIVER env var.
+# TODO: The image currently always installs Claude Code CLI.
+# SWARM_DRIVER selects the driver at runtime, but the CLI binary
+# is baked in at build time.  When a second production driver is
+# added, this should become a build arg or multi-stage build so
+# only the required CLI(s) are installed.
 RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
     && bash /tmp/claude-install.sh \
     && rm /tmp/claude-install.sh
