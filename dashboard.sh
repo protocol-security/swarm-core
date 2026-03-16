@@ -328,9 +328,9 @@ draw() {
             local env_dump
             env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
                 "$name" 2>/dev/null || true)
-            model=$(printf '%s' "$env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
+            model=$(printf '%s' "$env_dump" | grep '^SWARM_MODEL=' | head -1 | cut -d= -f2- || true)
             model="${model:-unknown}"
-            effort=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
+            effort=$(printf '%s' "$env_dump" | grep '^SWARM_EFFORT=' | head -1 | cut -d= -f2- || true)
             agent_tag=$(printf '%s' "$env_dump" | grep '^SWARM_TAG=' | head -1 | cut -d= -f2- || true)
             auth_mode=$(printf '%s' "$env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
             if [ -z "$auth_mode" ]; then
@@ -417,9 +417,9 @@ draw() {
         local pp_env_dump
         pp_env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
             "$pp_name" 2>/dev/null || true)
-        pp_model=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
+        pp_model=$(printf '%s' "$pp_env_dump" | grep '^SWARM_MODEL=' | head -1 | cut -d= -f2- || true)
         pp_model="${pp_model:-unknown}"
-        pp_effort=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
+        pp_effort=$(printf '%s' "$pp_env_dump" | grep '^SWARM_EFFORT=' | head -1 | cut -d= -f2- || true)
         pp_tag=$(printf '%s' "$pp_env_dump" | grep '^SWARM_TAG=' | head -1 | cut -d= -f2- || true)
         pp_auth_mode=$(printf '%s' "$pp_env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
         if [ -z "$pp_auth_mode" ]; then
