@@ -58,7 +58,7 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_EFFORT` | | Reasoning effort. |
 | `SWARM_INJECT_GIT_RULES` | `true` | Inject git rules. |
 | `SWARM_GIT_USER_NAME` | `swarm-agent` | Git author name. |
-| `SWARM_GIT_USER_EMAIL` | `agent@claude-swarm.local` | Git email. |
+| `SWARM_GIT_USER_EMAIL` | `agent@swarm.local` | Git email. |
 | `ANTHROPIC_BASE_URL` | | Override API URL. |
 | `ANTHROPIC_AUTH_TOKEN` | | Override auth token. |
 

@@ -282,8 +282,8 @@ mkdir -p "$HOOK_REPO/.git/hooks"
 cat > "$HOOK_REPO/.git/hooks/prepare-commit-msg" <<'HOOK'
 #!/bin/bash
 if ! grep -q '^Model:' "$1"; then
-    printf '\nModel: %s\nTools: claude-swarm %s, Claude Code %s\n' \
-        "$CLAUDE_MODEL" "$SWARM_VERSION" "$CLAUDE_VERSION" >> "$1"
+    printf '\nModel: %s\nTools: swarm %s, %s %s\n' \
+        "$SWARM_MODEL" "$SWARM_VERSION" "$AGENT_CLI_NAME" "$AGENT_CLI_VERSION" >> "$1"
     printf '> Run: %s\n' "$SWARM_RUN_CONTEXT" >> "$1"
     cfg="$SWARM_CFG_PROMPT"
     [ -n "$SWARM_CFG_SETUP" ] && cfg="${cfg}, ${SWARM_CFG_SETUP}"
@@ -299,7 +299,7 @@ chmod +x "$HOOK_REPO/.git/hooks/prepare-commit-msg"
 # Commit with prompt + setup (full context = no context trailer).
 touch "$HOOK_REPO/file.txt"
 git -C "$HOOK_REPO" add file.txt
-CLAUDE_MODEL="claude-opus-4-6" CLAUDE_VERSION="1.0.32" SWARM_VERSION="0.1.0" \
+SWARM_MODEL="claude-opus-4-6" AGENT_CLI_NAME="Claude Code" AGENT_CLI_VERSION="1.0.32" SWARM_VERSION="0.1.0" \
     SWARM_RUN_CONTEXT="netherfuzz@a3f8c21 (main)" \
     SWARM_CFG_PROMPT="prompts/task.md" SWARM_CFG_SETUP="scripts/setup.sh" \
     SWARM_CONTEXT="full" \
@@ -310,7 +310,7 @@ assert_eq "hook model trailer" \
     "Model: claude-opus-4-6" \
     "$(echo "$MSG" | grep '^Model:')"
 assert_eq "hook tools trailer" \
-    "Tools: claude-swarm 0.1.0, Claude Code 1.0.32" \
+    "Tools: swarm 0.1.0, Claude Code 1.0.32" \
     "$(echo "$MSG" | grep '^Tools:')"
 assert_eq "hook run trailer" \
     "> Run: netherfuzz@a3f8c21 (main)" \
@@ -328,7 +328,7 @@ assert_eq "hook subject preserved" \
 # Second commit with bare context (context=none trailer should appear).
 echo "x" > "$HOOK_REPO/file2.txt"
 git -C "$HOOK_REPO" add file2.txt
-CLAUDE_MODEL="MiniMax-M2.5" CLAUDE_VERSION="1.0.30" SWARM_VERSION="0.1.0" \
+SWARM_MODEL="MiniMax-M2.5" AGENT_CLI_NAME="Claude Code" AGENT_CLI_VERSION="1.0.30" SWARM_VERSION="0.1.0" \
     SWARM_RUN_CONTEXT="gethfuzz@b4e9d12 (develop)" \
     SWARM_CFG_PROMPT="prompts/fuzz.md" SWARM_CFG_SETUP="" \
     SWARM_CONTEXT="none" \
@@ -339,7 +339,7 @@ assert_eq "hook model trailer 2" \
     "Model: MiniMax-M2.5" \
     "$(echo "$MSG2" | grep '^Model:')"
 assert_eq "hook tools trailer 2" \
-    "Tools: claude-swarm 0.1.0, Claude Code 1.0.30" \
+    "Tools: swarm 0.1.0, Claude Code 1.0.30" \
     "$(echo "$MSG2" | grep '^Tools:')"
 assert_eq "hook run trailer 2" \
     "> Run: gethfuzz@b4e9d12 (develop)" \
@@ -354,7 +354,7 @@ assert_eq "hook ctx trailer (none)" \
 # Idempotent: if trailers already present, hook does not duplicate.
 echo "y" > "$HOOK_REPO/file3.txt"
 git -C "$HOOK_REPO" add file3.txt
-CLAUDE_MODEL="claude-opus-4-6" CLAUDE_VERSION="1.0.32" SWARM_VERSION="0.1.0" \
+SWARM_MODEL="claude-opus-4-6" AGENT_CLI_NAME="Claude Code" AGENT_CLI_VERSION="1.0.32" SWARM_VERSION="0.1.0" \
     SWARM_RUN_CONTEXT="test@abc1234 (main)" \
     SWARM_CFG_PROMPT="p.md" SWARM_CFG_SETUP="" \
     SWARM_CONTEXT="full" \

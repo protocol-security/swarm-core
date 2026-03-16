@@ -4,7 +4,11 @@ set -euo pipefail
 # Reads stream-json (JSONL) from stdin and prints human-readable
 # activity summaries to stdout.  Designed to be used with:
 #
-#   claude ... --output-format stream-json | tee "$LOG" | activity-filter.sh
+#   agent_run ... | tee "$LOG" | activity-filter.sh
+#
+# If a driver is loaded (SWARM_DRIVER set and driver file exists),
+# the jq filter is obtained from agent_activity_jq().  Otherwise
+# the default Claude Code filter is used.
 #
 # Each tool_use content block becomes one full-line ANSI
 # yellow output (matching harness green for visual contrast):
@@ -15,7 +19,11 @@ set -euo pipefail
 
 AGENT_ID="${AGENT_ID:-?}"
 
-exec jq --unbuffered --raw-input --arg id "$AGENT_ID" -r '
+# Obtain the jq filter from the loaded driver, or use built-in default.
+if type -t agent_activity_jq &>/dev/null; then
+    JQ_FILTER=$(agent_activity_jq)
+else
+    JQ_FILTER='
   def truncate(n):
     if length > n then .[:n-3] + "..." else . end;
 
@@ -46,3 +54,6 @@ exec jq --unbuffered --raw-input --arg id "$AGENT_ID" -r '
   else "\(prefix) " + .name + reset
   end
 '
+fi
+
+exec jq --unbuffered --raw-input --arg id "$AGENT_ID" -r "$JQ_FILTER"

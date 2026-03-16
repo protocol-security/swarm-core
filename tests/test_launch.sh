@@ -42,8 +42,8 @@ parse_pp_api_key()  { jq -r '.post_process.api_key // empty' "$1"; }
 parse_pp_effort()   { jq -r '.post_process.effort // empty' "$1"; }
 
 parse_agents_cfg() {
-    jq -r '.agents[] | range(.count) as $i |
-        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // "")] | join("|")' "$1"
+    jq -r '.driver as $dd | .agents[] | range(.count) as $i |
+        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // ""), (.driver // $dd // "")] | join("|")' "$1"
 }
 
 # Mirrors the per-agent credential selection in launch.sh.
@@ -124,17 +124,17 @@ assert_eq "double slash" "a-b-c"            "$(shorten_model "a/b/c")"
 echo ""
 echo "=== 2. TSV generation (env var path) ==="
 
-CLAUDE_MODEL="claude-opus-4-6"
+SWARM_MODEL="claude-opus-4-6"
 EFFORT_LEVEL="medium"
 NUM_AGENTS=3
 : > "$TMPDIR/env-agents.cfg"
 for _i in $(seq 1 "$NUM_AGENTS"); do
-    printf '%s|||%s|||||\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
+    printf '%s|||%s||||||\n' "$SWARM_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
 done
 
 assert_eq "line count" "3" "$(wc -l < "$TMPDIR/env-agents.cfg" | tr -d ' ')"
 
-IFS='|' read -r m u k e a c p t g < "$TMPDIR/env-agents.cfg"
+IFS='|' read -r m u k e a c p t g d < "$TMPDIR/env-agents.cfg"
 assert_eq "model"    "claude-opus-4-6" "$m"
 assert_eq "base_url" ""               "$u"
 assert_eq "api_key"  ""               "$k"
@@ -266,9 +266,9 @@ echo "=== 8. Effort env var fallback (no effort set) ==="
 
 EFFORT_LEVEL=""
 : > "$TMPDIR/env-no-effort.cfg"
-printf '%s|||%s|||||\n' "claude-opus-4-6" "$EFFORT_LEVEL" >> "$TMPDIR/env-no-effort.cfg"
+printf '%s|||%s||||||\n' "claude-opus-4-6" "$EFFORT_LEVEL" >> "$TMPDIR/env-no-effort.cfg"
 
-IFS='|' read -r m u k e a c p t g < "$TMPDIR/env-no-effort.cfg"
+IFS='|' read -r m u k e a c p t g d < "$TMPDIR/env-no-effort.cfg"
 assert_eq "no effort" "" "$e"
 
 # ============================================================
@@ -451,7 +451,7 @@ eval "$(sed -n '/^parse_start_args()/,/^}/p' "$_LAUNCH")"
 # Reset variables to known state before each sub-test.
 reset_vars() {
     SWARM_PROMPT="orig.md"
-    CLAUDE_MODEL="orig-model"
+    SWARM_MODEL="orig-model"
     NUM_AGENTS=1
     MAX_IDLE=3
     EFFORT_LEVEL=""
@@ -464,7 +464,7 @@ reset_vars() {
 reset_vars
 parse_start_args --prompt new.md --model new-model --agents 5
 assert_eq "cli prompt"  "new.md"    "$SWARM_PROMPT"
-assert_eq "cli model"   "new-model" "$CLAUDE_MODEL"
+assert_eq "cli model"   "new-model" "$SWARM_MODEL"
 assert_eq "cli agents"  "5"         "$NUM_AGENTS"
 
 reset_vars
@@ -488,7 +488,7 @@ echo "=== 17. parse_start_args — no args leaves defaults ==="
 reset_vars
 parse_start_args
 assert_eq "default prompt"  "orig.md"    "$SWARM_PROMPT"
-assert_eq "default model"   "orig-model" "$CLAUDE_MODEL"
+assert_eq "default model"   "orig-model" "$SWARM_MODEL"
 assert_eq "default agents"  "1"          "$NUM_AGENTS"
 assert_eq "default idle"    "3"          "$MAX_IDLE"
 assert_eq "default effort"  ""           "$EFFORT_LEVEL"
@@ -500,11 +500,11 @@ echo ""
 echo "=== 18. parse_start_args — CLI overrides env vars ==="
 
 SWARM_PROMPT="env.md"
-CLAUDE_MODEL="env-model"
+SWARM_MODEL="env-model"
 NUM_AGENTS=2
 parse_start_args --prompt cli.md --model cli-model --agents 8
 assert_eq "cli > env prompt" "cli.md"    "$SWARM_PROMPT"
-assert_eq "cli > env model"  "cli-model" "$CLAUDE_MODEL"
+assert_eq "cli > env model"  "cli-model" "$SWARM_MODEL"
 assert_eq "cli > env agents" "8"         "$NUM_AGENTS"
 
 # ============================================================
@@ -529,7 +529,7 @@ parse_start_args --prompt p.md --model m --agents 4 \
     --max-idle 2 --effort low --setup x.sh \
     --no-inject-git-rules --dashboard
 assert_eq "combo prompt"  "p.md"  "$SWARM_PROMPT"
-assert_eq "combo model"   "m"     "$CLAUDE_MODEL"
+assert_eq "combo model"   "m"     "$SWARM_MODEL"
 assert_eq "combo agents"  "4"     "$NUM_AGENTS"
 assert_eq "combo idle"    "2"     "$MAX_IDLE"
 assert_eq "combo effort"  "low"   "$EFFORT_LEVEL"

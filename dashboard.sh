@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Always-on TUI dashboard for claude-swarm.
+# Always-on TUI dashboard for swarm agents.
 # Pure bash with ANSI escape codes and tput.
 
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,7 +10,7 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
 Usage: $0
 
-Always-on TUI dashboard for claude-swarm.
+Always-on TUI dashboard for swarm agents.
 Refreshes every 2 seconds. Shows per-agent model, auth source,
 status, cost, token usage, cache hits, turns, and duration.
 
@@ -48,7 +48,7 @@ if [ -f "$STATE_FILE" ]; then
     source "$STATE_FILE"
 fi
 
-DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-claude-swarm}}"
+DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-swarm}}"
 
 CONFIG_FILE="${SWARM_CONFIG:-}"
 if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
@@ -85,8 +85,8 @@ else
         [ "$NUM_AGENTS" -eq 0 ] && NUM_AGENTS=3
     fi
     SWARM_PROMPT="${SWARM_PROMPT:-}"
-    CLAUDE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
-    MODEL_SUMMARY="${NUM_AGENTS}x ${CLAUDE_MODEL}"
+    SWARM_ACTIVE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
+    MODEL_SUMMARY="${NUM_AGENTS}x ${SWARM_ACTIVE_MODEL}"
     CONFIG_LABEL="env vars"
 fi
 
@@ -276,7 +276,7 @@ draw() {
     if [ -f "$STATE_FILE" ]; then
         # shellcheck disable=SC1090
         source "$STATE_FILE"
-        DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-claude-swarm}}"
+        DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-swarm}}"
         NUM_AGENTS="${SWARM_NUM_AGENTS:-$NUM_AGENTS}"
         SWARM_PROMPT="${SWARM_PROMPT:-$SWARM_PROMPT}"
         MODEL_SUMMARY="${SWARM_MODEL_SUMMARY:-$MODEL_SUMMARY}"

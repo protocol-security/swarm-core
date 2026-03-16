@@ -10,13 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sudo \
     && rm -rf /var/lib/apt/lists/*
 
-# Claude Code refuses --dangerously-skip-permissions as root.
+# Agent CLIs refuse --dangerously-skip-permissions as root.
 RUN useradd -m -s /bin/bash agent \
     && echo "agent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/agent
 USER agent
 
 # Language toolchains are installed by SWARM_SETUP, not here.
 
+# Default driver: Claude Code. Override with SWARM_DRIVER env var.
 RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
     && bash /tmp/claude-install.sh \
     && rm /tmp/claude-install.sh
@@ -30,6 +31,7 @@ COPY --chmod=755 lib/harness.sh /harness.sh
 COPY --chmod=755 lib/activity-filter.sh /activity-filter.sh
 COPY --chmod=644 lib/agent-system-prompt.md /agent-system-prompt.md
 COPY --chmod=644 VERSION /swarm-version
+COPY --chmod=755 lib/drivers/ /drivers/
 
 WORKDIR /workspace
 

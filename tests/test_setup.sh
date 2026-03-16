@@ -79,12 +79,12 @@ detect_auth_mode() {
 echo "=== 1. Basic config construction ==="
 
 AGENTS=$(build_agents_json 2 "claude-opus-4-6")
-CONFIG=$(build_config "task.md" "" 3 "swarm-agent" "agent@claude-swarm.local" "$AGENTS")
+CONFIG=$(build_config "task.md" "" 3 "swarm-agent" "agent@swarm.local" "$AGENTS")
 
 assert_eq "prompt"  "task.md" "$(echo "$CONFIG" | jq -r '.prompt')"
 assert_eq "max_idle" "3"      "$(echo "$CONFIG" | jq -r '.max_idle')"
 assert_eq "git name" "swarm-agent" "$(echo "$CONFIG" | jq -r '.git_user.name')"
-assert_eq "git email" "agent@claude-swarm.local" "$(echo "$CONFIG" | jq -r '.git_user.email')"
+assert_eq "git email" "agent@swarm.local" "$(echo "$CONFIG" | jq -r '.git_user.email')"
 assert_eq "agent count" "2"   "$(echo "$CONFIG" | jq '[.agents[].count] | add')"
 assert_eq "no setup"   "null" "$(echo "$CONFIG" | jq -r '.setup // "null"')"
 
@@ -162,7 +162,7 @@ echo ""
 echo "=== 8. Config valid without API key (OAuth-only) ==="
 
 AGENTS=$(build_agents_json 3 "claude-opus-4-6")
-CONFIG=$(build_config "task.md" "" 3 "swarm-agent" "agent@claude-swarm.local" "$AGENTS")
+CONFIG=$(build_config "task.md" "" 3 "swarm-agent" "agent@swarm.local" "$AGENTS")
 
 echo "$CONFIG" > "$TMPDIR/oauth-config.json"
 assert_eq "valid JSON (oauth)" "true" \
@@ -256,7 +256,7 @@ assert_eq "custom ep no auth"   "null"                 "$(echo "$OBJ" | jq -r '.
 
 # Full round-trip: oauth-only agent in a config
 AGENTS=$(echo "[]" | jq --argjson obj "$(build_agent_obj 3 "claude-opus-4-6" "" "sk-tok")" '. + [$obj]')
-CONFIG=$(build_config "task.md" "" 3 "swarm-agent" "agent@claude-swarm.local" "$AGENTS")
+CONFIG=$(build_config "task.md" "" 3 "swarm-agent" "agent@swarm.local" "$AGENTS")
 assert_eq "config oauth auth"   "oauth"           "$(echo "$CONFIG" | jq -r '.agents[0].auth')"
 assert_eq "config no api_key"   "null"             "$(echo "$CONFIG" | jq -r '.agents[0].api_key // "null"')"
 assert_eq "config agent count"  "3"                "$(echo "$CONFIG" | jq '[.agents[].count] | add')"
