@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     sudo \
     && rm -rf /var/lib/apt/lists/*
 
-# Agent CLIs refuse --dangerously-skip-permissions as root.
+# Claude Code refuses --dangerously-skip-permissions as root.
 RUN useradd -m -s /bin/bash agent \
     && echo "agent ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/agent
 USER agent

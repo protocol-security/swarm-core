@@ -326,7 +326,9 @@ Dashboard columns:
 Agent drivers decouple the harness from any specific CLI tool.
 Each driver (`lib/drivers/<name>.sh`) implements a fixed role
 interface so the harness can run, monitor, and parse stats from
-any supported agent.
+any supported agent.  Today only `claude-code` is production-
+ready; the interface is designed to accommodate additional
+agents in the future.
 
 Built-in drivers:
 
@@ -347,7 +349,7 @@ Or per agent group:
 {
   "agents": [
     { "count": 2, "model": "claude-opus-4-6" },
-    { "count": 1, "model": "gemini-2.5-pro", "driver": "gemini-cli" }
+    { "count": 1, "model": "other-model", "driver": "other-driver" }
   ]
 }
 ```
@@ -368,6 +370,7 @@ agent_version()         # Print version string to stdout
 agent_run()             # Run one session (model, prompt, logfile, append_file)
 agent_settings()        # Write agent config files into workspace
 agent_extract_stats()   # Parse stats from log file (TSV output)
+agent_detect_fatal()    # Detect fatal errors from log + exit code
 agent_activity_jq()     # Return jq filter for activity streaming
 agent_docker_env()      # Print -e flags for agent-specific env vars
 agent_install_cmd()     # Dockerfile fragment to install the CLI

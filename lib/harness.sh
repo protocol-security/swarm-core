@@ -88,6 +88,14 @@ export SWARM_CFG_SETUP="${SWARM_CFG_SETUP:-${SWARM_SETUP}}"
 
 hlog "starting driver=${SWARM_DRIVER} model=${SWARM_MODEL} prompt=${SWARM_PROMPT} context=${SWARM_CONTEXT}"
 
+# Write the driver's activity jq filter to a file so the
+# activity-filter.sh subprocess (piped from agent_run) can read it.
+# This bridges the process boundary: the driver is sourced here but
+# activity-filter.sh runs as a separate process.
+SWARM_JQ_FILTER_FILE=$(mktemp /tmp/swarm-jq-XXXXXX.jq)
+agent_activity_jq > "$SWARM_JQ_FILTER_FILE"
+export SWARM_JQ_FILTER_FILE
+
 if [ ! -d "/workspace/.git" ]; then
     hlog "cloning upstream"
     git clone -q /upstream /workspace
@@ -236,8 +244,9 @@ while true; do
         APPEND_FILE="/agent-system-prompt.md"
     fi
 
+    AGENT_RUN_EXIT=0
     agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
-        | /activity-filter.sh || true
+        | /activity-filter.sh || AGENT_RUN_EXIT=$?
 
     # Extract usage stats via the driver.
     STATS_LINE=$(agent_extract_stats "$LOGFILE")
@@ -252,14 +261,22 @@ while true; do
         >> "$STATS_FILE"
     hlog "session end cost=\$${cost} in=${tok_in} out=${tok_out} turns=${turns} time=${dur}ms"
 
-    # Detect fatal errors (model not found, auth failure) and exit
-    # immediately rather than spinning in a tight loop.
-    SESSION_ERROR=$(grep '"error"[[:space:]]*:' "$LOGFILE" 2>/dev/null \
-        | jq -r 'select(.error) | .error' 2>/dev/null | head -1 || true)
-    if [ -n "$SESSION_ERROR" ] && [ "$tok_in" = "0" ] && [ "$tok_out" = "0" ]; then
-        RESULT_LINE=$(grep '"type"[[:space:]]*:[[:space:]]*"result"' "$LOGFILE" 2>/dev/null | tail -1 || true)
-        SESSION_MSG=$(echo "$RESULT_LINE" | jq -r '.result // empty' 2>/dev/null || true)
-        hlog_err "fatal: ${SESSION_ERROR}: ${SESSION_MSG}"
+    # Ask the driver to detect fatal errors (model not found, auth
+    # failure, etc.).  The driver inspects its own log format.
+    FATAL_MSG=""
+    if type -t agent_detect_fatal &>/dev/null; then
+        FATAL_MSG=$(agent_detect_fatal "$LOGFILE" "$AGENT_RUN_EXIT")
+    fi
+    # Generic fallback: a non-zero exit with zero tokens is always
+    # fatal, regardless of whether the driver detected anything.
+    # This catches crashes, missing binaries, and other failures
+    # that occur before structured output is emitted.
+    if [ -z "$FATAL_MSG" ] && [ "$AGENT_RUN_EXIT" -ne 0 ] \
+            && [ "$tok_in" = "0" ] && [ "$tok_out" = "0" ]; then
+        FATAL_MSG="agent exited with code ${AGENT_RUN_EXIT} and produced no tokens"
+    fi
+    if [ -n "$FATAL_MSG" ]; then
+        hlog_err "fatal: ${FATAL_MSG}"
         hlog_err "exiting due to unrecoverable error"
         exit 1
     fi

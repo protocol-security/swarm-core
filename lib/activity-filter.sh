@@ -6,9 +6,9 @@ set -euo pipefail
 #
 #   agent_run ... | tee "$LOG" | activity-filter.sh
 #
-# If a driver is loaded (SWARM_DRIVER set and driver file exists),
-# the jq filter is obtained from agent_activity_jq().  Otherwise
-# the default Claude Code filter is used.
+# The jq filter is read from the file path in SWARM_JQ_FILTER_FILE
+# (written by harness.sh from the loaded driver).  If not set or
+# not readable, falls back to the built-in Claude Code filter.
 #
 # Each tool_use content block becomes one full-line ANSI
 # yellow output (matching harness green for visual contrast):
@@ -19,9 +19,9 @@ set -euo pipefail
 
 AGENT_ID="${AGENT_ID:-?}"
 
-# Obtain the jq filter from the loaded driver, or use built-in default.
-if type -t agent_activity_jq &>/dev/null; then
-    JQ_FILTER=$(agent_activity_jq)
+# Read driver-provided jq filter from file, or use built-in default.
+if [ -n "${SWARM_JQ_FILTER_FILE:-}" ] && [ -r "$SWARM_JQ_FILTER_FILE" ]; then
+    JQ_FILTER=$(cat "$SWARM_JQ_FILTER_FILE")
 else
     JQ_FILTER='
   def truncate(n):

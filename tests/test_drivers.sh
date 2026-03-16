@@ -202,6 +202,95 @@ assert_eq "default driver" "claude-code" "$DEFAULT"
 
 # ============================================================
 echo ""
+echo "=== 10. Activity filter reads jq from SWARM_JQ_FILTER_FILE ==="
+
+# Regression test for the process boundary: activity-filter.sh
+# runs as a separate process and cannot inherit shell functions
+# from the harness.  It reads the jq filter from a file written
+# by the harness (SWARM_JQ_FILTER_FILE).
+
+FILTER_DIR="$TESTS_DIR/../lib"
+
+# Test 1: With SWARM_JQ_FILTER_FILE set, the filter file is used.
+cat > "$TMPDIR/custom.jq" <<'JQ'
+fromjson? // empty |
+select(.type == "custom") |
+"CUSTOM:" + .name
+JQ
+
+CUSTOM_INPUT='{"type":"custom","name":"test-tool"}'
+CUSTOM_OUT=$(echo "$CUSTOM_INPUT" | \
+    AGENT_ID=1 SWARM_JQ_FILTER_FILE="$TMPDIR/custom.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_eq "custom jq filter from file" "CUSTOM:test-tool" "$CUSTOM_OUT"
+
+# Test 2: Without SWARM_JQ_FILTER_FILE, falls back to built-in Claude filter.
+CLAUDE_INPUT='{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t","name":"Read","input":{"file_path":"src/main.ts"}}]}}'
+FALLBACK_OUT=$(echo "$CLAUDE_INPUT" | \
+    AGENT_ID=1 SWARM_JQ_FILTER_FILE="" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "fallback filter reads tool_use" "Read src/main.ts" "$FALLBACK_OUT"
+
+# Test 3: Claude Code driver's agent_activity_jq() produces a
+# valid filter that works when written to file (simulating the
+# harness→activity-filter process boundary).
+source "$DRIVERS_DIR/claude-code.sh"
+agent_activity_jq > "$TMPDIR/claude-code.jq"
+CC_OUT=$(echo "$CLAUDE_INPUT" | \
+    AGENT_ID=2 SWARM_JQ_FILTER_FILE="$TMPDIR/claude-code.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "driver jq via file boundary" "Read src/main.ts" "$CC_OUT"
+
+# Test 4: Fake driver's jq filter works via file boundary too.
+source "$DRIVERS_DIR/fake.sh"
+agent_activity_jq > "$TMPDIR/fake.jq"
+FAKE_INPUT='{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t","name":"DoSomething","input":{}}]}}'
+FAKE_OUT=$(echo "$FAKE_INPUT" | \
+    AGENT_ID=3 SWARM_JQ_FILTER_FILE="$TMPDIR/fake.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "fake driver jq via file boundary" "DoSomething" "$FAKE_OUT"
+
+# ============================================================
+echo ""
+echo "=== 11. agent_detect_fatal — Claude Code driver ==="
+
+source "$DRIVERS_DIR/claude-code.sh"
+
+# Fatal: error line with zero tokens.
+cat > "$TMPDIR/fatal.jsonl" <<'EOF'
+{"error":"model_not_found","message":"The model does not exist"}
+{"type":"result","subtype":"error","session_id":"s01","total_cost_usd":0,"is_error":true,"duration_ms":100,"duration_api_ms":0,"num_turns":0,"result":"Error","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}
+EOF
+FATAL_OUT=$(agent_detect_fatal "$TMPDIR/fatal.jsonl" 1)
+assert_not_empty "fatal error detected" "$FATAL_OUT"
+assert_contains "fatal mentions error" "model_not_found" "$FATAL_OUT"
+
+# Non-fatal: error but tokens were produced.
+cat > "$TMPDIR/nonfatal.jsonl" <<'EOF'
+{"error":"rate_limited","message":"Slow down"}
+{"type":"result","subtype":"success","session_id":"s01","total_cost_usd":0.05,"is_error":false,"duration_ms":5000,"duration_api_ms":4000,"num_turns":3,"result":"Done","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}
+EOF
+NONFATAL_OUT=$(agent_detect_fatal "$TMPDIR/nonfatal.jsonl" 0)
+assert_eq "non-fatal not flagged" "" "$NONFATAL_OUT"
+
+# No error at all.
+cat > "$TMPDIR/clean.jsonl" <<'EOF'
+{"type":"result","subtype":"success","session_id":"s01","total_cost_usd":0.10,"is_error":false,"duration_ms":10000,"duration_api_ms":8000,"num_turns":5,"result":"Done","usage":{"input_tokens":200,"output_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}
+EOF
+CLEAN_OUT=$(agent_detect_fatal "$TMPDIR/clean.jsonl" 0)
+assert_eq "clean log not flagged" "" "$CLEAN_OUT"
+
+# ============================================================
+echo ""
+echo "=== 12. agent_detect_fatal — Fake driver ==="
+
+source "$DRIVERS_DIR/fake.sh"
+
+FAKE_FATAL=$(agent_detect_fatal "$TMPDIR/fatal.jsonl" 1)
+assert_eq "fake driver never fatal" "" "$FAKE_FATAL"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

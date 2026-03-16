@@ -1,8 +1,8 @@
-# swarm
+# claude-swarm
 
 N coding agents in Docker, coordinating through git.
-No orchestrator, no message passing.  Agent-agnostic — supports
-Claude Code, Gemini CLI, Codex CLI, and custom drivers.
+No orchestrator, no message passing.  Designed to support
+multiple agent CLIs via a driver abstraction layer.
 
 Based on the agent-team pattern from
 [Building a C Compiler with Large Language Models](https://www.anthropic.com/engineering/building-c-compiler).
@@ -12,7 +12,7 @@ Based on the agent-team pattern from
 - [Docker](https://docs.docker.com/get-docker/)
 - bash (4.0+), git, jq, bc
 - tput (ncurses) — used by the dashboard
-- An API key, OAuth token, or compatible endpoint for your agent
+- An Anthropic API key, OAuth token, or compatible endpoint
 
 Optional: `whiptail` for the interactive setup wizard TUI.
 For development: `shellcheck` for linting.
@@ -22,13 +22,13 @@ For development: `shellcheck` for linting.
 Add as a submodule:
 
 ```bash
-git submodule add https://github.com/moodmosaic/claude-swarm.git tools/swarm
+git submodule add https://github.com/moodmosaic/claude-swarm.git tools/claude-swarm
 ```
 
 Or clone standalone and run from your project directory:
 
 ```bash
-./path/to/swarm/launch.sh start --prompt tasks/task.md
+./path/to/claude-swarm/launch.sh start --prompt tasks/task.md
 ```
 
 ## How it works
@@ -123,9 +123,15 @@ Each driver implements a fixed role interface:
 | `agent_run` | Run one session, output JSONL |
 | `agent_settings` | Write agent-specific settings |
 | `agent_extract_stats` | Parse session stats from log |
+| `agent_detect_fatal` | Detect fatal errors from log + exit code |
 | `agent_activity_jq` | jq filter for activity display |
 
 Built-in drivers: `claude-code` (default), `fake` (test double).
+
+The driver abstraction is designed to eventually support
+non-Claude agents (Gemini CLI, Codex CLI, etc.).  Today only
+`claude-code` is production-ready; the interface may evolve as
+additional drivers are added.
 
 To add a new agent, create `lib/drivers/<name>.sh` implementing
 the interface above.  Then set `"driver": "<name>"` in your

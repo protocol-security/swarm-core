@@ -232,13 +232,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE4=$(echo "$CFG" | sed -n '4p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "opus effort"  "high"   "$e1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
 assert_eq "sonnet effort" "medium" "$e2"
 
-IFS='|' read -r m4 u4 k4 e4 a4 c4 p4 t4 g4 <<< "$LINE4"
+IFS='|' read -r m4 u4 k4 e4 a4 c4 p4 t4 g4 d4 <<< "$LINE4"
 assert_eq "haiku effort (empty)" "" "$e4"
 
 # ============================================================
@@ -311,14 +311,14 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "auth apikey"  "apikey"  "$a1"
 assert_eq "auth apikey model" "claude-opus-4-6" "$m1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
 assert_eq "auth oauth"   "oauth"   "$a2"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 <<< "$LINE3"
+IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
 assert_eq "auth custom (empty)" "" "$a3"
 assert_eq "auth custom key" "sk-mm" "$k3"
 
@@ -370,13 +370,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "context default (empty)" "" "$c1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
 assert_eq "context none" "none" "$c2"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 <<< "$LINE3"
+IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
 assert_eq "context slim" "slim" "$c3"
 
 # ============================================================
@@ -399,13 +399,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "prompt default (empty)" "" "$p1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 <<< "$LINE2"
+IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
 assert_eq "prompt override" "tasks/review.md" "$p2"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 <<< "$LINE3"
+IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
 assert_eq "prompt + context" "tasks/explore.md" "$p3"
 assert_eq "context preserved" "none" "$c3"
 
@@ -429,13 +429,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 LINE4=$(echo "$CFG" | sed -n '4p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 <<< "$LINE1"
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "tag explore" "explore" "$g1"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 <<< "$LINE3"
+IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
 assert_eq "tag review" "review" "$g3"
 
-IFS='|' read -r m4 u4 k4 e4 a4 c4 p4 t4 g4 <<< "$LINE4"
+IFS='|' read -r m4 u4 k4 e4 a4 c4 p4 t4 g4 d4 <<< "$LINE4"
 assert_eq "tag empty" "" "$g4"
 
 # ============================================================

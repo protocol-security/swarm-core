@@ -197,6 +197,11 @@ while true; do
         AGENT_OBJ+=", \"auth\": \"apikey\""
     fi
 
+    GDRIVER=$(input "Driver for this group (blank for default)" "")
+    if [ -n "$GDRIVER" ]; then
+        AGENT_OBJ+=", \"driver\": \"${GDRIVER}\""
+    fi
+
     AGENT_OBJ+="}"
     AGENTS_JSON=$(echo "$AGENTS_JSON" | jq --argjson obj "$AGENT_OBJ" '. + [$obj]')
 

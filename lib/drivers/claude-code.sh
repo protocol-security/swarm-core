@@ -107,6 +107,31 @@ end
 JQ
 }
 
+# Detect fatal errors in a Claude Code session log.
+# Returns non-empty string if fatal, empty if OK.
+# Args: <logfile> <exit_code>
+agent_detect_fatal() {
+    local logfile="$1"
+    # exit_code=$2 — available but not needed for Claude Code
+    # since we detect errors from the structured JSON log.
+    local session_error
+    session_error=$(grep '"error"[[:space:]]*:' "$logfile" 2>/dev/null \
+        | jq -r 'select(.error) | .error' 2>/dev/null | head -1 || true)
+    if [ -n "$session_error" ]; then
+        # Check zero tokens via result line.
+        local result_line tok_in tok_out
+        result_line=$(grep '"type"[[:space:]]*:[[:space:]]*"result"' "$logfile" 2>/dev/null | tail -1 || true)
+        tok_in=$(echo "$result_line" | jq -r '.usage.input_tokens // 0' 2>/dev/null || echo 0)
+        tok_out=$(echo "$result_line" | jq -r '.usage.output_tokens // 0' 2>/dev/null || echo 0)
+        if [ "${tok_in:-0}" = "0" ] && [ "${tok_out:-0}" = "0" ]; then
+            local session_msg
+            session_msg=$(echo "$result_line" | jq -r '.result // empty' 2>/dev/null || true)
+            echo "${session_error}: ${session_msg}"
+            return
+        fi
+    fi
+}
+
 # Map generic config to agent-specific Docker env vars.
 # Args: <api_key> <effort>
 # Prints -e flags for docker run.

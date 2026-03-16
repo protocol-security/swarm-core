@@ -156,9 +156,13 @@ parse_start_args() {
 }
 
 cmd_start() {
-    if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "$CONFIG_FILE" ]; then
-        echo "ERROR: ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN must be set." >&2
-        exit 1
+    # Credential check: only require Anthropic keys for the
+    # default claude-code driver (other drivers bring their own).
+    if [ "$SWARM_DRIVER_DEFAULT" = "claude-code" ]; then
+        if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "$CONFIG_FILE" ]; then
+            echo "ERROR: ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN must be set." >&2
+            exit 1
+        fi
     fi
 
     if [ -z "$SWARM_PROMPT" ]; then
@@ -247,6 +251,24 @@ cmd_start() {
         for _i in $(seq 1 "$NUM_AGENTS"); do
             printf '%s|||%s||||||\n' "$SWARM_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
         done
+    fi
+
+    # Preflight: validate all referenced drivers exist before
+    # spending time on image build and container startup.
+    local _bad_drivers="" _checked_drivers=" "
+    while IFS='|' read -r _ _ _ _ _ _ _ _ _ _drv; do
+        _drv="${_drv:-${SWARM_DRIVER_DEFAULT}}"
+        # Skip already-checked drivers.
+        [[ "$_checked_drivers" == *" $_drv "* ]] && continue
+        _checked_drivers+="$_drv "
+        if [ ! -f "$SWARM_DIR/lib/drivers/${_drv}.sh" ]; then
+            _bad_drivers+="  - ${_drv}\n"
+        fi
+    done < "$AGENTS_CFG"
+    if [ -n "$_bad_drivers" ]; then
+        printf "ERROR: unknown driver(s):\n%b" "$_bad_drivers" >&2
+        echo "Available drivers: $(ls "$SWARM_DIR/lib/drivers/" | sed 's/\.sh$//' | tr '\n' ' ')" >&2
+        exit 1
     fi
 
     # Read mirror volume mounts (shared across all containers).

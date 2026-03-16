@@ -25,6 +25,9 @@ agent_run() {
 # No agent-specific settings needed for the fake driver.
 agent_settings() { :; }
 
+# Detect fatal errors — fake driver never fails fatally.
+agent_detect_fatal() { :; }
+
 # Extract stats from session log (same JSONL format as Claude).
 agent_extract_stats() {
     local logfile="$1"
