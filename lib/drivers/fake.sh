@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2034
 # Agent driver: Fake (test double)
 # Emits realistic JSONL output for unit-testing the harness loop
 # without Docker or API keys.  See "Exploring the Continuum of

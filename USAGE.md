@@ -61,6 +61,7 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_GIT_USER_EMAIL` | `agent@swarm.local` | Git email. |
 | `ANTHROPIC_BASE_URL` | | Override API URL. |
 | `ANTHROPIC_AUTH_TOKEN` | | Override auth token. |
+| `SWARM_DRIVER` | `claude-code` | Agent driver (see Drivers). |
 
 Any Anthropic-compatible endpoint works globally via
 `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`, or per-group
@@ -82,9 +83,10 @@ Per-group fields in `swarm.json` `agents` array:
 | `auth_token` | key or `$VAR` | Per-group Bearer token (OpenRouter-style). |
 | `base_url` | URL | Per-group API endpoint. |
 | `inject_git_rules` | `true`, `false` | Append git coordination rules to system prompt. |
+| `driver` | driver name | Agent driver override (default: top-level or `claude-code`). |
 
-Top-level fields: `prompt`, `setup`, `max_idle`, `inject_git_rules`,
-`post_process`.
+Top-level fields: `prompt`, `setup`, `max_idle`, `driver`,
+`inject_git_rules`, `post_process`.
 
 ## Dashboard
 
@@ -120,8 +122,8 @@ what an agent is doing:
 12:35:18 harness[1] session end cost=$0.12 in=800 out=644 turns=6 time=19s
 ```
 
-The filter (`lib/activity-filter.sh`) parses `stream-json`
-events from the Claude CLI and prints one line per tool call.
+The filter (`lib/activity-filter.sh`) parses stream-json
+events from the agent CLI and prints one line per tool call.
 The timestamp and agent ID are colored in ANSI yellow
 (matching git's commit-hash color) for readability.
 
@@ -169,6 +171,7 @@ Unit tests (no Docker or API key):
 ```bash
 ./tests/test.sh --unit         # All unit tests.
 ./tests/test_config.sh         # Config parsing.
+./tests/test_drivers.sh        # Agent driver interface.
 ./tests/test_format.sh         # Formatting helpers.
 ./tests/test_launch.sh         # Launch logic.
 ./tests/test_harness.sh        # Stat extraction.
@@ -317,6 +320,61 @@ Dashboard columns:
 - **Turns** — number of assistant turns across all sessions.
 - **Tok/s** — output tokens per second of API time.
 - **Time** — cumulative wall-clock duration.
+
+## Drivers
+
+Agent drivers decouple the harness from any specific CLI tool.
+Each driver (`lib/drivers/<name>.sh`) implements a fixed role
+interface so the harness can run, monitor, and parse stats from
+any supported agent.
+
+Built-in drivers:
+
+| Driver | CLI | Default |
+|--------|-----|---------|
+| `claude-code` | `claude` | Yes |
+| `fake` | (none) | Test double for unit testing |
+
+Set the driver globally in `swarm.json`:
+
+```json
+{ "driver": "claude-code" }
+```
+
+Or per agent group:
+
+```json
+{
+  "agents": [
+    { "count": 2, "model": "claude-opus-4-6" },
+    { "count": 1, "model": "gemini-2.5-pro", "driver": "gemini-cli" }
+  ]
+}
+```
+
+Or via environment: `SWARM_DRIVER=claude-code`.
+
+Per-agent drivers inherit the top-level `driver` field, which
+defaults to `claude-code`.
+
+### Writing a new driver
+
+Create `lib/drivers/<name>.sh` implementing these functions:
+
+```bash
+agent_name()            # Human-readable name for commit trailers
+agent_cmd()             # CLI command name
+agent_version()         # Print version string to stdout
+agent_run()             # Run one session (model, prompt, logfile, append_file)
+agent_settings()        # Write agent config files into workspace
+agent_extract_stats()   # Parse stats from log file (TSV output)
+agent_activity_jq()     # Return jq filter for activity streaming
+agent_docker_env()      # Print -e flags for agent-specific env vars
+agent_install_cmd()     # Dockerfile fragment to install the CLI
+```
+
+See `lib/drivers/claude-code.sh` for the reference implementation
+and `lib/drivers/fake.sh` for a minimal test double.
 
 ## Cleanup
 
