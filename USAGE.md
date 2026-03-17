@@ -379,6 +379,26 @@ agent_install_cmd()     # Dockerfile fragment to install the CLI
 See `lib/drivers/claude-code.sh` for the reference implementation
 and `lib/drivers/fake.sh` for a minimal test double.
 
+### Dry-run with the fake driver
+
+Use the `fake` driver to validate setup scripts, prompt paths, and
+config without spending tokens or requiring API keys:
+
+```bash
+SWARM_DRIVER=fake \
+SWARM_PROMPT=your-prompt.md \
+SWARM_MODEL=fake \
+SWARM_SETUP=your-setup.sh \
+SWARM_NUM_AGENTS=1 \
+./launch.sh start --dashboard
+```
+
+The fake driver runs the full harness loop — cloning, setup script
+execution, git hooks — but replaces the agent session with a
+synthetic JSONL stream that completes instantly.  This catches
+path errors, missing dependencies, and config issues before any
+real agent run.
+
 ## Cleanup
 
 ```bash
