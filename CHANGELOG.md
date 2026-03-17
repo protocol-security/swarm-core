@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.11.0 — 2026-03-17
+
+- **Gemini CLI driver.** New `gemini-cli` driver
+  (`lib/drivers/gemini-cli.sh`) implements the full interface for
+  Google's Gemini CLI: headless mode with `--output-format stream-json`,
+  JSONL stats extraction, tool-call activity parsing, and fatal error
+  detection.
+- **Auth abstraction.** New `agent_docker_auth()` interface function
+  lets each driver resolve its own credentials and emit Docker `-e`
+  flags. Claude Code handles ANTHROPIC_API_KEY / OAuth / auth-token;
+  Gemini CLI handles GEMINI_API_KEY and OpenRouter. The ~50-line auth
+  block that was duplicated in `launch.sh` (start + post-process) is
+  now a single call per driver.
+- **Default model per driver.** New `agent_default_model()` interface
+  function so each driver declares its fallback model (claude-opus-4-6,
+  gemini-2.5-pro, fake-model). `harness.sh` calls it when
+  `SWARM_MODEL` is unset, removing the hardcoded Claude default.
+- **Conditional Dockerfile.** `SWARM_AGENTS` build arg controls which
+  CLIs are installed: `claude-code` (default), `gemini-cli`, or both.
+  Node.js 20 is only installed when Gemini CLI is needed. `launch.sh`
+  derives the arg from config and passes it to `docker build`.
+- **Dashboard driver label.** `format_model()` shows a `[gem]` or
+  `[fake]` suffix when the agent's driver is not the default
+  `claude-code`, making mixed-driver swarms easy to identify at a
+  glance.
+- Add 6 new test configs covering gemini-only, mixed-driver,
+  OpenRouter, driver inheritance, post-process, and heterogeneous
+  kitchen-sink scenarios. 87 new test assertions (762 total).
+
 ## 0.10.0 — 2026-03-16
 
 - **Agent driver abstraction.** The harness is no longer coupled to
