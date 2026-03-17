@@ -29,7 +29,6 @@ HELP
 fi
 
 AGENT_ID="${AGENT_ID:-unnamed}"
-SWARM_MODEL="${SWARM_MODEL:-${CLAUDE_MODEL:-claude-opus-4-6}}"
 SWARM_PROMPT="${SWARM_PROMPT:?SWARM_PROMPT is required.}"
 SWARM_SETUP="${SWARM_SETUP:-}"
 MAX_IDLE="${MAX_IDLE:-3}"
@@ -48,8 +47,9 @@ fi
 source "$DRIVER_FILE"
 
 # Validate the driver implements all required interface functions.
-_required_fns=(agent_name agent_cmd agent_version agent_run
-               agent_settings agent_extract_stats agent_activity_jq)
+_required_fns=(agent_default_model agent_name agent_cmd agent_version
+               agent_run agent_settings agent_extract_stats
+               agent_activity_jq agent_docker_auth)
 for _fn in "${_required_fns[@]}"; do
     if ! type -t "$_fn" &>/dev/null; then
         echo "ERROR: driver '${SWARM_DRIVER}' missing required function: ${_fn}" >&2
@@ -57,6 +57,9 @@ for _fn in "${_required_fns[@]}"; do
     fi
 done
 unset _required_fns _fn
+
+# Resolve model: explicit env > driver default.
+SWARM_MODEL="${SWARM_MODEL:-$(agent_default_model)}"
 
 # Backward compat: export CLAUDE_MODEL so existing hooks and
 # dashboard env-parsing still work.

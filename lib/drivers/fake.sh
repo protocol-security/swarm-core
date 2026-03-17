@@ -8,6 +8,7 @@
 # shellcheck source=_common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
+agent_default_model() { echo "fake-model"; }
 agent_name()    { echo "Fake Agent"; }
 agent_cmd()     { echo "fake-agent"; }
 agent_version() { echo "0.0.0-fake"; }
@@ -52,6 +53,10 @@ JQ
 }
 
 agent_docker_env() { :; }
+
+agent_docker_auth() {
+    printf -- '-e\nSWARM_AUTH_MODE=\n'
+}
 
 agent_install_cmd() {
     echo '# Fake driver: no agent to install.'

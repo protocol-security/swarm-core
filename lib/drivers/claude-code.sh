@@ -5,6 +5,7 @@
 # shellcheck source=_common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
+agent_default_model() { echo "claude-opus-4-6"; }
 agent_name()    { echo "Claude Code"; }
 agent_cmd()     { echo "claude"; }
 
@@ -117,6 +118,52 @@ agent_docker_env() {
     if [ -n "$effort" ]; then
         printf -- '-e\nCLAUDE_CODE_EFFORT_LEVEL=%s\n' "$effort"
     fi
+}
+
+# Resolve auth credentials and emit Docker -e flags.
+# Args: <api_key> <auth_token> <auth_mode> <base_url>
+# Reads host env: ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN,
+#                 ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL
+agent_docker_auth() {
+    local api_key="$1" auth_token="$2" auth_mode="$3" base_url="$4"
+
+    if [ -n "$base_url" ]; then
+        printf -- '-e\nANTHROPIC_BASE_URL=%s\n' "$base_url"
+    elif [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
+        printf -- '-e\nANTHROPIC_BASE_URL=%s\n' "$ANTHROPIC_BASE_URL"
+    fi
+    [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
+        && printf -- '-e\nANTHROPIC_AUTH_TOKEN=%s\n' "$ANTHROPIC_AUTH_TOKEN"
+
+    local resolved_key="" label=""
+    if [ -n "$auth_token" ]; then
+        printf -- '-e\nANTHROPIC_AUTH_TOKEN=%s\n' "$auth_token"
+        label="token"
+    else
+        case "${auth_mode}" in
+            oauth)
+                printf -- '-e\nCLAUDE_CODE_OAUTH_TOKEN=%s\n' "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+                label="oauth"
+                ;;
+            apikey)
+                resolved_key="${api_key:-${ANTHROPIC_API_KEY:-}}"
+                label="key"
+                ;;
+            *)
+                resolved_key="${api_key:-${ANTHROPIC_API_KEY:-}}"
+                [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
+                    && printf -- '-e\nCLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
+                if [ -n "$api_key" ]; then label="key"
+                elif [ -n "$resolved_key" ] && [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then label="auto"
+                elif [ -n "$resolved_key" ]; then label="key"
+                elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then label="oauth"
+                fi
+                ;;
+        esac
+    fi
+
+    printf -- '-e\nANTHROPIC_API_KEY=%s\n' "$resolved_key"
+    printf -- '-e\nSWARM_AUTH_MODE=%s\n' "$label"
 }
 
 # Dockerfile fragment to install this agent's CLI.
