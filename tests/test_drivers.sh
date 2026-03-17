@@ -347,8 +347,9 @@ assert_eq "common empty turns" "0" "$turns"
 echo ""
 echo "=== 16. Driver interface completeness ==="
 
-_required_fns=(agent_name agent_cmd agent_version agent_run
-               agent_settings agent_extract_stats agent_activity_jq)
+_required_fns=(agent_default_model agent_name agent_cmd agent_version
+               agent_run agent_settings agent_extract_stats
+               agent_activity_jq agent_docker_auth)
 
 source "$DRIVERS_DIR/claude-code.sh"
 for fn in "${_required_fns[@]}"; do
@@ -361,6 +362,177 @@ for fn in "${_required_fns[@]}"; do
     assert_eq "fake has $fn" "true" \
         "$(type -t "$fn" &>/dev/null && echo true || echo false)"
 done
+
+source "$DRIVERS_DIR/gemini-cli.sh"
+for fn in "${_required_fns[@]}"; do
+    assert_eq "gemini has $fn" "true" \
+        "$(type -t "$fn" &>/dev/null && echo true || echo false)"
+done
+
+# ============================================================
+echo ""
+echo "=== 17. Gemini CLI driver — role interface ==="
+
+assert_eq "gemini-cli driver exists" "true" \
+    "$([ -f "$DRIVERS_DIR/gemini-cli.sh" ] && echo true || echo false)"
+
+source "$DRIVERS_DIR/gemini-cli.sh"
+
+assert_eq "gemini-cli name"    "Gemini CLI"     "$(agent_name)"
+assert_eq "gemini-cli cmd"     "gemini"         "$(agent_cmd)"
+assert_eq "gemini-cli default" "gemini-2.5-pro" "$(agent_default_model)"
+
+GEM_JQ=$(agent_activity_jq)
+assert_not_empty "gemini-cli jq filter" "$GEM_JQ"
+assert_contains "gemini-cli jq has tool_call" "tool_call" "$GEM_JQ"
+assert_contains "gemini-cli jq has shell" "shell" "$GEM_JQ"
+
+GEM_INSTALL=$(agent_install_cmd)
+assert_contains "gemini-cli install has npm" "npm" "$GEM_INSTALL"
+assert_contains "gemini-cli install has @google/gemini-cli" "@google/gemini-cli" "$GEM_INSTALL"
+
+# ============================================================
+echo ""
+echo "=== 18. Gemini CLI driver — agent_settings ==="
+
+GWORK="$TMPDIR/gem-workspace"
+mkdir -p "$GWORK"
+agent_settings "$GWORK"
+
+assert_eq "gemini settings file created" "true" \
+    "$([ -f "$GWORK/.gemini/settings.json" ] && echo true || echo false)"
+assert_eq "gemini settings valid JSON" "true" \
+    "$(jq empty "$GWORK/.gemini/settings.json" 2>/dev/null && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 19. Gemini CLI driver — agent_extract_stats ==="
+
+cat > "$TMPDIR/gemini-session.jsonl" <<'EOF'
+{"type":"init","model":"gemini-2.5-pro","tools":["shell","read_file","write_file"]}
+{"type":"tool_call","name":"shell","input":"ls -la"}
+{"type":"result","stats":{"input_tokens":800,"output_tokens":200,"cached":5000,"duration_ms":12000,"tool_calls":4}}
+EOF
+
+GSTATS=$(agent_extract_stats "$TMPDIR/gemini-session.jsonl")
+IFS=$'\t' read -r g_cost g_in g_out g_cache_rd g_cache_cr g_dur g_api_ms g_turns <<< "$GSTATS"
+
+assert_eq "gemini cost is 0 (not tracked)" "0"     "$g_cost"
+assert_eq "gemini tok_in"                  "800"   "$g_in"
+assert_eq "gemini tok_out"                 "200"   "$g_out"
+assert_eq "gemini cached"                  "5000"  "$g_cache_rd"
+assert_eq "gemini cache_cr"                "0"     "$g_cache_cr"
+assert_eq "gemini duration"                "12000" "$g_dur"
+assert_eq "gemini turns = tool_calls"      "4"     "$g_turns"
+
+# Empty result: all zeroes.
+: > "$TMPDIR/gemini-empty.jsonl"
+GSTATS_EMPTY=$(agent_extract_stats "$TMPDIR/gemini-empty.jsonl")
+IFS=$'\t' read -r g_cost g_in g_out g_cache_rd g_cache_cr g_dur g_api_ms g_turns <<< "$GSTATS_EMPTY"
+assert_eq "gemini empty cost"  "0" "$g_cost"
+assert_eq "gemini empty turns" "0" "$g_turns"
+
+# ============================================================
+echo ""
+echo "=== 20. Gemini CLI driver — agent_detect_fatal ==="
+
+cat > "$TMPDIR/gemini-fatal.jsonl" <<'EOF'
+{"type":"error","message":"API key invalid","severity":"fatal"}
+EOF
+GFATAL=$(agent_detect_fatal "$TMPDIR/gemini-fatal.jsonl" 1)
+assert_not_empty "gemini fatal detected" "$GFATAL"
+assert_contains "gemini fatal message" "API key invalid" "$GFATAL"
+
+cat > "$TMPDIR/gemini-clean.jsonl" <<'EOF'
+{"type":"result","stats":{"input_tokens":100,"output_tokens":50,"cached":0,"duration_ms":5000,"tool_calls":2}}
+EOF
+GCLEAN=$(agent_detect_fatal "$TMPDIR/gemini-clean.jsonl" 0)
+assert_eq "gemini clean not flagged" "" "$GCLEAN"
+
+# ============================================================
+echo ""
+echo "=== 21. agent_default_model — all drivers ==="
+
+source "$DRIVERS_DIR/claude-code.sh"
+assert_eq "cc default model" "claude-opus-4-6" "$(agent_default_model)"
+
+source "$DRIVERS_DIR/fake.sh"
+assert_eq "fake default model" "fake-model" "$(agent_default_model)"
+
+source "$DRIVERS_DIR/gemini-cli.sh"
+assert_eq "gemini default model" "gemini-2.5-pro" "$(agent_default_model)"
+
+# ============================================================
+echo ""
+echo "=== 22. agent_docker_auth — Claude Code driver ==="
+
+source "$DRIVERS_DIR/claude-code.sh"
+
+# OAuth mode.
+CLAUDE_CODE_OAUTH_TOKEN="test-oauth" \
+ANTHROPIC_API_KEY="" \
+AUTH_OUT=$(agent_docker_auth "" "" "oauth" "")
+assert_contains "cc auth oauth has CLAUDE_CODE_OAUTH_TOKEN" "CLAUDE_CODE_OAUTH_TOKEN" "$AUTH_OUT"
+assert_contains "cc auth oauth label" "SWARM_AUTH_MODE=oauth" "$AUTH_OUT"
+
+# API key mode.
+AUTH_OUT=$(ANTHROPIC_API_KEY="sk-test" agent_docker_auth "" "" "apikey" "")
+assert_contains "cc auth key has ANTHROPIC_API_KEY" "ANTHROPIC_API_KEY=sk-test" "$AUTH_OUT"
+assert_contains "cc auth key label" "SWARM_AUTH_MODE=key" "$AUTH_OUT"
+
+# Auth token (OpenRouter) mode.
+AUTH_OUT=$(agent_docker_auth "" "or-token-123" "" "https://openrouter.ai/api")
+assert_contains "cc auth token has ANTHROPIC_AUTH_TOKEN=or-token" "ANTHROPIC_AUTH_TOKEN=or-token-123" "$AUTH_OUT"
+assert_contains "cc auth token has base_url" "ANTHROPIC_BASE_URL=https://openrouter.ai/api" "$AUTH_OUT"
+assert_contains "cc auth token label" "SWARM_AUTH_MODE=token" "$AUTH_OUT"
+
+# ============================================================
+echo ""
+echo "=== 23. agent_docker_auth — Gemini CLI driver ==="
+
+source "$DRIVERS_DIR/gemini-cli.sh"
+
+# Native key.
+AUTH_OUT=$(GEMINI_API_KEY="gkey-123" agent_docker_auth "" "" "" "")
+assert_contains "gemini auth native key" "GEMINI_API_KEY=gkey-123" "$AUTH_OUT"
+assert_contains "gemini auth native label" "SWARM_AUTH_MODE=key" "$AUTH_OUT"
+
+# OpenRouter via auth_token.
+AUTH_OUT=$(agent_docker_auth "" "or-key-456" "" "https://openrouter.ai/api")
+assert_contains "gemini auth openrouter key" "OPENROUTER_API_KEY=or-key-456" "$AUTH_OUT"
+assert_contains "gemini auth openrouter base" "GEMINI_API_BASE=https://openrouter.ai/api" "$AUTH_OUT"
+assert_contains "gemini auth openrouter label" "SWARM_AUTH_MODE=openrouter" "$AUTH_OUT"
+
+# ============================================================
+echo ""
+echo "=== 24. agent_docker_auth — Fake driver ==="
+
+source "$DRIVERS_DIR/fake.sh"
+
+AUTH_OUT=$(agent_docker_auth "" "" "" "")
+assert_contains "fake auth has empty SWARM_AUTH_MODE" "SWARM_AUTH_MODE=" "$AUTH_OUT"
+
+# ============================================================
+echo ""
+echo "=== 25. agent_docker_env — Gemini CLI driver ==="
+
+source "$DRIVERS_DIR/gemini-cli.sh"
+
+GEM_ENV=$(agent_docker_env "high")
+assert_eq "gemini docker_env is no-op" "" "$GEM_ENV"
+
+# ============================================================
+echo ""
+echo "=== 26. Gemini CLI — activity jq filter via file boundary ==="
+
+source "$DRIVERS_DIR/gemini-cli.sh"
+agent_activity_jq > "$TMPDIR/gemini.jq"
+
+GEMINI_INPUT='{"type":"tool_call","name":"shell","input":"ls -la"}'
+GEM_ACT_OUT=$(echo "$GEMINI_INPUT" | \
+    AGENT_ID=5 SWARM_JQ_FILTER_FILE="$TMPDIR/gemini.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "gemini jq via file boundary" "Shell:" "$GEM_ACT_OUT"
 
 # ============================================================
 echo ""

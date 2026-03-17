@@ -1,0 +1,43 @@
+{
+  "prompt": "unused",
+  "agents": [
+    {
+      "count": 1,
+      "model": "claude-opus-4-6",
+      "driver": "claude-code",
+      "effort": "high",
+      "auth": "oauth",
+      "context": "slim",
+      "tag": "deep"
+    },
+    {
+      "count": 1,
+      "model": "gemini-2.5-pro",
+      "driver": "gemini-cli",
+      "context": "slim",
+      "tag": "gem-scan"
+    },
+    {
+      "count": 1,
+      "model": "google/gemini-2.5-pro",
+      "driver": "gemini-cli",
+      "base_url": "https://openrouter.ai/api",
+      "auth_token": "$OPENROUTER_API_KEY",
+      "tag": "gem-or"
+    },
+    {
+      "count": 1,
+      "model": "claude-sonnet-4-6",
+      "driver": "claude-code",
+      "effort": "medium",
+      "auth": "apikey",
+      "tag": "fast"
+    }
+  ],
+  "post_process": {
+    "prompt": "unused-pp",
+    "model": "claude-opus-4-6",
+    "driver": "claude-code",
+    "auth": "oauth"
+  }
+}

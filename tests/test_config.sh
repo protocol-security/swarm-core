@@ -10,6 +10,8 @@ FAIL=0
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
+TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
     if [ "$expected" = "$actual" ]; then
@@ -780,6 +782,100 @@ cat > "$TMPDIR/pp_driver_default.json" <<'EOF'
 EOF
 assert_eq "pp driver default" "claude-code" \
     "$(jq -r '.post_process.driver // .driver // "claude-code"' "$TMPDIR/pp_driver_default.json")"
+
+# ============================================================
+echo ""
+echo "=== 23. Gemini-only config ==="
+
+CFG="$TESTS_DIR/configs/gemini-only.json"
+assert_eq "gemini-only count" "2" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "gemini-only driver" "gemini-cli" "$(jq -r '.driver // "claude-code"' "$CFG")"
+assert_eq "gemini-only model" "gemini-2.5-pro" "$(jq -r '.agents[0].model' "$CFG")"
+# Agents inherit top-level driver.
+AGENT_DRV=$(jq -r '.driver as $dd | .agents[0] | (.driver // $dd // "claude-code")' "$CFG")
+assert_eq "gemini-only agent inherits driver" "gemini-cli" "$AGENT_DRV"
+
+# ============================================================
+echo ""
+echo "=== 24. Mixed-drivers config ==="
+
+CFG="$TESTS_DIR/configs/mixed-drivers.json"
+assert_eq "mixed-drivers count" "3" "$(jq '[.agents[].count] | add' "$CFG")"
+DRV1=$(jq -r '.driver as $dd | .agents[0] | (.driver // $dd // "claude-code")' "$CFG")
+DRV2=$(jq -r '.driver as $dd | .agents[1] | (.driver // $dd // "claude-code")' "$CFG")
+assert_eq "mixed agent1 driver" "claude-code" "$DRV1"
+assert_eq "mixed agent2 driver" "gemini-cli"  "$DRV2"
+assert_eq "mixed agent1 model" "claude-opus-4-6" "$(jq -r '.agents[0].model' "$CFG")"
+assert_eq "mixed agent2 model" "gemini-2.5-pro"  "$(jq -r '.agents[1].model' "$CFG")"
+
+# ============================================================
+echo ""
+echo "=== 25. Gemini-OpenRouter config ==="
+
+CFG="$TESTS_DIR/configs/gemini-openrouter.json"
+assert_eq "gemini-or count" "1" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "gemini-or driver" "gemini-cli" "$(jq -r '.driver // "claude-code"' "$CFG")"
+assert_eq "gemini-or auth_token" "\$OPENROUTER_API_KEY" "$(jq -r '.agents[0].auth_token' "$CFG")"
+assert_eq "gemini-or base_url" "https://openrouter.ai/api" "$(jq -r '.agents[0].base_url' "$CFG")"
+
+# ============================================================
+echo ""
+echo "=== 26. Driver-inheritance config ==="
+
+CFG="$TESTS_DIR/configs/driver-inheritance.json"
+assert_eq "inherit top driver" "gemini-cli" "$(jq -r '.driver // "claude-code"' "$CFG")"
+assert_eq "inherit count" "2" "$(jq '[.agents[].count] | add' "$CFG")"
+# Both agents should inherit gemini-cli.
+A1=$(jq -r '.driver as $dd | .agents[0] | (.driver // $dd // "claude-code")' "$CFG")
+A2=$(jq -r '.driver as $dd | .agents[1] | (.driver // $dd // "claude-code")' "$CFG")
+assert_eq "inherit agent1 driver" "gemini-cli" "$A1"
+assert_eq "inherit agent2 driver" "gemini-cli" "$A2"
+assert_eq "inherit agent1 model" "gemini-2.5-pro"   "$(jq -r '.agents[0].model' "$CFG")"
+assert_eq "inherit agent2 model" "gemini-2.5-flash"  "$(jq -r '.agents[1].model' "$CFG")"
+
+# ============================================================
+echo ""
+echo "=== 27. Driver-post-process config ==="
+
+CFG="$TESTS_DIR/configs/driver-post-process.json"
+assert_eq "pp-cfg agent count" "2" "$(jq '[.agents[].count] | add' "$CFG")"
+PP_DRV=$(jq -r '.post_process.driver // .driver // "claude-code"' "$CFG")
+assert_eq "pp driver gemini-cli" "gemini-cli" "$PP_DRV"
+assert_eq "pp model" "gemini-2.5-flash" "$(jq -r '.post_process.model' "$CFG")"
+
+# ============================================================
+echo ""
+echo "=== 28. Heterogeneous kitchen-sink config ==="
+
+CFG="$TESTS_DIR/configs/heterogeneous-kitchen-sink.json"
+assert_eq "hetero count" "4" "$(jq '[.agents[].count] | add' "$CFG")"
+
+# Agent drivers.
+DRVS=$(jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | .[]' "$CFG")
+D1=$(echo "$DRVS" | sed -n '1p')
+D2=$(echo "$DRVS" | sed -n '2p')
+D3=$(echo "$DRVS" | sed -n '3p')
+D4=$(echo "$DRVS" | sed -n '4p')
+assert_eq "hetero agent1 driver" "claude-code" "$D1"
+assert_eq "hetero agent2 driver" "gemini-cli"  "$D2"
+assert_eq "hetero agent3 driver" "gemini-cli"  "$D3"
+assert_eq "hetero agent4 driver" "claude-code" "$D4"
+
+# Tags.
+TAGS=$(jq -r '[.agents[].tag] | .[]' "$CFG")
+T1=$(echo "$TAGS" | sed -n '1p')
+T2=$(echo "$TAGS" | sed -n '2p')
+T3=$(echo "$TAGS" | sed -n '3p')
+T4=$(echo "$TAGS" | sed -n '4p')
+assert_eq "hetero tag1" "deep"     "$T1"
+assert_eq "hetero tag2" "gem-scan" "$T2"
+assert_eq "hetero tag3" "gem-or"   "$T3"
+assert_eq "hetero tag4" "fast"     "$T4"
+
+# Post-process.
+assert_eq "hetero pp driver" "claude-code" \
+    "$(jq -r '.post_process.driver // .driver // "claude-code"' "$CFG")"
+assert_eq "hetero pp auth" "oauth" "$(jq -r '.post_process.auth' "$CFG")"
 
 # ============================================================
 echo ""
