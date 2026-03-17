@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Interactive setup wizard for claude-swarm.
+# Interactive setup wizard for swarm agents.
 # Produces a swarm.json config file.
 # Uses whiptail for dialogs; falls back to read-based prompts.
 
@@ -11,7 +11,7 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
 Usage: $0
 
-Interactive setup wizard for claude-swarm.
+Interactive setup wizard for swarm agents.
 Generates a swarm.json config file in the repo root.
 
 Walks through: credentials, prompt file, agent groups (model,
@@ -43,7 +43,7 @@ fi
 
 msg() {
     if $USE_WHIPTAIL; then
-        whiptail --title "claude-swarm" --msgbox "$1" 10 60
+        whiptail --title "swarm" --msgbox "$1" 10 60
     else
         echo ""
         echo "$1"
@@ -54,7 +54,7 @@ msg() {
 input() {
     local title="$1" default="$2"
     if $USE_WHIPTAIL; then
-        whiptail --title "claude-swarm" --inputbox "$title" 10 60 "$default" 3>&1 1>&2 2>&3 || echo "$default"
+        whiptail --title "swarm" --inputbox "$title" 10 60 "$default" 3>&1 1>&2 2>&3 || echo "$default"
     else
         local val
         read -rp "$title [$default]: " val
@@ -65,7 +65,7 @@ input() {
 password() {
     local title="$1"
     if $USE_WHIPTAIL; then
-        whiptail --title "claude-swarm" --passwordbox "$title" 10 60 3>&1 1>&2 2>&3 || echo ""
+        whiptail --title "swarm" --passwordbox "$title" 10 60 3>&1 1>&2 2>&3 || echo ""
     else
         local val
         read -rsp "$title: " val
@@ -77,7 +77,7 @@ password() {
 yesno() {
     local title="$1"
     if $USE_WHIPTAIL; then
-        whiptail --title "claude-swarm" --yesno "$title" 10 60 && return 0 || return 1
+        whiptail --title "swarm" --yesno "$title" 10 60 && return 0 || return 1
     else
         local val
         read -rp "$title [Y/n]: " val
@@ -90,8 +90,8 @@ yesno() {
 
 # ---- Gather settings ----
 
-echo "claude-swarm setup wizard"
-echo "========================="
+echo "swarm setup wizard"
+echo "==================="
 echo ""
 
 # 1. Authentication (API key and/or OAuth token).
@@ -197,6 +197,11 @@ while true; do
         AGENT_OBJ+=", \"auth\": \"apikey\""
     fi
 
+    GDRIVER=$(input "Driver for this group (blank for default)" "")
+    if [ -n "$GDRIVER" ]; then
+        AGENT_OBJ+=", \"driver\": \"${GDRIVER}\""
+    fi
+
     AGENT_OBJ+="}"
     AGENTS_JSON=$(echo "$AGENTS_JSON" | jq --argjson obj "$AGENT_OBJ" '. + [$obj]')
 
@@ -213,13 +218,13 @@ done
 SETUP_PATH=""
 MAX_IDLE=3
 GIT_NAME="swarm-agent"
-GIT_EMAIL="agent@claude-swarm.local"
+GIT_EMAIL="agent@swarm.local"
 
 if yesno "Configure advanced settings (setup script, idle limit, git user)?"; then
     SETUP_PATH=$(input "Setup script path (blank to skip)" "")
     MAX_IDLE=$(input "Max idle sessions before exit" "3")
     GIT_NAME=$(input "Git user name for agent commits" "swarm-agent")
-    GIT_EMAIL=$(input "Git user email for agent commits" "agent@claude-swarm.local")
+    GIT_EMAIL=$(input "Git user email for agent commits" "agent@swarm.local")
 fi
 
 # 5. Post-processing.

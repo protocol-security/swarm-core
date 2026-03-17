@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Always-on TUI dashboard for claude-swarm.
+# Always-on TUI dashboard for swarm agents.
 # Pure bash with ANSI escape codes and tput.
 
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,7 +10,7 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
 Usage: $0
 
-Always-on TUI dashboard for claude-swarm.
+Always-on TUI dashboard for swarm agents.
 Refreshes every 2 seconds. Shows per-agent model, auth source,
 status, cost, token usage, cache hits, turns, and duration.
 
@@ -48,7 +48,7 @@ if [ -f "$STATE_FILE" ]; then
     source "$STATE_FILE"
 fi
 
-DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-claude-swarm}}"
+DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-swarm}}"
 
 CONFIG_FILE="${SWARM_CONFIG:-}"
 if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
@@ -85,8 +85,8 @@ else
         [ "$NUM_AGENTS" -eq 0 ] && NUM_AGENTS=3
     fi
     SWARM_PROMPT="${SWARM_PROMPT:-}"
-    CLAUDE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
-    MODEL_SUMMARY="${NUM_AGENTS}x ${CLAUDE_MODEL}"
+    SWARM_ACTIVE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
+    MODEL_SUMMARY="${NUM_AGENTS}x ${SWARM_ACTIVE_MODEL}"
     CONFIG_LABEL="env vars"
 fi
 
@@ -276,7 +276,7 @@ draw() {
     if [ -f "$STATE_FILE" ]; then
         # shellcheck disable=SC1090
         source "$STATE_FILE"
-        DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-claude-swarm}}"
+        DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-swarm}}"
         NUM_AGENTS="${SWARM_NUM_AGENTS:-$NUM_AGENTS}"
         SWARM_PROMPT="${SWARM_PROMPT:-$SWARM_PROMPT}"
         MODEL_SUMMARY="${SWARM_MODEL_SUMMARY:-$MODEL_SUMMARY}"
@@ -328,9 +328,9 @@ draw() {
             local env_dump
             env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
                 "$name" 2>/dev/null || true)
-            model=$(printf '%s' "$env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
+            model=$(printf '%s' "$env_dump" | grep '^SWARM_MODEL=' | head -1 | cut -d= -f2- || true)
             model="${model:-unknown}"
-            effort=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
+            effort=$(printf '%s' "$env_dump" | grep '^SWARM_EFFORT=' | head -1 | cut -d= -f2- || true)
             agent_tag=$(printf '%s' "$env_dump" | grep '^SWARM_TAG=' | head -1 | cut -d= -f2- || true)
             auth_mode=$(printf '%s' "$env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
             if [ -z "$auth_mode" ]; then
@@ -417,9 +417,9 @@ draw() {
         local pp_env_dump
         pp_env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
             "$pp_name" 2>/dev/null || true)
-        pp_model=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
+        pp_model=$(printf '%s' "$pp_env_dump" | grep '^SWARM_MODEL=' | head -1 | cut -d= -f2- || true)
         pp_model="${pp_model:-unknown}"
-        pp_effort=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
+        pp_effort=$(printf '%s' "$pp_env_dump" | grep '^SWARM_EFFORT=' | head -1 | cut -d= -f2- || true)
         pp_tag=$(printf '%s' "$pp_env_dump" | grep '^SWARM_TAG=' | head -1 | cut -d= -f2- || true)
         pp_auth_mode=$(printf '%s' "$pp_env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
         if [ -z "$pp_auth_mode" ]; then
@@ -556,13 +556,25 @@ while true; do
                 ;;
             p|P)
                 leave_alt_screen
+                _pp_configured=false
+                if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
+                    _pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE" 2>/dev/null)
+                    [ -n "$_pp_prompt" ] && _pp_configured=true
+                fi
+                if ! $_pp_configured; then
+                    echo "(post-processing not configured -- add post_process to swarm.json)"
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
+                    enter_alt_screen
+                    continue
+                fi
                 echo "--- Stopping agents ---"
                 for i in $(seq 1 "$NUM_AGENTS"); do
                     docker stop "${IMAGE_NAME}-${i}" 2>/dev/null || true
                 done
                 echo "--- Starting post-processing ---"
                 "$SWARM_DIR/launch.sh" post-process || \
-                    echo "(post-processing not configured -- add post_process to swarm.json)"
+                    echo "(post-processing failed)"
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
                 enter_alt_screen

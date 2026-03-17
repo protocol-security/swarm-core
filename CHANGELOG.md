@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.10.0 — 2026-03-16
+
+- **Agent driver abstraction.** The harness is no longer coupled to
+  Claude Code. A pluggable driver interface (`lib/drivers/*.sh`)
+  lets each agent CLI implement `agent_run`, `agent_extract_stats`,
+  `agent_activity_jq`, and other role functions. Adding a new agent
+  is now a single file in `lib/drivers/`.
+- Ship two drivers: `claude-code` (production) and `fake` (test
+  double that emits realistic JSONL without Docker or API keys).
+- Add `SWARM_DRIVER` config field in `swarm.json` (top-level
+  default and per-agent override) to select the agent driver.
+- Validate driver interface on startup: harness fails fast with a
+  clear error if any required function is missing.
+- Extract shared JSONL stats parser into `lib/drivers/_common.sh`
+  to eliminate duplication across drivers.
+- Wire up `agent_docker_env()` so drivers can map generic config
+  (e.g. effort level) to CLI-specific Docker environment variables.
+- Dashboard reads generic `SWARM_MODEL` and `SWARM_EFFORT` env
+  vars instead of Claude-specific `CLAUDE_MODEL` and
+  `CLAUDE_CODE_EFFORT_LEVEL`.
+- Bridge the process boundary for activity filtering: the driver's
+  `agent_activity_jq` output is written to a temp file so the
+  piped `activity-filter.sh` subprocess can read it.
+- Preflight driver validation in `launch.sh`: unknown drivers are
+  rejected before any containers are started.
+- Document the Dockerfile build-time limitation (CLI binary is
+  baked in, `SWARM_DRIVER` is a runtime choice) with a TODO for
+  build-arg support when a second production driver lands.
+- Add 40+ new unit test assertions covering driver fields in config
+  parsing, `agent_docker_env`, shared stats helper, interface
+  completeness, and activity filter process boundary.
+- Guard the dashboard post-process keybinding (`p`) so it checks
+  whether `post_process` is configured before stopping agents.
+- Document dry-run pattern using the `fake` driver in `USAGE.md`.
+
 ## 0.9.3 — 2026-03-12
 
 - Set `CLAUDE_CODE_ATTRIBUTION_HEADER=0` in workspace settings to

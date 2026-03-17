@@ -10,7 +10,7 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
 Usage: $0 COMMAND [OPTIONS]
 
-Orchestrate Claude Code agents in Docker containers.
+Orchestrate coding agents in Docker containers.
 
 Commands:
   start [OPTIONS]      Build image, create bare repo, launch agents.
@@ -40,6 +40,7 @@ Environment (lowest priority, after CLI args and config file):
   SWARM_MAX_IDLE            Idle sessions before exit.
   SWARM_EFFORT              Reasoning effort.
   SWARM_TITLE               Dashboard title override.
+  SWARM_DRIVER              Agent driver (default: claude-code).
 HELP
     exit 0
 fi
@@ -98,18 +99,20 @@ if [ -n "$CONFIG_FILE" ]; then
     MAX_IDLE=$(jq -r '.max_idle // 3' "$CONFIG_FILE")
     INJECT_GIT_RULES=$(jq -r 'if has("inject_git_rules") then .inject_git_rules else true end' "$CONFIG_FILE")
     GIT_USER_NAME=$(jq -r '.git_user.name // "swarm-agent"' "$CONFIG_FILE")
-    GIT_USER_EMAIL=$(jq -r '.git_user.email // "agent@claude-swarm.local"' "$CONFIG_FILE")
+    GIT_USER_EMAIL=$(jq -r '.git_user.email // "agent@swarm.local"' "$CONFIG_FILE")
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
+    SWARM_DRIVER_DEFAULT=$(jq -r '.driver // "claude-code"' "$CONFIG_FILE")
 else
     NUM_AGENTS="${SWARM_NUM_AGENTS:-3}"
-    CLAUDE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
+    SWARM_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
     SWARM_PROMPT="${SWARM_PROMPT:-}"
     SWARM_SETUP="${SWARM_SETUP:-}"
     MAX_IDLE="${SWARM_MAX_IDLE:-3}"
     INJECT_GIT_RULES="${SWARM_INJECT_GIT_RULES:-true}"
     GIT_USER_NAME="${SWARM_GIT_USER_NAME:-swarm-agent}"
-    GIT_USER_EMAIL="${SWARM_GIT_USER_EMAIL:-agent@claude-swarm.local}"
+    GIT_USER_EMAIL="${SWARM_GIT_USER_EMAIL:-agent@swarm.local}"
     EFFORT_LEVEL="${SWARM_EFFORT:-}"
+    SWARM_DRIVER_DEFAULT="${SWARM_DRIVER:-claude-code}"
 fi
 
 # CLI overrides for `start`.  Applied after config/env defaults.
@@ -123,7 +126,7 @@ parse_start_args() {
                 SWARM_PROMPT="${2:?--prompt requires a value}"
                 shift 2 ;;
             --model)
-                CLAUDE_MODEL="${2:?--model requires a value}"
+                SWARM_MODEL="${2:?--model requires a value}"
                 shift 2 ;;
             --agents)
                 NUM_AGENTS="${2:?--agents requires a value}"
@@ -153,9 +156,13 @@ parse_start_args() {
 }
 
 cmd_start() {
-    if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "$CONFIG_FILE" ]; then
-        echo "ERROR: ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN must be set." >&2
-        exit 1
+    # Credential check: only require Anthropic keys for the
+    # default claude-code driver (other drivers bring their own).
+    if [ "$SWARM_DRIVER_DEFAULT" = "claude-code" ]; then
+        if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -z "$CONFIG_FILE" ]; then
+            echo "ERROR: ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN must be set." >&2
+            exit 1
+        fi
     fi
 
     if [ -z "$SWARM_PROMPT" ]; then
@@ -232,18 +239,36 @@ cmd_start() {
         echo "-v ${mirror}:/mirrors/${name}:ro"
     done > "/tmp/${PROJECT}-mirror-vols.txt"
 
-    # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag per line).
+    # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
     AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
     if [ -n "$CONFIG_FILE" ]; then
-        jq -r '.agents[] | range(.count) as $i |
-            [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // "")] | join("|")' \
+        jq -r '.driver as $dd | .agents[] | range(.count) as $i |
+            [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // ""), (.driver // $dd // "")] | join("|")' \
             "$CONFIG_FILE" > "$AGENTS_CFG"
     else
         : > "$AGENTS_CFG"
         for _i in $(seq 1 "$NUM_AGENTS"); do
-            printf '%s|||%s|||||\n' "$CLAUDE_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
+            printf '%s|||%s||||||\n' "$SWARM_MODEL" "${EFFORT_LEVEL:-}" >> "$AGENTS_CFG"
         done
+    fi
+
+    # Preflight: validate all referenced drivers exist before
+    # spending time on image build and container startup.
+    local _bad_drivers="" _checked_drivers=" "
+    while IFS='|' read -r _ _ _ _ _ _ _ _ _ _drv; do
+        _drv="${_drv:-${SWARM_DRIVER_DEFAULT}}"
+        # Skip already-checked drivers.
+        [[ "$_checked_drivers" == *" $_drv "* ]] && continue
+        _checked_drivers+="$_drv "
+        if [ ! -f "$SWARM_DIR/lib/drivers/${_drv}.sh" ]; then
+            _bad_drivers+="  - ${_drv}\n"
+        fi
+    done < "$AGENTS_CFG"
+    if [ -n "$_bad_drivers" ]; then
+        printf "ERROR: unknown driver(s):\n%b" "$_bad_drivers" >&2
+        echo "Available drivers: $(ls "$SWARM_DIR/lib/drivers/" | sed 's/\.sh$//' | tr '\n' ' ')" >&2
+        exit 1
     fi
 
     # Read mirror volume mounts (shared across all containers).
@@ -254,19 +279,25 @@ cmd_start() {
     done < "/tmp/${PROJECT}-mirror-vols.txt"
 
     AGENT_IDX=0
-    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt agent_auth_token agent_tag; do
+    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt agent_auth_token agent_tag agent_driver; do
         AGENT_IDX=$((AGENT_IDX + 1))
         NAME="${IMAGE_NAME}-${AGENT_IDX}"
         docker rm -f "$NAME" 2>/dev/null || true
         agent_api_key="$(expand_env_ref "$agent_api_key")"
         agent_auth_token="$(expand_env_ref "$agent_auth_token")"
         agent_context="${agent_context:-full}"
+        agent_driver="${agent_driver:-${SWARM_DRIVER_DEFAULT}}"
+
+        # Source the driver to access agent_docker_env.
+        # shellcheck source=lib/drivers/claude-code.sh
+        source "$SWARM_DIR/lib/drivers/${agent_driver}.sh"
         local effective_prompt="${agent_prompt:-$SWARM_PROMPT}"
 
-        local ctx_label="" prompt_label=""
+        local ctx_label="" prompt_label="" driver_label=""
         [ "$agent_context" != "full" ] && ctx_label=" context=${agent_context}"
         [ -n "$agent_prompt" ] && prompt_label=" prompt=${agent_prompt}"
-        echo "--- Launching ${NAME} (${agent_model}${agent_effort:+ effort=${agent_effort}}${ctx_label}${prompt_label}) ---"
+        [ "$agent_driver" != "claude-code" ] && driver_label=" driver=${agent_driver}"
+        echo "--- Launching ${NAME} (${agent_model}${agent_effort:+ effort=${agent_effort}}${ctx_label}${prompt_label}${driver_label}) ---"
         EXTRA_ENV=()
         if [ -n "$agent_base_url" ]; then
             EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${agent_base_url}")
@@ -281,7 +312,7 @@ cmd_start() {
         #
         # auth_token mode (OpenRouter-style): the key goes into
         # ANTHROPIC_AUTH_TOKEN (Bearer header) and ANTHROPIC_API_KEY
-        # is explicitly empty so Claude Code enters third-party mode.
+        # is explicitly empty so the agent CLI enters third-party mode.
         local resolved_api_key
         if [ -n "$agent_auth_token" ]; then
             resolved_api_key=""
@@ -322,8 +353,11 @@ cmd_start() {
         fi
 
         local eff="${agent_effort:-${EFFORT_LEVEL:-}}"
-        [ -n "$eff" ] \
-            && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${eff}")
+        if [ -n "$eff" ]; then
+            while IFS= read -r _de; do
+                [ -n "$_de" ] && EXTRA_ENV+=("$_de")
+            done < <(agent_docker_env "$eff")
+        fi
 
         docker run -d \
             --name "$NAME" \
@@ -331,6 +365,8 @@ cmd_start() {
             "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
             -e "ANTHROPIC_API_KEY=${resolved_api_key}" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
+            -e "SWARM_MODEL=${agent_model}" \
+            -e "SWARM_EFFORT=${eff}" \
             -e "CLAUDE_MODEL=${agent_model}" \
             -e "SWARM_PROMPT=${effective_prompt}" \
             -e "SWARM_SETUP=${SWARM_SETUP}" \
@@ -342,6 +378,7 @@ cmd_start() {
             -e "SWARM_AUTH_MODE=${auth_label}" \
             -e "SWARM_TAG=${agent_tag}" \
             -e "SWARM_CONTEXT=${agent_context}" \
+            -e "SWARM_DRIVER=${agent_driver}" \
             -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
             -e "SWARM_CFG_PROMPT=${effective_prompt}" \
             -e "SWARM_CFG_SETUP=${SWARM_SETUP}" \
@@ -367,7 +404,7 @@ cmd_start() {
             "$CONFIG_FILE")
         state_config_label=$(basename "$CONFIG_FILE")
     else
-        state_model_summary="${NUM_AGENTS}x ${CLAUDE_MODEL}"
+        state_model_summary="${NUM_AGENTS}x ${SWARM_MODEL}"
         state_config_label="env vars"
     fi
     cat > "/tmp/${PROJECT}-swarm.env" <<ENVEOF
@@ -461,7 +498,7 @@ cmd_post_process() {
         exit 1
     fi
 
-    local pp_prompt pp_model pp_base_url pp_api_key pp_effort pp_auth pp_auth_token pp_tag
+    local pp_prompt pp_model pp_base_url pp_api_key pp_effort pp_auth pp_auth_token pp_tag pp_driver
     pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE")
     pp_model=$(jq -r '.post_process.model // "claude-opus-4-6"' "$CONFIG_FILE")
     pp_base_url=$(jq -r '.post_process.base_url // empty' "$CONFIG_FILE")
@@ -472,6 +509,7 @@ cmd_post_process() {
     pp_effort=$(jq -r '.post_process.effort // empty' "$CONFIG_FILE")
     pp_auth=$(jq -r '.post_process.auth // empty' "$CONFIG_FILE")
     pp_tag=$(jq -r '.post_process.tag // empty' "$CONFIG_FILE")
+    pp_driver=$(jq -r '.post_process.driver // .driver // "claude-code"' "$CONFIG_FILE")
 
     if [ -z "$pp_prompt" ]; then
         echo "ERROR: post_process.prompt is not set in ${CONFIG_FILE}." >&2
@@ -549,8 +587,14 @@ cmd_post_process() {
         pp_auth_label="oauth"
     fi
 
-    [ -n "$pp_effort" ] \
-        && EXTRA_ENV+=(-e "CLAUDE_CODE_EFFORT_LEVEL=${pp_effort}")
+    # Source the driver to access agent_docker_env.
+    # shellcheck source=lib/drivers/claude-code.sh
+    source "$SWARM_DIR/lib/drivers/${pp_driver}.sh"
+    if [ -n "$pp_effort" ]; then
+        while IFS= read -r _de; do
+            [ -n "$_de" ] && EXTRA_ENV+=("$_de")
+        done < <(agent_docker_env "$pp_effort")
+    fi
 
     echo "--- Starting post-processing (${pp_model}) ---"
     docker run -d \
@@ -559,6 +603,8 @@ cmd_post_process() {
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
         -e "ANTHROPIC_API_KEY=${pp_resolved_api_key}" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
+        -e "SWARM_MODEL=${pp_model}" \
+        -e "SWARM_EFFORT=${pp_effort}" \
         -e "CLAUDE_MODEL=${pp_model}" \
         -e "SWARM_PROMPT=${pp_prompt}" \
         -e "SWARM_SETUP=${SWARM_SETUP:-}" \
@@ -569,6 +615,7 @@ cmd_post_process() {
         -e "AGENT_ID=post" \
         -e "SWARM_AUTH_MODE=${pp_auth_label}" \
         -e "SWARM_TAG=${pp_tag}" \
+        -e "SWARM_DRIVER=${pp_driver}" \
         -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
         -e "SWARM_CFG_PROMPT=${pp_prompt}" \
         -e "SWARM_CFG_SETUP=${SWARM_SETUP:-}" \

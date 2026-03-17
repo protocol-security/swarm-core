@@ -1,7 +1,8 @@
 # claude-swarm
 
-N Claude Code instances in Docker, coordinating through git.
-No orchestrator, no message passing.
+N coding agents in Docker, coordinating through git.
+No orchestrator, no message passing.  Designed to support
+multiple agent CLIs via a driver abstraction layer.
 
 Based on the agent-team pattern from
 [Building a C Compiler with Large Language Models](https://www.anthropic.com/engineering/building-c-compiler).
@@ -52,7 +53,7 @@ Host                         /tmp (bare repos)
 
 All containers mount the same bare repo. Each runs
 `lib/harness.sh` which loops: reset to `origin/agent-work`,
-run one Claude session, push. When one agent pushes, others
+run one agent session, push. When one agent pushes, others
 see the changes on the next fetch.
 
 ## Quick start
@@ -81,6 +82,7 @@ Place a `swarm.json` in your repo root:
   "prompt": "prompts/task.md",
   "setup": "scripts/setup.sh",
   "max_idle": 3,
+  "driver": "claude-code",
   "agents": [
     { "count": 2, "model": "claude-opus-4-6", "effort": "high" },
     { "count": 1, "model": "claude-opus-4-6", "context": "none" },
@@ -104,8 +106,35 @@ Groups without `api_key` use `ANTHROPIC_API_KEY` or
 
 **Per-group fields:** `model`, `count`, `effort`, `context`,
 `prompt`, `auth`, `api_key`, `auth_token`, `base_url`,
-`inject_git_rules`. See [USAGE.md](USAGE.md) for field
-reference, environment variables, auth modes, context modes,
-and per-group prompts.
+`driver`, `inject_git_rules`. See [USAGE.md](USAGE.md) for
+field reference, environment variables, auth modes, context
+modes, per-group prompts, and agent drivers.
+
+## Drivers
+
+Agent drivers decouple the harness from any specific CLI.
+Each driver implements a fixed role interface:
+
+| Function | Description |
+| --- | --- |
+| `agent_name` | Human-readable name (e.g. "Claude Code") |
+| `agent_cmd` | CLI command (e.g. "claude") |
+| `agent_version` | CLI version string |
+| `agent_run` | Run one session, output JSONL |
+| `agent_settings` | Write agent-specific settings |
+| `agent_extract_stats` | Parse session stats from log |
+| `agent_detect_fatal` | Detect fatal errors from log + exit code |
+| `agent_activity_jq` | jq filter for activity display |
+
+Built-in drivers: `claude-code` (default), `fake` (test double).
+
+The driver abstraction is designed to eventually support
+non-Claude agents (Gemini CLI, Codex CLI, etc.).  Today only
+`claude-code` is production-ready; the interface may evolve as
+additional drivers are added.
+
+To add a new agent, create `lib/drivers/<name>.sh` implementing
+the interface above.  Then set `"driver": "<name>"` in your
+config or `SWARM_DRIVER=<name>` in the environment.
 
 Priority: CLI flags > config file > environment variables.

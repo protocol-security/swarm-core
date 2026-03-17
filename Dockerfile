@@ -17,6 +17,11 @@ USER agent
 
 # Language toolchains are installed by SWARM_SETUP, not here.
 
+# TODO: The image currently always installs Claude Code CLI.
+# SWARM_DRIVER selects the driver at runtime, but the CLI binary
+# is baked in at build time.  When a second production driver is
+# added, this should become a build arg or multi-stage build so
+# only the required CLI(s) are installed.
 RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
     && bash /tmp/claude-install.sh \
     && rm /tmp/claude-install.sh
@@ -30,6 +35,7 @@ COPY --chmod=755 lib/harness.sh /harness.sh
 COPY --chmod=755 lib/activity-filter.sh /activity-filter.sh
 COPY --chmod=644 lib/agent-system-prompt.md /agent-system-prompt.md
 COPY --chmod=644 VERSION /swarm-version
+COPY --chmod=755 lib/drivers/ /drivers/
 
 WORKDIR /workspace
 
