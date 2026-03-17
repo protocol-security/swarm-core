@@ -31,6 +31,9 @@
 - Add 40+ new unit test assertions covering driver fields in config
   parsing, `agent_docker_env`, shared stats helper, interface
   completeness, and activity filter process boundary.
+- Guard the dashboard post-process keybinding (`p`) so it checks
+  whether `post_process` is configured before stopping agents.
+- Document dry-run pattern using the `fake` driver in `USAGE.md`.
 
 ## 0.9.3 — 2026-03-12
 

@@ -556,13 +556,25 @@ while true; do
                 ;;
             p|P)
                 leave_alt_screen
+                _pp_configured=false
+                if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
+                    _pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE" 2>/dev/null)
+                    [ -n "$_pp_prompt" ] && _pp_configured=true
+                fi
+                if ! $_pp_configured; then
+                    echo "(post-processing not configured -- add post_process to swarm.json)"
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
+                    enter_alt_screen
+                    continue
+                fi
                 echo "--- Stopping agents ---"
                 for i in $(seq 1 "$NUM_AGENTS"); do
                     docker stop "${IMAGE_NAME}-${i}" 2>/dev/null || true
                 done
                 echo "--- Starting post-processing ---"
                 "$SWARM_DIR/launch.sh" post-process || \
-                    echo "(post-processing not configured -- add post_process to swarm.json)"
+                    echo "(post-processing failed)"
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
                 enter_alt_screen
