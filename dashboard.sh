@@ -185,11 +185,18 @@ format_tps() {
 }
 
 format_model() {
-    local m="${1:-unknown}" effort="${2:-}"
+    local m="${1:-unknown}" effort="${2:-}" driver="${3:-}"
+    local suffix=""
+    case "$driver" in
+        gemini-cli)  suffix=" [gem]" ;;
+        claude-code) ;;
+        fake)        suffix=" [fake]" ;;
+        ?*)          suffix=" [${driver:0:3}]" ;;
+    esac
     if [ -n "$effort" ]; then
-        printf '%s (%s)' "$m" "${effort:0:1}"
+        printf '%s (%s)%s' "$m" "${effort:0:1}" "$suffix"
     else
-        printf '%s' "$m"
+        printf '%s%s' "$m" "$suffix"
     fi
 }
 
@@ -323,7 +330,7 @@ draw() {
         local state
         state=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo "not found")
 
-        local model="unknown" effort="" auth_mode="" agent_tag=""
+        local model="unknown" effort="" auth_mode="" agent_tag="" agent_driver=""
         if [ "$state" != "not found" ]; then
             local env_dump
             env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
@@ -332,26 +339,12 @@ draw() {
             model="${model:-unknown}"
             effort=$(printf '%s' "$env_dump" | grep '^SWARM_EFFORT=' | head -1 | cut -d= -f2- || true)
             agent_tag=$(printf '%s' "$env_dump" | grep '^SWARM_TAG=' | head -1 | cut -d= -f2- || true)
+            agent_driver=$(printf '%s' "$env_dump" | grep '^SWARM_DRIVER=' | head -1 | cut -d= -f2- || true)
             auth_mode=$(printf '%s' "$env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
-            if [ -z "$auth_mode" ]; then
-                local has_apikey has_oauth has_authtoken
-                has_apikey=$(printf '%s' "$env_dump" | grep '^ANTHROPIC_API_KEY=' | head -1 | cut -d= -f2- || true)
-                has_oauth=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_OAUTH_TOKEN=' | head -1 | cut -d= -f2- || true)
-                has_authtoken=$(printf '%s' "$env_dump" | grep '^ANTHROPIC_AUTH_TOKEN=' | head -1 | cut -d= -f2- || true)
-                if [ -n "$has_authtoken" ] && [ -z "$has_apikey" ]; then
-                    auth_mode="token"
-                elif [ -n "$has_oauth" ] && [ -z "$has_apikey" ]; then
-                    auth_mode="oauth"
-                elif [ -n "$has_apikey" ] && [ -n "$has_oauth" ]; then
-                    auth_mode="auto"
-                elif [ -n "$has_apikey" ]; then
-                    auth_mode="key"
-                fi
-            fi
         fi
 
         local model_label
-        model_label=$(format_model "$model" "$effort")
+        model_label=$(format_model "$model" "$effort" "$agent_driver")
 
         local agent_stats a_cost a_in a_out a_cache a_dur a_api_ms a_turns
         agent_stats=$(read_agent_stats "$name" "$i")
@@ -413,7 +406,7 @@ draw() {
     local pp_state
     pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || true)
     if [ -n "$pp_state" ] && [ "$pp_state" != "none" ]; then
-        local pp_model pp_effort pp_auth_mode pp_tag
+        local pp_model pp_effort pp_auth_mode pp_tag pp_driver
         local pp_env_dump
         pp_env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
             "$pp_name" 2>/dev/null || true)
@@ -421,20 +414,11 @@ draw() {
         pp_model="${pp_model:-unknown}"
         pp_effort=$(printf '%s' "$pp_env_dump" | grep '^SWARM_EFFORT=' | head -1 | cut -d= -f2- || true)
         pp_tag=$(printf '%s' "$pp_env_dump" | grep '^SWARM_TAG=' | head -1 | cut -d= -f2- || true)
+        pp_driver=$(printf '%s' "$pp_env_dump" | grep '^SWARM_DRIVER=' | head -1 | cut -d= -f2- || true)
         pp_auth_mode=$(printf '%s' "$pp_env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
-        if [ -z "$pp_auth_mode" ]; then
-            local pp_has_apikey pp_has_oauth
-            pp_has_apikey=$(printf '%s' "$pp_env_dump" | grep '^ANTHROPIC_API_KEY=' | head -1 | cut -d= -f2- || true)
-            pp_has_oauth=$(printf '%s' "$pp_env_dump" | grep '^CLAUDE_CODE_OAUTH_TOKEN=' | head -1 | cut -d= -f2- || true)
-            if [ -n "$pp_has_oauth" ] && [ -z "$pp_has_apikey" ]; then
-                pp_auth_mode="oauth"
-            elif [ -n "$pp_has_apikey" ] && [ -z "$pp_has_oauth" ]; then
-                pp_auth_mode="apikey"
-            fi
-        fi
 
         local pp_model_label
-        pp_model_label=$(format_model "$pp_model" "$pp_effort")
+        pp_model_label=$(format_model "$pp_model" "$pp_effort" "$pp_driver")
 
         local pp_stats pp_cost pp_in pp_out pp_cache pp_dur pp_api_ms pp_turns
         pp_stats=$(read_agent_stats "$pp_name" "post")
