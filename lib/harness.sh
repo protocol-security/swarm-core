@@ -29,7 +29,6 @@ HELP
 fi
 
 AGENT_ID="${AGENT_ID:-unnamed}"
-SWARM_MODEL="${SWARM_MODEL:-${CLAUDE_MODEL:-claude-opus-4-6}}"
 SWARM_PROMPT="${SWARM_PROMPT:?SWARM_PROMPT is required.}"
 SWARM_SETUP="${SWARM_SETUP:-}"
 MAX_IDLE="${MAX_IDLE:-3}"
@@ -48,8 +47,9 @@ fi
 source "$DRIVER_FILE"
 
 # Validate the driver implements all required interface functions.
-_required_fns=(agent_name agent_cmd agent_version agent_run
-               agent_settings agent_extract_stats agent_activity_jq)
+_required_fns=(agent_default_model agent_name agent_cmd agent_version
+               agent_run agent_settings agent_extract_stats
+               agent_activity_jq agent_docker_auth)
 for _fn in "${_required_fns[@]}"; do
     if ! type -t "$_fn" &>/dev/null; then
         echo "ERROR: driver '${SWARM_DRIVER}' missing required function: ${_fn}" >&2
@@ -57,6 +57,9 @@ for _fn in "${_required_fns[@]}"; do
     fi
 done
 unset _required_fns _fn
+
+# Resolve model: explicit env > driver default.
+SWARM_MODEL="${SWARM_MODEL:-$(agent_default_model)}"
 
 # Backward compat: export CLAUDE_MODEL so existing hooks and
 # dashboard env-parsing still work.
@@ -265,6 +268,15 @@ while true; do
     cost="${cost:-0}"; tok_in="${tok_in:-0}"; tok_out="${tok_out:-0}"
     cache_rd="${cache_rd:-0}"; cache_cr="${cache_cr:-0}"
     dur="${dur:-0}"; api_ms="${api_ms:-0}"; turns="${turns:-0}"
+
+    # Compute cost from token counts when the driver doesn't report
+    # it natively (e.g. Gemini CLI).  Pricing is $/M tokens, passed
+    # via env vars from launch.sh (sourced from config "pricing" map).
+    if [ "$cost" = "0" ] && [ -n "${SWARM_PRICE_INPUT:-}" ]; then
+        cost=$(awk "BEGIN {printf \"%.6f\",
+            (${tok_in} * ${SWARM_PRICE_INPUT} + ${tok_out} * ${SWARM_PRICE_OUTPUT:-0} + ${cache_rd} * ${SWARM_PRICE_CACHED:-0}) / 1000000}")
+    fi
+
     mkdir -p "$(dirname "$STATS_FILE")"
     printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
         "$(date +%s)" "$cost" "$tok_in" "$tok_out" \

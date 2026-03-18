@@ -1,0 +1,10 @@
+{
+  "prompt": "unused",
+  "driver": "gemini-cli",
+  "agents": [
+    {
+      "count": 2,
+      "model": "gemini-2.5-pro"
+    }
+  ]
+}

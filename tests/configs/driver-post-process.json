@@ -1,0 +1,15 @@
+{
+  "prompt": "unused",
+  "agents": [
+    {
+      "count": 2,
+      "model": "gemini-2.5-pro",
+      "driver": "gemini-cli"
+    }
+  ],
+  "post_process": {
+    "prompt": "unused-pp",
+    "model": "gemini-2.5-flash",
+    "driver": "gemini-cli"
+  }
+}

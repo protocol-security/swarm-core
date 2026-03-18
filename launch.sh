@@ -229,16 +229,6 @@ cmd_start() {
         git clone --bare "$gitdir" "$mirror"
     done
 
-    echo "--- Building agent image ---"
-    docker build -t "$IMAGE_NAME" -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
-
-    # Build mirror volume args from discovered submodules.
-    git submodule foreach --quiet 'echo "$name"' | while read -r name; do
-        safe_name="${name//\//_}"
-        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
-        echo "-v ${mirror}:/mirrors/${name}:ro"
-    done > "/tmp/${PROJECT}-mirror-vols.txt"
-
     # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
     AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
@@ -258,7 +248,6 @@ cmd_start() {
     local _bad_drivers="" _checked_drivers=" "
     while IFS='|' read -r _ _ _ _ _ _ _ _ _ _drv; do
         _drv="${_drv:-${SWARM_DRIVER_DEFAULT}}"
-        # Skip already-checked drivers.
         [[ "$_checked_drivers" == *" $_drv "* ]] && continue
         _checked_drivers+="$_drv "
         if [ ! -f "$SWARM_DIR/lib/drivers/${_drv}.sh" ]; then
@@ -270,6 +259,35 @@ cmd_start() {
         echo "Available drivers: $(ls "$SWARM_DIR/lib/drivers/" | sed 's/\.sh$//' | tr '\n' ' ')" >&2
         exit 1
     fi
+
+    # Derive the set of agent CLIs to install from referenced drivers.
+    local _swarm_agents=""
+    local _seen_agents=" "
+    while IFS='|' read -r _ _ _ _ _ _ _ _ _ _drv; do
+        _drv="${_drv:-${SWARM_DRIVER_DEFAULT}}"
+        [[ "$_seen_agents" == *" $_drv "* ]] && continue
+        _seen_agents+="$_drv "
+        _swarm_agents="${_swarm_agents:+${_swarm_agents},}${_drv}"
+    done < "$AGENTS_CFG"
+    if [ -n "$CONFIG_FILE" ]; then
+        local _pp_drv
+        _pp_drv=$(jq -r '.post_process.driver // .driver // "claude-code"' "$CONFIG_FILE" 2>/dev/null || true)
+        if [[ "$_seen_agents" != *" $_pp_drv "* ]]; then
+            _swarm_agents="${_swarm_agents:+${_swarm_agents},}${_pp_drv}"
+        fi
+    fi
+
+    echo "--- Building agent image (agents: ${_swarm_agents}) ---"
+    docker build -t "$IMAGE_NAME" \
+        --build-arg "SWARM_AGENTS=${_swarm_agents}" \
+        -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
+
+    # Build mirror volume args from discovered submodules.
+    git submodule foreach --quiet 'echo "$name"' | while read -r name; do
+        safe_name="${name//\//_}"
+        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
+        echo "-v ${mirror}:/mirrors/${name}:ro"
+    done > "/tmp/${PROJECT}-mirror-vols.txt"
 
     # Read mirror volume mounts (shared across all containers).
     MIRROR_ARGS=()
@@ -299,58 +317,11 @@ cmd_start() {
         [ "$agent_driver" != "claude-code" ] && driver_label=" driver=${agent_driver}"
         echo "--- Launching ${NAME} (${agent_model}${agent_effort:+ effort=${agent_effort}}${ctx_label}${prompt_label}${driver_label}) ---"
         EXTRA_ENV=()
-        if [ -n "$agent_base_url" ]; then
-            EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${agent_base_url}")
-        elif [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
-            EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}")
-        fi
-        [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
-            && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
 
-        # Per-agent auth source: "oauth" = subscription only,
-        # "apikey" = API key only, "" = pass both (CLI decides).
-        #
-        # auth_token mode (OpenRouter-style): the key goes into
-        # ANTHROPIC_AUTH_TOKEN (Bearer header) and ANTHROPIC_API_KEY
-        # is explicitly empty so the agent CLI enters third-party mode.
-        local resolved_api_key
-        if [ -n "$agent_auth_token" ]; then
-            resolved_api_key=""
-            EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${agent_auth_token}")
-        else
-            case "${agent_auth}" in
-                oauth)
-                    resolved_api_key=""
-                    EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}")
-                    ;;
-                apikey)
-                    resolved_api_key="${agent_api_key:-${ANTHROPIC_API_KEY:-}}"
-                    ;;
-                *)
-                    resolved_api_key="${agent_api_key:-${ANTHROPIC_API_KEY:-}}"
-                    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
-                        && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
-                    ;;
-            esac
-        fi
-
-        # Dashboard auth label: describes the actual credential source.
-        local auth_label=""
-        if [ -n "$agent_auth_token" ]; then
-            auth_label="token"
-        elif [ "$agent_auth" = "oauth" ]; then
-            auth_label="oauth"
-        elif [ "$agent_auth" = "apikey" ]; then
-            auth_label="key"
-        elif [ -n "$agent_api_key" ]; then
-            auth_label="key"
-        elif [ -n "$resolved_api_key" ] && [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-            auth_label="auto"
-        elif [ -n "$resolved_api_key" ]; then
-            auth_label="key"
-        elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-            auth_label="oauth"
-        fi
+        # Delegate auth credential resolution to the driver.
+        while IFS= read -r _ae; do
+            [ -n "$_ae" ] && EXTRA_ENV+=("$_ae")
+        done < <(agent_docker_auth "$agent_api_key" "$agent_auth_token" "$agent_auth" "$agent_base_url")
 
         local eff="${agent_effort:-${EFFORT_LEVEL:-}}"
         if [ -n "$eff" ]; then
@@ -359,11 +330,22 @@ cmd_start() {
             done < <(agent_docker_env "$eff")
         fi
 
+        # Look up per-model pricing from config ($/M tokens).
+        local price_input="" price_output="" price_cached=""
+        if [ -n "$CONFIG_FILE" ]; then
+            local _price
+            _price=$(jq -r --arg m "$agent_model" \
+                '.pricing[$m] // empty | "\(.input) \(.output) \(.cached // 0)"' \
+                "$CONFIG_FILE" 2>/dev/null || true)
+            if [ -n "$_price" ]; then
+                read -r price_input price_output price_cached <<< "$_price"
+            fi
+        fi
+
         docker run -d \
             --name "$NAME" \
             -v "${BARE_REPO}:/upstream:rw" \
             "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
-            -e "ANTHROPIC_API_KEY=${resolved_api_key}" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
             -e "SWARM_MODEL=${agent_model}" \
             -e "SWARM_EFFORT=${eff}" \
@@ -375,13 +357,15 @@ cmd_start() {
             -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
             -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
             -e "AGENT_ID=${AGENT_IDX}" \
-            -e "SWARM_AUTH_MODE=${auth_label}" \
             -e "SWARM_TAG=${agent_tag}" \
             -e "SWARM_CONTEXT=${agent_context}" \
             -e "SWARM_DRIVER=${agent_driver}" \
             -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
             -e "SWARM_CFG_PROMPT=${effective_prompt}" \
             -e "SWARM_CFG_SETUP=${SWARM_SETUP}" \
+            ${price_input:+-e "SWARM_PRICE_INPUT=${price_input}"} \
+            ${price_output:+-e "SWARM_PRICE_OUTPUT=${price_output}"} \
+            ${price_cached:+-e "SWARM_PRICE_CACHED=${price_cached}"} \
             "$IMAGE_NAME"
     done < "$AGENTS_CFG"
 
@@ -540,60 +524,31 @@ cmd_post_process() {
     done < "/tmp/${PROJECT}-pp-vols.txt"
     rm -f "/tmp/${PROJECT}-pp-vols.txt"
 
-    local EXTRA_ENV=()
-    if [ -n "$pp_base_url" ]; then
-        EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${pp_base_url}")
-    elif [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
-        EXTRA_ENV+=(-e "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}")
-    fi
-    [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ] \
-        && EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN}")
-
-    local pp_resolved_api_key
-    if [ -n "$pp_auth_token" ]; then
-        pp_resolved_api_key=""
-        EXTRA_ENV+=(-e "ANTHROPIC_AUTH_TOKEN=${pp_auth_token}")
-    else
-        case "${pp_auth}" in
-            oauth)
-                pp_resolved_api_key=""
-                EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}")
-                ;;
-            apikey)
-                pp_resolved_api_key="${pp_api_key:-${ANTHROPIC_API_KEY:-}}"
-                ;;
-            *)
-                pp_resolved_api_key="${pp_api_key:-${ANTHROPIC_API_KEY:-}}"
-                [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] \
-                    && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}")
-                ;;
-        esac
-    fi
-
-    local pp_auth_label=""
-    if [ -n "$pp_auth_token" ]; then
-        pp_auth_label="token"
-    elif [ "$pp_auth" = "oauth" ]; then
-        pp_auth_label="oauth"
-    elif [ "$pp_auth" = "apikey" ]; then
-        pp_auth_label="key"
-    elif [ -n "$pp_api_key" ]; then
-        pp_auth_label="key"
-    elif [ -n "$pp_resolved_api_key" ] && [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-        pp_auth_label="auto"
-    elif [ -n "$pp_resolved_api_key" ]; then
-        pp_auth_label="key"
-    elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-        pp_auth_label="oauth"
-    fi
-
-    # Source the driver to access agent_docker_env.
+    # Source the driver to access agent_docker_auth / agent_docker_env.
     # shellcheck source=lib/drivers/claude-code.sh
     source "$SWARM_DIR/lib/drivers/${pp_driver}.sh"
+
+    local EXTRA_ENV=()
+    while IFS= read -r _ae; do
+        [ -n "$_ae" ] && EXTRA_ENV+=("$_ae")
+    done < <(agent_docker_auth "$pp_api_key" "$pp_auth_token" "$pp_auth" "$pp_base_url")
+
     if [ -n "$pp_effort" ]; then
         while IFS= read -r _de; do
             [ -n "$_de" ] && EXTRA_ENV+=("$_de")
         done < <(agent_docker_env "$pp_effort")
+    fi
+
+    # Look up per-model pricing from config ($/M tokens).
+    local price_input="" price_output="" price_cached=""
+    if [ -n "$CONFIG_FILE" ]; then
+        local _price
+        _price=$(jq -r --arg m "$pp_model" \
+            '.pricing[$m] // empty | "\(.input) \(.output) \(.cached // 0)"' \
+            "$CONFIG_FILE" 2>/dev/null || true)
+        if [ -n "$_price" ]; then
+            read -r price_input price_output price_cached <<< "$_price"
+        fi
     fi
 
     echo "--- Starting post-processing (${pp_model}) ---"
@@ -601,7 +556,6 @@ cmd_post_process() {
         --name "$NAME" \
         -v "${BARE_REPO}:/upstream:rw" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
-        -e "ANTHROPIC_API_KEY=${pp_resolved_api_key}" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
         -e "SWARM_MODEL=${pp_model}" \
         -e "SWARM_EFFORT=${pp_effort}" \
@@ -613,12 +567,14 @@ cmd_post_process() {
         -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
         -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
         -e "AGENT_ID=post" \
-        -e "SWARM_AUTH_MODE=${pp_auth_label}" \
         -e "SWARM_TAG=${pp_tag}" \
         -e "SWARM_DRIVER=${pp_driver}" \
         -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
         -e "SWARM_CFG_PROMPT=${pp_prompt}" \
         -e "SWARM_CFG_SETUP=${SWARM_SETUP:-}" \
+        ${price_input:+-e "SWARM_PRICE_INPUT=${price_input}"} \
+        ${price_output:+-e "SWARM_PRICE_OUTPUT=${price_output}"} \
+        ${price_cached:+-e "SWARM_PRICE_CACHED=${price_cached}"} \
         "$IMAGE_NAME"
 
     echo "Post-processing agent launched: ${NAME}"

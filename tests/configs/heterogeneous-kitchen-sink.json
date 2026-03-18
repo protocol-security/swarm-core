@@ -1,0 +1,66 @@
+{
+  "prompt": "unused",
+  "pricing": {
+    "gemini-2.5-pro":                     {"input": 1.25, "output": 10.00, "cached": 0.13},
+    "gemini-3.1-pro-preview":             {"input": 2.00, "output": 12.00, "cached": 0.20},
+    "gemini-3.1-pro-preview-customtools": {"input": 2.00, "output": 12.00, "cached": 0.20},
+    "gemini-3-flash-preview":             {"input": 0.50, "output": 3.00},
+    "gemini-2.5-flash":                   {"input": 0.30, "output": 2.50}
+  },
+  "agents": [
+    {
+      "count": 1,
+      "model": "claude-opus-4-6",
+      "driver": "claude-code",
+      "effort": "high",
+      "auth": "oauth",
+      "context": "slim",
+      "tag": "deep"
+    },
+    {
+      "count": 1,
+      "model": "gemini-2.5-pro",
+      "driver": "gemini-cli",
+      "context": "slim",
+      "tag": "gem-scan"
+    },
+    {
+      "count": 1,
+      "model": "gemini-3.1-pro-preview",
+      "driver": "gemini-cli",
+      "tag": "gem-3.1"
+    },
+    {
+      "count": 1,
+      "model": "gemini-3.1-pro-preview-customtools",
+      "driver": "gemini-cli",
+      "tag": "gem-ct"
+    },
+    {
+      "count": 1,
+      "model": "gemini-3-flash-preview",
+      "driver": "gemini-cli",
+      "tag": "gem-flash"
+    },
+    {
+      "count": 1,
+      "model": "gemini-2.5-flash",
+      "driver": "gemini-cli",
+      "tag": "gem-25f"
+    },
+    {
+      "count": 1,
+      "model": "claude-sonnet-4-6",
+      "driver": "claude-code",
+      "effort": "medium",
+      "auth": "apikey",
+      "tag": "fast"
+    }
+  ],
+  "post_process": {
+    "prompt": "unused-pp",
+    "model": "claude-opus-4-6",
+    "driver": "claude-code",
+    "auth": "oauth"
+  }
+}

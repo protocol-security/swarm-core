@@ -17,15 +17,27 @@ USER agent
 
 # Language toolchains are installed by SWARM_SETUP, not here.
 
-# TODO: The image currently always installs Claude Code CLI.
-# SWARM_DRIVER selects the driver at runtime, but the CLI binary
-# is baked in at build time.  When a second production driver is
-# added, this should become a build arg or multi-stage build so
-# only the required CLI(s) are installed.
-RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
-    && bash /tmp/claude-install.sh \
-    && rm /tmp/claude-install.sh
+# Comma-separated list of drivers whose CLIs should be installed.
+# launch.sh derives this from the config and passes it as --build-arg.
+ARG SWARM_AGENTS=claude-code
+
+# --- Claude Code CLI (default) ---
+RUN if echo ",$SWARM_AGENTS," | grep -q ",claude-code,"; then \
+        curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
+        && bash /tmp/claude-install.sh \
+        && rm /tmp/claude-install.sh; \
+    fi
 ENV PATH="/home/agent/.local/bin:${PATH}"
+
+# --- Gemini CLI (requires Node.js) ---
+USER root
+RUN if echo ",$SWARM_AGENTS," | grep -q ",gemini-cli,"; then \
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+        && apt-get install -y --no-install-recommends nodejs \
+        && rm -rf /var/lib/apt/lists/* \
+        && npm install -g @google/gemini-cli; \
+    fi
+USER agent
 
 # Trust mounted bare repos and allow file:// transport for submodules.
 RUN git config --global --add safe.directory '*' \

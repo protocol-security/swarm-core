@@ -445,6 +445,53 @@ assert_contains "hlog_pipe green" $'\033[32m' "$PIPE_OUT"
 
 # ============================================================
 echo ""
+echo "=== 13. Pricing-based cost computation ==="
+
+# Mirrors the cost computation logic in harness.sh:
+# if cost=0 and SWARM_PRICE_INPUT is set, compute from tokens.
+compute_cost() {
+    local cost="$1" tok_in="$2" tok_out="$3" cache_rd="$4"
+    local price_in="${5:-}" price_out="${6:-}" price_cached="${7:-0}"
+    if [ "$cost" = "0" ] && [ -n "$price_in" ]; then
+        cost=$(awk "BEGIN {printf \"%.6f\",
+            (${tok_in} * ${price_in} + ${tok_out} * ${price_out} + ${cache_rd} * ${price_cached}) / 1000000}")
+    fi
+    echo "$cost"
+}
+
+# Gemini 2.5 Pro: 100k in, 5k out, 80k cached.
+# 100000*1.25 + 5000*10.00 + 80000*0.13 = 125000+50000+10400 = 185400 / 1M = 0.1854
+assert_eq "gemini pricing basic" "0.185400" \
+    "$(compute_cost 0 100000 5000 80000 1.25 10.00 0.13)"
+
+# Gemini 3.1 Pro: 500k in, 10k out, 200k cached.
+assert_eq "gemini 3.1 pricing" "1.160000" \
+    "$(compute_cost 0 500000 10000 200000 2.00 12.00 0.20)"
+
+# Flash model: cheaper rates.
+# 1000*0.50 + 5000*3.00 + 100*0 = 500+15000+0 = 15500 / 1M = 0.0155
+assert_eq "flash pricing" "0.015500" \
+    "$(compute_cost 0 1000 5000 100 0.50 3.00 0.0)"
+
+# No cached pricing provided (defaults to 0).
+# 100000*0.50 + 5000*10.00 + 80000*0 = 50000+50000 = 100000 / 1M = 0.10
+assert_eq "no cached pricing" "0.100000" \
+    "$(compute_cost 0 100000 5000 80000 0.50 10.00)"
+
+# Driver already reports cost — pricing should NOT override.
+assert_eq "native cost preserved" "5.55" \
+    "$(compute_cost 5.55 100000 5000 80000 1.25 10.00 0.13)"
+
+# No pricing configured — cost stays 0.
+assert_eq "no pricing stays zero" "0" \
+    "$(compute_cost 0 100000 5000 80000)"
+
+# Zero tokens with pricing — cost should be 0.
+assert_eq "zero tokens zero cost" "0.000000" \
+    "$(compute_cost 0 0 0 0 2.00 12.00 0.20)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
