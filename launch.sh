@@ -229,36 +229,6 @@ cmd_start() {
         git clone --bare "$gitdir" "$mirror"
     done
 
-    # Derive the set of agent CLIs to install from referenced drivers.
-    local _swarm_agents=""
-    local _seen_agents=" "
-    while IFS='|' read -r _ _ _ _ _ _ _ _ _ _drv; do
-        _drv="${_drv:-${SWARM_DRIVER_DEFAULT}}"
-        [[ "$_seen_agents" == *" $_drv "* ]] && continue
-        _seen_agents+="$_drv "
-        _swarm_agents="${_swarm_agents:+${_swarm_agents},}${_drv}"
-    done < "$AGENTS_CFG"
-    # Include post-process driver if present.
-    if [ -n "$CONFIG_FILE" ]; then
-        local _pp_drv
-        _pp_drv=$(jq -r '.post_process.driver // .driver // "claude-code"' "$CONFIG_FILE" 2>/dev/null || true)
-        if [[ "$_seen_agents" != *" $_pp_drv "* ]]; then
-            _swarm_agents="${_swarm_agents:+${_swarm_agents},}${_pp_drv}"
-        fi
-    fi
-
-    echo "--- Building agent image (agents: ${_swarm_agents}) ---"
-    docker build -t "$IMAGE_NAME" \
-        --build-arg "SWARM_AGENTS=${_swarm_agents}" \
-        -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
-
-    # Build mirror volume args from discovered submodules.
-    git submodule foreach --quiet 'echo "$name"' | while read -r name; do
-        safe_name="${name//\//_}"
-        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
-        echo "-v ${mirror}:/mirrors/${name}:ro"
-    done > "/tmp/${PROJECT}-mirror-vols.txt"
-
     # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
     AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
@@ -278,7 +248,6 @@ cmd_start() {
     local _bad_drivers="" _checked_drivers=" "
     while IFS='|' read -r _ _ _ _ _ _ _ _ _ _drv; do
         _drv="${_drv:-${SWARM_DRIVER_DEFAULT}}"
-        # Skip already-checked drivers.
         [[ "$_checked_drivers" == *" $_drv "* ]] && continue
         _checked_drivers+="$_drv "
         if [ ! -f "$SWARM_DIR/lib/drivers/${_drv}.sh" ]; then
@@ -290,6 +259,35 @@ cmd_start() {
         echo "Available drivers: $(ls "$SWARM_DIR/lib/drivers/" | sed 's/\.sh$//' | tr '\n' ' ')" >&2
         exit 1
     fi
+
+    # Derive the set of agent CLIs to install from referenced drivers.
+    local _swarm_agents=""
+    local _seen_agents=" "
+    while IFS='|' read -r _ _ _ _ _ _ _ _ _ _drv; do
+        _drv="${_drv:-${SWARM_DRIVER_DEFAULT}}"
+        [[ "$_seen_agents" == *" $_drv "* ]] && continue
+        _seen_agents+="$_drv "
+        _swarm_agents="${_swarm_agents:+${_swarm_agents},}${_drv}"
+    done < "$AGENTS_CFG"
+    if [ -n "$CONFIG_FILE" ]; then
+        local _pp_drv
+        _pp_drv=$(jq -r '.post_process.driver // .driver // "claude-code"' "$CONFIG_FILE" 2>/dev/null || true)
+        if [[ "$_seen_agents" != *" $_pp_drv "* ]]; then
+            _swarm_agents="${_swarm_agents:+${_swarm_agents},}${_pp_drv}"
+        fi
+    fi
+
+    echo "--- Building agent image (agents: ${_swarm_agents}) ---"
+    docker build -t "$IMAGE_NAME" \
+        --build-arg "SWARM_AGENTS=${_swarm_agents}" \
+        -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
+
+    # Build mirror volume args from discovered submodules.
+    git submodule foreach --quiet 'echo "$name"' | while read -r name; do
+        safe_name="${name//\//_}"
+        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
+        echo "-v ${mirror}:/mirrors/${name}:ro"
+    done > "/tmp/${PROJECT}-mirror-vols.txt"
 
     # Read mirror volume mounts (shared across all containers).
     MIRROR_ARGS=()
