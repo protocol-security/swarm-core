@@ -146,21 +146,17 @@ agent_docker_env() { :; }
 
 # Resolve auth credentials and emit Docker -e flags.
 # Args: <api_key> <auth_token> <auth_mode> <base_url>
-# Reads host env: GEMINI_API_KEY, OPENROUTER_API_KEY
+# Reads host env: GEMINI_API_KEY
 agent_docker_auth() {
-    local api_key="$1" auth_token="$2" auth_mode="$3" base_url="$4"
+    local api_key="$1"
+    # auth_token=$2, auth_mode=$3, base_url=$4 — unused;
+    # Gemini CLI only supports native GEMINI_API_KEY auth.
 
     local label=""
-    if [ -n "$auth_token" ]; then
-        printf -- '-e\nOPENROUTER_API_KEY=%s\n' "$auth_token"
-        [ -n "$base_url" ] && printf -- '-e\nGEMINI_API_BASE=%s\n' "$base_url"
-        label="openrouter"
-    else
-        local key="${api_key:-${GEMINI_API_KEY:-}}"
-        if [ -n "$key" ]; then
-            printf -- '-e\nGEMINI_API_KEY=%s\n' "$key"
-            label="key"
-        fi
+    local key="${api_key:-${GEMINI_API_KEY:-}}"
+    if [ -n "$key" ]; then
+        printf -- '-e\nGEMINI_API_KEY=%s\n' "$key"
+        label="key"
     fi
 
     printf -- '-e\nSWARM_AUTH_MODE=%s\n' "$label"

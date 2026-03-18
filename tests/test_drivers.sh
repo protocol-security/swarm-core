@@ -531,12 +531,6 @@ AUTH_OUT=$(GEMINI_API_KEY="gkey-123" agent_docker_auth "" "" "" "")
 assert_contains "gemini auth native key" "GEMINI_API_KEY=gkey-123" "$AUTH_OUT"
 assert_contains "gemini auth native label" "SWARM_AUTH_MODE=key" "$AUTH_OUT"
 
-# OpenRouter via auth_token.
-AUTH_OUT=$(agent_docker_auth "" "or-key-456" "" "https://openrouter.ai/api")
-assert_contains "gemini auth openrouter key" "OPENROUTER_API_KEY=or-key-456" "$AUTH_OUT"
-assert_contains "gemini auth openrouter base" "GEMINI_API_BASE=https://openrouter.ai/api" "$AUTH_OUT"
-assert_contains "gemini auth openrouter label" "SWARM_AUTH_MODE=openrouter" "$AUTH_OUT"
-
 # ============================================================
 echo ""
 echo "=== 24. agent_docker_auth — Fake driver ==="
@@ -645,12 +639,6 @@ AUTH_OUT=$(GEMINI_API_KEY="" agent_docker_auth "" "" "" "")
 assert_contains "gemini no creds has auth mode" "SWARM_AUTH_MODE=" "$AUTH_OUT"
 _line_count=$(echo "$AUTH_OUT" | grep -c "GEMINI_API_KEY" || true)
 assert_eq "gemini no creds no key flag" "0" "$_line_count"
-
-# OpenRouter without base_url (just auth_token).
-AUTH_OUT=$(agent_docker_auth "" "or-key" "" "")
-assert_contains "gemini openrouter no base" "OPENROUTER_API_KEY=or-key" "$AUTH_OUT"
-_base_count=$(echo "$AUTH_OUT" | grep -c "GEMINI_API_BASE" || true)
-assert_eq "gemini openrouter no base_url flag" "0" "$_base_count"
 
 # ============================================================
 echo ""

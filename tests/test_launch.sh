@@ -783,9 +783,6 @@ assert_eq "gemini-3.1 customtools pricing" "2 12 0.2" \
 assert_eq "flash pricing" "0.5 3 0" \
     "$(extract_pricing "$TESTS_DIR/configs/heterogeneous-kitchen-sink.json" "gemini-3-flash-preview")"
 
-assert_eq "openrouter model pricing" "1.25 10 0.13" \
-    "$(extract_pricing "$TESTS_DIR/configs/heterogeneous-kitchen-sink.json" "google/gemini-2.5-pro")"
-
 # Model not in pricing map — returns empty.
 assert_eq "unlisted model empty" "" \
     "$(extract_pricing "$TESTS_DIR/configs/heterogeneous-kitchen-sink.json" "claude-opus-4-6")"
