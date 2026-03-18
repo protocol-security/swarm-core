@@ -34,12 +34,10 @@ USER root
 RUN if echo ",$SWARM_AGENTS," | grep -q ",gemini-cli,"; then \
         curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
         && apt-get install -y --no-install-recommends nodejs \
-        && rm -rf /var/lib/apt/lists/*; \
+        && rm -rf /var/lib/apt/lists/* \
+        && npm install -g @google/gemini-cli; \
     fi
 USER agent
-RUN if echo ",$SWARM_AGENTS," | grep -q ",gemini-cli,"; then \
-        npm install -g @google/gemini-cli; \
-    fi
 
 # Trust mounted bare repos and allow file:// transport for submodules.
 RUN git config --global --add safe.directory '*' \
