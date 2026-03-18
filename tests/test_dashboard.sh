@@ -80,15 +80,25 @@ echo "=== 3. row layout ==="
 BOLD=""; RESET=""; GREEN=""; RED=""; DIM=""
 MODEL_COL_W=25
 TAG_COL_W=12
+DRV_COL_W=6
 HAS_TAGS=true
 
+short_driver() {
+    case "${1:-}" in
+        claude-code) printf 'claude' ;;
+        gemini-cli)  printf 'gemini' ;;
+        *)           printf '%s' "${1:-}" ;;
+    esac
+}
+
 emit_row() {
-    local id_str="$1" model_str="$2" auth_str="$3"
-    local status_color="$4" status_str="$5"
-    local cost_str="$6" inout_str="$7" cache_str="$8"
-    local turns_str="$9" tps_str="${10}" dur_str="${11}"
-    local tag_str="${12:-}" is_bold="${13:-}"
+    local id_str="$1" model_str="$2" driver_str="$3" auth_str="$4"
+    local status_color="$5" status_str="$6"
+    local cost_str="$7" inout_str="$8" cache_str="$9"
+    local turns_str="${10}" tps_str="${11}" dur_str="${12}"
+    local tag_str="${13:-}" is_bold="${14:-}"
     printf "  %-3s %-${MODEL_COL_W}s" "$id_str" "$model_str"
+    if $SHOW_DRIVER; then printf " %-${DRV_COL_W}s" "$driver_str"; fi
     if $SHOW_AUTH;  then printf " %-6s" "$auth_str"; fi
     printf " %-8s %7s" "$status_str" "$cost_str"
     if $SHOW_INOUT; then printf " %10s" "$inout_str"; fi
@@ -101,8 +111,8 @@ emit_row() {
 }
 
 # Wide: all columns visible.
-SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=true
-wide_line=$(emit_row "1" "claude-opus-4-6 (h)" "oauth" "" "running" \
+SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=true; SHOW_DRIVER=false
+wide_line=$(emit_row "1" "claude-opus-4-6 (h)" "" "oauth" "" "running" \
     '$21.06' "6k/34k" "5.6M" "86" "15.7" "23m 27s" "explore")
 assert_eq "wide has Auth"   "true" "$(echo "$wide_line" | grep -q 'oauth' && echo true || echo false)"
 assert_eq "wide has Cache"  "true" "$(echo "$wide_line" | grep -q '5.6M' && echo true || echo false)"
@@ -110,9 +120,9 @@ assert_eq "wide has Turns"  "true" "$(echo "$wide_line" | grep -q '86' && echo t
 assert_eq "wide has Tok/s"  "true" "$(echo "$wide_line" | grep -q '15.7' && echo true || echo false)"
 assert_eq "wide has Tag"    "true" "$(echo "$wide_line" | grep -q 'explore' && echo true || echo false)"
 
-# Narrow: minimal columns (no Auth, Cache, Turns, Tok/s, Tag).
-SHOW_INOUT=false; SHOW_AUTH=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false
-narrow_line=$(emit_row "1" "claude-opus-4-6 (h)" "oauth" "" "running" \
+# Narrow: minimal columns (no Auth, Cache, Turns, Tok/s, Tag, Driver).
+SHOW_INOUT=false; SHOW_AUTH=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false; SHOW_DRIVER=false
+narrow_line=$(emit_row "1" "claude-opus-4-6 (h)" "" "oauth" "" "running" \
     '$21.06' "6k/34k" "5.6M" "86" "15.7" "23m 27s" "explore")
 assert_eq "narrow no Auth"  "false" "$(echo "$narrow_line" | grep -q 'oauth' && echo true || echo false)"
 assert_eq "narrow no Cache" "false" "$(echo "$narrow_line" | grep -q '5.6M' && echo true || echo false)"
@@ -121,25 +131,25 @@ assert_eq "narrow has Cost"  "true" "$(echo "$narrow_line" | grep -q '21.06' && 
 assert_eq "narrow has Time"  "true" "$(echo "$narrow_line" | grep -q '23m' && echo true || echo false)"
 
 # Tag hidden when terminal is narrow but other optional columns shown.
-SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=false
-mid_line=$(emit_row "1" "claude-opus-4-6 (h)" "oauth" "" "running" \
+SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=false; SHOW_DRIVER=false
+mid_line=$(emit_row "1" "claude-opus-4-6 (h)" "" "oauth" "" "running" \
     '$21.06' "6k/34k" "5.6M" "86" "15.7" "23m 27s" "explore")
 assert_eq "mid has Auth"   "true"  "$(echo "$mid_line" | grep -q 'oauth' && echo true || echo false)"
 assert_eq "mid no Tag"     "false" "$(echo "$mid_line" | grep -q 'explore' && echo true || echo false)"
 
 # Status column alignment across different model widths.
-SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=true
-line_opus=$(emit_row "1" "claude-opus-4-6 (h)" "oauth" "" "running" \
+SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=true; SHOW_DRIVER=false
+line_opus=$(emit_row "1" "claude-opus-4-6 (h)" "" "oauth" "" "running" \
     '$0' "0/0" "0" "0" "--" "0s" "explore")
-line_sonnet=$(emit_row "3" "claude-sonnet-4-6 (h)" "oauth" "" "running" \
+line_sonnet=$(emit_row "3" "claude-sonnet-4-6 (h)" "" "oauth" "" "running" \
     '$0' "0/0" "0" "0" "--" "0s" "deep")
 status_pos_opus=$(echo "$line_opus" | grep -bo 'running' | head -1 | cut -d: -f1)
 status_pos_sonnet=$(echo "$line_sonnet" | grep -bo 'running' | head -1 | cut -d: -f1)
 assert_eq "Status column aligns" "$status_pos_opus" "$status_pos_sonnet"
 
 # Tag at the end of the row.
-SHOW_INOUT=false; SHOW_AUTH=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=true
-tag_line=$(emit_row "2" "claude-sonnet-4-6 (m)" "key" "" "running" \
+SHOW_INOUT=false; SHOW_AUTH=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=true; SHOW_DRIVER=false
+tag_line=$(emit_row "2" "claude-sonnet-4-6 (m)" "" "key" "" "running" \
     '$1.05' "1k/2k" "100k" "5" "12.0" "2m 30s" "reviewer")
 tag_pos=$(echo "$tag_line" | grep -bo 'reviewer' | head -1 | cut -d: -f1)
 time_pos=$(echo "$tag_line" | grep -bo '2m 30s' | head -1 | cut -d: -f1)
@@ -147,13 +157,13 @@ assert_eq "Tag after Time" "true" "$([ "$tag_pos" -gt "$time_pos" ] && echo true
 
 # Empty tag does not break layout.
 SHOW_TAG=true
-empty_tag_line=$(emit_row "1" "claude-opus-4-6 (h)" "oauth" "" "running" \
+empty_tag_line=$(emit_row "1" "claude-opus-4-6 (h)" "" "oauth" "" "running" \
     '$0' "0/0" "0" "0" "--" "0s" "")
 assert_eq "empty tag ok" "true" "$([ -n "$empty_tag_line" ] && echo true || echo false)"
 
 # Idle status in Status column.
-SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=false
-idle_line=$(emit_row "2" "claude-opus-4-6 (h)" "key" "" "idle 1/3" \
+SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=false; SHOW_DRIVER=false
+idle_line=$(emit_row "2" "claude-opus-4-6 (h)" "" "key" "" "idle 1/3" \
     '$0.05' "1k/500" "50k" "3" "12.0" "30s" "")
 assert_eq "idle in status"  "true" "$(echo "$idle_line" | grep -q 'idle 1/3' && echo true || echo false)"
 assert_eq "idle has cost"   "true" "$(echo "$idle_line" | grep -q '0.05' && echo true || echo false)"
@@ -163,17 +173,50 @@ _s="idle 2/3";   assert_eq "idle 2/3 fits"   "true"  "$([ ${#_s} -le 8 ] && echo
 _s="idle 10/10"; assert_eq "idle 10/10 fits" "false" "$([ ${#_s} -le 8 ] && echo true || echo false)"
 
 # Idle status aligns with running.
-running_line=$(emit_row "1" "claude-opus-4-6 (h)" "key" "" "running" \
+SHOW_DRIVER=false
+running_line=$(emit_row "1" "claude-opus-4-6 (h)" "" "key" "" "running" \
     '$0' "0/0" "0" "0" "--" "0s" "")
-idle_align_line=$(emit_row "2" "claude-opus-4-6 (h)" "key" "" "idle 1/3" \
+idle_align_line=$(emit_row "2" "claude-opus-4-6 (h)" "" "key" "" "idle 1/3" \
     '$0' "0/0" "0" "0" "--" "0s" "")
 cost_pos_run=$(echo "$running_line" | grep -bo '\$0' | head -1 | cut -d: -f1)
 cost_pos_idle=$(echo "$idle_align_line" | grep -bo '\$0' | head -1 | cut -d: -f1)
 assert_eq "idle cost aligns with running" "$cost_pos_run" "$cost_pos_idle"
 
+# Driver column visible when SHOW_DRIVER=true.
+SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false; SHOW_DRIVER=true
+drv_line=$(emit_row "1" "claude-opus-4-6 (h)" "claude" "oauth" "" "running" \
+    '$0' "0/0" "0" "0" "--" "0s" "")
+assert_eq "driver col visible" "true" "$(echo "$drv_line" | grep -q 'claude' && echo true || echo false)"
+
+# Driver column hidden when SHOW_DRIVER=false.
+SHOW_DRIVER=false
+no_drv_line=$(emit_row "1" "claude-opus-4-6 (h)" "gemini" "key" "" "running" \
+    '$0' "0/0" "0" "0" "--" "0s" "")
+assert_eq "driver col hidden" "false" "$(echo "$no_drv_line" | grep -q 'gemini' && echo true || echo false)"
+
+# Driver column aligns across rows.
+SHOW_DRIVER=true; SHOW_AUTH=true; SHOW_INOUT=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false
+drv_claude=$(emit_row "1" "claude-opus-4-6 (h)" "claude" "oauth" "" "running" \
+    '$0' "0/0" "0" "0" "--" "0s" "")
+drv_gemini=$(emit_row "2" "gemini-2.5-pro" "gemini" "key" "" "running" \
+    '$0' "0/0" "0" "0" "--" "0s" "")
+auth_pos_c=$(echo "$drv_claude" | grep -bo 'oauth' | head -1 | cut -d: -f1)
+auth_pos_g=$(echo "$drv_gemini" | grep -bo 'key' | head -1 | cut -d: -f1)
+assert_eq "auth aligns with driver col" "$auth_pos_c" "$auth_pos_g"
+
 # ============================================================
 echo ""
-echo "=== 4. tag column width from config ==="
+echo "=== 4. short_driver ==="
+
+assert_eq "claude-code → claude" "claude" "$(short_driver claude-code)"
+assert_eq "gemini-cli → gemini"  "gemini" "$(short_driver gemini-cli)"
+assert_eq "fake passthrough"     "fake"   "$(short_driver fake)"
+assert_eq "unknown passthrough"  "foo"    "$(short_driver foo)"
+assert_eq "empty → empty"       ""        "$(short_driver "")"
+
+# ============================================================
+echo ""
+echo "=== 5. tag column width from config ===" 
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -222,7 +265,7 @@ assert_eq "partial tags" "1" "$tw"
 
 # ============================================================
 echo ""
-echo "=== 5. tag field in agents.cfg ==="
+echo "=== 6. tag field in agents.cfg ==="
 
 parse_agents_cfg() {
     jq -r '.agents[] | range(.count) as $i |
@@ -246,7 +289,7 @@ assert_eq "tag empty" "" "$tag1"
 
 # ============================================================
 echo ""
-echo "=== 6. MODEL_COL_W computation from config ==="
+echo "=== 7. MODEL_COL_W computation from config ==="
 
 compute_model_col_w() {
     local w
@@ -294,7 +337,7 @@ assert_eq "pp model widens column" "23" "$(compute_model_col_w "$TMPDIR/pp_wider
 
 # ============================================================
 echo ""
-echo "=== 7. Model label fits within column ==="
+echo "=== 8. Model label fits within column ==="
 
 # Verify that common model labels don't overflow MODEL_COL_W=25.
 check_fits() {
@@ -312,6 +355,9 @@ assert_eq "haiku (h) fits"  "fits" "$(check_fits "claude-haiku-4-5 (h)" 25)"
 assert_eq "openai fits"     "fits" "$(check_fits "openai/gpt-5.4-pro (h)" 25)"
 assert_eq "minimax fits"    "fits" "$(check_fits "MiniMax-M2.5 (h)" 25)"
 assert_eq "bare model fits" "fits" "$(check_fits "claude-opus-4-6" 25)"
+assert_eq "gemini pro needs wide col" "overflow:34" "$(check_fits "gemini-3.1-pro-preview-customtools" 25)"
+assert_eq "gemini pro fits 40"        "fits"        "$(check_fits "gemini-3.1-pro-preview-customtools" 40)"
+assert_eq "gemini flash fits"         "fits"        "$(check_fits "gemini-3-flash-preview" 25)"
 
 # ============================================================
 echo ""

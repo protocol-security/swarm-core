@@ -101,6 +101,14 @@ if [ -n "$CONFIG_FILE" ]; then
 fi
 [ "$MODEL_COL_W" -lt 22 ] && MODEL_COL_W=22
 
+HAS_MULTI_DRIVERS=false
+DRV_COL_W=6
+if [ -n "$CONFIG_FILE" ]; then
+    _nd=$(jq -r '[(.agents[].driver // .driver // "claude-code")] | unique | length' \
+        "$CONFIG_FILE" 2>/dev/null || echo 1)
+    [ "$_nd" -gt 1 ] && HAS_MULTI_DRIVERS=true
+fi
+
 HAS_TAGS=false
 TAG_COL_W=12
 if [ -n "$CONFIG_FILE" ]; then
@@ -185,19 +193,20 @@ format_tps() {
 }
 
 format_model() {
-    local m="${1:-unknown}" effort="${2:-}" driver="${3:-}"
-    local suffix=""
-    case "$driver" in
-        gemini-cli)  suffix=" [gem]" ;;
-        claude-code) ;;
-        fake)        suffix=" [fake]" ;;
-        ?*)          suffix=" [${driver:0:3}]" ;;
-    esac
+    local m="${1:-unknown}" effort="${2:-}"
     if [ -n "$effort" ]; then
-        printf '%s (%s)%s' "$m" "${effort:0:1}" "$suffix"
+        printf '%s (%s)' "$m" "${effort:0:1}"
     else
-        printf '%s%s' "$m" "$suffix"
+        printf '%s' "$m"
     fi
+}
+
+short_driver() {
+    case "${1:-}" in
+        claude-code) printf 'claude' ;;
+        gemini-cli)  printf 'gemini' ;;
+        *)           printf '%s' "${1:-}" ;;
+    esac
 }
 
 truncate_str() {
@@ -244,16 +253,17 @@ read_idle_state() {
 }
 
 emit_row() {
-    local id_str="$1" model_str="$2" auth_str="$3"
-    local status_color="$4" status_str="$5"
-    local cost_str="$6" inout_str="$7" cache_str="$8"
-    local turns_str="$9" tps_str="${10}" dur_str="${11}"
-    local tag_str="${12:-}" is_bold="${13:-}"
+    local id_str="$1" model_str="$2" driver_str="$3" auth_str="$4"
+    local status_color="$5" status_str="$6"
+    local cost_str="$7" inout_str="$8" cache_str="$9"
+    local turns_str="${10}" tps_str="${11}" dur_str="${12}"
+    local tag_str="${13:-}" is_bold="${14:-}"
 
     local open="" close=""
     if [ "$is_bold" = "bold" ]; then open="$BOLD"; close="$RESET"; fi
 
     printf "  ${open}%-3s %-${MODEL_COL_W}s" "$id_str" "$model_str"
+    if $SHOW_DRIVER; then printf " %-${DRV_COL_W}s" "$driver_str"; fi
     if $SHOW_AUTH;  then printf " %-6s" "$auth_str"; fi
     printf " %b%-8s%b %7s" "$status_color" "$status_str" "$RESET" "$cost_str"
     if $SHOW_INOUT; then printf " %10s" "$inout_str"; fi
@@ -267,6 +277,7 @@ emit_row() {
 
 emit_header() {
     printf "  ${BOLD}%-3s %-${MODEL_COL_W}s" "#" "Model"
+    if $SHOW_DRIVER; then printf " %-${DRV_COL_W}s" "Driver"; fi
     if $SHOW_AUTH;  then printf " %-6s" "Auth"; fi
     printf " %-8s %7s" "Status" "Cost"
     if $SHOW_INOUT; then printf " %10s" "In/Out"; fi
@@ -298,8 +309,9 @@ draw() {
     # Adaptive column visibility based on terminal width.
     # Base: # (3) + Model (MW+1) + Status (9) + Cost (8) + Time (9) + indent (2).
     local base_w=$((MODEL_COL_W + 32))
-    SHOW_INOUT=false; SHOW_AUTH=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false
+    SHOW_INOUT=false; SHOW_AUTH=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false; SHOW_DRIVER=false
     local avail=$((TERM_COLS - base_w))
+    if $HAS_MULTI_DRIVERS && [ "$avail" -ge $((DRV_COL_W + 1)) ]; then SHOW_DRIVER=true; avail=$((avail - DRV_COL_W - 1)); fi
     if [ "$avail" -ge 11 ]; then SHOW_INOUT=true; avail=$((avail - 11)); fi
     if [ "$avail" -ge 7 ];  then SHOW_AUTH=true;  avail=$((avail - 7)); fi
     if [ "$avail" -ge 7 ];  then SHOW_TURNS=true; avail=$((avail - 7)); fi
@@ -344,7 +356,7 @@ draw() {
         fi
 
         local model_label
-        model_label=$(format_model "$model" "$effort" "$agent_driver")
+        model_label=$(format_model "$model" "$effort")
 
         local agent_stats a_cost a_in a_out a_cache a_dur a_api_ms a_turns
         agent_stats=$(read_agent_stats "$name" "$i")
@@ -392,7 +404,7 @@ draw() {
                 ;;
         esac
 
-        emit_row "$i" "$model_label" "$auth_mode" \
+        emit_row "$i" "$model_label" "$(short_driver "$agent_driver")" "$auth_mode" \
             "$status_color" "$status_text" \
             "$(format_cost "$a_cost")" \
             "$(format_tokens "$a_in")/$(format_tokens "$a_out")" \
@@ -418,7 +430,7 @@ draw() {
         pp_auth_mode=$(printf '%s' "$pp_env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
 
         local pp_model_label
-        pp_model_label=$(format_model "$pp_model" "$pp_effort" "$pp_driver")
+        pp_model_label=$(format_model "$pp_model" "$pp_effort")
 
         local pp_stats pp_cost pp_in pp_out pp_cache pp_dur pp_api_ms pp_turns
         pp_stats=$(read_agent_stats "$pp_name" "post")
@@ -445,7 +457,7 @@ draw() {
         esac
 
         printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
-        emit_row "PP" "$pp_model_label" "$pp_auth_mode" \
+        emit_row "PP" "$pp_model_label" "$(short_driver "$pp_driver")" "$pp_auth_mode" \
             "$pp_status_color" "$pp_state" \
             "$(format_cost "$pp_cost")" \
             "$(format_tokens "$pp_in")/$(format_tokens "$pp_out")" \
@@ -462,7 +474,7 @@ draw() {
     t_cache_str=$(format_tokens "$total_cache")
     t_tps_str=$(format_tps "$total_out" "$total_api_ms")
     t_dur_str=$(format_duration_ms "$total_dur")
-    emit_row "" "Total" "" \
+    emit_row "" "Total" "" "" \
         "" "" "$t_cost_str" "$t_inout_str" "$t_cache_str" \
         "$total_turns" "$t_tps_str" "$t_dur_str" "" "bold"
 
