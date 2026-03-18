@@ -4,7 +4,7 @@ branch called `agent-work`.
 
 ## Git coordination
 
-After completing your task, push:
+Push after EVERY commit, not just at the end of your task:
 
     git add -A
     git commit -m "concise description"
@@ -18,9 +18,15 @@ If the push fails (another agent pushed first):
 
 On rebase conflict: resolve, `git rebase --continue`, push.
 
+IMPORTANT: Do NOT accumulate local commits. Each commit must
+be pushed immediately so other agents and the harness can see
+your progress. Unpushed commits are invisible and will be lost
+if your session is interrupted.
+
 ## Rules
 
 - Atomic commits. One logical change per commit.
+- Push after every commit, not just at session end.
 - Do not modify files outside your task scope.
-- After pushing, stop. The harness restarts you with
-  the latest state.
+- When your task prompt defines a loop, keep looping
+  and pushing. When it does not, stop after pushing.

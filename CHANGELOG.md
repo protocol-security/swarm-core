@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.1 — 2026-03-18
+
+- **Push after every commit.** System prompt now instructs agents to
+  push immediately after each commit, not just at session end.
+  Prevents silent commit accumulation inside containers that the
+  harness and harvest cannot see.
+
 ## 0.11.0 — 2026-03-17
 
 - **Gemini CLI driver.** New `gemini-cli` driver
