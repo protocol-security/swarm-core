@@ -474,6 +474,15 @@ GAUTH=$(agent_detect_fatal "$TMPDIR/gemini-auth-err.jsonl" 1)
 assert_not_empty "gemini auth error detected" "$GAUTH"
 assert_contains "gemini auth message" "Invalid API key" "$GAUTH"
 
+# Tool-level errors (tool_result with status:"error") must NOT be treated as fatal.
+cat > "$TMPDIR/gemini-tool-err.jsonl" <<'EOF'
+{"type":"tool_result","timestamp":"2026-03-18T12:27:29.716Z","tool_id":"hp3irmrr","status":"error","output":"File not found.","error":{"type":"file_not_found","message":"File not found: /workspace/targets/Foo/Bar.cs"}}
+{"type":"tool_result","timestamp":"2026-03-18T12:57:09.792Z","tool_id":"8m6f5t7c","status":"error","output":"Error: Failed to edit","error":{"type":"edit_no_occurrence_found","message":"Failed to edit"}}
+{"type":"result","timestamp":"2026-03-18T13:21:18.397Z","status":"success","stats":{"total_tokens":4953705,"input_tokens":4924523,"output_tokens":13596,"cached":0,"input":0,"duration_ms":4054153,"tool_calls":95}}
+EOF
+GTOOL=$(agent_detect_fatal "$TMPDIR/gemini-tool-err.jsonl" 0)
+assert_eq "tool_result errors not fatal" "" "$GTOOL"
+
 # ============================================================
 echo ""
 echo "=== 21. agent_default_model — all drivers ==="

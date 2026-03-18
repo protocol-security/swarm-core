@@ -123,8 +123,11 @@ agent_detect_fatal() {
     # Gemini wraps API errors in a result event with status:"error"
     # rather than emitting a separate error event. Example:
     #   {"type":"result","status":"error","error":{"message":"..."}}
+    # Must match type:"result" too -- tool_result events also have
+    # status:"error" for normal tool failures (file not found, etc.).
     local result_line
-    result_line=$(grep '"status"[[:space:]]*:[[:space:]]*"error"' "$logfile" 2>/dev/null | head -1 || true)
+    result_line=$(grep '"type"[[:space:]]*:[[:space:]]*"result"' "$logfile" 2>/dev/null \
+        | grep '"status"[[:space:]]*:[[:space:]]*"error"' | head -1 || true)
     if [ -n "$result_line" ]; then
         local msg
         msg=$(echo "$result_line" | jq -r '.error.message // "unknown API error"' 2>/dev/null || true)
