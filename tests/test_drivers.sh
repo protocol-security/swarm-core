@@ -449,6 +449,31 @@ EOF
 GCLEAN=$(agent_detect_fatal "$TMPDIR/gemini-clean.jsonl" 0)
 assert_eq "gemini clean not flagged" "" "$GCLEAN"
 
+# Quota exhaustion: result event with status:"error" (not a separate error event).
+cat > "$TMPDIR/gemini-quota.jsonl" <<'EOF'
+{"type":"init","timestamp":"2026-03-18T09:51:40.322Z","session_id":"test","model":"gemini-3.1-pro-preview"}
+{"type":"result","timestamp":"2026-03-18T09:51:40.600Z","status":"error","error":{"type":"Error","message":"[API Error: You have exhausted your daily quota on this model.]"},"stats":{"total_tokens":0,"input_tokens":0,"output_tokens":0,"cached":0,"input":0,"duration_ms":0,"tool_calls":0}}
+EOF
+GQUOTA=$(agent_detect_fatal "$TMPDIR/gemini-quota.jsonl" 1)
+assert_not_empty "gemini quota error detected" "$GQUOTA"
+assert_contains "gemini quota message" "quota" "$GQUOTA"
+
+# Quota with retry delay in stderr.
+cat > "$TMPDIR/gemini-quota.jsonl.err" <<'EOF'
+TerminalQuotaError: You have exhausted your daily quota on this model.
+Please retry in 14h8m19.430128398s.
+EOF
+GQUOTA_RETRY=$(agent_detect_fatal "$TMPDIR/gemini-quota.jsonl" 1)
+assert_contains "gemini quota has retry" "retry in 14h8m19" "$GQUOTA_RETRY"
+
+# Auth error via result status (no .err file with retry).
+cat > "$TMPDIR/gemini-auth-err.jsonl" <<'EOF'
+{"type":"result","status":"error","error":{"type":"Error","message":"[API Error: Invalid API key]"},"stats":{"total_tokens":0,"input_tokens":0,"output_tokens":0}}
+EOF
+GAUTH=$(agent_detect_fatal "$TMPDIR/gemini-auth-err.jsonl" 1)
+assert_not_empty "gemini auth error detected" "$GAUTH"
+assert_contains "gemini auth message" "Invalid API key" "$GAUTH"
+
 # ============================================================
 echo ""
 echo "=== 21. agent_default_model — all drivers ==="

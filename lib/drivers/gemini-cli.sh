@@ -108,13 +108,32 @@ JQ
 }
 
 # Detect fatal errors in a Gemini CLI session log.
+# Checks both explicit error events and result events with
+# error status (quota exhaustion, auth failure, etc.).
 agent_detect_fatal() {
     local logfile="$1"
+
     local error_line
     error_line=$(grep '"type"[[:space:]]*:[[:space:]]*"error"' "$logfile" 2>/dev/null | head -1 || true)
     if [ -n "$error_line" ]; then
+        echo "$error_line" | jq -r '.message // .error // "unknown error"' 2>/dev/null || true
+        return
+    fi
+
+    # Gemini wraps API errors in a result event with status:"error"
+    # rather than emitting a separate error event. Example:
+    #   {"type":"result","status":"error","error":{"message":"..."}}
+    local result_line
+    result_line=$(grep '"status"[[:space:]]*:[[:space:]]*"error"' "$logfile" 2>/dev/null | head -1 || true)
+    if [ -n "$result_line" ]; then
         local msg
-        msg=$(echo "$error_line" | jq -r '.message // .error // "unknown error"' 2>/dev/null || true)
+        msg=$(echo "$result_line" | jq -r '.error.message // "unknown API error"' 2>/dev/null || true)
+        # Enrich with retry delay from stderr if available.
+        if [ -f "${logfile}.err" ]; then
+            local retry
+            retry=$(grep -o 'retry in [^.]*' "${logfile}.err" 2>/dev/null | head -1 || true)
+            [ -n "$retry" ] && msg="${msg} (${retry})"
+        fi
         echo "$msg"
     fi
 }
