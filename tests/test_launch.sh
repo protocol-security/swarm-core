@@ -674,6 +674,93 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 # ============================================================
 echo ""
+echo "=== SWARM_AGENTS derivation from config ==="
+
+# Mirrors the logic in cmd_start() that reads AGENTS_CFG and builds
+# a comma-separated list of unique drivers for the Docker build arg.
+derive_swarm_agents() {
+    local cfg_file="$1" config_file="${2:-}" default_driver="claude-code"
+    local _swarm_agents="" _seen_agents=" "
+    while IFS='|' read -r _ _ _ _ _ _ _ _ _ _drv; do
+        _drv="${_drv:-${default_driver}}"
+        [[ "$_seen_agents" == *" $_drv "* ]] && continue
+        _seen_agents+="$_drv "
+        _swarm_agents="${_swarm_agents:+${_swarm_agents},}${_drv}"
+    done < "$cfg_file"
+    if [ -n "$config_file" ]; then
+        local _pp_drv
+        _pp_drv=$(jq -r '.post_process.driver // .driver // "claude-code"' "$config_file" 2>/dev/null || true)
+        if [[ "$_seen_agents" != *" $_pp_drv "* ]]; then
+            _swarm_agents="${_swarm_agents:+${_swarm_agents},}${_pp_drv}"
+        fi
+    fi
+    echo "$_swarm_agents"
+}
+
+# Single driver (no driver field in config).
+# Format: model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver (9 pipes)
+: > "$TMPDIR/agents_single.cfg"
+printf 'claude-opus-4-6|||||||||\n' >> "$TMPDIR/agents_single.cfg"
+printf 'claude-sonnet-4-6|||||||||\n' >> "$TMPDIR/agents_single.cfg"
+assert_eq "single driver default" "claude-code" \
+    "$(derive_swarm_agents "$TMPDIR/agents_single.cfg")"
+
+# Mixed drivers.
+: > "$TMPDIR/agents_mixed.cfg"
+printf 'claude-opus-4-6|||||||||claude-code\n' >> "$TMPDIR/agents_mixed.cfg"
+printf 'gemini-2.5-pro|||||||||gemini-cli\n' >> "$TMPDIR/agents_mixed.cfg"
+assert_eq "mixed drivers" "claude-code,gemini-cli" \
+    "$(derive_swarm_agents "$TMPDIR/agents_mixed.cfg")"
+
+# Deduplication — multiple agents with same driver.
+: > "$TMPDIR/agents_dedup.cfg"
+printf 'gemini-2.5-pro|||||||||gemini-cli\n' >> "$TMPDIR/agents_dedup.cfg"
+printf 'gemini-3-flash|||||||||gemini-cli\n' >> "$TMPDIR/agents_dedup.cfg"
+assert_eq "dedup same driver" "gemini-cli" \
+    "$(derive_swarm_agents "$TMPDIR/agents_dedup.cfg")"
+
+# Post-process adds a new driver.
+: > "$TMPDIR/agents_pp.cfg"
+printf 'gemini-2.5-pro|||||||||gemini-cli\n' >> "$TMPDIR/agents_pp.cfg"
+cat > "$TMPDIR/pp_driver.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "gemini-2.5-pro", "driver": "gemini-cli" }],
+  "post_process": { "prompt": "r.md", "driver": "claude-code" }
+}
+EOF
+assert_eq "pp adds driver" "gemini-cli,claude-code" \
+    "$(derive_swarm_agents "$TMPDIR/agents_pp.cfg" "$TMPDIR/pp_driver.json")"
+
+# Post-process driver already present — no duplicate.
+cat > "$TMPDIR/pp_same.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "claude-opus-4-6" }],
+  "post_process": { "prompt": "r.md" }
+}
+EOF
+: > "$TMPDIR/agents_pp_same.cfg"
+printf 'claude-opus-4-6|||||||||\n' >> "$TMPDIR/agents_pp_same.cfg"
+assert_eq "pp same driver no dup" "claude-code" \
+    "$(derive_swarm_agents "$TMPDIR/agents_pp_same.cfg" "$TMPDIR/pp_same.json")"
+
+# Post-process inherits top-level driver.
+cat > "$TMPDIR/pp_inherit.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "driver": "gemini-cli",
+  "agents": [{ "count": 1, "model": "gemini-2.5-pro" }],
+  "post_process": { "prompt": "r.md" }
+}
+EOF
+: > "$TMPDIR/agents_pp_inh.cfg"
+printf 'gemini-2.5-pro|||||||||gemini-cli\n' >> "$TMPDIR/agents_pp_inh.cfg"
+assert_eq "pp inherits top driver" "gemini-cli" \
+    "$(derive_swarm_agents "$TMPDIR/agents_pp_inh.cfg" "$TMPDIR/pp_inherit.json")"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

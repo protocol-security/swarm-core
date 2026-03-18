@@ -361,6 +361,83 @@ assert_eq "gemini flash fits"         "fits"        "$(check_fits "gemini-3-flas
 
 # ============================================================
 echo ""
+echo "=== 9. format_model passthrough for all drivers ==="
+
+assert_eq "gemini full name" "gemini-3.1-pro-preview-customtools" \
+    "$(format_model "gemini-3.1-pro-preview-customtools" "")"
+assert_eq "gemini flash no effort" "gemini-3-flash-preview" \
+    "$(format_model "gemini-3-flash-preview" "")"
+assert_eq "gemini with effort" "gemini-2.5-pro (h)" \
+    "$(format_model "gemini-2.5-pro" "high")"
+
+# ============================================================
+echo ""
+echo "=== 10. HAS_MULTI_DRIVERS jq detection ==="
+
+detect_multi_drivers() {
+    jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | unique | length' \
+        "$1" 2>/dev/null || echo 1
+}
+
+cat > "$TMPDIR/single_claude.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "count": 2, "model": "claude-opus-4-6" },
+    { "count": 1, "model": "claude-sonnet-4-6" }
+  ]
+}
+EOF
+assert_eq "all claude → 1 driver" "1" "$(detect_multi_drivers "$TMPDIR/single_claude.json")"
+
+cat > "$TMPDIR/mixed_explicit.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6" },
+    { "count": 1, "model": "gemini-2.5-pro", "driver": "gemini-cli" }
+  ]
+}
+EOF
+assert_eq "mixed explicit → 2 drivers" "2" "$(detect_multi_drivers "$TMPDIR/mixed_explicit.json")"
+
+cat > "$TMPDIR/inherit_top.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "driver": "gemini-cli",
+  "agents": [
+    { "count": 1, "model": "gemini-2.5-pro" },
+    { "count": 1, "model": "gemini-3-flash-preview" }
+  ]
+}
+EOF
+assert_eq "inherit top-level → 1 driver" "1" "$(detect_multi_drivers "$TMPDIR/inherit_top.json")"
+
+cat > "$TMPDIR/override_top.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "driver": "gemini-cli",
+  "agents": [
+    { "count": 1, "model": "gemini-2.5-pro" },
+    { "count": 1, "model": "claude-opus-4-6", "driver": "claude-code" }
+  ]
+}
+EOF
+assert_eq "override top-level → 2 drivers" "2" "$(detect_multi_drivers "$TMPDIR/override_top.json")"
+
+cat > "$TMPDIR/all_gemini_explicit.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "count": 1, "model": "gemini-2.5-pro", "driver": "gemini-cli" },
+    { "count": 1, "model": "gemini-3-flash-preview", "driver": "gemini-cli" }
+  ]
+}
+EOF
+assert_eq "all gemini explicit → 1 driver" "1" "$(detect_multi_drivers "$TMPDIR/all_gemini_explicit.json")"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
