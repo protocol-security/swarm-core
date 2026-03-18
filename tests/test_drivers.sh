@@ -384,8 +384,8 @@ assert_eq "gemini-cli default" "gemini-2.5-pro" "$(agent_default_model)"
 
 GEM_JQ=$(agent_activity_jq)
 assert_not_empty "gemini-cli jq filter" "$GEM_JQ"
-assert_contains "gemini-cli jq has tool_call" "tool_call" "$GEM_JQ"
-assert_contains "gemini-cli jq has shell" "shell" "$GEM_JQ"
+assert_contains "gemini-cli jq has tool_use" "tool_use" "$GEM_JQ"
+assert_contains "gemini-cli jq has run_shell_command" "run_shell_command" "$GEM_JQ"
 
 GEM_INSTALL=$(agent_install_cmd)
 assert_contains "gemini-cli install has npm" "npm" "$GEM_INSTALL"
@@ -528,11 +528,24 @@ echo "=== 26. Gemini CLI — activity jq filter via file boundary ==="
 source "$DRIVERS_DIR/gemini-cli.sh"
 agent_activity_jq > "$TMPDIR/gemini.jq"
 
-GEMINI_INPUT='{"type":"tool_call","name":"shell","input":"ls -la"}'
+GEMINI_INPUT='{"type":"tool_use","tool_name":"run_shell_command","tool_id":"abc","parameters":{"command":"ls -la"}}'
 GEM_ACT_OUT=$(echo "$GEMINI_INPUT" | \
     AGENT_ID=5 SWARM_JQ_FILTER_FILE="$TMPDIR/gemini.jq" \
     bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
 assert_contains "gemini jq via file boundary" "Shell:" "$GEM_ACT_OUT"
+
+GEMINI_READ='{"type":"tool_use","tool_name":"read_file","tool_id":"xyz","parameters":{"file_path":"src/main.cs"}}'
+GEM_READ_OUT=$(echo "$GEMINI_READ" | \
+    AGENT_ID=5 SWARM_JQ_FILTER_FILE="$TMPDIR/gemini.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "gemini jq read_file" "Read " "$GEM_READ_OUT"
+assert_contains "gemini jq read_file path" "src/main.cs" "$GEM_READ_OUT"
+
+GEMINI_GREP='{"type":"tool_use","tool_name":"grep_search","tool_id":"g1","parameters":{"pattern":"async void"}}'
+GEM_GREP_OUT=$(echo "$GEMINI_GREP" | \
+    AGENT_ID=5 SWARM_JQ_FILTER_FILE="$TMPDIR/gemini.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "gemini jq grep_search" "Grep " "$GEM_GREP_OUT"
 
 # ============================================================
 echo ""
