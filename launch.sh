@@ -330,6 +330,18 @@ cmd_start() {
             done < <(agent_docker_env "$eff")
         fi
 
+        # Look up per-model pricing from config ($/M tokens).
+        local price_input="" price_output="" price_cached=""
+        if [ -n "$CONFIG_FILE" ]; then
+            local _price
+            _price=$(jq -r --arg m "$agent_model" \
+                '.pricing[$m] // empty | "\(.input) \(.output) \(.cached // 0)"' \
+                "$CONFIG_FILE" 2>/dev/null || true)
+            if [ -n "$_price" ]; then
+                read -r price_input price_output price_cached <<< "$_price"
+            fi
+        fi
+
         docker run -d \
             --name "$NAME" \
             -v "${BARE_REPO}:/upstream:rw" \
@@ -351,6 +363,9 @@ cmd_start() {
             -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
             -e "SWARM_CFG_PROMPT=${effective_prompt}" \
             -e "SWARM_CFG_SETUP=${SWARM_SETUP}" \
+            ${price_input:+-e "SWARM_PRICE_INPUT=${price_input}"} \
+            ${price_output:+-e "SWARM_PRICE_OUTPUT=${price_output}"} \
+            ${price_cached:+-e "SWARM_PRICE_CACHED=${price_cached}"} \
             "$IMAGE_NAME"
     done < "$AGENTS_CFG"
 
@@ -524,6 +539,18 @@ cmd_post_process() {
         done < <(agent_docker_env "$pp_effort")
     fi
 
+    # Look up per-model pricing from config ($/M tokens).
+    local price_input="" price_output="" price_cached=""
+    if [ -n "$CONFIG_FILE" ]; then
+        local _price
+        _price=$(jq -r --arg m "$pp_model" \
+            '.pricing[$m] // empty | "\(.input) \(.output) \(.cached // 0)"' \
+            "$CONFIG_FILE" 2>/dev/null || true)
+        if [ -n "$_price" ]; then
+            read -r price_input price_output price_cached <<< "$_price"
+        fi
+    fi
+
     echo "--- Starting post-processing (${pp_model}) ---"
     docker run -d \
         --name "$NAME" \
@@ -545,6 +572,9 @@ cmd_post_process() {
         -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
         -e "SWARM_CFG_PROMPT=${pp_prompt}" \
         -e "SWARM_CFG_SETUP=${SWARM_SETUP:-}" \
+        ${price_input:+-e "SWARM_PRICE_INPUT=${price_input}"} \
+        ${price_output:+-e "SWARM_PRICE_OUTPUT=${price_output}"} \
+        ${price_cached:+-e "SWARM_PRICE_CACHED=${price_cached}"} \
         "$IMAGE_NAME"
 
     echo "Post-processing agent launched: ${NAME}"

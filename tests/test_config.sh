@@ -848,7 +848,7 @@ echo ""
 echo "=== 28. Heterogeneous kitchen-sink config ==="
 
 CFG="$TESTS_DIR/configs/heterogeneous-kitchen-sink.json"
-assert_eq "hetero count" "4" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "hetero count" "8" "$(jq '[.agents[].count] | add' "$CFG")"
 
 # Agent drivers.
 DRVS=$(jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | .[]' "$CFG")
@@ -856,10 +856,18 @@ D1=$(echo "$DRVS" | sed -n '1p')
 D2=$(echo "$DRVS" | sed -n '2p')
 D3=$(echo "$DRVS" | sed -n '3p')
 D4=$(echo "$DRVS" | sed -n '4p')
+D5=$(echo "$DRVS" | sed -n '5p')
+D6=$(echo "$DRVS" | sed -n '6p')
+D7=$(echo "$DRVS" | sed -n '7p')
+D8=$(echo "$DRVS" | sed -n '8p')
 assert_eq "hetero agent1 driver" "claude-code" "$D1"
 assert_eq "hetero agent2 driver" "gemini-cli"  "$D2"
 assert_eq "hetero agent3 driver" "gemini-cli"  "$D3"
-assert_eq "hetero agent4 driver" "claude-code" "$D4"
+assert_eq "hetero agent4 driver" "gemini-cli"  "$D4"
+assert_eq "hetero agent5 driver" "gemini-cli"  "$D5"
+assert_eq "hetero agent6 driver" "gemini-cli"  "$D6"
+assert_eq "hetero agent7 driver" "gemini-cli"  "$D7"
+assert_eq "hetero agent8 driver" "claude-code" "$D8"
 
 # Tags.
 TAGS=$(jq -r '[.agents[].tag] | .[]' "$CFG")
@@ -867,10 +875,18 @@ T1=$(echo "$TAGS" | sed -n '1p')
 T2=$(echo "$TAGS" | sed -n '2p')
 T3=$(echo "$TAGS" | sed -n '3p')
 T4=$(echo "$TAGS" | sed -n '4p')
+T5=$(echo "$TAGS" | sed -n '5p')
+T6=$(echo "$TAGS" | sed -n '6p')
+T7=$(echo "$TAGS" | sed -n '7p')
+T8=$(echo "$TAGS" | sed -n '8p')
 assert_eq "hetero tag1" "deep"     "$T1"
 assert_eq "hetero tag2" "gem-scan" "$T2"
-assert_eq "hetero tag3" "gem-or"   "$T3"
-assert_eq "hetero tag4" "fast"     "$T4"
+assert_eq "hetero tag3" "gem-3.1"  "$T3"
+assert_eq "hetero tag4" "gem-ct"   "$T4"
+assert_eq "hetero tag5" "gem-flash" "$T5"
+assert_eq "hetero tag6" "gem-25f"  "$T6"
+assert_eq "hetero tag7" "gem-or"   "$T7"
+assert_eq "hetero tag8" "fast"     "$T8"
 
 # Post-process.
 assert_eq "hetero pp driver" "claude-code" \
