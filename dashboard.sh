@@ -104,7 +104,7 @@ fi
 HAS_MULTI_DRIVERS=false
 DRV_COL_W=6
 if [ -n "$CONFIG_FILE" ]; then
-    _nd=$(jq -r '[(.agents[].driver // .driver // "claude-code")] | unique | length' \
+    _nd=$(jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | unique | length' \
         "$CONFIG_FILE" 2>/dev/null || echo 1)
     [ "$_nd" -gt 1 ] && HAS_MULTI_DRIVERS=true
 fi
