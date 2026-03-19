@@ -1,11 +1,21 @@
 # Changelog
 
-## 0.11.1 — 2026-03-18
+## 0.12.0 — 2026-03-19
 
 - **Push after every commit.** System prompt now instructs agents to
   push immediately after each commit, not just at session end.
   Prevents silent commit accumulation inside containers that the
   harness and harvest cannot see.
+- **Task-complete stopping.** Replaced "stop after pushing" with
+  "keep working until your task is complete, then stop." Agents
+  with multi-step or looping prompts now continue naturally instead
+  of exiting after the first push. The harness idle counter still
+  catches agents with nothing to do.
+- **Hardened smoke test.** Split counting and reasoning into two
+  commits with distinct messages; add step-0 "already done" guard
+  so harness re-runs do not produce duplicate commits; pre-commit
+  hook now unstages `agent_logs/` and `.claude/settings.local.json`;
+  verification fails on missing reasoning files and garbage commits.
 
 ## 0.11.0 — 2026-03-17
 

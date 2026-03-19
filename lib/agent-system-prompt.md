@@ -26,7 +26,7 @@ if your session is interrupted.
 ## Rules
 
 - Atomic commits. One logical change per commit.
-- Push after every commit, not just at session end.
+- Push immediately after every commit.
 - Do not modify files outside your task scope.
-- When your task prompt defines a loop, keep looping
-  and pushing. When it does not, stop after pushing.
+- Keep working until your task is complete, then stop.
+  The harness will restart you with fresh context.

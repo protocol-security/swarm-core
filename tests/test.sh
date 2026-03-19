@@ -449,6 +449,15 @@ Your ONLY task is to create two files and push them.
 
 ## Steps
 
+0. First, check whether your work already exists:
+
+```bash
+test -f "test-results/agent-${AGENT_ID}.txt" && echo "ALREADY DONE"
+```
+
+   If the file exists, your previous session already completed this task.
+   Stop immediately — do not create, modify, or commit any files.
+
 1. Read the AGENT_ID environment variable:
 
 ```bash
@@ -468,7 +477,16 @@ END=$((START + 99))
 seq $START $END > test-results/agent-${AGENT_ID}.txt
 ```
 
-3. Reasoning checkpoint — think through this before proceeding:
+3. Commit and push the counting file:
+
+```bash
+git add test-results/agent-${AGENT_ID}.txt
+git commit -m "Smoke test: agent ${AGENT_ID} counting"
+git pull --rebase origin agent-work
+git push origin agent-work
+```
+
+4. Reasoning checkpoint — think through this before proceeding:
    Compute the sum of all 100 numbers you just wrote. The formula
    for the sum of consecutive integers from a to b is:
    sum = (b - a + 1) * (a + b) / 2
@@ -478,16 +496,16 @@ seq $START $END > test-results/agent-${AGENT_ID}.txt
    - Line 1: the computed sum (a single integer)
    - Line 2: a one-sentence explanation of how you derived it
 
-4. Commit and push:
+5. Commit and push the reasoning file:
 
 ```bash
-git add test-results/
-git commit -m "Smoke test: agent ${AGENT_ID} counting"
+git add test-results/reasoning-${AGENT_ID}.txt
+git commit -m "Smoke test: agent ${AGENT_ID} reasoning"
 git pull --rebase origin agent-work
 git push origin agent-work
 ```
 
-5. Stop. Do NOT loop, do NOT pick another task. Exit after
+6. Stop. Do NOT loop, do NOT pick another task. Exit after
    the push succeeds.
 
 ## Rules
@@ -497,7 +515,7 @@ git push origin agent-work
   test-results/reasoning-{AGENT_ID}.txt.
 - The counting file must contain exactly 100 lines, one number per line.
 - The reasoning file must contain exactly 2 lines.
-- Use the exact bash commands above for steps 2 and 4. Do not improvise.
+- Use the exact bash commands above for steps 3 and 5. Do not improvise.
 PROMPT
     else
         cat > "$dest/$PROMPT_FILE" <<'PROMPT'
@@ -508,6 +526,15 @@ Your ONLY task is to create two files and commit them.
 
 ## Steps
 
+0. First, check whether your work already exists:
+
+```bash
+test -f "test-results/agent-${AGENT_ID}.txt" && echo "ALREADY DONE"
+```
+
+   If the file exists, your previous session already completed this task.
+   Stop immediately — do not create, modify, or commit any files.
+
 1. Read the AGENT_ID environment variable:
 
 ```bash
@@ -527,7 +554,10 @@ END=$((START + 99))
 seq $START $END > test-results/agent-${AGENT_ID}.txt
 ```
 
-3. Reasoning checkpoint — think through this before proceeding:
+3. Commit the counting file with message
+   "Smoke test: agent ${AGENT_ID} counting".
+
+4. Reasoning checkpoint — think through this before proceeding:
    Compute the sum of all 100 numbers you just wrote. The formula
    for the sum of consecutive integers from a to b is:
    sum = (b - a + 1) * (a + b) / 2
@@ -537,9 +567,10 @@ seq $START $END > test-results/agent-${AGENT_ID}.txt
    - Line 1: the computed sum (a single integer)
    - Line 2: a one-sentence explanation of how you derived it
 
-4. Commit your work with message "Smoke test: agent ${AGENT_ID} counting".
+5. Commit the reasoning file with message
+   "Smoke test: agent ${AGENT_ID} reasoning".
 
-5. Stop. Do NOT loop, do NOT pick another task.
+6. Stop. Do NOT loop, do NOT pick another task.
 
 ## Rules
 
@@ -698,6 +729,9 @@ git clone --quiet "$BARE_REPO" "$REVIEW_DIR"
 cd "$REVIEW_DIR"
 git checkout --quiet agent-work
 
+PROMPT_COMMIT=$(git log --all --oneline --grep="tmp: smoke test prompt" \
+    --format="%H" | head -1)
+
 for i in $(seq 1 "$NUM_AGENTS"); do
     FILE="test-results/agent-${i}.txt"
     RFILE="test-results/reasoning-${i}.txt"
@@ -720,10 +754,10 @@ for i in $(seq 1 "$NUM_AGENTS"); do
         errors=$((errors + 1))
     fi
 
-    # Verify reasoning file: first line should be the sum.
     EXPECTED_SUM=$(( (END - START + 1) * (START + END) / 2 ))
     if [ ! -f "$RFILE" ]; then
-        echo "  WARN: ${RFILE} missing (reasoning step skipped)"
+        echo "  FAIL: ${RFILE} missing"
+        errors=$((errors + 1))
     else
         ACTUAL_SUM=$(head -1 "$RFILE" | tr -d '[:space:]')
         if [ "$ACTUAL_SUM" = "$EXPECTED_SUM" ]; then
@@ -733,7 +767,37 @@ for i in $(seq 1 "$NUM_AGENTS"); do
             errors=$((errors + 1))
         fi
     fi
+
+    # Verify commit messages: each agent should have a "counting" and
+    # a "reasoning" commit with distinct messages.
+    COUNT_C=$(git log --all --oneline \
+        --grep="Smoke test: agent ${i} counting" | wc -l)
+    REASON_C=$(git log --all --oneline \
+        --grep="Smoke test: agent ${i} reasoning" | wc -l)
+    if [ "$COUNT_C" -lt 1 ]; then
+        echo "  FAIL: agent ${i} missing counting commit"
+        errors=$((errors + 1))
+    fi
+    if [ "$REASON_C" -lt 1 ]; then
+        echo "  WARN: agent ${i} missing reasoning commit"
+    fi
+    TOTAL_C=$((COUNT_C + REASON_C))
+    if [ "$TOTAL_C" -gt 2 ]; then
+        echo "  WARN: agent ${i} has ${TOTAL_C} commits (expected 2)"
+    fi
 done
+
+# Check for garbage files committed outside test-results/.
+if [ -n "$PROMPT_COMMIT" ]; then
+    GARBAGE=$(git diff --name-only "${PROMPT_COMMIT}..HEAD" -- \
+        ':!test-results/' 2>/dev/null || true)
+    if [ -n "$GARBAGE" ]; then
+        echo ""
+        echo "  FAIL: garbage files committed outside test-results/:"
+        printf '        %s\n' $GARBAGE
+        errors=$((errors + 1))
+    fi
+fi
 
 echo ""
 if [ "$errors" -eq 0 ]; then
