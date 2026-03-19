@@ -207,9 +207,13 @@ git commit --amend --no-verify --no-edit -m "${msg}${trailer}" \
 HOOK
     chmod +x .git/hooks/post-rewrite
 
-    # pre-commit hook: prevent accidental submodule pointer changes.
+    # pre-commit hook: prevent accidental staging of internal files
+    # and submodule pointer changes from broad `git add`.
     cat > .git/hooks/pre-commit <<'HOOK'
 #!/bin/bash
+# Unstage internal harness/agent files that should never be committed.
+git reset -q HEAD -- agent_logs/ .claude/settings.local.json 2>/dev/null || true
+
 # Silently unstage submodule pointer changes so agents can't
 # accidentally commit a submodule bump via broad `git add`.
 changed_subs=$(git diff --cached --diff-filter=M --name-only | while read -r path; do
