@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.13.0 — 2026-03-23
+
+- **Swarmfile-only configuration.** Environment variables and CLI
+  flags can no longer substitute for swarmfile fields. A swarmfile
+  is now always required. API credentials (`ANTHROPIC_API_KEY`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `OPENROUTER_API_KEY`, etc.) remain
+  environment variables.
+- **Optional top-level prompt.** The top-level `prompt` field is no
+  longer required when every agent group specifies its own `prompt`.
+- **Dashboard column widening.** Status column widened to 14 chars
+  (handles `idle N/M` without misalignment), In/Out column widened
+  to 13 chars for large token counts.
+- **Branch info in dashboard header.** The header now shows the git
+  branch instead of the prompt path. Auto-detects branch and HEAD
+  from the repo the swarm runs in. The `title` field in the
+  swarmfile is respected and persists across dashboard refreshes.
+- **Claude Code version pinning.** New `claude_code_version` field
+  in the swarmfile passes a specific version to the install script,
+  allowing reproducible Docker image builds.
+- **MiniMax-M2.7 in kitchen-sink.** Updated the showcase config to
+  the newer model with per-model pricing.
+- Rewrite dry-run documentation to use the swarmfile pattern.
+  Expand cleanup section with full artifact inventory.
+
 ## 0.12.1 — 2026-03-23
 
 - **Config pricing overrides driver cost.** The `pricing` map in
