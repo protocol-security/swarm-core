@@ -265,8 +265,8 @@ emit_row() {
     printf "  ${open}%-3s %-${MODEL_COL_W}s" "$id_str" "$model_str"
     if $SHOW_DRIVER; then printf " %-${DRV_COL_W}s" "$driver_str"; fi
     if $SHOW_AUTH;  then printf " %-6s" "$auth_str"; fi
-    printf " %b%-8s%b %7s" "$status_color" "$status_str" "$RESET" "$cost_str"
-    if $SHOW_INOUT; then printf " %10s" "$inout_str"; fi
+    printf " %b%-14s%b %7s" "$status_color" "$status_str" "$RESET" "$cost_str"
+    if $SHOW_INOUT; then printf " %13s" "$inout_str"; fi
     if $SHOW_CACHE; then printf " %7s" "$cache_str"; fi
     if $SHOW_TURNS; then printf " %6s" "$turns_str"; fi
     if $SHOW_TPS;   then printf " %6s" "$tps_str"; fi
@@ -279,8 +279,8 @@ emit_header() {
     printf "  ${BOLD}%-3s %-${MODEL_COL_W}s" "#" "Model"
     if $SHOW_DRIVER; then printf " %-${DRV_COL_W}s" "Driver"; fi
     if $SHOW_AUTH;  then printf " %-6s" "Auth"; fi
-    printf " %-8s %7s" "Status" "Cost"
-    if $SHOW_INOUT; then printf " %10s" "In/Out"; fi
+    printf " %-14s %7s" "Status" "Cost"
+    if $SHOW_INOUT; then printf " %13s" "In/Out"; fi
     if $SHOW_CACHE; then printf " %7s" "Cache"; fi
     if $SHOW_TURNS; then printf " %6s" "Turns"; fi
     if $SHOW_TPS;   then printf " %6s" "Tok/s"; fi
@@ -307,12 +307,12 @@ draw() {
     uptime_str=$(format_duration "$elapsed")
 
     # Adaptive column visibility based on terminal width.
-    # Base: # (3) + Model (MW+1) + Status (9) + Cost (8) + Time (9) + indent (2).
-    local base_w=$((MODEL_COL_W + 32))
+    # Base: # (3) + Model (MW+1) + Status (15) + Cost (8) + Time (9) + indent (2).
+    local base_w=$((MODEL_COL_W + 38))
     SHOW_INOUT=false; SHOW_AUTH=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false; SHOW_DRIVER=false
     local avail=$((TERM_COLS - base_w))
     if $HAS_MULTI_DRIVERS && [ "$avail" -ge $((DRV_COL_W + 1)) ]; then SHOW_DRIVER=true; avail=$((avail - DRV_COL_W - 1)); fi
-    if [ "$avail" -ge 11 ]; then SHOW_INOUT=true; avail=$((avail - 11)); fi
+    if [ "$avail" -ge 14 ]; then SHOW_INOUT=true; avail=$((avail - 14)); fi
     if [ "$avail" -ge 7 ];  then SHOW_AUTH=true;  avail=$((avail - 7)); fi
     if [ "$avail" -ge 7 ];  then SHOW_TURNS=true; avail=$((avail - 7)); fi
     if [ "$avail" -ge 7 ];  then SHOW_TPS=true;   avail=$((avail - 7)); fi
