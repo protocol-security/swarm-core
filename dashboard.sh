@@ -63,7 +63,7 @@ if [ -n "$CONFIG_FILE" ]; then
     SWARM_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
     MODEL_SUMMARY=$(jq -r \
-        '.prompt as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
+        '(.prompt // "") as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
         [.agents[] |
           "\(.count)x \(.model | split("/") | .[-1])" +
           (if .context == "none" then " ctx:bare"
@@ -327,7 +327,11 @@ draw() {
     local title_len=${#DASHBOARD_TITLE}
     local right="${DIM}uptime: ${uptime_str}${RESET}"
     printf "%b%*s%b\n" "$title" $((TERM_COLS - title_len - 2 - ${#uptime_str} - 10)) "" "$right"
-    printf " ${DIM}config: %s | prompt: %s${RESET}\n" "$CONFIG_LABEL" "$SWARM_PROMPT"
+    if [ -n "$SWARM_PROMPT" ]; then
+        printf " ${DIM}config: %s | prompt: %s${RESET}\n" "$CONFIG_LABEL" "$SWARM_PROMPT"
+    else
+        printf " ${DIM}config: %s${RESET}\n" "$CONFIG_LABEL"
+    fi
     printf " ${DIM}agents: %s — %s${RESET}\n" "$NUM_AGENTS" "$MODEL_SUMMARY"
     echo ""
 

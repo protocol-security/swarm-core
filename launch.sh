@@ -110,29 +110,33 @@ parse_start_args() {
 }
 
 cmd_start() {
-    if [ -z "$SWARM_PROMPT" ]; then
-        echo "ERROR: 'prompt' is missing in ${CONFIG_FILE}." >&2
+    # Top-level prompt is optional when every agent group defines its own.
+    local all_groups_have_prompt
+    all_groups_have_prompt=$(jq \
+        '[.agents[] | has("prompt") and (.prompt | length > 0)] | all' \
+        "$CONFIG_FILE")
+
+    if [ -z "$SWARM_PROMPT" ] && [ "$all_groups_have_prompt" != "true" ]; then
+        echo "ERROR: 'prompt' is missing in ${CONFIG_FILE} (required when not every agent group specifies its own)." >&2
         exit 1
     fi
 
-    if [ ! -f "$REPO_ROOT/$SWARM_PROMPT" ]; then
+    if [ -n "$SWARM_PROMPT" ] && [ ! -f "$REPO_ROOT/$SWARM_PROMPT" ]; then
         echo "ERROR: ${SWARM_PROMPT} not found." >&2
         exit 1
     fi
 
     # Validate per-group prompt overrides.
-    if [ -n "$CONFIG_FILE" ]; then
-        local group_prompts
-        group_prompts=$(jq -r '[.agents[].prompt // empty] | unique[]' \
-            "$CONFIG_FILE" 2>/dev/null || true)
-        while IFS= read -r gp; do
-            [ -z "$gp" ] && continue
-            if [ ! -f "$REPO_ROOT/$gp" ]; then
-                echo "ERROR: per-group prompt ${gp} not found." >&2
-                exit 1
-            fi
-        done <<< "$group_prompts"
-    fi
+    local group_prompts
+    group_prompts=$(jq -r '[.agents[].prompt // empty] | unique[]' \
+        "$CONFIG_FILE" 2>/dev/null || true)
+    while IFS= read -r gp; do
+        [ -z "$gp" ] && continue
+        if [ ! -f "$REPO_ROOT/$gp" ]; then
+            echo "ERROR: per-group prompt ${gp} not found." >&2
+            exit 1
+        fi
+    done <<< "$group_prompts"
 
     # Refuse to overwrite a bare repo that has unharvested commits.
     if [ -d "$BARE_REPO" ]; then
@@ -297,7 +301,7 @@ cmd_start() {
     # Write state file so a standalone dashboard can pick up config.
     local state_model_summary state_config_label
     state_model_summary=$(jq -r \
-        '.prompt as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
+        '(.prompt // "") as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
         [.agents[] |
           "\(.count)x \(.model | split("/") | .[-1])" +
           (if .context == "none" then " ctx:bare"

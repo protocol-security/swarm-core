@@ -60,6 +60,9 @@ Per-group fields in `swarm.json` `agents` array:
 Top-level fields: `prompt`, `setup`, `max_idle`, `driver`,
 `inject_git_rules`, `post_process`.
 
+The top-level `prompt` is optional when every agent group specifies its
+own `prompt`.  When omitted, each group **must** provide one.
+
 ## Dashboard
 
 ```bash
@@ -197,10 +200,24 @@ Each agent group can run a different prompt file:
 }
 ```
 
-Groups without `prompt` inherit the top-level value. Combined
-with context modes, this enables divergent exploration: hunting
-agents run one prompt with full skills, a reconciliation agent
-runs a different prompt to validate and normalize findings.
+Groups without `prompt` inherit the top-level value.  When every
+group specifies its own prompt, the top-level `prompt` can be
+omitted entirely:
+
+```json
+{
+  "agents": [
+    { "count": 2, "model": "claude-opus-4-6",
+      "prompt": "tasks/hunt.md" },
+    { "count": 1, "model": "claude-sonnet-4-6",
+      "prompt": "tasks/review.md" }
+  ]
+}
+```
+
+Combined with context modes, this enables divergent exploration:
+hunting agents run one prompt with full skills, a reconciliation
+agent runs a different prompt to validate and normalize findings.
 
 ## Auth modes
 

@@ -427,6 +427,76 @@ assert_eq "prompt same group" "tasks/explore.md" "$p4"
 
 # ============================================================
 echo ""
+echo "=== 17b. Optional top-level prompt ==="
+
+all_groups_have_prompt() {
+    jq '[.agents[] | has("prompt") and (.prompt | length > 0)] | all' "$1"
+}
+
+cat > "$TMPDIR/all_per_prompt.json" <<'EOF'
+{
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6", "prompt": "tasks/scan.md" },
+    { "count": 1, "model": "claude-sonnet-4-6", "prompt": "tasks/review.md" },
+    { "count": 2, "model": "claude-sonnet-4-6", "prompt": "tasks/explore.md" }
+  ]
+}
+EOF
+
+assert_eq "no top prompt, all per-group" "" "$(parse_prompt "$TMPDIR/all_per_prompt.json")"
+assert_eq "all groups have prompt" "true" "$(all_groups_have_prompt "$TMPDIR/all_per_prompt.json")"
+assert_eq "all-per-prompt agent count" "4" "$(parse_num_agents "$TMPDIR/all_per_prompt.json")"
+TSV=$(parse_agents_cfg "$TMPDIR/all_per_prompt.json")
+IFS='|' read -r m u k e a c p t g d <<< "$(echo "$TSV" | sed -n '1p')"
+assert_eq "all-per agent1 prompt" "tasks/scan.md" "$p"
+IFS='|' read -r m u k e a c p t g d <<< "$(echo "$TSV" | sed -n '2p')"
+assert_eq "all-per agent2 prompt" "tasks/review.md" "$p"
+
+cat > "$TMPDIR/some_per_prompt.json" <<'EOF'
+{
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6", "prompt": "tasks/scan.md" },
+    { "count": 1, "model": "claude-sonnet-4-6" }
+  ]
+}
+EOF
+
+assert_eq "some groups missing prompt" "false" "$(all_groups_have_prompt "$TMPDIR/some_per_prompt.json")"
+
+cat > "$TMPDIR/empty_prompt_field.json" <<'EOF'
+{
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6", "prompt": "tasks/scan.md" },
+    { "count": 1, "model": "claude-sonnet-4-6", "prompt": "" }
+  ]
+}
+EOF
+
+assert_eq "empty prompt string treated as missing" "false" "$(all_groups_have_prompt "$TMPDIR/empty_prompt_field.json")"
+
+# With top-level prompt present, flag still works correctly.
+assert_eq "with top prompt, mixed" "false" "$(all_groups_have_prompt "$TMPDIR/per_prompt.json")"
+assert_eq "with top prompt, present" "true" "$(all_groups_have_prompt "$TMPDIR/all_per_prompt.json")"
+
+# Model summary jq handles missing top-level prompt gracefully.
+MODEL_SUM=$(jq -r \
+    '(.prompt // "") as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
+    [.agents[] |
+      "\(.count)x \(.model | split("/") | .[-1])" +
+      (if .context == "none" then " ctx:bare"
+       elif .context == "slim" then " ctx:slim"
+       else "" end) +
+      (if .prompt and .prompt != $dp then
+        ":" + (.prompt | split("/") | .[-1] | rtrimstr(".md") |
+          if startswith($dp_stem + "-") then .[$dp_stem | length + 1:] else . end)
+       else "" end)] | join(", ")' \
+    "$TMPDIR/all_per_prompt.json")
+assert_eq "model summary no top prompt" \
+    "1x claude-opus-4-6:scan, 1x claude-sonnet-4-6:review, 2x claude-sonnet-4-6:explore" \
+    "$MODEL_SUM"
+
+# ============================================================
+echo ""
 echo "=== 18. auth_token field (OpenRouter-style Bearer auth) ==="
 
 cat > "$TMPDIR/auth_token.json" <<'EOF'
