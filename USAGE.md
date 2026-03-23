@@ -356,15 +356,24 @@ and `lib/drivers/fake.sh` for a minimal test double.
 ### Dry-run with the fake driver
 
 Use the `fake` driver to validate setup scripts, prompt paths, and
-config without spending tokens or requiring API keys:
+config without spending tokens or requiring API keys.  Create a
+swarmfile that sets `"driver": "fake"`:
+
+```json
+{
+  "prompt": "your-prompt.md",
+  "setup": "your-setup.sh",
+  "driver": "fake",
+  "agents": [
+    { "count": 1, "model": "fake" }
+  ]
+}
+```
+
+Then run it:
 
 ```bash
-SWARM_DRIVER=fake \
-SWARM_PROMPT=your-prompt.md \
-SWARM_MODEL=fake \
-SWARM_SETUP=your-setup.sh \
-SWARM_NUM_AGENTS=1 \
-./launch.sh start --dashboard
+SWARM_CONFIG=dry-run.json ./launch.sh start --dashboard
 ```
 
 The fake driver runs the full harness loop — cloning, setup script
@@ -373,10 +382,33 @@ synthetic JSONL stream that completes instantly.  This catches
 path errors, missing dependencies, and config issues before any
 real agent run.
 
-## Cleanup
+Clean up afterwards:
 
 ```bash
-rm -rf /tmp/<project>-upstream.git
+PROJECT=$(basename $(pwd))
+docker rm -f ${PROJECT}-agent-1 2>/dev/null
+rm -rf /tmp/${PROJECT}-upstream.git
+```
+
+## Cleanup
+
+After a swarm run, the following artifacts remain on disk:
+
+| Artifact | Path |
+|----------|------|
+| Bare repo | `/tmp/<project>-upstream.git` |
+| Submodule mirrors | `/tmp/<project>-mirror-*.git` |
+| Agent containers | `<project>-agent-N` |
+| State file | `/tmp/<project>-swarm.env` |
+| Agent config | `/tmp/<project>-agents.cfg` |
+
+Remove everything for a fresh start:
+
+```bash
+PROJECT=$(basename $(pwd))
+docker rm -f $(docker ps -aq --filter "name=${PROJECT}-agent-") 2>/dev/null
+rm -rf /tmp/${PROJECT}-upstream.git /tmp/${PROJECT}-mirror-*.git
+rm -f  /tmp/${PROJECT}-swarm.env /tmp/${PROJECT}-agents.cfg
 ```
 
 ## Verify image
