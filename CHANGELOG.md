@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.1 — 2026-03-23
+
+- **Config pricing overrides driver cost.** The `pricing` map in
+  `swarm.json` now always takes precedence when present. Previously
+  it only applied when the driver reported $0 (Gemini CLI path).
+  Claude Code reports costs at Anthropic rates even when routing to
+  third-party endpoints (MiniMax, self-hosted models via litellm),
+  so third-party runs showed wildly inflated costs.
+
 ## 0.12.0 — 2026-03-19
 
 - **Push after every commit.** System prompt now instructs agents to
