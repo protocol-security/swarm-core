@@ -58,7 +58,7 @@ Per-group fields in `swarm.json` `agents` array:
 | `driver` | driver name | Agent driver override (default: top-level or `claude-code`). |
 
 Top-level fields: `prompt`, `setup`, `max_idle`, `driver`,
-`inject_git_rules`, `post_process`.
+`inject_git_rules`, `claude_code_version`, `post_process`.
 
 The top-level `prompt` is optional when every agent group specifies its
 own `prompt`.  When omitted, each group **must** provide one.
@@ -322,6 +322,16 @@ Or per agent group:
 
 Per-agent drivers inherit the top-level `driver` field, which
 defaults to `claude-code`.
+
+### Pinning Claude Code version
+
+By default the Docker image installs the latest Claude Code CLI.
+To pin a specific version, set `claude_code_version` in the
+swarmfile:
+
+```json
+{ "claude_code_version": "1.0.30" }
+```
 
 ### Writing a new driver
 

@@ -77,6 +77,7 @@ assert_contains "claude-code jq has Read" "Read" "$JQ_FILTER"
 INSTALL=$(agent_install_cmd)
 assert_contains "claude-code install has curl" "curl" "$INSTALL"
 assert_contains "claude-code install has claude.ai" "claude.ai" "$INSTALL"
+assert_contains "claude-code install supports version" "CLAUDE_CODE_VERSION" "$INSTALL"
 
 # ============================================================
 echo ""

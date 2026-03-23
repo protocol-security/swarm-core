@@ -717,6 +717,31 @@ assert_eq "no pricing section" "" \
 
 # ============================================================
 echo ""
+echo "=== 29. claude_code_version field ==="
+
+cat > "$TMPDIR/cc_pinned.json" <<'JSON'
+{
+  "prompt": "unused",
+  "claude_code_version": "1.0.30",
+  "agents": [{"count": 1, "model": "claude-opus-4-6"}]
+}
+JSON
+
+assert_eq "cc version present" "1.0.30" \
+    "$(jq -r '.claude_code_version // empty' "$TMPDIR/cc_pinned.json")"
+
+cat > "$TMPDIR/cc_no_version.json" <<'JSON'
+{
+  "prompt": "unused",
+  "agents": [{"count": 1, "model": "claude-opus-4-6"}]
+}
+JSON
+
+assert_eq "cc version absent" "" \
+    "$(jq -r '.claude_code_version // empty' "$TMPDIR/cc_no_version.json")"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
