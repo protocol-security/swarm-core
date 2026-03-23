@@ -313,9 +313,10 @@ cmd_start() {
            else "" end)] | join(", ")' \
         "$CONFIG_FILE")
     state_config_label=$(basename "$CONFIG_FILE")
+    local config_title
+    config_title=$(jq -r '.title // empty' "$CONFIG_FILE" 2>/dev/null || true)
     cat > "/tmp/${PROJECT}-swarm.env" <<ENVEOF
-SWARM_TITLE="${SWARM_TITLE:-}"
-SWARM_PROMPT="${SWARM_PROMPT}"
+SWARM_TITLE="${SWARM_TITLE:-${config_title}}"
 SWARM_CONFIG="${CONFIG_FILE}"
 SWARM_NUM_AGENTS="${NUM_AGENTS}"
 SWARM_MODEL_SUMMARY="${state_model_summary}"

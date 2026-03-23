@@ -453,6 +453,38 @@ assert_eq "all gemini explicit → 1 driver" "1" "$(detect_multi_drivers "$TMPDI
 
 # ============================================================
 echo ""
+echo "=== 11. Git info and default title ==="
+
+GIT_BRANCH_TEST=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+GIT_SHORT_HEAD_TEST=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+assert_eq "git branch detected" "true" "$([ -n "$GIT_BRANCH_TEST" ] && echo true || echo false)"
+assert_eq "git short head detected" "true" "$([ -n "$GIT_SHORT_HEAD_TEST" ] && echo true || echo false)"
+
+PROJECT_TEST=$(basename "$(git rev-parse --show-toplevel)")
+DEFAULT_TITLE_TEST="${PROJECT_TEST} (@${GIT_SHORT_HEAD_TEST})"
+assert_eq "default title format" "${PROJECT_TEST} (@${GIT_SHORT_HEAD_TEST})" "$DEFAULT_TITLE_TEST"
+
+# State file title: config title captured when no env var.
+config_title=$(jq -r '.title // empty' "$TMPDIR/tags.json")
+assert_eq "no title field → empty" "" "$config_title"
+
+cat > "$TMPDIR/titled.json" <<'EOF'
+{ "prompt": "p.md", "title": "My Fuzzer", "agents": [{ "count": 1, "model": "m" }] }
+EOF
+config_title=$(jq -r '.title // empty' "$TMPDIR/titled.json")
+assert_eq "title from config" "My Fuzzer" "$config_title"
+
+# Title priority: user env > state file > config > default.
+USER_TITLE_T="user-set"
+SWARM_TITLE_T="state-set"
+assert_eq "user title wins" "user-set" "${USER_TITLE_T:-${SWARM_TITLE_T:-${DEFAULT_TITLE_TEST}}}"
+USER_TITLE_T=""
+assert_eq "state title wins" "state-set" "${USER_TITLE_T:-${SWARM_TITLE_T:-${DEFAULT_TITLE_TEST}}}"
+SWARM_TITLE_T=""
+assert_eq "default title wins" "$DEFAULT_TITLE_TEST" "${USER_TITLE_T:-${SWARM_TITLE_T:-${DEFAULT_TITLE_TEST}}}"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

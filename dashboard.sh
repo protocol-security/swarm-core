@@ -37,6 +37,12 @@ BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
 START_TIME=$(date +%s)
 
+GIT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+GIT_SHORT_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")
+
+DEFAULT_TITLE="${PROJECT}"
+[ -n "$GIT_SHORT_HEAD" ] && DEFAULT_TITLE="${PROJECT} (@${GIT_SHORT_HEAD})"
+
 # Save user's explicit env var so it takes priority over state file.
 USER_TITLE="${SWARM_TITLE:-}"
 
@@ -48,7 +54,7 @@ if [ -f "$STATE_FILE" ]; then
     source "$STATE_FILE"
 fi
 
-DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-swarm}}"
+DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
 
 CONFIG_FILE="${SWARM_CONFIG:-}"
 if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
@@ -60,7 +66,6 @@ if [ -n "$CONFIG_FILE" ]; then
     if [ -n "$local_title" ]; then
         DASHBOARD_TITLE="$local_title"
     fi
-    SWARM_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
     MODEL_SUMMARY=$(jq -r \
         '(.prompt // "") as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
@@ -84,7 +89,6 @@ else
         NUM_AGENTS="${NUM_AGENTS:-0}"
         [ "$NUM_AGENTS" -eq 0 ] && NUM_AGENTS=3
     fi
-    SWARM_PROMPT="${SWARM_PROMPT:-}"
     SWARM_ACTIVE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
     MODEL_SUMMARY="${NUM_AGENTS}x ${SWARM_ACTIVE_MODEL}"
     CONFIG_LABEL="env vars"
@@ -294,9 +298,8 @@ draw() {
     if [ -f "$STATE_FILE" ]; then
         # shellcheck disable=SC1090
         source "$STATE_FILE"
-        DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-swarm}}"
+        DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
         NUM_AGENTS="${SWARM_NUM_AGENTS:-$NUM_AGENTS}"
-        SWARM_PROMPT="${SWARM_PROMPT:-$SWARM_PROMPT}"
         MODEL_SUMMARY="${SWARM_MODEL_SUMMARY:-$MODEL_SUMMARY}"
         CONFIG_LABEL="${SWARM_CONFIG_LABEL:-$CONFIG_LABEL}"
     fi
@@ -327,8 +330,8 @@ draw() {
     local title_len=${#DASHBOARD_TITLE}
     local right="${DIM}uptime: ${uptime_str}${RESET}"
     printf "%b%*s%b\n" "$title" $((TERM_COLS - title_len - 2 - ${#uptime_str} - 10)) "" "$right"
-    if [ -n "$SWARM_PROMPT" ]; then
-        printf " ${DIM}config: %s | prompt: %s${RESET}\n" "$CONFIG_LABEL" "$SWARM_PROMPT"
+    if [ -n "$GIT_BRANCH" ]; then
+        printf " ${DIM}config: %s | branch: %s${RESET}\n" "$CONFIG_LABEL" "$GIT_BRANCH"
     else
         printf " ${DIM}config: %s${RESET}\n" "$CONFIG_LABEL"
     fi
