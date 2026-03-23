@@ -452,7 +452,7 @@ echo "=== 13. Pricing-based cost computation ==="
 compute_cost() {
     local cost="$1" tok_in="$2" tok_out="$3" cache_rd="$4"
     local price_in="${5:-}" price_out="${6:-}" price_cached="${7:-0}"
-    if [ "$cost" = "0" ] && [ -n "$price_in" ]; then
+    if [ -n "$price_in" ]; then
         cost=$(awk "BEGIN {printf \"%.6f\",
             (${tok_in} * ${price_in} + ${tok_out} * ${price_out} + ${cache_rd} * ${price_cached}) / 1000000}")
     fi
@@ -478,8 +478,8 @@ assert_eq "flash pricing" "0.015500" \
 assert_eq "no cached pricing" "0.100000" \
     "$(compute_cost 0 100000 5000 80000 0.50 10.00)"
 
-# Driver already reports cost — pricing should NOT override.
-assert_eq "native cost preserved" "5.55" \
+# Driver reports cost but config pricing overrides it.
+assert_eq "config pricing overrides driver" "0.185400" \
     "$(compute_cost 5.55 100000 5000 80000 1.25 10.00 0.13)"
 
 # No pricing configured — cost stays 0.
