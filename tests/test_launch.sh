@@ -707,6 +707,10 @@ assert_eq "flash pricing" "0.5 3 0" \
 assert_eq "unlisted model empty" "" \
     "$(extract_pricing "$TESTS_DIR/configs/heterogeneous-kitchen-sink.json" "claude-opus-4-6")"
 
+# MiniMax-M2.7 pricing in kitchen-sink.json.
+assert_eq "minimax-m2.7 pricing" "0.3 1.2 0.06" \
+    "$(extract_pricing "$TESTS_DIR/configs/kitchen-sink.json" "MiniMax-M2.7")"
+
 # Config without pricing section — returns empty.
 assert_eq "no pricing section" "" \
     "$(extract_pricing "$TESTS_DIR/configs/gemini-only.json" "gemini-2.5-pro")"
