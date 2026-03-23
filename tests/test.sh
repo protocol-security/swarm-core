@@ -11,7 +11,7 @@ set -euo pipefail
 #   --all           Run unit tests then full integration matrix.
 #   --oauth         Integration test using OAuth token (needs Docker +
 #                   CLAUDE_CODE_OAUTH_TOKEN).
-#   --config FILE   Use a swarm.json for mixed-model testing.
+#   --config FILE   Use a swarmfile for mixed-model testing.
 #   --no-inject     Disable git rule injection; prompt includes
 #                   explicit git commands (backward compat test).
 #   -h, --help      Show this help message.
@@ -60,20 +60,18 @@ run_all_tests() {
         echo ""
     else
         local cases=(
-            "1-agent-env|1||"
-            "2-agents-env|2||"
-            "3-agents-env|3||"
+            "1-agent|1||"
+            "2-agents|2||"
+            "3-agents|3||"
             "2-agents-no-inject|2||--no-inject"
             "2-agents-sonnet|2|claude-sonnet-4-6|"
-            "2-agents-config|2|config-single|"
             "3-agents-mixed|3|config-mixed|"
-            "1-agent-effort-env|1|effort-env|"
-            "2-agents-effort-cfg|2|config-effort|"
+            "1-agent-effort|1|config-effort-single|"
+            "2-agents-effort|2|config-effort|"
             "2-agents-postprocess|2|config-pp|"
             "2-agents-context-bare|2|config-context-none|"
             "2-agents-context-slim|2|config-context-slim|"
             "2-agents-per-prompt|2|config-per-prompt|"
-            "1-agent-cli-flags|1|cli-flags|"
         )
 
         local int_total=${#cases[@]} int_idx=0
@@ -175,32 +173,20 @@ run_all_tests() {
 
 run_integration_case() {
     local label="$1" num_agents="$2" model_or_cfg="$3" extra_flag="$4"
-    local args=()
-    local env_prefix=()
+    local cfg dm
+    cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
+    dm="${SWARM_MODEL:-claude-opus-4-6}"
 
     case "$model_or_cfg" in
-        config-single)
-            local cfg
-            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
-            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
-                '{prompt: "unused", agents: [{count: '"$num_agents"', model: $m}]}' \
-                > "$cfg"
-            args+=(--config "$cfg")
-            ;;
         config-mixed)
-            local cfg
-            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
-            jq -n --arg m1 "${SWARM_MODEL:-claude-opus-4-6}" \
-                  --arg m2 "claude-sonnet-4-6" \
+            jq -n --arg m1 "$dm" --arg m2 "claude-sonnet-4-6" \
                 '{prompt: "unused", agents: [
                     {count: 2, model: $m1},
                     {count: 1, model: $m2}
                 ]}' > "$cfg"
-            args+=(--config "$cfg")
             ;;
         config-pp)
-            local cfg pp_prompt
-            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
+            local pp_prompt
             pp_prompt=$(mktemp "/tmp/${PROJECT}-pp-prompt.XXXXXX.md")
             cat > "$pp_prompt" <<'PPPROMPT'
 List all files in test-results/ and write a summary to
@@ -208,97 +194,79 @@ test-results/summary.txt with the word DONE on the last line.
 Commit and push.
 PPPROMPT
             cp "$pp_prompt" "$REPO_ROOT/.claude-swarm-pp-prompt.md"
-            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
-                  --arg pp ".claude-swarm-pp-prompt.md" \
+            jq -n --arg m "$dm" --arg pp ".claude-swarm-pp-prompt.md" \
                 '{prompt: "unused",
                   agents: [{count: '"$num_agents"', model: $m}],
                   post_process: {prompt: $pp, model: $m}}' \
                 > "$cfg"
-            args+=(--config "$cfg")
             rm -f "$pp_prompt"
             ;;
-        effort-env)
-            env_prefix=(SWARM_NUM_AGENTS="$num_agents"
-                        SWARM_EFFORT="medium")
+        config-effort-single)
+            jq -n --arg m "$dm" \
+                '{prompt: "unused", agents: [{count: '"$num_agents"', model: $m, effort: "medium"}]}' \
+                > "$cfg"
             ;;
         config-effort)
-            local cfg
-            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
-            jq -n --arg m1 "${SWARM_MODEL:-claude-opus-4-6}" \
-                  --arg m2 "claude-sonnet-4-6" \
+            jq -n --arg m1 "$dm" --arg m2 "claude-sonnet-4-6" \
                 '{prompt: "unused", agents: [
                     {count: 1, model: $m1, effort: "high"},
                     {count: 1, model: $m2, effort: "low"}
                 ]}' > "$cfg"
-            args+=(--config "$cfg")
             ;;
         config-mixed-auth)
-            local cfg
-            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
-            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
+            jq -n --arg m "$dm" \
                 '{prompt: "unused", agents: [
                     {count: 1, model: $m, auth: "apikey"},
                     {count: 1, model: $m, auth: "oauth"}
                 ]}' > "$cfg"
-            args+=(--config "$cfg")
             ;;
         config-context-none)
-            local cfg
-            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
-            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
+            jq -n --arg m "$dm" \
                 '{prompt: "unused", agents: [
                     {count: 1, model: $m},
                     {count: 1, model: $m, context: "none"}
                 ]}' > "$cfg"
-            args+=(--config "$cfg")
             ;;
         config-context-slim)
-            local cfg
-            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
-            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
+            jq -n --arg m "$dm" \
                 '{prompt: "unused", agents: [
                     {count: 1, model: $m},
                     {count: 1, model: $m, context: "slim"}
                 ]}' > "$cfg"
-            args+=(--config "$cfg")
             ;;
         config-per-prompt)
-            local cfg alt_prompt
-            cfg=$(mktemp "/tmp/${PROJECT}-inttest.XXXXXX.json")
-            alt_prompt=".claude-swarm-smoke-alt.md"
-            jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
-                --arg ap "$alt_prompt" \
+            jq -n --arg m "$dm" \
+                --arg ap ".claude-swarm-smoke-alt.md" \
                 '{prompt: "unused", agents: [
                     {count: 1, model: $m},
                     {count: 1, model: $m, prompt: $ap}
                 ]}' > "$cfg"
-            args+=(--config "$cfg")
-            ;;
-        cli-flags)
-            args+=(-- --model "${SWARM_MODEL:-claude-opus-4-6}" --agents "$num_agents")
             ;;
         "")
-            env_prefix=(SWARM_NUM_AGENTS="$num_agents")
+            jq -n --arg m "$dm" \
+                '{prompt: "unused", agents: [{count: '"$num_agents"', model: $m}]}' \
+                > "$cfg"
             ;;
         *)
-            env_prefix=(SWARM_NUM_AGENTS="$num_agents"
-                        SWARM_MODEL="$model_or_cfg")
+            jq -n --arg m "$model_or_cfg" \
+                '{prompt: "unused", agents: [{count: '"$num_agents"', model: $m}]}' \
+                > "$cfg"
             ;;
     esac
 
+    local args=(--config "$cfg")
     if [ -n "$extra_flag" ]; then
         # shellcheck disable=SC2206
         args+=($extra_flag)
     fi
 
     local rc=0
-    env "${env_prefix[@]+"${env_prefix[@]}"}" \
-        ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
+        CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
         SWARM_TITLE="$label" \
         TIMEOUT="${TIMEOUT}" \
-        "$TESTS_DIR/test.sh" "${args[@]+"${args[@]}"}" || rc=$?
+        "$TESTS_DIR/test.sh" "${args[@]}" || rc=$?
 
-    # Clean up temp configs and prompt files.
     rm -f "/tmp/${PROJECT}-inttest."*.json
     rm -f "$REPO_ROOT/.claude-swarm-pp-prompt.md"
 
@@ -338,13 +306,17 @@ cmd_oauth() {
         exit 1
     fi
 
-    local rc=0
+    local cfg rc=0
+    cfg=$(mktemp "/tmp/${PROJECT}-oauth.XXXXXX.json")
+    jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
+        '{prompt: "unused", agents: [{count: 1, model: $m, auth: "oauth"}]}' \
+        > "$cfg"
     env ANTHROPIC_API_KEY="" \
         CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN}" \
-        SWARM_NUM_AGENTS="1" \
         SWARM_TITLE="${SWARM_TITLE:-1-agent-oauth}" \
         TIMEOUT="${TIMEOUT}" \
-        "$TESTS_DIR/test.sh" || rc=$?
+        "$TESTS_DIR/test.sh" --config "$cfg" || rc=$?
+    rm -f "$cfg"
     return "$rc"
 }
 
@@ -360,16 +332,15 @@ Options:
   --all             Unit tests, then full integration matrix.
   --oauth           Integration test using CLAUDE_CODE_OAUTH_TOKEN
                     (needs Docker + OAuth token).
-  --config FILE     Use a swarm.json for mixed-model testing.
+  --config FILE     Use a swarmfile for mixed-model testing.
   --no-inject       Explicit git commands in prompt (backward compat test).
-  -- FLAGS          Forward FLAGS to launch.sh start (e.g. --model, --agents).
   -h, --help        Show this help message.
 
 Environment:
   ANTHROPIC_API_KEY        Required for integration tests.
   CLAUDE_CODE_OAUTH_TOKEN  Required for --oauth tests.
   TIMEOUT                  Seconds to wait for agents (default: 600).
-  SWARM_MODEL              Model for env-var integration cases.
+  SWARM_MODEL              Override default model (default: claude-opus-4-6).
 HELP
 }
 
@@ -378,7 +349,7 @@ NO_INJECT=false
 RUN_ALL=false
 RUN_UNIT=false
 RUN_OAUTH=false
-LAUNCH_FLAGS=()
+_AUTO_CONFIG=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --config)
@@ -393,7 +364,6 @@ while [ $# -gt 0 ]; do
         --unit) RUN_UNIT=true; shift ;;
         --oauth) RUN_OAUTH=true; shift ;;
         -h|--help) cmd_help; exit 0 ;;
-        --) shift; LAUNCH_FLAGS=("$@"); break ;;
         *) echo "Unknown option: $1 (try --help)" >&2; exit 1 ;;
     esac
 done
@@ -418,19 +388,14 @@ if [ -n "$CONFIG_FILE" ] && [ ! -f "$CONFIG_FILE" ]; then
     exit 1
 fi
 
-if [ -n "$CONFIG_FILE" ]; then
-    NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
-elif [ ${#LAUNCH_FLAGS[@]} -gt 0 ]; then
-    NUM_AGENTS=2
-    for ((i=0; i<${#LAUNCH_FLAGS[@]}; i++)); do
-        if [ "${LAUNCH_FLAGS[i]}" = "--agents" ]; then
-            NUM_AGENTS="${LAUNCH_FLAGS[i+1]}"
-            break
-        fi
-    done
-else
-    NUM_AGENTS="${SWARM_NUM_AGENTS:-2}"
+if [ -z "$CONFIG_FILE" ]; then
+    CONFIG_FILE=$(mktemp "/tmp/${PROJECT}-test-default.XXXXXX.json")
+    _AUTO_CONFIG="$CONFIG_FILE"
+    jq -n --arg m "${SWARM_MODEL:-claude-opus-4-6}" \
+        '{prompt: "unused", agents: [{count: '"${SWARM_NUM_AGENTS:-2}"', model: $m}]}' \
+        > "$CONFIG_FILE"
 fi
+NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
 
 # Two prompt variants: default relies on injected git rules,
 # --no-inject uses explicit git commands for backward compat.
@@ -598,45 +563,30 @@ write_prompt "$REPO_ROOT"
 ALT_PROMPT_FILE=".claude-swarm-smoke-alt.md"
 cp "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$ALT_PROMPT_FILE"
 
-TEMP_CONFIG=""
-if [ -n "$CONFIG_FILE" ]; then
-    TEMP_CONFIG=$(mktemp "/tmp/${PROJECT}-test-config.XXXXXX.json")
-    if $NO_INJECT; then
-        jq --arg p "$PROMPT_FILE" --arg s "$SETUP_FILE" \
-            '.prompt = $p | .setup = $s | .inject_git_rules = false' \
-            "$CONFIG_FILE" > "$TEMP_CONFIG"
-    else
-        jq --arg p "$PROMPT_FILE" --arg s "$SETUP_FILE" \
-            '.prompt = $p | .setup = $s' \
-            "$CONFIG_FILE" > "$TEMP_CONFIG"
-    fi
+TEMP_CONFIG=$(mktemp "/tmp/${PROJECT}-test-config.XXXXXX.json")
+if $NO_INJECT; then
+    jq --arg p "$PROMPT_FILE" --arg s "$SETUP_FILE" \
+        '.prompt = $p | .setup = $s | .inject_git_rules = false' \
+        "$CONFIG_FILE" > "$TEMP_CONFIG"
+else
+    jq --arg p "$PROMPT_FILE" --arg s "$SETUP_FILE" \
+        '.prompt = $p | .setup = $s' \
+        "$CONFIG_FILE" > "$TEMP_CONFIG"
 fi
 
 cleanup() {
     echo ""
     echo "--- Cleaning up ---"
     cd "$REPO_ROOT"
-    if [ -n "$TEMP_CONFIG" ]; then
-        SWARM_CONFIG="$TEMP_CONFIG" \
-            "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
-        rm -f "$TEMP_CONFIG"
-    else
-        SWARM_PROMPT="$PROMPT_FILE" \
-            SWARM_SETUP="$SETUP_FILE" \
-            ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
-            CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
-            SWARM_NUM_AGENTS="${NUM_AGENTS}" \
-            "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
-    fi
+    SWARM_CONFIG="$TEMP_CONFIG" \
+        "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
+    rm -f "$TEMP_CONFIG" "$_AUTO_CONFIG"
     rm -rf "$REVIEW_DIR" "$INJECT_DIR"
     rm_docker_dir "/tmp/${PROJECT}-upstream.git"
     rm -f "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$SETUP_FILE" \
         "$REPO_ROOT/$ALT_PROMPT_FILE"
 }
 trap cleanup EXIT
-
-INJECT_ENV="true"
-if $NO_INJECT; then INJECT_ENV="false"; fi
 
 echo "=== Smoke test: ${NUM_AGENTS} agents ==="
 if $NO_INJECT; then
@@ -646,26 +596,10 @@ else
 fi
 echo ""
 
-if [ -n "$TEMP_CONFIG" ]; then
-    SWARM_CONFIG="$TEMP_CONFIG" \
-        ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
-        CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
-        "$SWARM_DIR/launch.sh" start
-elif [ ${#LAUNCH_FLAGS[@]} -gt 0 ]; then
+SWARM_CONFIG="$TEMP_CONFIG" \
     ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
-        CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
-        "$SWARM_DIR/launch.sh" start \
-        --prompt "$PROMPT_FILE" --setup "$SETUP_FILE" \
-        "${LAUNCH_FLAGS[@]}"
-else
-    SWARM_PROMPT="$PROMPT_FILE" \
-        SWARM_SETUP="$SETUP_FILE" \
-        ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
-        CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
-        SWARM_NUM_AGENTS="${NUM_AGENTS}" \
-        SWARM_INJECT_GIT_RULES="${INJECT_ENV}" \
-        "$SWARM_DIR/launch.sh" start
-fi
+    CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
+    "$SWARM_DIR/launch.sh" start
 
 # Inject prompt + setup into bare repo via a temp clone.
 # Agents fetch at the start of each session so they pick this up

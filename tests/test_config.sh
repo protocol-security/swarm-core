@@ -136,35 +136,6 @@ assert_eq "prompt is empty" "" "$(parse_prompt "$TMPDIR/noprompt.json")"
 
 # ============================================================
 echo ""
-echo "=== 4. Env-var fallback (synthetic TSV) ==="
-
-CLAUDE_MODEL="claude-opus-4-6"
-EFFORT_LEVEL="medium"
-NUM_AGENTS=3
-: > "$TMPDIR/env-agents.cfg"
-for _i in $(seq 1 "$NUM_AGENTS"); do
-    printf '%s|||%s||||\n' "$CLAUDE_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
-done
-
-assert_eq "line count" "3" "$(wc -l < "$TMPDIR/env-agents.cfg" | tr -d ' ')"
-
-AGENT_IDX=0
-while IFS='|' read -r m u k e a c p t g d; do
-    AGENT_IDX=$((AGENT_IDX + 1))
-done < "$TMPDIR/env-agents.cfg"
-assert_eq "agents iterated" "3" "$AGENT_IDX"
-
-IFS='|' read -r m u k e a c p t g d < "$TMPDIR/env-agents.cfg"
-assert_eq "env model"      "claude-opus-4-6" "$m"
-assert_eq "env base_url"   ""               "$u"
-assert_eq "env api_key"    ""               "$k"
-assert_eq "env effort"     "medium"         "$e"
-assert_eq "env auth"       ""               "$a"
-assert_eq "env context"    ""               "$c"
-assert_eq "env auth_token" ""               "$t"
-
-# ============================================================
-echo ""
 echo "=== 5. Single agent ==="
 
 cat > "$TMPDIR/single.json" <<'EOF'

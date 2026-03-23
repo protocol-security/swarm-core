@@ -25,10 +25,11 @@ Add as a submodule:
 git submodule add https://github.com/moodmosaic/claude-swarm.git tools/claude-swarm
 ```
 
-Or clone standalone and run from your project directory:
+Or clone standalone and run from your project directory
+(with a `swarm.json` in the project root):
 
 ```bash
-./path/to/claude-swarm/launch.sh start --prompt tasks/task.md
+./path/to/claude-swarm/launch.sh start --dashboard
 ```
 
 ## How it works
@@ -62,16 +63,15 @@ see the changes on the next fetch.
 # Interactive setup (generates swarm.json).
 ./setup.sh
 
-# Or launch directly.
-ANTHROPIC_API_KEY="sk-ant-..." \
-./launch.sh start --prompt tasks/task.md --agents 3
+# Or create a swarmfile and launch.
+SWARM_CONFIG=swarm.json ./launch.sh start --dashboard
 
-# Monitor.
-./dashboard.sh
+# Or place swarm.json in your repo root and launch.
+./launch.sh start --dashboard
 ```
 
-See [USAGE.md](USAGE.md) for all commands, CLI flags,
-dashboard keys, and testing.
+See [USAGE.md](USAGE.md) for all commands, dashboard keys,
+and testing.
 
 ## Configuration
 
@@ -134,7 +134,5 @@ non-Claude agents (Gemini CLI, Codex CLI, etc.).  Today only
 additional drivers are added.
 
 To add a new agent, create `lib/drivers/<name>.sh` implementing
-the interface above.  Then set `"driver": "<name>"` in your
-config or `SWARM_DRIVER=<name>` in the environment.
-
-Priority: CLI flags > config file > environment variables.
+the interface above.  Then set `"driver": "<name>"` in the
+swarmfile.
