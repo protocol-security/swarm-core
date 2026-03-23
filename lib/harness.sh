@@ -276,7 +276,7 @@ while true; do
     # Compute cost from token counts when the driver doesn't report
     # it natively (e.g. Gemini CLI).  Pricing is $/M tokens, passed
     # via env vars from launch.sh (sourced from config "pricing" map).
-    if [ "$cost" = "0" ] && [ -n "${SWARM_PRICE_INPUT:-}" ]; then
+    if [ -n "${SWARM_PRICE_INPUT:-}" ]; then
         cost=$(awk "BEGIN {printf \"%.6f\",
             (${tok_in} * ${SWARM_PRICE_INPUT} + ${tok_out} * ${SWARM_PRICE_OUTPUT:-0} + ${cache_rd} * ${SWARM_PRICE_CACHED:-0}) / 1000000}")
     fi
