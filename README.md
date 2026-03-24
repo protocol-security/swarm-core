@@ -126,12 +126,10 @@ Each driver implements a fixed role interface:
 | `agent_detect_fatal` | Detect fatal errors from log + exit code |
 | `agent_activity_jq` | jq filter for activity display |
 
-Built-in drivers: `claude-code` (default), `fake` (test double).
+Built-in drivers: `claude-code` (default), `gemini-cli`,
+`fake` (test double).
 
-The driver abstraction is designed to eventually support
-non-Claude agents (Gemini CLI, Codex CLI, etc.).  Today only
-`claude-code` is production-ready; the interface may evolve as
-additional drivers are added.
+The interface may evolve as additional drivers are added.
 
 To add a new agent, create `lib/drivers/<name>.sh` implementing
 the interface above.  Then set `"driver": "<name>"` in the

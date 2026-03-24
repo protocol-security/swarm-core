@@ -58,7 +58,8 @@ Per-group fields in `swarm.json` `agents` array:
 | `driver` | driver name | Agent driver override (default: top-level or `claude-code`). |
 
 Top-level fields: `prompt`, `setup`, `max_idle`, `driver`,
-`inject_git_rules`, `claude_code_version`, `post_process`.
+`inject_git_rules`, `claude_code_version`, `title`, `pricing`,
+`post_process`.
 
 The top-level `prompt` is optional when every agent group specifies its
 own `prompt`.  When omitted, each group **must** provide one.
@@ -301,6 +302,7 @@ Built-in drivers:
 | Driver | CLI | Default |
 |--------|-----|---------|
 | `claude-code` | `claude` | Yes |
+| `gemini-cli` | `gemini` | |
 | `fake` | (none) | Test double for unit testing |
 
 Set the driver globally in `swarm.json`:
