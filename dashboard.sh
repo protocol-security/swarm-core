@@ -536,6 +536,10 @@ while true; do
                 leave_alt_screen
                 echo "--- Logs for ${IMAGE_NAME}-${key} (Ctrl-C to return) ---"
                 docker logs -f "${IMAGE_NAME}-${key}" 2>&1 || true
+                if ! docker inspect -f '{{.State.Running}}' "${IMAGE_NAME}-${key}" 2>/dev/null | grep -q true; then
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
+                fi
                 enter_alt_screen
                 ;;
             h|H)
