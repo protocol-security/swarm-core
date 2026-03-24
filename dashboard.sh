@@ -302,6 +302,26 @@ draw() {
         NUM_AGENTS="${SWARM_NUM_AGENTS:-$NUM_AGENTS}"
         MODEL_SUMMARY="${SWARM_MODEL_SUMMARY:-$MODEL_SUMMARY}"
         CONFIG_LABEL="${SWARM_CONFIG_LABEL:-$CONFIG_LABEL}"
+
+        local _new_cfg="${SWARM_CONFIG:-}"
+        if [ -n "$_new_cfg" ] && [ "$_new_cfg" != "$CONFIG_FILE" ] && [ -f "$_new_cfg" ]; then
+            CONFIG_FILE="$_new_cfg"
+            local _nd
+            _nd=$(jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | unique | length' \
+                "$CONFIG_FILE" 2>/dev/null || echo 1)
+            HAS_MULTI_DRIVERS=false
+            [ "$_nd" -gt 1 ] && HAS_MULTI_DRIVERS=true
+
+            local _tw
+            _tw=$(jq -r '[.agents[] | .tag // empty] | if length == 0 then 0
+                else map(length) | max end' "$CONFIG_FILE" 2>/dev/null || echo 0)
+            HAS_TAGS=false
+            if [ "$_tw" -gt 0 ]; then
+                HAS_TAGS=true
+                TAG_COL_W=$((_tw + 2))
+                [ "$TAG_COL_W" -lt 6 ] && TAG_COL_W=6
+            fi
+        fi
     fi
 
     local now elapsed uptime_str
