@@ -37,6 +37,12 @@ BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
 START_TIME=$(date +%s)
 
+GIT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+GIT_SHORT_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")
+
+DEFAULT_TITLE="${PROJECT}"
+[ -n "$GIT_SHORT_HEAD" ] && DEFAULT_TITLE="${PROJECT} (@${GIT_SHORT_HEAD})"
+
 # Save user's explicit env var so it takes priority over state file.
 USER_TITLE="${SWARM_TITLE:-}"
 
@@ -48,7 +54,7 @@ if [ -f "$STATE_FILE" ]; then
     source "$STATE_FILE"
 fi
 
-DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-swarm}}"
+DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
 
 CONFIG_FILE="${SWARM_CONFIG:-}"
 if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
@@ -60,10 +66,9 @@ if [ -n "$CONFIG_FILE" ]; then
     if [ -n "$local_title" ]; then
         DASHBOARD_TITLE="$local_title"
     fi
-    SWARM_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
     MODEL_SUMMARY=$(jq -r \
-        '.prompt as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
+        '(.prompt // "") as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
         [.agents[] |
           "\(.count)x \(.model | split("/") | .[-1])" +
           (if .context == "none" then " ctx:bare"
@@ -84,7 +89,6 @@ else
         NUM_AGENTS="${NUM_AGENTS:-0}"
         [ "$NUM_AGENTS" -eq 0 ] && NUM_AGENTS=3
     fi
-    SWARM_PROMPT="${SWARM_PROMPT:-}"
     SWARM_ACTIVE_MODEL="${SWARM_MODEL:-claude-opus-4-6}"
     MODEL_SUMMARY="${NUM_AGENTS}x ${SWARM_ACTIVE_MODEL}"
     CONFIG_LABEL="env vars"
@@ -265,8 +269,8 @@ emit_row() {
     printf "  ${open}%-3s %-${MODEL_COL_W}s" "$id_str" "$model_str"
     if $SHOW_DRIVER; then printf " %-${DRV_COL_W}s" "$driver_str"; fi
     if $SHOW_AUTH;  then printf " %-6s" "$auth_str"; fi
-    printf " %b%-8s%b %7s" "$status_color" "$status_str" "$RESET" "$cost_str"
-    if $SHOW_INOUT; then printf " %10s" "$inout_str"; fi
+    printf " %b%-14s%b %7s" "$status_color" "$status_str" "$RESET" "$cost_str"
+    if $SHOW_INOUT; then printf " %13s" "$inout_str"; fi
     if $SHOW_CACHE; then printf " %7s" "$cache_str"; fi
     if $SHOW_TURNS; then printf " %6s" "$turns_str"; fi
     if $SHOW_TPS;   then printf " %6s" "$tps_str"; fi
@@ -279,8 +283,8 @@ emit_header() {
     printf "  ${BOLD}%-3s %-${MODEL_COL_W}s" "#" "Model"
     if $SHOW_DRIVER; then printf " %-${DRV_COL_W}s" "Driver"; fi
     if $SHOW_AUTH;  then printf " %-6s" "Auth"; fi
-    printf " %-8s %7s" "Status" "Cost"
-    if $SHOW_INOUT; then printf " %10s" "In/Out"; fi
+    printf " %-14s %7s" "Status" "Cost"
+    if $SHOW_INOUT; then printf " %13s" "In/Out"; fi
     if $SHOW_CACHE; then printf " %7s" "Cache"; fi
     if $SHOW_TURNS; then printf " %6s" "Turns"; fi
     if $SHOW_TPS;   then printf " %6s" "Tok/s"; fi
@@ -294,11 +298,30 @@ draw() {
     if [ -f "$STATE_FILE" ]; then
         # shellcheck disable=SC1090
         source "$STATE_FILE"
-        DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-swarm}}"
+        DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
         NUM_AGENTS="${SWARM_NUM_AGENTS:-$NUM_AGENTS}"
-        SWARM_PROMPT="${SWARM_PROMPT:-$SWARM_PROMPT}"
         MODEL_SUMMARY="${SWARM_MODEL_SUMMARY:-$MODEL_SUMMARY}"
         CONFIG_LABEL="${SWARM_CONFIG_LABEL:-$CONFIG_LABEL}"
+
+        local _new_cfg="${SWARM_CONFIG:-}"
+        if [ -n "$_new_cfg" ] && [ "$_new_cfg" != "$CONFIG_FILE" ] && [ -f "$_new_cfg" ]; then
+            CONFIG_FILE="$_new_cfg"
+            local _nd
+            _nd=$(jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | unique | length' \
+                "$CONFIG_FILE" 2>/dev/null || echo 1)
+            HAS_MULTI_DRIVERS=false
+            [ "$_nd" -gt 1 ] && HAS_MULTI_DRIVERS=true
+
+            local _tw
+            _tw=$(jq -r '[.agents[] | .tag // empty] | if length == 0 then 0
+                else map(length) | max end' "$CONFIG_FILE" 2>/dev/null || echo 0)
+            HAS_TAGS=false
+            if [ "$_tw" -gt 0 ]; then
+                HAS_TAGS=true
+                TAG_COL_W=$((_tw + 2))
+                [ "$TAG_COL_W" -lt 6 ] && TAG_COL_W=6
+            fi
+        fi
     fi
 
     local now elapsed uptime_str
@@ -307,12 +330,12 @@ draw() {
     uptime_str=$(format_duration "$elapsed")
 
     # Adaptive column visibility based on terminal width.
-    # Base: # (3) + Model (MW+1) + Status (9) + Cost (8) + Time (9) + indent (2).
-    local base_w=$((MODEL_COL_W + 32))
+    # Base: # (3) + Model (MW+1) + Status (15) + Cost (8) + Time (9) + indent (2).
+    local base_w=$((MODEL_COL_W + 38))
     SHOW_INOUT=false; SHOW_AUTH=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false; SHOW_DRIVER=false
     local avail=$((TERM_COLS - base_w))
     if $HAS_MULTI_DRIVERS && [ "$avail" -ge $((DRV_COL_W + 1)) ]; then SHOW_DRIVER=true; avail=$((avail - DRV_COL_W - 1)); fi
-    if [ "$avail" -ge 11 ]; then SHOW_INOUT=true; avail=$((avail - 11)); fi
+    if [ "$avail" -ge 14 ]; then SHOW_INOUT=true; avail=$((avail - 14)); fi
     if [ "$avail" -ge 7 ];  then SHOW_AUTH=true;  avail=$((avail - 7)); fi
     if [ "$avail" -ge 7 ];  then SHOW_TURNS=true; avail=$((avail - 7)); fi
     if [ "$avail" -ge 7 ];  then SHOW_TPS=true;   avail=$((avail - 7)); fi
@@ -327,7 +350,11 @@ draw() {
     local title_len=${#DASHBOARD_TITLE}
     local right="${DIM}uptime: ${uptime_str}${RESET}"
     printf "%b%*s%b\n" "$title" $((TERM_COLS - title_len - 2 - ${#uptime_str} - 10)) "" "$right"
-    printf " ${DIM}config: %s | prompt: %s${RESET}\n" "$CONFIG_LABEL" "$SWARM_PROMPT"
+    if [ -n "$GIT_BRANCH" ]; then
+        printf " ${DIM}config: %s | branch: %s${RESET}\n" "$CONFIG_LABEL" "$GIT_BRANCH"
+    else
+        printf " ${DIM}config: %s${RESET}\n" "$CONFIG_LABEL"
+    fi
     printf " ${DIM}agents: %s — %s${RESET}\n" "$NUM_AGENTS" "$MODEL_SUMMARY"
     echo ""
 
@@ -529,6 +556,10 @@ while true; do
                 leave_alt_screen
                 echo "--- Logs for ${IMAGE_NAME}-${key} (Ctrl-C to return) ---"
                 docker logs -f "${IMAGE_NAME}-${key}" 2>&1 || true
+                if ! docker inspect -f '{{.State.Running}}' "${IMAGE_NAME}-${key}" 2>/dev/null | grep -q true; then
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
+                fi
                 enter_alt_screen
                 ;;
             h|H)

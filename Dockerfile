@@ -22,9 +22,10 @@ USER agent
 ARG SWARM_AGENTS=claude-code
 
 # --- Claude Code CLI (default) ---
+ARG CLAUDE_CODE_VERSION=
 RUN if echo ",$SWARM_AGENTS," | grep -q ",claude-code,"; then \
         curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
-        && bash /tmp/claude-install.sh \
+        && bash /tmp/claude-install.sh ${CLAUDE_CODE_VERSION:+$CLAUDE_CODE_VERSION} \
         && rm /tmp/claude-install.sh; \
     fi
 ENV PATH="/home/agent/.local/bin:${PATH}"

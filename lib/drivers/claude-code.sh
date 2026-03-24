@@ -167,10 +167,11 @@ agent_docker_auth() {
 }
 
 # Dockerfile fragment to install this agent's CLI.
+# CLAUDE_CODE_VERSION is a Docker build-arg; empty = latest.
 agent_install_cmd() {
     cat <<'INSTALL'
 RUN curl -fsSL https://claude.ai/install.sh -o /tmp/claude-install.sh \
-    && bash /tmp/claude-install.sh \
+    && bash /tmp/claude-install.sh ${CLAUDE_CODE_VERSION:+$CLAUDE_CODE_VERSION} \
     && rm /tmp/claude-install.sh
 ENV PATH="/home/agent/.local/bin:${PATH}"
 INSTALL

@@ -1,5 +1,8 @@
 {
   "prompt": "unused",
+  "pricing": {
+    "MiniMax-M2.7": {"input": 0.30, "output": 1.20, "cached": 0.06}
+  },
   "agents": [
     {
       "count": 1,
@@ -39,7 +42,7 @@
     },
     {
       "count": 1,
-      "model": "MiniMax-M2.5",
+      "model": "MiniMax-M2.7",
       "base_url": "https://api.minimax.io/anthropic",
       "api_key": "$MINIMAX_API_KEY",
       "tag": "minimax"

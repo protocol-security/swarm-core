@@ -6,66 +6,38 @@
 # Interactive setup (generates swarm.json).
 ./setup.sh
 
-# Or configure via CLI flags.
-ANTHROPIC_API_KEY="sk-ant-..." \
-./launch.sh start --prompt path/to/prompt.md
-
-# Or configure via environment.
-ANTHROPIC_API_KEY="sk-ant-..." \
-SWARM_PROMPT="path/to/prompt.md" \
-./launch.sh start
+# Or create a swarmfile manually and launch.
+SWARM_CONFIG=swarm.json ./launch.sh start --dashboard
 ```
+
+All configuration lives in the swarmfile (JSON).  Place a
+`swarm.json` in your repo root or point to it with `SWARM_CONFIG`.
 
 ## Commands
 
 ```bash
-./launch.sh start [OPTIONS]    # Launch agents.
-./launch.sh stop               # Stop all agents.
-./launch.sh status             # Show containers.
-./launch.sh logs N             # Tail agent N logs.
-./launch.sh wait               # Block, harvest, post-process.
-./launch.sh post-process       # Run post-process agent.
+./launch.sh start [--dashboard]   # Launch agents.
+./launch.sh stop                  # Stop all agents.
+./launch.sh status                # Show containers.
+./launch.sh logs N                # Tail agent N logs.
+./launch.sh wait                  # Block, harvest, post-process.
+./launch.sh post-process          # Run post-process agent.
 ```
-
-Start options (override env vars):
-
-```
---prompt FILE           Prompt file path.
---model MODEL           Model name (default: claude-opus-4-6).
---agents N              Agent count (default: 3; conflicts with config groups).
---max-idle N            Idle sessions before exit (default: 3).
---effort LEVEL          Reasoning effort: low, medium, high.
---setup SCRIPT          Setup script path.
---no-inject-git-rules   Disable git coordination rules.
---dashboard             Open the TUI dashboard after launch.
-```
-
-Priority: CLI flags > config file > environment variables.
-Credentials stay as env vars (not in shell history).
 
 ## Environment variables
+
+Credentials stay as env vars (not in shell history).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | | API key (or use `CLAUDE_CODE_OAUTH_TOKEN`). |
 | `CLAUDE_CODE_OAUTH_TOKEN` | | OAuth token via `claude setup-token`. |
-| `SWARM_PROMPT` | (required) | Prompt file path. |
-| `SWARM_CONFIG` | | Config file path. |
-| `SWARM_SETUP` | | Setup script path. |
-| `SWARM_MODEL` | `claude-opus-4-6` | Model. |
-| `SWARM_NUM_AGENTS` | `3` | Container count. |
-| `SWARM_MAX_IDLE` | `3` | Idle sessions before exit. |
-| `SWARM_EFFORT` | | Reasoning effort. |
-| `SWARM_INJECT_GIT_RULES` | `true` | Inject git rules. |
-| `SWARM_GIT_USER_NAME` | `swarm-agent` | Git author name. |
-| `SWARM_GIT_USER_EMAIL` | `agent@swarm.local` | Git email. |
-| `ANTHROPIC_BASE_URL` | | Override API URL. |
-| `ANTHROPIC_AUTH_TOKEN` | | Override auth token. |
-| `SWARM_DRIVER` | `claude-code` | Agent driver (see Drivers). |
+| `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
+| `SWARM_TITLE` | | Dashboard title override. |
 
-Any Anthropic-compatible endpoint works globally via
-`ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY`, or per-group
-via `base_url`/`api_key` in `swarm.json`.
+Per-group credentials (`api_key`, `auth_token`, `base_url`)
+are set in the swarmfile.  Use `$VAR` references to pull
+values from the host environment without hardcoding secrets.
 
 ## Config file fields
 
@@ -86,7 +58,11 @@ Per-group fields in `swarm.json` `agents` array:
 | `driver` | driver name | Agent driver override (default: top-level or `claude-code`). |
 
 Top-level fields: `prompt`, `setup`, `max_idle`, `driver`,
-`inject_git_rules`, `post_process`.
+`inject_git_rules`, `claude_code_version`, `title`, `pricing`,
+`post_process`.
+
+The top-level `prompt` is optional when every agent group specifies its
+own `prompt`.  When omitted, each group **must** provide one.
 
 ## Dashboard
 
@@ -136,35 +112,13 @@ The timestamp and agent ID are colored in ANSI yellow
 ./tests/test.sh --all                # Full matrix.
 ./tests/test.sh --config swarm.json  # Custom config.
 ./tests/test.sh --no-inject          # Explicit git prompt.
-./tests/test.sh -- --model m --agents 2  # CLI flags.
 ```
 
 Flags combine: `./tests/test.sh --config f.json --no-inject`.
-Use `--` to forward flags to `launch.sh start` (e.g. `--model`,
-`--agents`) instead of using env vars or a config file.
 
 The test harness uses its own built-in prompt (counting +
 reasoning) regardless of config. The reasoning step exercises
 adaptive thinking at different effort levels.
-
-Integration matrix (`--all`):
-
-| Case | Agents | Notes |
-|------|--------|-------|
-| `1-agent-env` | 1 | |
-| `2-agents-env` | 2 | |
-| `3-agents-env` | 3 | |
-| `2-agents-no-inject` | 2 | `--no-inject` |
-| `2-agents-sonnet` | 2 | sonnet model |
-| `2-agents-config` | 2 | swarm.json |
-| `3-agents-mixed` | 3 | opus + sonnet |
-| `1-agent-effort-env` | 1 | effort via env |
-| `2-agents-effort-cfg` | 2 | effort via config |
-| `2-agents-postprocess` | 2 | + post-process |
-| `2-agents-context-bare` | 2 | 1 full + 1 bare |
-| `2-agents-context-slim` | 2 | 1 full + 1 slim |
-| `2-agents-per-prompt` | 2 | per-group prompt override |
-| `1-agent-cli-flags` | 1 | CLI flags via `--` |
 
 Unit tests (no Docker or API key):
 
@@ -247,10 +201,24 @@ Each agent group can run a different prompt file:
 }
 ```
 
-Groups without `prompt` inherit the top-level value. Combined
-with context modes, this enables divergent exploration: hunting
-agents run one prompt with full skills, a reconciliation agent
-runs a different prompt to validate and normalize findings.
+Groups without `prompt` inherit the top-level value.  When every
+group specifies its own prompt, the top-level `prompt` can be
+omitted entirely:
+
+```json
+{
+  "agents": [
+    { "count": 2, "model": "claude-opus-4-6",
+      "prompt": "tasks/hunt.md" },
+    { "count": 1, "model": "claude-sonnet-4-6",
+      "prompt": "tasks/review.md" }
+  ]
+}
+```
+
+Combined with context modes, this enables divergent exploration:
+hunting agents run one prompt with full skills, a reconciliation
+agent runs a different prompt to validate and normalize findings.
 
 ## Auth modes
 
@@ -290,8 +258,7 @@ Agents receive git rules (commit/push/rebase) via a system
 prompt appendix. Your task prompt only needs to describe the
 work.
 
-Disable with `"inject_git_rules": false` in `swarm.json` or
-`SWARM_INJECT_GIT_RULES=false`.
+Disable with `"inject_git_rules": false` in the swarmfile.
 
 ## Cost tracking
 
@@ -335,6 +302,7 @@ Built-in drivers:
 | Driver | CLI | Default |
 |--------|-----|---------|
 | `claude-code` | `claude` | Yes |
+| `gemini-cli` | `gemini` | |
 | `fake` | (none) | Test double for unit testing |
 
 Set the driver globally in `swarm.json`:
@@ -354,10 +322,18 @@ Or per agent group:
 }
 ```
 
-Or via environment: `SWARM_DRIVER=claude-code`.
-
 Per-agent drivers inherit the top-level `driver` field, which
 defaults to `claude-code`.
+
+### Pinning Claude Code version
+
+By default the Docker image installs the latest Claude Code CLI.
+To pin a specific version, set `claude_code_version` in the
+swarmfile:
+
+```json
+{ "claude_code_version": "1.0.30" }
+```
 
 ### Writing a new driver
 
@@ -382,15 +358,24 @@ and `lib/drivers/fake.sh` for a minimal test double.
 ### Dry-run with the fake driver
 
 Use the `fake` driver to validate setup scripts, prompt paths, and
-config without spending tokens or requiring API keys:
+config without spending tokens or requiring API keys.  Create a
+swarmfile that sets `"driver": "fake"`:
+
+```json
+{
+  "prompt": "your-prompt.md",
+  "setup": "your-setup.sh",
+  "driver": "fake",
+  "agents": [
+    { "count": 1, "model": "fake" }
+  ]
+}
+```
+
+Then run it:
 
 ```bash
-SWARM_DRIVER=fake \
-SWARM_PROMPT=your-prompt.md \
-SWARM_MODEL=fake \
-SWARM_SETUP=your-setup.sh \
-SWARM_NUM_AGENTS=1 \
-./launch.sh start --dashboard
+SWARM_CONFIG=dry-run.json ./launch.sh start --dashboard
 ```
 
 The fake driver runs the full harness loop — cloning, setup script
@@ -399,10 +384,33 @@ synthetic JSONL stream that completes instantly.  This catches
 path errors, missing dependencies, and config issues before any
 real agent run.
 
-## Cleanup
+Clean up afterwards:
 
 ```bash
-rm -rf /tmp/<project>-upstream.git
+PROJECT=$(basename $(pwd))
+docker rm -f ${PROJECT}-agent-1 2>/dev/null
+rm -rf /tmp/${PROJECT}-upstream.git
+```
+
+## Cleanup
+
+After a swarm run, the following artifacts remain on disk:
+
+| Artifact | Path |
+|----------|------|
+| Bare repo | `/tmp/<project>-upstream.git` |
+| Submodule mirrors | `/tmp/<project>-mirror-*.git` |
+| Agent containers | `<project>-agent-N` |
+| State file | `/tmp/<project>-swarm.env` |
+| Agent config | `/tmp/<project>-agents.cfg` |
+
+Remove everything for a fresh start:
+
+```bash
+PROJECT=$(basename $(pwd))
+docker rm -f $(docker ps -aq --filter "name=${PROJECT}-agent-") 2>/dev/null
+rm -rf /tmp/${PROJECT}-upstream.git /tmp/${PROJECT}-mirror-*.git
+rm -f  /tmp/${PROJECT}-swarm.env /tmp/${PROJECT}-agents.cfg
 ```
 
 ## Verify image

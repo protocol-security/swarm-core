@@ -122,28 +122,6 @@ assert_eq "double slash" "a-b-c"            "$(shorten_model "a/b/c")"
 
 # ============================================================
 echo ""
-echo "=== 2. TSV generation (env var path) ==="
-
-SWARM_MODEL="claude-opus-4-6"
-EFFORT_LEVEL="medium"
-NUM_AGENTS=3
-: > "$TMPDIR/env-agents.cfg"
-for _i in $(seq 1 "$NUM_AGENTS"); do
-    printf '%s|||%s||||||\n' "$SWARM_MODEL" "$EFFORT_LEVEL" >> "$TMPDIR/env-agents.cfg"
-done
-
-assert_eq "line count" "3" "$(wc -l < "$TMPDIR/env-agents.cfg" | tr -d ' ')"
-
-IFS='|' read -r m u k e a c p t g d < "$TMPDIR/env-agents.cfg"
-assert_eq "model"    "claude-opus-4-6" "$m"
-assert_eq "base_url" ""               "$u"
-assert_eq "api_key"  ""               "$k"
-assert_eq "effort"   "medium"         "$e"
-assert_eq "auth"     ""               "$a"
-assert_eq "context"  ""               "$c"
-
-# ============================================================
-echo ""
 echo "=== 3. inject_git_rules config ==="
 
 cat > "$TMPDIR/default.json" <<'EOF'
@@ -259,17 +237,6 @@ EOF
 
 assert_eq "pp effort"       "low" "$(parse_pp_effort "$TMPDIR/pp_effort.json")"
 assert_eq "pp effort absent" ""   "$(parse_pp_effort "$TMPDIR/no_pp.json")"
-
-# ============================================================
-echo ""
-echo "=== 8. Effort env var fallback (no effort set) ==="
-
-EFFORT_LEVEL=""
-: > "$TMPDIR/env-no-effort.cfg"
-printf '%s|||%s||||||\n' "claude-opus-4-6" "$EFFORT_LEVEL" >> "$TMPDIR/env-no-effort.cfg"
-
-IFS='|' read -r m u k e a c p t g d < "$TMPDIR/env-no-effort.cfg"
-assert_eq "no effort" "" "$e"
 
 # ============================================================
 echo ""
@@ -440,78 +407,21 @@ assert_eq "tag empty" "" "$g4"
 
 # ============================================================
 echo ""
-echo "=== 16. parse_start_args — basic flags ==="
+echo "=== 16. parse_start_args — dashboard flag ==="
 
-# Source the function from launch.sh without executing the
-# case statement.  We extract it with sed to avoid side effects
-# (git rev-parse, docker, etc.).
 _LAUNCH="$TESTS_DIR/../launch.sh"
 eval "$(sed -n '/^parse_start_args()/,/^}/p' "$_LAUNCH")"
 
-# Reset variables to known state before each sub-test.
-reset_vars() {
-    SWARM_PROMPT="orig.md"
-    SWARM_MODEL="orig-model"
-    NUM_AGENTS=1
-    MAX_IDLE=3
-    EFFORT_LEVEL=""
-    SWARM_SETUP=""
-    INJECT_GIT_RULES="true"
-    OPEN_DASHBOARD=false
-    AGENTS_CLI_OVERRIDE=false
-}
-
-reset_vars
-parse_start_args --prompt new.md --model new-model --agents 5
-assert_eq "cli prompt"  "new.md"    "$SWARM_PROMPT"
-assert_eq "cli model"   "new-model" "$SWARM_MODEL"
-assert_eq "cli agents"  "5"         "$NUM_AGENTS"
-
-reset_vars
-parse_start_args --max-idle 7 --effort high --setup s.sh
-assert_eq "cli max-idle" "7"    "$MAX_IDLE"
-assert_eq "cli effort"   "high" "$EFFORT_LEVEL"
-assert_eq "cli setup"    "s.sh" "$SWARM_SETUP"
-
-reset_vars
-parse_start_args --no-inject-git-rules
-assert_eq "cli no-inject" "false" "$INJECT_GIT_RULES"
-
-reset_vars
 parse_start_args --dashboard
 assert_eq "cli dashboard" "true" "$OPEN_DASHBOARD"
 
-# ============================================================
-echo ""
-echo "=== 17. parse_start_args — no args leaves defaults ==="
-
-reset_vars
 parse_start_args
-assert_eq "default prompt"  "orig.md"    "$SWARM_PROMPT"
-assert_eq "default model"   "orig-model" "$SWARM_MODEL"
-assert_eq "default agents"  "1"          "$NUM_AGENTS"
-assert_eq "default idle"    "3"          "$MAX_IDLE"
-assert_eq "default effort"  ""           "$EFFORT_LEVEL"
-assert_eq "default inject"  "true"       "$INJECT_GIT_RULES"
-assert_eq "default dash"    "false"      "$OPEN_DASHBOARD"
+assert_eq "default no dashboard" "false" "$OPEN_DASHBOARD"
 
 # ============================================================
 echo ""
-echo "=== 18. parse_start_args — CLI overrides env vars ==="
+echo "=== 17. parse_start_args — unknown flag errors ==="
 
-SWARM_PROMPT="env.md"
-SWARM_MODEL="env-model"
-NUM_AGENTS=2
-parse_start_args --prompt cli.md --model cli-model --agents 8
-assert_eq "cli > env prompt" "cli.md"    "$SWARM_PROMPT"
-assert_eq "cli > env model"  "cli-model" "$SWARM_MODEL"
-assert_eq "cli > env agents" "8"         "$NUM_AGENTS"
-
-# ============================================================
-echo ""
-echo "=== 19. parse_start_args — unknown flag errors ==="
-
-reset_vars
 if (parse_start_args --bogus 2>/dev/null); then
     echo "  FAIL: unknown flag should error"
     FAIL=$((FAIL + 1))
@@ -520,34 +430,29 @@ else
     PASS=$((PASS + 1))
 fi
 
-# ============================================================
-echo ""
-echo "=== 20. parse_start_args — combined flags ==="
+if (parse_start_args --prompt foo.md 2>/dev/null); then
+    echo "  FAIL: removed --prompt flag should error"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: --prompt rejected (config-only)"
+    PASS=$((PASS + 1))
+fi
 
-reset_vars
-parse_start_args --prompt p.md --model m --agents 4 \
-    --max-idle 2 --effort low --setup x.sh \
-    --no-inject-git-rules --dashboard
-assert_eq "combo prompt"  "p.md"  "$SWARM_PROMPT"
-assert_eq "combo model"   "m"     "$SWARM_MODEL"
-assert_eq "combo agents"  "4"     "$NUM_AGENTS"
-assert_eq "combo idle"    "2"     "$MAX_IDLE"
-assert_eq "combo effort"  "low"   "$EFFORT_LEVEL"
-assert_eq "combo setup"   "x.sh"  "$SWARM_SETUP"
-assert_eq "combo inject"  "false" "$INJECT_GIT_RULES"
-assert_eq "combo dash"    "true"  "$OPEN_DASHBOARD"
+if (parse_start_args --model m 2>/dev/null); then
+    echo "  FAIL: removed --model flag should error"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: --model rejected (config-only)"
+    PASS=$((PASS + 1))
+fi
 
-# ============================================================
-echo ""
-echo "=== 21. --agents sets AGENTS_CLI_OVERRIDE flag ==="
-
-reset_vars
-parse_start_args --agents 5
-assert_eq "override flag set" "true" "$AGENTS_CLI_OVERRIDE"
-
-reset_vars
-parse_start_args --model m
-assert_eq "override flag unset" "false" "$AGENTS_CLI_OVERRIDE"
+if (parse_start_args --agents 5 2>/dev/null); then
+    echo "  FAIL: removed --agents flag should error"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: --agents rejected (config-only)"
+    PASS=$((PASS + 1))
+fi
 
 # ============================================================
 echo ""
@@ -674,6 +579,21 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 # ============================================================
 echo ""
+echo "=== 18. Swarmfile is required ==="
+
+# launch.sh start without a config should fail with a clear message.
+# Must run from a git repo (launch.sh needs git rev-parse).
+_no_cfg_dir=$(mktemp -d)
+git -C "$_no_cfg_dir" init -q
+out=$(cd "$_no_cfg_dir" && SWARM_CONFIG="" bash "$TESTS_DIR/../launch.sh" start 2>&1) \
+    && rc=0 || rc=$?
+rm -rf "$_no_cfg_dir"
+assert_eq "no config exits nonzero" "1" "$rc"
+assert_eq "no config says swarmfile" "true" \
+    "$([[ "$out" == *"swarmfile"* ]] && echo true || echo false)"
+
+# ============================================================
+echo ""
 echo "=== SWARM_AGENTS derivation from config ==="
 
 # Mirrors the logic in cmd_start() that reads AGENTS_CFG and builds
@@ -787,9 +707,38 @@ assert_eq "flash pricing" "0.5 3 0" \
 assert_eq "unlisted model empty" "" \
     "$(extract_pricing "$TESTS_DIR/configs/heterogeneous-kitchen-sink.json" "claude-opus-4-6")"
 
+# MiniMax-M2.7 pricing in kitchen-sink.json.
+assert_eq "minimax-m2.7 pricing" "0.3 1.2 0.06" \
+    "$(extract_pricing "$TESTS_DIR/configs/kitchen-sink.json" "MiniMax-M2.7")"
+
 # Config without pricing section — returns empty.
 assert_eq "no pricing section" "" \
     "$(extract_pricing "$TESTS_DIR/configs/gemini-only.json" "gemini-2.5-pro")"
+
+# ============================================================
+echo ""
+echo "=== 29. claude_code_version field ==="
+
+cat > "$TMPDIR/cc_pinned.json" <<'JSON'
+{
+  "prompt": "unused",
+  "claude_code_version": "1.0.30",
+  "agents": [{"count": 1, "model": "claude-opus-4-6"}]
+}
+JSON
+
+assert_eq "cc version present" "1.0.30" \
+    "$(jq -r '.claude_code_version // empty' "$TMPDIR/cc_pinned.json")"
+
+cat > "$TMPDIR/cc_no_version.json" <<'JSON'
+{
+  "prompt": "unused",
+  "agents": [{"count": 1, "model": "claude-opus-4-6"}]
+}
+JSON
+
+assert_eq "cc version absent" "" \
+    "$(jq -r '.claude_code_version // empty' "$TMPDIR/cc_no_version.json")"
 
 # ============================================================
 echo ""

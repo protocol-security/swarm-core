@@ -100,8 +100,8 @@ emit_row() {
     printf "  %-3s %-${MODEL_COL_W}s" "$id_str" "$model_str"
     if $SHOW_DRIVER; then printf " %-${DRV_COL_W}s" "$driver_str"; fi
     if $SHOW_AUTH;  then printf " %-6s" "$auth_str"; fi
-    printf " %-8s %7s" "$status_str" "$cost_str"
-    if $SHOW_INOUT; then printf " %10s" "$inout_str"; fi
+    printf " %-14s %7s" "$status_str" "$cost_str"
+    if $SHOW_INOUT; then printf " %13s" "$inout_str"; fi
     if $SHOW_CACHE; then printf " %7s" "$cache_str"; fi
     if $SHOW_TURNS; then printf " %6s" "$turns_str"; fi
     if $SHOW_TPS;   then printf " %6s" "$tps_str"; fi
@@ -168,9 +168,12 @@ idle_line=$(emit_row "2" "claude-opus-4-6 (h)" "" "key" "" "idle 1/3" \
 assert_eq "idle in status"  "true" "$(echo "$idle_line" | grep -q 'idle 1/3' && echo true || echo false)"
 assert_eq "idle has cost"   "true" "$(echo "$idle_line" | grep -q '0.05' && echo true || echo false)"
 
-# "idle 2/3" fits in 8-char status column.
-_s="idle 2/3";   assert_eq "idle 2/3 fits"   "true"  "$([ ${#_s} -le 8 ] && echo true || echo false)"
-_s="idle 10/10"; assert_eq "idle 10/10 fits" "false" "$([ ${#_s} -le 8 ] && echo true || echo false)"
+# Status column now 14 chars: idle states with larger counts fit.
+_s="idle 2/3";         assert_eq "idle 2/3 fits"         "true" "$([ ${#_s} -le 14 ] && echo true || echo false)"
+_s="idle 10/10";       assert_eq "idle 10/10 fits"       "true" "$([ ${#_s} -le 14 ] && echo true || echo false)"
+_s="idle 10/999";      assert_eq "idle 10/999 fits"      "true" "$([ ${#_s} -le 14 ] && echo true || echo false)"
+_s="idle 999/999";     assert_eq "idle 999/999 fits"     "true" "$([ ${#_s} -le 14 ] && echo true || echo false)"
+_s="idle 999/1234567"; assert_eq "idle 999/1234567 long" "true" "$([ ${#_s} -gt 14 ] && echo true || echo false)"
 
 # Idle status aligns with running.
 SHOW_DRIVER=false
@@ -181,6 +184,18 @@ idle_align_line=$(emit_row "2" "claude-opus-4-6 (h)" "" "key" "" "idle 1/3" \
 cost_pos_run=$(echo "$running_line" | grep -bo '\$0' | head -1 | cut -d: -f1)
 cost_pos_idle=$(echo "$idle_align_line" | grep -bo '\$0' | head -1 | cut -d: -f1)
 assert_eq "idle cost aligns with running" "$cost_pos_run" "$cost_pos_idle"
+
+# Wider idle value aligns correctly with cost column.
+SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=false; SHOW_DRIVER=false
+wide_idle_line=$(emit_row "2" "claude-opus-4-6 (h)" "" "key" "" "idle 10/999" \
+    '$0.05' "1k/500" "50k" "3" "12.0" "30s" "")
+assert_eq "wide idle in status" "true" "$(echo "$wide_idle_line" | grep -q 'idle 10/999' && echo true || echo false)"
+assert_eq "wide idle has cost"  "true" "$(echo "$wide_idle_line" | grep -q '0.05' && echo true || echo false)"
+
+# In/Out column handles large values (13-char width).
+large_inout_line=$(emit_row "1" "claude-opus-4-6 (h)" "" "key" "" "exited" \
+    '$199.28' "171.6M/952k" "72.3M" "4398" "27.6" "10h 00m" "")
+assert_eq "large inout present" "true" "$(echo "$large_inout_line" | grep -q '171.6M/952k' && echo true || echo false)"
 
 # Driver column visible when SHOW_DRIVER=true.
 SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false; SHOW_DRIVER=true
@@ -435,6 +450,38 @@ cat > "$TMPDIR/all_gemini_explicit.json" <<'EOF'
 }
 EOF
 assert_eq "all gemini explicit → 1 driver" "1" "$(detect_multi_drivers "$TMPDIR/all_gemini_explicit.json")"
+
+# ============================================================
+echo ""
+echo "=== 11. Git info and default title ==="
+
+GIT_BRANCH_TEST=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+GIT_SHORT_HEAD_TEST=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+assert_eq "git branch detected" "true" "$([ -n "$GIT_BRANCH_TEST" ] && echo true || echo false)"
+assert_eq "git short head detected" "true" "$([ -n "$GIT_SHORT_HEAD_TEST" ] && echo true || echo false)"
+
+PROJECT_TEST=$(basename "$(git rev-parse --show-toplevel)")
+DEFAULT_TITLE_TEST="${PROJECT_TEST} (@${GIT_SHORT_HEAD_TEST})"
+assert_eq "default title format" "${PROJECT_TEST} (@${GIT_SHORT_HEAD_TEST})" "$DEFAULT_TITLE_TEST"
+
+# State file title: config title captured when no env var.
+config_title=$(jq -r '.title // empty' "$TMPDIR/tags.json")
+assert_eq "no title field → empty" "" "$config_title"
+
+cat > "$TMPDIR/titled.json" <<'EOF'
+{ "prompt": "p.md", "title": "My Fuzzer", "agents": [{ "count": 1, "model": "m" }] }
+EOF
+config_title=$(jq -r '.title // empty' "$TMPDIR/titled.json")
+assert_eq "title from config" "My Fuzzer" "$config_title"
+
+# Title priority: user env > state file > config > default.
+USER_TITLE_T="user-set"
+SWARM_TITLE_T="state-set"
+assert_eq "user title wins" "user-set" "${USER_TITLE_T:-${SWARM_TITLE_T:-${DEFAULT_TITLE_TEST}}}"
+USER_TITLE_T=""
+assert_eq "state title wins" "state-set" "${USER_TITLE_T:-${SWARM_TITLE_T:-${DEFAULT_TITLE_TEST}}}"
+SWARM_TITLE_T=""
+assert_eq "default title wins" "$DEFAULT_TITLE_TEST" "${USER_TITLE_T:-${SWARM_TITLE_T:-${DEFAULT_TITLE_TEST}}}"
 
 # ============================================================
 echo ""
