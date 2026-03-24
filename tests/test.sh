@@ -410,14 +410,15 @@ write_prompt() {
 # Smoke Test: Deterministic Counting
 
 You are agent $AGENT_ID in an infrastructure smoke test.
-Your ONLY task is to create two files and push them.
+You must create TWO files and make TWO separate commits.
+The task is NOT complete until both files are committed and pushed.
 
 ## Steps
 
 0. First, check whether your work already exists:
 
 ```bash
-test -f "test-results/agent-${AGENT_ID}.txt" && echo "ALREADY DONE"
+test -f "test-results/reasoning-${AGENT_ID}.txt" && echo "ALREADY DONE"
 ```
 
    If the file exists, your previous session already completed this task.
@@ -451,7 +452,7 @@ git pull --rebase origin agent-work
 git push origin agent-work
 ```
 
-4. Reasoning checkpoint — think through this before proceeding:
+4. IMPORTANT — you are not done yet. You must now create a second file.
    Compute the sum of all 100 numbers you just wrote. The formula
    for the sum of consecutive integers from a to b is:
    sum = (b - a + 1) * (a + b) / 2
@@ -470,31 +471,32 @@ git pull --rebase origin agent-work
 git push origin agent-work
 ```
 
-6. Stop. Do NOT loop, do NOT pick another task. Exit after
-   the push succeeds.
+6. Now you are done. Stop. Do NOT loop, do NOT pick another task.
 
 ## Rules
 
 - Do NOT modify any existing files.
-- Only create test-results/agent-{AGENT_ID}.txt and
-  test-results/reasoning-{AGENT_ID}.txt.
+- You must create BOTH test-results/agent-{AGENT_ID}.txt AND
+  test-results/reasoning-{AGENT_ID}.txt. Both are required.
 - The counting file must contain exactly 100 lines, one number per line.
 - The reasoning file must contain exactly 2 lines.
 - Use the exact bash commands above for steps 3 and 5. Do not improvise.
+- Do NOT stop after step 3. You must continue to steps 4 and 5.
 PROMPT
     else
         cat > "$dest/$PROMPT_FILE" <<'PROMPT'
 # Smoke Test: Deterministic Counting
 
 You are agent $AGENT_ID in an infrastructure smoke test.
-Your ONLY task is to create two files and commit them.
+You must create TWO files and make TWO separate commits.
+The task is NOT complete until both files are committed and pushed.
 
 ## Steps
 
 0. First, check whether your work already exists:
 
 ```bash
-test -f "test-results/agent-${AGENT_ID}.txt" && echo "ALREADY DONE"
+test -f "test-results/reasoning-${AGENT_ID}.txt" && echo "ALREADY DONE"
 ```
 
    If the file exists, your previous session already completed this task.
@@ -522,7 +524,7 @@ seq $START $END > test-results/agent-${AGENT_ID}.txt
 3. Commit the counting file with message
    "Smoke test: agent ${AGENT_ID} counting".
 
-4. Reasoning checkpoint — think through this before proceeding:
+4. IMPORTANT — you are not done yet. You must now create a second file.
    Compute the sum of all 100 numbers you just wrote. The formula
    for the sum of consecutive integers from a to b is:
    sum = (b - a + 1) * (a + b) / 2
@@ -535,15 +537,16 @@ seq $START $END > test-results/agent-${AGENT_ID}.txt
 5. Commit the reasoning file with message
    "Smoke test: agent ${AGENT_ID} reasoning".
 
-6. Stop. Do NOT loop, do NOT pick another task.
+6. Now you are done. Stop. Do NOT loop, do NOT pick another task.
 
 ## Rules
 
 - Do NOT modify any existing files.
-- Only create test-results/agent-{AGENT_ID}.txt and
-  test-results/reasoning-{AGENT_ID}.txt.
+- You must create BOTH test-results/agent-{AGENT_ID}.txt AND
+  test-results/reasoning-{AGENT_ID}.txt. Both are required.
 - The counting file must contain exactly 100 lines, one number per line.
 - The reasoning file must contain exactly 2 lines.
+- Do NOT stop after step 3. You must continue to steps 4 and 5.
 PROMPT
     fi
 
@@ -640,10 +643,10 @@ while [ "$elapsed" -lt "$TIMEOUT" ]; do
 
     found=0
     for i in $(seq 1 "$NUM_AGENTS"); do
-        [ -f "test-results/agent-${i}.txt" ] && found=$((found + 1))
+        [ -f "test-results/reasoning-${i}.txt" ] && found=$((found + 1))
     done
 
-    printf "  [%3ds] %d/%d agents pushed results\n" \
+    printf "  [%3ds] %d/%d agents fully completed\n" \
         "$elapsed" "$found" "$NUM_AGENTS"
 
     cd /
@@ -713,7 +716,8 @@ for i in $(seq 1 "$NUM_AGENTS"); do
         errors=$((errors + 1))
     fi
     if [ "$REASON_C" -lt 1 ]; then
-        echo "  WARN: agent ${i} missing reasoning commit"
+        echo "  FAIL: agent ${i} missing reasoning commit"
+        errors=$((errors + 1))
     fi
     TOTAL_C=$((COUNT_C + REASON_C))
     if [ "$TOTAL_C" -gt 2 ]; then
