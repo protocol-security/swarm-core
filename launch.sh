@@ -122,7 +122,7 @@ cmd_start() {
     fi
 
     if [ -n "$SWARM_PROMPT" ] && [ ! -f "$REPO_ROOT/$SWARM_PROMPT" ]; then
-        echo "ERROR: ${SWARM_PROMPT} not found." >&2
+        echo "ERROR: prompt '${SWARM_PROMPT}' not found." >&2
         exit 1
     fi
 
