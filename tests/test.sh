@@ -728,7 +728,7 @@ done
 # Check for garbage files committed outside test-results/.
 if [ -n "$PROMPT_COMMIT" ]; then
     GARBAGE=$(git diff --name-only "${PROMPT_COMMIT}..HEAD" -- \
-        ':!test-results/' 2>/dev/null || true)
+        ':!test-results/' ':!.gemini/' ':!GEMINI.md' 2>/dev/null || true)
     if [ -n "$GARBAGE" ]; then
         echo ""
         echo "  FAIL: garbage files committed outside test-results/:"
