@@ -238,6 +238,7 @@ cmd_start() {
         docker rm -f "$NAME" 2>/dev/null || true
         agent_api_key="$(expand_env_ref "$agent_api_key")"
         agent_auth_token="$(expand_env_ref "$agent_auth_token")"
+        agent_tag="$(expand_env_ref "$agent_tag")"
         agent_context="${agent_context:-full}"
         agent_driver="${agent_driver:-${SWARM_DRIVER_DEFAULT}}"
 
@@ -415,6 +416,7 @@ cmd_post_process() {
     pp_effort=$(jq -r '.post_process.effort // empty' "$CONFIG_FILE")
     pp_auth=$(jq -r '.post_process.auth // empty' "$CONFIG_FILE")
     pp_tag=$(jq -r '.post_process.tag // .tag // empty' "$CONFIG_FILE")
+    pp_tag="$(expand_env_ref "$pp_tag")"
     pp_driver=$(jq -r '.post_process.driver // .driver // "claude-code"' "$CONFIG_FILE")
 
     if [ -z "$pp_prompt" ]; then
