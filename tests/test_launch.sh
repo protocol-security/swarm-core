@@ -42,8 +42,8 @@ parse_pp_api_key()  { jq -r '.post_process.api_key // empty' "$1"; }
 parse_pp_effort()   { jq -r '.post_process.effort // empty' "$1"; }
 
 parse_agents_cfg() {
-    jq -r '.driver as $dd | .agents[] | range(.count) as $i |
-        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // ""), (.driver // $dd // "")] | join("|")' "$1"
+    jq -r '.tag as $dt | .driver as $dd | .agents[] | range(.count) as $i |
+        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' "$1"
 }
 
 # Mirrors the per-agent credential selection in launch.sh.
@@ -798,6 +798,142 @@ JSON
 
 assert_eq "cc version absent" "" \
     "$(jq -r '.claude_code_version // empty' "$TMPDIR/cc_no_version.json")"
+
+# ============================================================
+echo ""
+echo "=== 30. Top-level tag inheritance ==="
+
+cat > "$TMPDIR/tag_toplevel.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "tag": "custom-top-lvl-tag",
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6" },
+    { "count": 1, "model": "claude-sonnet-4-6", "tag": "custom-per-agent-tag" },
+    { "count": 1, "model": "claude-haiku-4-5", "tag": "" }
+  ]
+}
+EOF
+
+CFG=$(parse_agents_cfg "$TMPDIR/tag_toplevel.json")
+LINE1=$(echo "$CFG" | sed -n '1p')
+LINE2=$(echo "$CFG" | sed -n '2p')
+LINE3=$(echo "$CFG" | sed -n '3p')
+
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
+assert_eq "inherits top-level tag" "custom-top-lvl-tag" "$g1"
+
+IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
+assert_eq "per-agent tag overrides" "custom-per-agent-tag" "$g2"
+
+IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
+assert_eq "no top-level tag no agent tag" "" "$g3"
+
+# No top-level tag. Agents without tag get empty.
+cat > "$TMPDIR/tag_none.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "count": 1, "model": "claude-opus-4-6" }
+  ]
+}
+EOF
+
+CFG=$(parse_agents_cfg "$TMPDIR/tag_none.json")
+LINE1=$(echo "$CFG" | sed -n '1p')
+IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
+assert_eq "absent top-level tag" "" "$g1"
+
+# ============================================================
+echo ""
+echo "=== 31. Tag env var expansion ==="
+
+# Mirrors expand_env_ref from launch.sh.
+expand_env_ref() {
+    local val="$1"
+    if [[ "$val" =~ ^\$([A-Za-z_][A-Za-z_0-9]*)$ ]]; then
+        local varname="${BASH_REMATCH[1]}"
+        printf '%s' "${!varname:-}"
+    else
+        printf '%s' "$val"
+    fi
+}
+
+# Direct value -> no expansion.
+assert_eq "literal tag unchanged" "literal" "$(expand_env_ref "literal")"
+
+# Empty string —> stays empty.
+assert_eq "empty stays empty" "" "$(expand_env_ref "")"
+
+# $VAR reference -> expands.
+SWARM_TAG_TEST="expanded"
+assert_eq "env ref expands" "expanded" "$(expand_env_ref '$SWARM_TAG_TEST')"
+
+# Unset variable —> expands to empty.
+unset SWARM_TAG_MISSING 2>/dev/null || true
+assert_eq "unset env ref empty" "" "$(expand_env_ref '$SWARM_TAG_MISSING')"
+
+# Not a bare $VAR (inline text) —> returned as-is.
+assert_eq "inline not expanded" 'prefix-$SWARM_TAG_TEST' \
+    "$(expand_env_ref 'prefix-$SWARM_TAG_TEST')"
+
+# ============================================================
+echo ""
+echo "=== 32. Post-process tag fallback and expansion ==="
+
+parse_pp_tag() {
+    jq -r '.post_process.tag // .tag // empty' "$1"
+}
+
+# Post-process has its own tag.
+cat > "$TMPDIR/pp_tag_own.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "tag": "custom-top-lvl-tag",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": { "prompt": "r.md", "tag": "pp-review" }
+}
+EOF
+assert_eq "pp own tag" "pp-review" "$(parse_pp_tag "$TMPDIR/pp_tag_own.json")"
+
+# Post-process inherits top-level tag.
+cat > "$TMPDIR/pp_tag_inherit.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "tag": "custom-top-lvl-tag",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": { "prompt": "r.md" }
+}
+EOF
+assert_eq "pp inherits top-level tag" "custom-top-lvl-tag" \
+    "$(parse_pp_tag "$TMPDIR/pp_tag_inherit.json")"
+
+# Neither top-level, nor post-process tag —> empty.
+cat > "$TMPDIR/pp_tag_empty.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": { "prompt": "r.md" }
+}
+EOF
+assert_eq "pp no tag empty" "" "$(parse_pp_tag "$TMPDIR/pp_tag_empty.json")"
+
+# Post-process tag with env var expansion.
+SWARM_PP_TAG="expanded-pp"
+pp_raw=$(parse_pp_tag "$TMPDIR/pp_tag_inherit.json")
+assert_eq "pp tag before expansion" "custom-top-lvl-tag" "$pp_raw"
+
+cat > "$TMPDIR/pp_tag_envref.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "tag": "$SWARM_PP_TAG",
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": { "prompt": "r.md" }
+}
+EOF
+pp_raw=$(parse_pp_tag "$TMPDIR/pp_tag_envref.json")
+pp_expanded="$(expand_env_ref "$pp_raw")"
+assert_eq "pp tag env expansion" "expanded-pp" "$pp_expanded"
 
 # ============================================================
 echo ""
