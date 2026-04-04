@@ -255,6 +255,7 @@ mkdir -p "$HOOK_REPO"
 git init -q "$HOOK_REPO"
 git -C "$HOOK_REPO" config user.name "test"
 git -C "$HOOK_REPO" config user.email "test@test"
+git -C "$HOOK_REPO" config commit.gpgsign false
 
 mkdir -p "$HOOK_REPO/.git/hooks"
 cat > "$HOOK_REPO/.git/hooks/prepare-commit-msg" <<'HOOK'

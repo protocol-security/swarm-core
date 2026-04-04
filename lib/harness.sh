@@ -90,6 +90,7 @@ GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-agent@swarm.local}"
 git config --global user.name "$GIT_USER_NAME"
 git config --global user.email "$GIT_USER_EMAIL"
+git config --global commit.gpgsign false
 
 # Capture CLI version once for the prepare-commit-msg hook.
 AGENT_CLI_VERSION=$(agent_version)

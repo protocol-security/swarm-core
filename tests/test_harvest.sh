@@ -28,7 +28,8 @@ setup_repos() {
 
     git init -q "$TMPDIR/source"
     cd "$TMPDIR/source"
-    git -c user.name=test -c user.email=t@t commit -q --allow-empty -m "init"
+    git -c user.name=test -c user.email=t@t -c commit.gpgsign=false \
+        commit -q --allow-empty -m "init"
 
     git clone -q --bare "$TMPDIR/source" "$TMPDIR/bare"
     git -C "$TMPDIR/bare" branch agent-work HEAD 2>/dev/null || true
@@ -49,7 +50,8 @@ add_agent_commits() {
     for i in $(seq 1 "$n"); do
         echo "work $i" > "file-$i.txt"
         git add "file-$i.txt"
-        git -c user.name=agent -c user.email=a@a commit -q -m "Agent commit $i"
+        git -c user.name=agent -c user.email=a@a -c commit.gpgsign=false \
+            commit -q -m "Agent commit $i"
     done
     git push -q origin agent-work
     rm -rf "$agent_dir"
