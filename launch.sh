@@ -93,6 +93,7 @@ GIT_USER_NAME=$(jq -r '.git_user.name // "swarm-agent"' "$CONFIG_FILE")
 GIT_USER_EMAIL=$(jq -r '.git_user.email // "agent@swarm.local"' "$CONFIG_FILE")
 NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
 SWARM_DRIVER_DEFAULT=$(jq -r '.driver // "claude-code"' "$CONFIG_FILE")
+MAX_RETRY_WAIT=$(jq -r '.max_retry_wait // 0' "$CONFIG_FILE")
 
 parse_start_args() {
     OPEN_DASHBOARD=false
@@ -284,6 +285,7 @@ cmd_start() {
             -e "SWARM_PROMPT=${effective_prompt}" \
             -e "SWARM_SETUP=${SWARM_SETUP}" \
             -e "MAX_IDLE=${MAX_IDLE}" \
+            -e "MAX_RETRY_WAIT=${MAX_RETRY_WAIT}" \
             -e "GIT_USER_NAME=${GIT_USER_NAME}" \
             -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
             -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
@@ -480,6 +482,7 @@ cmd_post_process() {
         -e "SWARM_PROMPT=${pp_prompt}" \
         -e "SWARM_SETUP=${SWARM_SETUP:-}" \
         -e "MAX_IDLE=${MAX_IDLE}" \
+        -e "MAX_RETRY_WAIT=${MAX_RETRY_WAIT}" \
         -e "GIT_USER_NAME=${GIT_USER_NAME}" \
         -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
         -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \

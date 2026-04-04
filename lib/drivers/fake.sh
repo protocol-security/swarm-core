@@ -32,6 +32,9 @@ agent_settings() { :; }
 # Detect fatal errors — fake driver never fails fatally.
 agent_detect_fatal() { :; }
 
+# Detect retriable errors — fake driver is never rate-limited.
+agent_is_retriable() { :; }
+
 # Extract stats from session log — delegates to the shared JSONL
 # parser since the fake driver emits the standard format.
 agent_extract_stats() { _extract_jsonl_stats "$1"; }

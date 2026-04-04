@@ -124,6 +124,7 @@ Each driver implements a fixed role interface:
 | `agent_settings` | Write agent-specific settings |
 | `agent_extract_stats` | Parse session stats from log |
 | `agent_detect_fatal` | Detect fatal errors from log + exit code |
+| `agent_is_retriable` | Detect retriable errors (rate limits, overload) |
 | `agent_activity_jq` | jq filter for activity display |
 
 Built-in drivers: `claude-code` (default), `gemini-cli`,

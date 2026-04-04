@@ -58,9 +58,24 @@ Per-group fields in `swarm.json` `agents` array:
 | `inject_git_rules` | `true`, `false` | Append git coordination rules to system prompt. |
 | `driver` | driver name | Agent driver override (default: top-level or `claude-code`). |
 
-Top-level fields: `prompt`, `setup`, `max_idle`, `driver`,
-`inject_git_rules`, `claude_code_version`, `title`, `pricing`,
-`post_process`.
+Top-level fields: `prompt`, `setup`, `max_idle`, `max_retry_wait`,
+`driver`, `inject_git_rules`, `claude_code_version`, `title`,
+`pricing`, `post_process`.
+
+### Retry on rate limits
+
+Set `max_retry_wait` (seconds) to have agents retry with
+exponential backoff when rate-limited instead of exiting:
+
+```json
+{ "max_retry_wait": 25200 }
+```
+
+Default is `0` (no retry -- exit immediately on fatal errors).
+The backoff starts at 30 s, doubles each attempt, and caps at
+30 min per sleep.  When the cumulative wait exceeds
+`max_retry_wait`, the agent exits.  This also covers transient
+network failures.
 
 The top-level `prompt` is optional when every agent group specifies its
 own `prompt`.  When omitted, each group **must** provide one.

@@ -141,6 +141,19 @@ agent_detect_fatal() {
     fi
 }
 
+# Detect retriable errors (rate limits, quota exhaustion).
+# Returns non-empty string if the error is retriable, empty if fatal.
+# Args: <logfile> <exit_code>
+agent_is_retriable() {
+    local logfile="$1"
+    grep -qi 'RESOURCE_EXHAUSTED\|429.*Too many\|Too many requests' \
+        "$logfile" 2>/dev/null && echo "rate_limited" && return
+    if [ -f "${logfile}.err" ]; then
+        grep -qi 'rate.limit\|quota\|retry in\|too many requests' \
+            "${logfile}.err" 2>/dev/null && echo "rate_limited" && return
+    fi
+}
+
 # Gemini CLI has no effort flag.
 agent_docker_env() { :; }
 
