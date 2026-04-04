@@ -255,6 +255,7 @@ mkdir -p "$HOOK_REPO"
 git init -q "$HOOK_REPO"
 git -C "$HOOK_REPO" config user.name "test"
 git -C "$HOOK_REPO" config user.email "test@test"
+git -C "$HOOK_REPO" config commit.gpgsign false
 
 mkdir -p "$HOOK_REPO/.git/hooks"
 cat > "$HOOK_REPO/.git/hooks/prepare-commit-msg" <<'HOOK'
@@ -489,6 +490,81 @@ assert_eq "no pricing stays zero" "0" \
 # Zero tokens with pricing — cost should be 0.
 assert_eq "zero tokens zero cost" "0.000000" \
     "$(compute_cost 0 0 0 0 2.00 12.00 0.20)"
+
+# ============================================================
+echo ""
+echo "=== 14. Retry backoff logic ==="
+
+# Mirrors the retry decision in harness.sh: when MAX_RETRY_WAIT > 0
+# and agent_is_retriable returns non-empty, harness retries instead
+# of exiting.
+simulate_retry_decision() {
+    local fatal_msg="$1" max_retry="$2" retriable="$3"
+    if [ -n "$fatal_msg" ]; then
+        if [ -n "$retriable" ] && [ "$max_retry" -gt 0 ]; then
+            echo "retry"
+        else
+            echo "exit"
+        fi
+    else
+        echo "ok"
+    fi
+}
+
+assert_eq "no error → ok" "ok" \
+    "$(simulate_retry_decision "" 0 "")"
+assert_eq "fatal, no retry → exit" "exit" \
+    "$(simulate_retry_decision "rate limited" 0 "")"
+assert_eq "fatal, retry disabled → exit" "exit" \
+    "$(simulate_retry_decision "rate limited" 0 "rate_limited")"
+assert_eq "fatal, retriable, retry on → retry" "retry" \
+    "$(simulate_retry_decision "rate limited" 25200 "rate_limited")"
+assert_eq "fatal, not retriable, retry on → exit" "exit" \
+    "$(simulate_retry_decision "auth error" 25200 "")"
+
+# Zero-token exits become retriable when retry is enabled.
+simulate_zero_token_decision() {
+    local fatal_msg="$1" max_retry="$2" retriable="$3"
+    local zero_token="$4"
+    if [ -n "$fatal_msg" ]; then
+        local eff_retriable="$retriable"
+        if [ -z "$eff_retriable" ] && [ "$zero_token" = true ] \
+                && [ "$max_retry" -gt 0 ]; then
+            eff_retriable="zero_tokens"
+        fi
+        if [ -n "$eff_retriable" ] && [ "$max_retry" -gt 0 ]; then
+            echo "retry"
+        else
+            echo "exit"
+        fi
+    else
+        echo "ok"
+    fi
+}
+
+assert_eq "zero tok, retry on → retry" "retry" \
+    "$(simulate_zero_token_decision "exit code 1" 25200 "" true)"
+assert_eq "zero tok, retry off → exit" "exit" \
+    "$(simulate_zero_token_decision "exit code 1" 0 "" true)"
+assert_eq "non-zero tok, no driver match → exit" "exit" \
+    "$(simulate_zero_token_decision "some error" 25200 "" false)"
+
+# Backoff doubling with cap at 1800s.
+simulate_backoff() {
+    local backoff=30 iterations="$1" cap=1800
+    for _ in $(seq 1 "$iterations"); do
+        backoff=$((backoff * 2))
+        if [ "$backoff" -gt "$cap" ]; then
+            backoff=$cap
+        fi
+    done
+    echo "$backoff"
+}
+
+assert_eq "backoff after 1 double" "60" "$(simulate_backoff 1)"
+assert_eq "backoff after 2 doubles" "120" "$(simulate_backoff 2)"
+assert_eq "backoff after 3 doubles" "240" "$(simulate_backoff 3)"
+assert_eq "backoff capped at 1800" "1800" "$(simulate_backoff 10)"
 
 # ============================================================
 echo ""

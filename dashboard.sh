@@ -256,6 +256,20 @@ read_idle_state() {
     fi
 }
 
+read_retry_state() {
+    local name=$1 agent_id=$2
+    local retry_file="agent_logs/retry_agent_${agent_id}"
+    local tmpf="/tmp/.swarm-retry-${name}"
+    docker cp "${name}:/workspace/${retry_file}" "$tmpf" 2>/dev/null || true
+    if [ -s "$tmpf" ]; then
+        cat "$tmpf"
+        rm -f "$tmpf"
+    else
+        rm -f "$tmpf"
+        echo ""
+    fi
+}
+
 emit_row() {
     local id_str="$1" model_str="$2" driver_str="$3" auth_str="$4"
     local status_color="$5" status_str="$6"
@@ -403,16 +417,20 @@ draw() {
         total_api_ms=$((total_api_ms + a_api_ms))
         total_turns=$((total_turns + a_turns))
 
-        local idle_state=""
+        local idle_state="" retry_state=""
         if [ "$state" = "running" ]; then
             idle_state=$(read_idle_state "$name" "$i")
+            retry_state=$(read_retry_state "$name" "$i")
         fi
 
         local status_text status_color
         case "$state" in
             running)
                 running_count=$((running_count + 1))
-                if [ -n "$idle_state" ]; then
+                if [ -n "$retry_state" ]; then
+                    status_text="retry ${retry_state}s"
+                    status_color="$YELLOW"
+                elif [ -n "$idle_state" ]; then
                     status_text="idle ${idle_state}"
                     status_color="$YELLOW"
                 else

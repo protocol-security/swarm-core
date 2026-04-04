@@ -665,6 +665,66 @@ assert_contains "cc no creds has auth mode" "SWARM_AUTH_MODE=" "$AUTH_OUT"
 
 # ============================================================
 echo ""
+echo "=== 23. agent_is_retriable — Claude Code driver ==="
+
+source "$DRIVERS_DIR/claude-code.sh"
+
+cat > "$TMPDIR/cc-rate-limit.jsonl" <<'EOF'
+{"error":"rate_limit_error","message":"Too many requests"}
+{"type":"result","subtype":"error","session_id":"s01","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0}}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/cc-rate-limit.jsonl" 1)
+assert_not_empty "cc rate limit is retriable" "$RETRY_OUT"
+
+cat > "$TMPDIR/cc-overloaded.jsonl" <<'EOF'
+{"error":"overloaded_error","message":"Service overloaded"}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/cc-overloaded.jsonl" 1)
+assert_not_empty "cc overloaded is retriable" "$RETRY_OUT"
+
+cat > "$TMPDIR/cc-auth-err.jsonl" <<'EOF'
+{"error":"authentication_error","message":"Invalid API key"}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/cc-auth-err.jsonl" 1)
+assert_eq "cc auth error not retriable" "" "$RETRY_OUT"
+
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/nonfatal.jsonl" 0)
+assert_eq "cc clean log not retriable" "" "$RETRY_OUT"
+
+# ============================================================
+echo ""
+echo "=== 24. agent_is_retriable — Gemini CLI driver ==="
+
+source "$DRIVERS_DIR/gemini-cli.sh"
+
+cat > "$TMPDIR/gem-quota.jsonl" <<'EOF'
+{"type":"result","status":"error","error":{"type":"Error","message":"RESOURCE_EXHAUSTED: quota exceeded"}}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/gem-quota.jsonl" 1)
+assert_not_empty "gemini quota is retriable" "$RETRY_OUT"
+
+cat > "$TMPDIR/gem-429.jsonl" <<'EOF'
+{"type":"result","status":"error","error":{"type":"Error","message":"429 Too many requests"}}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/gem-429.jsonl" 1)
+assert_not_empty "gemini 429 is retriable" "$RETRY_OUT"
+
+cat > "$TMPDIR/gem-auth.jsonl" <<'EOF'
+{"type":"result","status":"error","error":{"type":"Error","message":"Invalid API key"}}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/gem-auth.jsonl" 1)
+assert_eq "gemini auth not retriable" "" "$RETRY_OUT"
+
+# ============================================================
+echo ""
+echo "=== 25. agent_is_retriable — Fake driver ==="
+
+source "$DRIVERS_DIR/fake.sh"
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/cc-rate-limit.jsonl" 1)
+assert_eq "fake driver never retriable" "" "$RETRY_OUT"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

@@ -22,6 +22,7 @@ Optional environment:
   SWARM_DRIVER   Agent driver (default: claude-code).
   SWARM_SETUP    Setup script to run before first session.
   MAX_IDLE       Idle sessions before exit (default: 3).
+  MAX_RETRY_WAIT Max seconds to retry on rate limits (default: 0 = no retry).
   INJECT_GIT_RULES  Inject git coordination rules (default: true).
   SWARM_CONTEXT  Context mode: full (default), slim, or none.
 HELP
@@ -32,6 +33,7 @@ AGENT_ID="${AGENT_ID:-unnamed}"
 SWARM_PROMPT="${SWARM_PROMPT:?SWARM_PROMPT is required.}"
 SWARM_SETUP="${SWARM_SETUP:-}"
 MAX_IDLE="${MAX_IDLE:-3}"
+MAX_RETRY_WAIT="${MAX_RETRY_WAIT:-0}"
 INJECT_GIT_RULES="${INJECT_GIT_RULES:-true}"
 SWARM_CONTEXT="${SWARM_CONTEXT:-full}"
 SWARM_DRIVER="${SWARM_DRIVER:-claude-code}"
@@ -90,6 +92,7 @@ GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-agent@swarm.local}"
 git config --global user.name "$GIT_USER_NAME"
 git config --global user.email "$GIT_USER_EMAIL"
+git config --global commit.gpgsign false
 
 # Capture CLI version once for the prepare-commit-msg hook.
 AGENT_CLI_VERSION=$(agent_version)
@@ -238,6 +241,8 @@ STATS_FILE="/workspace/${STATS_FILE}"
 
 IDLE_COUNT=0
 IDLE_FILE="/workspace/agent_logs/idle_agent_${AGENT_ID}"
+RETRY_FILE="/workspace/agent_logs/retry_agent_${AGENT_ID}"
+rm -f "$RETRY_FILE"
 
 while true; do
     # Reset to latest. Do not re-init submodules; setup changes would be lost.
@@ -294,18 +299,83 @@ while true; do
     if type -t agent_detect_fatal &>/dev/null; then
         FATAL_MSG=$(agent_detect_fatal "$LOGFILE" "$AGENT_RUN_EXIT")
     fi
-    # Generic fallback: a non-zero exit with zero tokens is always
-    # fatal, regardless of whether the driver detected anything.
-    # This catches crashes, missing binaries, and other failures
-    # that occur before structured output is emitted.
+    # Generic fallback: a non-zero exit with zero tokens is fatal
+    # when retry is disabled.  When retry is enabled, treat it as
+    # potentially transient (network error, temporary outage) so
+    # the backoff loop gets a chance to recover.
+    _zero_token_fatal=false
     if [ -z "$FATAL_MSG" ] && [ "$AGENT_RUN_EXIT" -ne 0 ] \
             && [ "$tok_in" = "0" ] && [ "$tok_out" = "0" ]; then
         FATAL_MSG="agent exited with code ${AGENT_RUN_EXIT} and produced no tokens"
+        _zero_token_fatal=true
     fi
     if [ -n "$FATAL_MSG" ]; then
-        hlog_err "fatal: ${FATAL_MSG}"
-        hlog_err "exiting due to unrecoverable error"
-        exit 1
+        _retriable=""
+        if [ "$MAX_RETRY_WAIT" -gt 0 ]; then
+            if type -t agent_is_retriable &>/dev/null; then
+                _retriable=$(agent_is_retriable "$LOGFILE" "$AGENT_RUN_EXIT")
+            fi
+            # Zero-token exits are often transient (network loss,
+            # DNS failure, temporary outage).  Allow retry.
+            if [ -z "$_retriable" ] && [ "$_zero_token_fatal" = true ]; then
+                _retriable="zero_tokens"
+            fi
+        fi
+        if [ -n "$_retriable" ] && [ "$MAX_RETRY_WAIT" -gt 0 ]; then
+            _backoff=30; _total_waited=0
+            while [ "$_total_waited" -lt "$MAX_RETRY_WAIT" ]; do
+                hlog_err "rate limited: ${FATAL_MSG}"
+                hlog "retrying in ${_backoff}s (waited ${_total_waited}/${MAX_RETRY_WAIT}s)"
+                printf '%s/%s\n' "$_total_waited" "$MAX_RETRY_WAIT" > "$RETRY_FILE"
+                sleep "$_backoff"
+                _total_waited=$((_total_waited + _backoff))
+                _backoff=$((_backoff * 2))
+                if [ "$_backoff" -gt 1800 ]; then
+                    _backoff=1800
+                fi
+                hlog "retry: starting session"
+                AGENT_RUN_EXIT=0
+                agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
+                    | /activity-filter.sh || AGENT_RUN_EXIT=$?
+                STATS_LINE=$(agent_extract_stats "$LOGFILE")
+                IFS=$'\t' read -r cost tok_in tok_out cache_rd cache_cr dur api_ms turns <<< "$STATS_LINE"
+                cost="${cost:-0}"; tok_in="${tok_in:-0}"; tok_out="${tok_out:-0}"
+                cache_rd="${cache_rd:-0}"; cache_cr="${cache_cr:-0}"
+                dur="${dur:-0}"; api_ms="${api_ms:-0}"; turns="${turns:-0}"
+                if [ -n "${SWARM_PRICE_INPUT:-}" ]; then
+                    cost=$(awk "BEGIN {printf \"%.6f\",
+                        (${tok_in} * ${SWARM_PRICE_INPUT} + ${tok_out} * ${SWARM_PRICE_OUTPUT:-0} + ${cache_rd} * ${SWARM_PRICE_CACHED:-0}) / 1000000}")
+                fi
+                printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+                    "$(date +%s)" "$cost" "$tok_in" "$tok_out" \
+                    "$cache_rd" "$cache_cr" "$dur" "$api_ms" "$turns" \
+                    >> "$STATS_FILE"
+                FATAL_MSG=""
+                if type -t agent_detect_fatal &>/dev/null; then
+                    FATAL_MSG=$(agent_detect_fatal "$LOGFILE" "$AGENT_RUN_EXIT")
+                fi
+                if [ -z "$FATAL_MSG" ]; then
+                    hlog "retry: session succeeded"
+                    rm -f "$RETRY_FILE"
+                    break
+                fi
+                _retriable=$(agent_is_retriable "$LOGFILE" "$AGENT_RUN_EXIT")
+                if [ -z "$_retriable" ]; then
+                    hlog_err "fatal (non-retriable): ${FATAL_MSG}"
+                    hlog_err "exiting due to unrecoverable error"
+                    exit 1
+                fi
+            done
+            if [ -n "$FATAL_MSG" ]; then
+                hlog_err "fatal: ${FATAL_MSG}"
+                hlog_err "retry wait limit reached (${MAX_RETRY_WAIT}s), exiting"
+                exit 1
+            fi
+        else
+            hlog_err "fatal: ${FATAL_MSG}"
+            hlog_err "exiting due to unrecoverable error"
+            exit 1
+        fi
     fi
 
     git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe

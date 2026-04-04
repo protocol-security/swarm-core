@@ -1,0 +1,44 @@
+name: Integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily at 07:00 UTC.
+    - cron: "0 7 * * *"
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq bc
+      - name: Integration smoke test
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY not set, skipping."
+            exit 0
+          fi
+          ./tests/test.sh
+
+  full-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: smoke-test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq bc
+      - name: Full test suite
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY not set, skipping."
+            exit 0
+          fi
+          ./tests/test.sh --all

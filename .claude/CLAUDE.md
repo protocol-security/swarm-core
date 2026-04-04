@@ -49,6 +49,14 @@
   examples, add test cases to matrices, remove stale
   references.
 
+## Releases
+
+- Tag every release as an annotated tag on the merge commit
+  that lands the version bump on master.
+- Format: `git tag -a v$VERSION $COMMIT -m "v$VERSION — summary"`.
+- Summary: terse, covers the headline feature(s).
+- Remind the user to push tags (`git push origin --tags`).
+
 ## Quality bars
 
 - Wrap to 79 chars.

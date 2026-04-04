@@ -190,7 +190,7 @@ echo "=== 15. Timestamp prefix format ==="
 
 RAW=$(run_filter_raw 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}')
 PLAIN=$(echo "$RAW" | strip_ansi)
-TS_MATCH=$(echo "$PLAIN" | grep -oP '^\d{2}:\d{2}:\d{2}' || true)
+TS_MATCH=$(echo "$PLAIN" | grep -oE '^[0-9]{2}:[0-9]{2}:[0-9]{2}' || true)
 if [ -n "$TS_MATCH" ]; then
     echo "  PASS: has HH:MM:SS timestamp"
     PASS=$((PASS + 1))
@@ -213,7 +213,8 @@ echo "=== 16. ANSI color — full line yellow ==="
 RAW=$(run_filter_raw 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}')
 
 # Yellow open (\033[33m) should appear before the timestamp.
-if printf '%s' "$RAW" | grep -qP '\x1b\[33m'; then
+_esc=$(printf '\033')
+if printf '%s' "$RAW" | grep -q "${_esc}\[33m"; then
     echo "  PASS: has yellow ANSI open"
     PASS=$((PASS + 1))
 else
@@ -222,7 +223,7 @@ else
 fi
 
 # Reset (\033[0m) should appear after the tool content.
-if printf '%s' "$RAW" | grep -qP '\x1b\[0m'; then
+if printf '%s' "$RAW" | grep -q "${_esc}\[0m"; then
     echo "  PASS: has ANSI reset"
     PASS=$((PASS + 1))
 else

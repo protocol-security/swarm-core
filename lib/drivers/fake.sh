@@ -23,7 +23,11 @@ agent_run() {
         printf '{"type":"system","subtype":"init","session_id":"fake-01","tools":["Bash","Read","Write"],"model":"%s"}\n' "$model"
         printf '{"type":"assistant","session_id":"fake-01","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"Fake agent completed the task."}]}}\n'
         printf '{"type":"result","subtype":"success","session_id":"fake-01","total_cost_usd":0.0001,"is_error":false,"duration_ms":100,"duration_api_ms":80,"num_turns":1,"result":"Done.","usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}\n'
-    } | stdbuf -oL tee "$logfile"
+    } | if command -v stdbuf &>/dev/null; then
+        stdbuf -oL tee "$logfile"
+    else
+        tee "$logfile"
+    fi
 }
 
 # No agent-specific settings needed for the fake driver.
@@ -31,6 +35,9 @@ agent_settings() { :; }
 
 # Detect fatal errors — fake driver never fails fatally.
 agent_detect_fatal() { :; }
+
+# Detect retriable errors — fake driver is never rate-limited.
+agent_is_retriable() { :; }
 
 # Extract stats from session log — delegates to the shared JSONL
 # parser since the fake driver emits the standard format.

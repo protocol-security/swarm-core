@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.14.0 — 2026-04-04
+
+- **Rate-limit retry with exponential backoff.** New
+  `max_retry_wait` field (seconds) in the swarmfile. When set,
+  agents retry with exponential backoff (30 s initial, 30 min cap)
+  on rate limits and zero-token exits instead of exiting. Default
+  is 0 (exit immediately). New `agent_is_retriable` driver
+  interface function distinguishes retriable errors from true
+  fatals.
+
+## 0.13.1 — 2026-04-04
+
+- **Dependency version warnings.** `check_deps` now warns when
+  bash, git, jq, or docker are below the tested minimums. Set
+  `SWARM_SKIP_DEP_CHECK=1` to silence. Never blocks execution.
+- **Disable git commit signing in containers.** Agents set
+  `commit.gpgsign=false` globally so FIDO/GPG-enforced hosts
+  do not block agent commits. Tests do the same in temp repos.
+- **jq 1.8 compatibility.** Guard `split("/") | .[-1]` with
+  `// ""` fallback in model summary expressions. jq 1.8 returns
+  null for `.[-1]` on empty arrays (from splitting an empty
+  string), breaking `rtrimstr()`. Coerce pricing interpolation
+  values to numbers with `+ 0`. Both changes are no-ops on
+  jq 1.6. (#42)
+
 ## 0.13.0 — 2026-03-23
 
 - **Swarmfile-only configuration.** Environment variables and CLI

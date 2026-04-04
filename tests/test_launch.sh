@@ -516,9 +516,14 @@ echo "--- check_deps ---"
 
 source "$TESTS_DIR/../lib/check-deps.sh"
 
-# Present tools should pass silently.
+# Present tools should pass silently (version warnings are
+# expected on macOS where system bash is 3.2).
 out=$(check_deps bash git 2>&1) || true
-assert_eq "present deps succeed" "" "$out"
+if [ "${BASH_VERSINFO[0]}" -ge 5 ]; then
+    assert_eq "present deps succeed" "" "$out"
+else
+    echo "  SKIP: system bash ${BASH_VERSION} triggers expected warning"
+fi
 
 # Missing tool should print error and list the tool name.
 out=$(check_deps __no_such_tool__ 2>&1) || true
@@ -535,6 +540,55 @@ assert_eq "mixed deps lists missing" "true" \
     "$([[ "$out" == *"__no_such_tool__"* ]] && echo true || echo false)"
 assert_eq "mixed deps omits present" "false" \
     "$([[ "$out" == *"bash"* ]] && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "--- _ver_ge comparison ---"
+
+assert_eq "ver_ge 1.6 >= 1.6"   "0" "$(_ver_ge 1.6 1.6  && echo 0 || echo 1)"
+assert_eq "ver_ge 1.8 >= 1.6"   "0" "$(_ver_ge 1.8 1.6  && echo 0 || echo 1)"
+assert_eq "ver_ge 2.0 >= 1.6"   "0" "$(_ver_ge 2.0 1.6  && echo 0 || echo 1)"
+assert_eq "ver_ge 1.5 < 1.6"    "1" "$(_ver_ge 1.5 1.6  && echo 0 || echo 1)"
+assert_eq "ver_ge 0.9 < 1.0"    "1" "$(_ver_ge 0.9 1.0  && echo 0 || echo 1)"
+assert_eq "ver_ge 24.0 >= 24.0" "0" "$(_ver_ge 24.0 24.0 && echo 0 || echo 1)"
+assert_eq "ver_ge 29.3 >= 24.0" "0" "$(_ver_ge 29.3 24.0 && echo 0 || echo 1)"
+assert_eq "ver_ge 23.9 < 24.0"  "1" "$(_ver_ge 23.9 24.0 && echo 0 || echo 1)"
+
+echo ""
+echo "--- _dep_version extraction ---"
+
+bash_ver=$(_dep_version bash)
+assert_eq "bash ver non-empty" "true" \
+    "$([ -n "$bash_ver" ] && echo true || echo false)"
+assert_eq "bash ver is dotted" "true" \
+    "$([[ "$bash_ver" == *.* ]] && echo true || echo false)"
+
+git_ver=$(_dep_version git)
+assert_eq "git ver non-empty" "true" \
+    "$([ -n "$git_ver" ] && echo true || echo false)"
+
+jq_ver=$(_dep_version jq)
+assert_eq "jq ver non-empty" "true" \
+    "$([ -n "$jq_ver" ] && echo true || echo false)"
+
+assert_eq "unknown cmd returns error" "1" \
+    "$(_dep_version __no_such__ 2>/dev/null && echo 0 || echo 1)"
+
+echo ""
+echo "--- version warning output ---"
+
+# Current system should produce no warnings (skip on macOS
+# where system bash is 3.2, below tested minimum).
+warn_out=$(check_deps bash git jq 2>&1) || true
+if [ "${BASH_VERSINFO[0]}" -ge 5 ]; then
+    assert_eq "no warnings on current system" "" "$warn_out"
+else
+    echo "  SKIP: system bash ${BASH_VERSION} below minimum (expected)"
+fi
+
+# SWARM_SKIP_DEP_CHECK silences warnings.
+warn_out=$(SWARM_SKIP_DEP_CHECK=1 check_deps bash git jq 2>&1) || true
+assert_eq "skip dep check silences" "" "$warn_out"
 
 # ============================================================
 # Script-level dependency guard integration tests.
@@ -583,14 +637,19 @@ echo "=== 18. Swarmfile is required ==="
 
 # launch.sh start without a config should fail with a clear message.
 # Must run from a git repo (launch.sh needs git rev-parse).
-_no_cfg_dir=$(mktemp -d)
-git -C "$_no_cfg_dir" init -q
-out=$(cd "$_no_cfg_dir" && SWARM_CONFIG="" bash "$TESTS_DIR/../launch.sh" start 2>&1) \
-    && rc=0 || rc=$?
-rm -rf "$_no_cfg_dir"
-assert_eq "no config exits nonzero" "1" "$rc"
-assert_eq "no config says swarmfile" "true" \
-    "$([[ "$out" == *"swarmfile"* ]] && echo true || echo false)"
+# Requires docker in PATH (check_deps runs before config check).
+if command -v docker &>/dev/null; then
+    _no_cfg_dir=$(mktemp -d)
+    git -C "$_no_cfg_dir" init -q
+    out=$(cd "$_no_cfg_dir" && SWARM_CONFIG="" bash "$TESTS_DIR/../launch.sh" start 2>&1) \
+        && rc=0 || rc=$?
+    rm -rf "$_no_cfg_dir"
+    assert_eq "no config exits nonzero" "1" "$rc"
+    assert_eq "no config says swarmfile" "true" \
+        "$([[ "$out" == *"swarmfile"* ]] && echo true || echo false)"
+else
+    echo "  SKIP: docker not available (macOS CI)"
+fi
 
 # ============================================================
 echo ""

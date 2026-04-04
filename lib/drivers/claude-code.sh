@@ -110,6 +110,21 @@ agent_detect_fatal() {
     fi
 }
 
+# Detect retriable errors (rate limits, overload).
+# Returns non-empty string if the error is retriable, empty if fatal.
+# Args: <logfile> <exit_code>
+agent_is_retriable() {
+    local logfile="$1"
+    grep -q '"overloaded_error"\|"rate_limit_error"\|"overloaded"' \
+        "$logfile" 2>/dev/null && echo "rate_limited" && return
+    grep -q '"Too many requests"\|"rate limit"' \
+        "$logfile" 2>/dev/null && echo "rate_limited" && return
+    if [ -f "${logfile}.err" ]; then
+        grep -qi 'rate.limit\|too many requests\|overloaded' \
+            "${logfile}.err" 2>/dev/null && echo "rate_limited" && return
+    fi
+}
+
 # Map generic config to agent-specific Docker env vars.
 # Args: <effort>
 # Prints -e flags for docker run (one flag per line).
