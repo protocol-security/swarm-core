@@ -480,7 +480,7 @@ assert_eq "with top prompt, present" "true" "$(all_groups_have_prompt "$TMPDIR/a
 
 # Model summary jq handles missing top-level prompt gracefully.
 MODEL_SUM=$(jq -r \
-    '(.prompt // "") as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
+    '(.prompt // "") as $dp | ($dp | split("/") | .[-1] // "" | rtrimstr(".md")) as $dp_stem |
     [.agents[] |
       "\(.count)x \(.model | split("/") | .[-1])" +
       (if .context == "none" then " ctx:bare"

@@ -68,7 +68,7 @@ if [ -n "$CONFIG_FILE" ]; then
     fi
     NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
     MODEL_SUMMARY=$(jq -r \
-        '(.prompt // "") as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
+        '(.prompt // "") as $dp | ($dp | split("/") | .[-1] // "" | rtrimstr(".md")) as $dp_stem |
         [.agents[] |
           "\(.count)x \(.model | split("/") | .[-1])" +
           (if .context == "none" then " ctx:bare"

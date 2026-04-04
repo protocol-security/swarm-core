@@ -267,7 +267,7 @@ cmd_start() {
         local price_input="" price_output="" price_cached=""
         local _price
         _price=$(jq -r --arg m "$agent_model" \
-            '.pricing[$m] // empty | "\(.input) \(.output) \(.cached // 0)"' \
+            '.pricing[$m] // empty | "\(.input + 0) \(.output + 0) \((.cached // 0) + 0)"' \
             "$CONFIG_FILE" 2>/dev/null || true)
         if [ -n "$_price" ]; then
             read -r price_input price_output price_cached <<< "$_price"
@@ -305,7 +305,7 @@ cmd_start() {
     # Write state file so a standalone dashboard can pick up config.
     local state_model_summary state_config_label
     state_model_summary=$(jq -r \
-        '(.prompt // "") as $dp | ($dp | split("/") | .[-1] | rtrimstr(".md")) as $dp_stem |
+        '(.prompt // "") as $dp | ($dp | split("/") | .[-1] // "" | rtrimstr(".md")) as $dp_stem |
         [.agents[] |
           "\(.count)x \(.model | split("/") | .[-1])" +
           (if .context == "none" then " ctx:bare"
@@ -462,7 +462,7 @@ cmd_post_process() {
     local price_input="" price_output="" price_cached=""
     local _price
     _price=$(jq -r --arg m "$pp_model" \
-        '.pricing[$m] // empty | "\(.input) \(.output) \(.cached // 0)"' \
+        '.pricing[$m] // empty | "\(.input + 0) \(.output + 0) \((.cached // 0) + 0)"' \
         "$CONFIG_FILE" 2>/dev/null || true)
     if [ -n "$_price" ]; then
         read -r price_input price_output price_cached <<< "$_price"

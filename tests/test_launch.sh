@@ -687,7 +687,7 @@ echo "=== 13. Pricing extraction from config ==="
 extract_pricing() {
     local config="$1" model="$2"
     jq -r --arg m "$model" \
-        '.pricing[$m] // empty | "\(.input) \(.output) \(.cached // 0)"' \
+        '.pricing[$m] // empty | "\(.input + 0) \(.output + 0) \((.cached // 0) + 0)"' \
         "$config" 2>/dev/null || true
 }
 
