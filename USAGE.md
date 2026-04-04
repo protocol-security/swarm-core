@@ -34,6 +34,7 @@ Credentials stay as env vars (not in shell history).
 | `CLAUDE_CODE_OAUTH_TOKEN` | | OAuth token via `claude setup-token`. |
 | `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
 | `SWARM_TITLE` | | Dashboard title override. |
+| `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
 
 Per-group credentials (`api_key`, `auth_token`, `base_url`)
 are set in the swarmfile.  Use `$VAR` references to pull

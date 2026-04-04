@@ -537,6 +537,50 @@ assert_eq "mixed deps omits present" "false" \
     "$([[ "$out" == *"bash"* ]] && echo true || echo false)"
 
 # ============================================================
+echo ""
+echo "--- _ver_ge comparison ---"
+
+assert_eq "ver_ge 1.6 >= 1.6"   "0" "$(_ver_ge 1.6 1.6  && echo 0 || echo 1)"
+assert_eq "ver_ge 1.8 >= 1.6"   "0" "$(_ver_ge 1.8 1.6  && echo 0 || echo 1)"
+assert_eq "ver_ge 2.0 >= 1.6"   "0" "$(_ver_ge 2.0 1.6  && echo 0 || echo 1)"
+assert_eq "ver_ge 1.5 < 1.6"    "1" "$(_ver_ge 1.5 1.6  && echo 0 || echo 1)"
+assert_eq "ver_ge 0.9 < 1.0"    "1" "$(_ver_ge 0.9 1.0  && echo 0 || echo 1)"
+assert_eq "ver_ge 24.0 >= 24.0" "0" "$(_ver_ge 24.0 24.0 && echo 0 || echo 1)"
+assert_eq "ver_ge 29.3 >= 24.0" "0" "$(_ver_ge 29.3 24.0 && echo 0 || echo 1)"
+assert_eq "ver_ge 23.9 < 24.0"  "1" "$(_ver_ge 23.9 24.0 && echo 0 || echo 1)"
+
+echo ""
+echo "--- _dep_version extraction ---"
+
+bash_ver=$(_dep_version bash)
+assert_eq "bash ver non-empty" "true" \
+    "$([ -n "$bash_ver" ] && echo true || echo false)"
+assert_eq "bash ver is dotted" "true" \
+    "$([[ "$bash_ver" == *.* ]] && echo true || echo false)"
+
+git_ver=$(_dep_version git)
+assert_eq "git ver non-empty" "true" \
+    "$([ -n "$git_ver" ] && echo true || echo false)"
+
+jq_ver=$(_dep_version jq)
+assert_eq "jq ver non-empty" "true" \
+    "$([ -n "$jq_ver" ] && echo true || echo false)"
+
+assert_eq "unknown cmd returns error" "1" \
+    "$(_dep_version __no_such__ 2>/dev/null && echo 0 || echo 1)"
+
+echo ""
+echo "--- version warning output ---"
+
+# Current system should produce no warnings.
+warn_out=$(check_deps bash git jq 2>&1) || true
+assert_eq "no warnings on current system" "" "$warn_out"
+
+# SWARM_SKIP_DEP_CHECK silences warnings.
+warn_out=$(SWARM_SKIP_DEP_CHECK=1 check_deps bash git jq 2>&1) || true
+assert_eq "skip dep check silences" "" "$warn_out"
+
+# ============================================================
 # Script-level dependency guard integration tests.
 # Build a minimal PATH with only basic utilities so that
 # jq, docker, bc, tput are genuinely absent.
