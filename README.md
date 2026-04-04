@@ -1,5 +1,7 @@
 # claude-swarm
 
+[![CI](https://github.com/moodmosaic/claude-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/moodmosaic/claude-swarm/actions/workflows/ci.yml)
+
 N coding agents in Docker, coordinating through git.
 No orchestrator, no message passing.  Designed to support
 multiple agent CLIs via a driver abstraction layer.

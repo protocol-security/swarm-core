@@ -516,9 +516,14 @@ echo "--- check_deps ---"
 
 source "$TESTS_DIR/../lib/check-deps.sh"
 
-# Present tools should pass silently.
+# Present tools should pass silently (version warnings are
+# expected on macOS where system bash is 3.2).
 out=$(check_deps bash git 2>&1) || true
-assert_eq "present deps succeed" "" "$out"
+if [ "${BASH_VERSINFO[0]}" -ge 5 ]; then
+    assert_eq "present deps succeed" "" "$out"
+else
+    echo "  SKIP: system bash ${BASH_VERSION} triggers expected warning"
+fi
 
 # Missing tool should print error and list the tool name.
 out=$(check_deps __no_such_tool__ 2>&1) || true
@@ -572,9 +577,14 @@ assert_eq "unknown cmd returns error" "1" \
 echo ""
 echo "--- version warning output ---"
 
-# Current system should produce no warnings.
+# Current system should produce no warnings (skip on macOS
+# where system bash is 3.2, below tested minimum).
 warn_out=$(check_deps bash git jq 2>&1) || true
-assert_eq "no warnings on current system" "" "$warn_out"
+if [ "${BASH_VERSINFO[0]}" -ge 5 ]; then
+    assert_eq "no warnings on current system" "" "$warn_out"
+else
+    echo "  SKIP: system bash ${BASH_VERSION} below minimum (expected)"
+fi
 
 # SWARM_SKIP_DEP_CHECK silences warnings.
 warn_out=$(SWARM_SKIP_DEP_CHECK=1 check_deps bash git jq 2>&1) || true
@@ -627,14 +637,19 @@ echo "=== 18. Swarmfile is required ==="
 
 # launch.sh start without a config should fail with a clear message.
 # Must run from a git repo (launch.sh needs git rev-parse).
-_no_cfg_dir=$(mktemp -d)
-git -C "$_no_cfg_dir" init -q
-out=$(cd "$_no_cfg_dir" && SWARM_CONFIG="" bash "$TESTS_DIR/../launch.sh" start 2>&1) \
-    && rc=0 || rc=$?
-rm -rf "$_no_cfg_dir"
-assert_eq "no config exits nonzero" "1" "$rc"
-assert_eq "no config says swarmfile" "true" \
-    "$([[ "$out" == *"swarmfile"* ]] && echo true || echo false)"
+# Requires docker in PATH (check_deps runs before config check).
+if command -v docker &>/dev/null; then
+    _no_cfg_dir=$(mktemp -d)
+    git -C "$_no_cfg_dir" init -q
+    out=$(cd "$_no_cfg_dir" && SWARM_CONFIG="" bash "$TESTS_DIR/../launch.sh" start 2>&1) \
+        && rc=0 || rc=$?
+    rm -rf "$_no_cfg_dir"
+    assert_eq "no config exits nonzero" "1" "$rc"
+    assert_eq "no config says swarmfile" "true" \
+        "$([[ "$out" == *"swarmfile"* ]] && echo true || echo false)"
+else
+    echo "  SKIP: docker not available (macOS CI)"
+fi
 
 # ============================================================
 echo ""
