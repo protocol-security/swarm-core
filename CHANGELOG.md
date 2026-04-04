@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.1 — 2026-04-04
+
+- **jq 1.8 compatibility.** Guard `split("/") | .[-1]` with
+  `// ""` fallback in model summary expressions. jq 1.8 returns
+  null for `.[-1]` on empty arrays (from splitting an empty
+  string), breaking `rtrimstr()`. Coerce pricing interpolation
+  values to numbers with `+ 0`. Both changes are no-ops on
+  jq 1.6. (#42)
+
 ## 0.13.0 — 2026-03-23
 
 - **Swarmfile-only configuration.** Environment variables and CLI
