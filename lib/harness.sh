@@ -381,6 +381,31 @@ while true; do
     git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
     AFTER=$(git rev-parse origin/agent-work)
 
+    # Safety net: if the agent committed locally but failed to
+    # push (concurrent lock, transient error), push on its behalf
+    # with jittered retries to avoid collisions across containers.
+    _local_head=$(git rev-parse HEAD)
+    if [ "$_local_head" != "$AFTER" ] \
+            && [ "$(git rev-list origin/agent-work..HEAD 2>/dev/null | wc -l)" -gt 0 ]; then
+        hlog "found unpushed local commits, pushing"
+        _push_ok=false
+        for _try in 1 2 3; do
+            sleep $((RANDOM % 5 + 1))
+            if git pull --rebase origin agent-work 2>&1 | hlog_pipe \
+                    && git push origin agent-work 2>&1 | hlog_pipe; then
+                _push_ok=true
+                break
+            fi
+            hlog "push retry ${_try}/3"
+        done
+        if [ "$_push_ok" = true ]; then
+            git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
+            AFTER=$(git rev-parse origin/agent-work)
+        else
+            hlog_err "push failed after 3 retries"
+        fi
+    fi
+
     if [ "$BEFORE" = "$AFTER" ]; then
         IDLE_COUNT=$((IDLE_COUNT + 1))
         printf '%s/%s\n' "$IDLE_COUNT" "$MAX_IDLE" > "$IDLE_FILE"

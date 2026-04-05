@@ -210,7 +210,7 @@ PPPROMPT
             jq -n --arg m1 "$dm" --arg m2 "claude-sonnet-4-6" \
                 '{prompt: "unused", agents: [
                     {count: 1, model: $m1, effort: "high"},
-                    {count: 1, model: $m2, effort: "low"}
+                    {count: 1, model: $m2, effort: "high"}
                 ]}' > "$cfg"
             ;;
         config-mixed-auth)
