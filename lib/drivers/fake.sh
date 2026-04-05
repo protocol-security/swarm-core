@@ -54,8 +54,10 @@ def reset: "\u001b[0m";
 fromjson? // empty |
 select(.type == "assistant") |
 .message.content[]? |
-select(.type == "tool_use") |
-"\(prefix) " + .name + reset
+if .type == "thinking" then "\(prefix) Think" + reset
+elif .type == "tool_use" then "\(prefix) " + .name + reset
+else empty
+end
 JQ
 }
 

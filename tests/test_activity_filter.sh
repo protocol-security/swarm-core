@@ -117,7 +117,28 @@ assert_eq "text event silent" "" "$OUT"
 
 # ============================================================
 echo ""
-echo "=== 8. Multiple tool uses in one message ==="
+echo "=== 8. Thinking content block ==="
+
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Let me analyze the error in src/main.ts and figure out the root cause.","signature":"sig"}]}}')
+assert_eq "thinking displayed" "agent[1] Think: Let me analyze the error in src/main.ts and figure out the root cause." "$OUT"
+
+LONG_THINK="This is a very long thinking block that should be truncated because it exceeds the eighty character limit for display purposes in the activity stream"
+OUT=$(run_filter 1 "{\"type\":\"assistant\",\"session_id\":\"s\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"$LONG_THINK\",\"signature\":\"sig\"}]}}")
+assert_contains "thinking truncated" "..." "$OUT"
+
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Line one\nLine two\nLine three","signature":"sig"}]}}')
+assert_eq "thinking first line only" "agent[1] Think: Line one" "$OUT"
+
+# Thinking + tool_use in same message — both displayed.
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Plan the edit","signature":"sig"},{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"x.ts"}}]}}')
+LINES=$(echo "$OUT" | wc -l | tr -d ' ')
+assert_eq "thinking + tool both shown" "2" "$LINES"
+assert_contains "thinking line present" "Think: Plan the edit" "$OUT"
+assert_contains "tool line present" "Edit x.ts" "$OUT"
+
+# ============================================================
+echo ""
+echo "=== 9. Multiple tool uses in one message ==="
 
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"a.ts"}},{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"b.ts"}}]}}')
 LINES=$(echo "$OUT" | wc -l | tr -d ' ')
@@ -127,7 +148,7 @@ assert_contains "second file" "Read b.ts" "$OUT"
 
 # ============================================================
 echo ""
-echo "=== 9. Invalid JSON is silently skipped ==="
+echo "=== 10. Invalid JSON is silently skipped ==="
 
 OUT=$(run_filter 1 'not json at all')
 assert_eq "garbage skipped" "" "$OUT"
@@ -137,7 +158,7 @@ assert_eq "partial json skipped" "" "$OUT"
 
 # ============================================================
 echo ""
-echo "=== 10. Multi-line JSONL stream ==="
+echo "=== 11. Multi-line JSONL stream ==="
 
 cat > "$TMPDIR/stream.jsonl" <<'EOF'
 {"type":"system","subtype":"init","session_id":"s","tools":["Bash","Read"]}
@@ -155,7 +176,7 @@ assert_contains "shell event" "agent[5] Shell: make build" "$OUT"
 
 # ============================================================
 echo ""
-echo "=== 11. Glob and Grep tools ==="
+echo "=== 12. Glob and Grep tools ==="
 
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Glob","input":{"pattern":"**/*.ts"}}]}}')
 assert_eq "glob tool" "agent[1] Glob **/*.ts" "$OUT"
@@ -165,28 +186,28 @@ assert_eq "grep tool" "agent[1] Grep TODO" "$OUT"
 
 # ============================================================
 echo ""
-echo "=== 12. Task tool ==="
+echo "=== 13. Task tool ==="
 
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Task","input":{"description":"Fix lint errors"}}]}}')
 assert_eq "task tool" "agent[1] Task: Fix lint errors" "$OUT"
 
 # ============================================================
 echo ""
-echo "=== 13. Unknown tool ==="
+echo "=== 14. Unknown tool ==="
 
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"WebSearch","input":{"query":"test"}}]}}')
 assert_eq "unknown tool fallback" "agent[1] WebSearch" "$OUT"
 
 # ============================================================
 echo ""
-echo "=== 14. Default AGENT_ID ==="
+echo "=== 15. Default AGENT_ID ==="
 
 OUT=$(AGENT_ID="" "$FILTER" <<< '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}' | strip_ts)
 assert_contains "empty id uses default" "agent[?] Shell: pwd" "$OUT"
 
 # ============================================================
 echo ""
-echo "=== 15. Timestamp prefix format ==="
+echo "=== 16. Timestamp prefix format ==="
 
 RAW=$(run_filter_raw 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}')
 PLAIN=$(echo "$RAW" | strip_ansi)
@@ -208,7 +229,7 @@ assert_eq "agent padded 3 spaces" "   " "$PAD_SPACES"
 
 # ============================================================
 echo ""
-echo "=== 16. ANSI color — full line yellow ==="
+echo "=== 17. ANSI color — full line yellow ==="
 
 RAW=$(run_filter_raw 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"pwd"}}]}}')
 

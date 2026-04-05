@@ -73,6 +73,7 @@ JQ_FILTER=$(agent_activity_jq)
 assert_not_empty "claude-code jq filter" "$JQ_FILTER"
 assert_contains "claude-code jq has Bash" "Bash" "$JQ_FILTER"
 assert_contains "claude-code jq has Read" "Read" "$JQ_FILTER"
+assert_contains "claude-code jq has thinking" "thinking" "$JQ_FILTER"
 
 INSTALL=$(agent_install_cmd)
 assert_contains "claude-code install has curl" "curl" "$INSTALL"
@@ -244,7 +245,15 @@ CC_OUT=$(echo "$CLAUDE_INPUT" | \
     bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
 assert_contains "driver jq via file boundary" "Read src/main.ts" "$CC_OUT"
 
-# Test 4: Fake driver's jq filter works via file boundary too.
+# Test 4: Claude Code thinking block via file boundary.
+CC_THINK='{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Analyzing the error in the test suite.","signature":"sig"}]}}'
+CC_THINK_OUT=$(echo "$CC_THINK" | \
+    AGENT_ID=2 SWARM_JQ_FILTER_FILE="$TMPDIR/claude-code.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "cc thinking via file boundary" "Think:" "$CC_THINK_OUT"
+assert_contains "cc thinking content" "Analyzing the error" "$CC_THINK_OUT"
+
+# Test 5: Fake driver's jq filter works via file boundary too.
 source "$DRIVERS_DIR/fake.sh"
 agent_activity_jq > "$TMPDIR/fake.jq"
 FAKE_INPUT='{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"tool_use","id":"t","name":"DoSomething","input":{}}]}}'
@@ -387,6 +396,7 @@ GEM_JQ=$(agent_activity_jq)
 assert_not_empty "gemini-cli jq filter" "$GEM_JQ"
 assert_contains "gemini-cli jq has tool_use" "tool_use" "$GEM_JQ"
 assert_contains "gemini-cli jq has run_shell_command" "run_shell_command" "$GEM_JQ"
+assert_contains "gemini-cli jq has thought" "thought" "$GEM_JQ"
 
 GEM_INSTALL=$(agent_install_cmd)
 assert_contains "gemini-cli install has npm" "npm" "$GEM_INSTALL"
@@ -600,6 +610,14 @@ GEM_UNK_OUT=$(echo "$GEMINI_UNKNOWN" | \
     AGENT_ID=5 SWARM_JQ_FILTER_FILE="$TMPDIR/gemini.jq" \
     bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
 assert_contains "gemini jq unknown tool" "some_custom_tool" "$GEM_UNK_OUT"
+
+# Gemini CLI thought event via file boundary.
+GEMINI_THINK='{"type":"thought","content":"Reviewing the build configuration."}'
+GEM_THINK_OUT=$(echo "$GEMINI_THINK" | \
+    AGENT_ID=5 SWARM_JQ_FILTER_FILE="$TMPDIR/gemini.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "gemini jq thought event" "Think:" "$GEM_THINK_OUT"
+assert_contains "gemini jq thought content" "Reviewing the build" "$GEM_THINK_OUT"
 
 # ============================================================
 echo ""
