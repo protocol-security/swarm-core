@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.17.0 — 2026-04-04
+
+- **Push safety net for concurrent agents.** After each agent
+  session the harness checks for unpushed local commits and
+  retries `git pull --rebase && git push` up to three times with
+  random jitter.  Fixes the race condition where multiple agents
+  competing for the bare-repo lock could leave commits stranded
+  locally, causing idle-timeout exits in multi-agent swarms.
+
 ## 0.16.0 — 2026-04-04
 
 - **Thinking/reasoning in activity stream.** Agent logs now
