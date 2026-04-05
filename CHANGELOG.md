@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.0 — 2026-04-04
+
+- **Top-level tag with per-group override.** New `tag` field in
+  the swarmfile sets a default label for all agent groups.
+  Per-group `tag` overrides the top-level value.  Supports
+  `$VAR` env expansion.  Post-process inherits the top-level
+  tag when none is set. (#41)
+- **Documentation cleanup.** Complete the driver interface list
+  in USAGE.md (all 13 functions).  Add missing test files to
+  the unit-test listing.  Remove stale claims, redundant
+  paragraphs, and fix per-group fields list in README.md.
+
 ## 0.14.0 — 2026-04-04
 
 - **Rate-limit retry with exponential backoff.** New
