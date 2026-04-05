@@ -95,14 +95,18 @@ def reset:
   "\u001b[0m";
 
 fromjson? // empty |
-select(.type == "tool_use") |
-if   .tool_name == "run_shell_command" then "\(prefix) Shell: " + ((.parameters.command // "") | first_line | truncate(80)) + reset
-elif .tool_name == "read_file"         then "\(prefix) Read "  + (.parameters.file_path // "") + reset
-elif .tool_name == "write_file"        then "\(prefix) Write " + (.parameters.file_path // "") + reset
-elif .tool_name == "edit_file"         then "\(prefix) Edit "  + (.parameters.file_path // "") + reset
-elif .tool_name == "list_directory"    then "\(prefix) List "  + (.parameters.dir_path // "") + reset
-elif .tool_name == "grep_search"       then "\(prefix) Grep "  + (.parameters.pattern // "") + reset
-else "\(prefix) " + (.tool_name // "unknown") + reset
+if .type == "thought" then
+  "\(prefix) Think: " + ((.content // "") | first_line | truncate(80)) + reset
+elif .type == "tool_use" then
+  if   .tool_name == "run_shell_command" then "\(prefix) Shell: " + ((.parameters.command // "") | first_line | truncate(80)) + reset
+  elif .tool_name == "read_file"         then "\(prefix) Read "  + (.parameters.file_path // "") + reset
+  elif .tool_name == "write_file"        then "\(prefix) Write " + (.parameters.file_path // "") + reset
+  elif .tool_name == "edit_file"         then "\(prefix) Edit "  + (.parameters.file_path // "") + reset
+  elif .tool_name == "list_directory"    then "\(prefix) List "  + (.parameters.dir_path // "") + reset
+  elif .tool_name == "grep_search"       then "\(prefix) Grep "  + (.parameters.pattern // "") + reset
+  else "\(prefix) " + (.tool_name // "unknown") + reset
+  end
+else empty
 end
 JQ
 }

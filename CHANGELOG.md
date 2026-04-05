@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.16.0 — 2026-04-04
+
+- **Thinking/reasoning in activity stream.** Agent logs now
+  display thinking content alongside tool calls.  Claude Code
+  thinking blocks (`type:"thinking"`) and Gemini CLI thought
+  events (`type:"thought"`) both render as
+  `Think: <first 80 chars>` in the live activity feed.
+
 ## 0.15.0 — 2026-04-04
 
 - **Top-level tag with per-group override.** New `tag` field in

@@ -113,9 +113,16 @@ what an agent is doing:
 ```
 
 The filter (`lib/activity-filter.sh`) parses stream-json
-events from the agent CLI and prints one line per tool call.
-The timestamp and agent ID are colored in ANSI yellow
-(matching git's commit-hash color) for readability.
+events from the agent CLI and prints one line per tool call
+or thinking block.  The timestamp and agent ID are colored
+in ANSI yellow (matching git's commit-hash color) for
+readability.
+
+Thinking/reasoning content appears as `Think: <summary>`
+when the model produces it.  Whether thinking is emitted
+depends on the model and configuration: Claude Code requires
+extended thinking to be enabled, and Gemini CLI emits thought
+events only for models that support them.
 
 ## Testing
 
