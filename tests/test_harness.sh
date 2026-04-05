@@ -568,6 +568,82 @@ assert_eq "backoff capped at 1800" "1800" "$(simulate_backoff 10)"
 
 # ============================================================
 echo ""
+echo "=== 12. Push safety net — unpushed commit detection ==="
+
+# Create a bare repo and a working clone to simulate the
+# harness post-session state where an agent committed locally
+# but failed to push.
+BARE="$TMPDIR/safety-bare.git"
+WORK="$TMPDIR/safety-work"
+git init -q --bare "$BARE"
+git clone -q "$BARE" "$WORK"
+git -C "$WORK" config user.name "test"
+git -C "$WORK" config user.email "test@test"
+git -C "$WORK" config commit.gpgsign false
+
+# Seed the bare repo with an initial commit on agent-work.
+touch "$WORK/init.txt"
+git -C "$WORK" add init.txt
+git -C "$WORK" commit -q -m "initial"
+git -C "$WORK" checkout -q -b agent-work
+git -C "$WORK" push -q origin agent-work
+
+BEFORE=$(git -C "$WORK" rev-parse origin/agent-work)
+
+# Simulate agent committing but failing to push.
+echo "work" > "$WORK/result.txt"
+git -C "$WORK" add result.txt
+git -C "$WORK" commit -q -m "agent work"
+
+LOCAL_HEAD=$(git -C "$WORK" rev-parse HEAD)
+UNPUSHED=$(git -C "$WORK" rev-list origin/agent-work..HEAD | wc -l | tr -d ' ')
+assert_eq "local ahead of origin" "1" "$UNPUSHED"
+
+# Safety net detects and pushes.
+if [ "$LOCAL_HEAD" != "$BEFORE" ] && [ "$UNPUSHED" -gt 0 ]; then
+    git -C "$WORK" push -q origin agent-work
+fi
+
+git -C "$WORK" fetch -q origin
+AFTER=$(git -C "$WORK" rev-parse origin/agent-work)
+assert_eq "origin advanced after push" "$LOCAL_HEAD" "$AFTER"
+
+# When no unpushed commits, safety net is a no-op.
+NOOP_UNPUSHED=$(git -C "$WORK" rev-list origin/agent-work..HEAD | wc -l | tr -d ' ')
+assert_eq "no unpushed after push" "0" "$NOOP_UNPUSHED"
+
+# Concurrent push simulation: second clone pushes first,
+# then the first clone rebases and retries.
+WORK2="$TMPDIR/safety-work2"
+git clone -q "$BARE" "$WORK2"
+git -C "$WORK2" config user.name "test2"
+git -C "$WORK2" config user.email "test2@test"
+git -C "$WORK2" config commit.gpgsign false
+git -C "$WORK2" checkout -q agent-work
+
+echo "agent2" > "$WORK2/agent2.txt"
+git -C "$WORK2" add agent2.txt
+git -C "$WORK2" commit -q -m "agent 2 work"
+git -C "$WORK2" push -q origin agent-work
+
+# First clone now has a local commit that diverges from origin.
+echo "agent1-late" > "$WORK/late.txt"
+git -C "$WORK" add late.txt
+git -C "$WORK" commit -q -m "agent 1 late work"
+
+LATE_UNPUSHED=$(git -C "$WORK" rev-list origin/agent-work..HEAD 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "diverged clone has unpushed" "1" "$LATE_UNPUSHED"
+
+# Rebase and push (mirrors the safety net retry).
+git -C "$WORK" pull -q --rebase origin agent-work
+git -C "$WORK" push -q origin agent-work
+git -C "$WORK" fetch -q origin
+FINAL=$(git -C "$WORK" rev-parse origin/agent-work)
+FINAL_LOCAL=$(git -C "$WORK" rev-parse HEAD)
+assert_eq "rebase+push reconciled" "$FINAL_LOCAL" "$FINAL"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
