@@ -172,8 +172,8 @@ cmd_start() {
     # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
     AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
-    jq -r '.driver as $dd | .agents[] | range(.count) as $i |
-        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // ""), (.driver // $dd // "")] | join("|")' \
+    jq -r '.tag as $dt | .driver as $dd | .agents[] | range(.count) as $i |
+        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' \
         "$CONFIG_FILE" > "$AGENTS_CFG"
 
     # Preflight: validate all referenced drivers exist before
@@ -238,6 +238,7 @@ cmd_start() {
         docker rm -f "$NAME" 2>/dev/null || true
         agent_api_key="$(expand_env_ref "$agent_api_key")"
         agent_auth_token="$(expand_env_ref "$agent_auth_token")"
+        agent_tag="$(expand_env_ref "$agent_tag")"
         agent_context="${agent_context:-full}"
         agent_driver="${agent_driver:-${SWARM_DRIVER_DEFAULT}}"
 
@@ -414,7 +415,8 @@ cmd_post_process() {
     pp_auth_token="$(expand_env_ref "$pp_auth_token")"
     pp_effort=$(jq -r '.post_process.effort // empty' "$CONFIG_FILE")
     pp_auth=$(jq -r '.post_process.auth // empty' "$CONFIG_FILE")
-    pp_tag=$(jq -r '.post_process.tag // empty' "$CONFIG_FILE")
+    pp_tag=$(jq -r '.post_process.tag // .tag // empty' "$CONFIG_FILE")
+    pp_tag="$(expand_env_ref "$pp_tag")"
     pp_driver=$(jq -r '.post_process.driver // .driver // "claude-code"' "$CONFIG_FILE")
 
     if [ -z "$pp_prompt" ]; then
