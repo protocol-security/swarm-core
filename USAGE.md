@@ -78,9 +78,6 @@ The backoff starts at 30 s, doubles each attempt, and caps at
 `max_retry_wait`, the agent exits.  This also covers transient
 network failures.
 
-The top-level `prompt` is optional when every agent group specifies its
-own `prompt`.  When omitted, each group **must** provide one.
-
 ## Dashboard
 
 ```bash
@@ -141,13 +138,15 @@ Unit tests (no Docker or API key):
 
 ```bash
 ./tests/test.sh --unit         # All unit tests.
+./tests/test_activity_filter.sh  # Activity stream parsing.
 ./tests/test_config.sh         # Config parsing.
+./tests/test_costs.sh          # Cost aggregation.
+./tests/test_dashboard.sh      # Dashboard rendering.
 ./tests/test_drivers.sh        # Agent driver interface.
 ./tests/test_format.sh         # Formatting helpers.
-./tests/test_launch.sh         # Launch logic.
 ./tests/test_harness.sh        # Stat extraction.
-./tests/test_costs.sh          # Cost aggregation.
 ./tests/test_harvest.sh        # Harvest git ops.
+./tests/test_launch.sh         # Launch logic.
 ./tests/test_setup.sh          # Setup wizard.
 ```
 
@@ -310,9 +309,7 @@ Dashboard columns:
 Agent drivers decouple the harness from any specific CLI tool.
 Each driver (`lib/drivers/<name>.sh`) implements a fixed role
 interface so the harness can run, monitor, and parse stats from
-any supported agent.  Today only `claude-code` is production-
-ready; the interface is designed to accommodate additional
-agents in the future.
+any supported agent.
 
 Built-in drivers:
 
@@ -357,6 +354,7 @@ swarmfile:
 Create `lib/drivers/<name>.sh` implementing these functions:
 
 ```bash
+agent_default_model()   # Fallback model when none configured
 agent_name()            # Human-readable name for commit trailers
 agent_cmd()             # CLI command name
 agent_version()         # Print version string to stdout
@@ -364,8 +362,10 @@ agent_run()             # Run one session (model, prompt, logfile, append_file)
 agent_settings()        # Write agent config files into workspace
 agent_extract_stats()   # Parse stats from log file (TSV output)
 agent_detect_fatal()    # Detect fatal errors from log + exit code
+agent_is_retriable()    # Detect retriable errors (rate limits, overload)
 agent_activity_jq()     # Return jq filter for activity streaming
 agent_docker_env()      # Print -e flags for agent-specific env vars
+agent_docker_auth()     # Resolve credentials, emit Docker -e flags
 agent_install_cmd()     # Dockerfile fragment to install the CLI
 ```
 

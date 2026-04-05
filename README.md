@@ -107,7 +107,7 @@ Groups without `api_key` use `ANTHROPIC_API_KEY` or
 `CLAUDE_CODE_OAUTH_TOKEN` from the environment.
 
 **Per-group fields:** `model`, `count`, `effort`, `context`,
-`prompt`, `auth`, `api_key`, `auth_token`, `base_url`,
+`prompt`, `auth`, `api_key`, `auth_token`, `base_url`, `tag`,
 `driver`, `inject_git_rules`. See [USAGE.md](USAGE.md) for
 field reference, environment variables, auth modes, context
 modes, per-group prompts, and agent drivers.
@@ -130,10 +130,6 @@ Each driver implements a fixed role interface:
 | `agent_activity_jq` | jq filter for activity display |
 
 Built-in drivers: `claude-code` (default), `gemini-cli`,
-`fake` (test double).
-
-The interface may evolve as additional drivers are added.
-
-To add a new agent, create `lib/drivers/<name>.sh` implementing
-the interface above.  Then set `"driver": "<name>"` in the
-swarmfile.
+`fake` (test double).  See [USAGE.md](USAGE.md#writing-a-new-driver)
+for the full 13-function interface and guide to writing a new
+driver.
