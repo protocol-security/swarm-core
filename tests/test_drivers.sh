@@ -285,6 +285,16 @@ EOF
 NONFATAL_OUT=$(agent_detect_fatal "$TMPDIR/nonfatal.jsonl" 0)
 assert_eq "non-fatal not flagged" "" "$NONFATAL_OUT"
 
+# Pro subscription rate limit: zero tokens + "error":"rate_limit".
+cat > "$TMPDIR/pro-rate-limit.jsonl" <<'EOF'
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1775505600}}
+{"type":"assistant","message":{"id":"x","model":"<synthetic>","role":"assistant","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"You've hit your limit"}]},"error":"rate_limit"}
+{"type":"result","subtype":"success","is_error":true,"duration_ms":500,"num_turns":1,"result":"You've hit your limit · resets 8pm (UTC)","usage":{"input_tokens":0,"output_tokens":0}}
+EOF
+PRO_FATAL=$(agent_detect_fatal "$TMPDIR/pro-rate-limit.jsonl" 0)
+assert_not_empty "pro rate limit detected as fatal" "$PRO_FATAL"
+assert_contains "pro rate limit mentions rate_limit" "rate_limit" "$PRO_FATAL"
+
 # No error at all.
 cat > "$TMPDIR/clean.jsonl" <<'EOF'
 {"type":"result","subtype":"success","session_id":"s01","total_cost_usd":0.10,"is_error":false,"duration_ms":10000,"duration_api_ms":8000,"num_turns":5,"result":"Done","usage":{"input_tokens":200,"output_tokens":100,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}
@@ -705,6 +715,16 @@ cat > "$TMPDIR/cc-auth-err.jsonl" <<'EOF'
 EOF
 RETRY_OUT=$(agent_is_retriable "$TMPDIR/cc-auth-err.jsonl" 1)
 assert_eq "cc auth error not retriable" "" "$RETRY_OUT"
+
+# Pro subscription rate limit (rate_limit_event + "error":"rate_limit").
+cat > "$TMPDIR/cc-pro-rate-limit.jsonl" <<'EOF'
+{"type":"system","subtype":"init","model":"claude-opus-4-6"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1775505600,"rateLimitType":"five_hour"}}
+{"type":"assistant","message":{"id":"x","model":"<synthetic>","role":"assistant","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"You've hit your limit"}]},"error":"rate_limit"}
+{"type":"result","subtype":"success","is_error":true,"duration_ms":500,"num_turns":1,"result":"You've hit your limit","usage":{"input_tokens":0,"output_tokens":0}}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/cc-pro-rate-limit.jsonl" 0)
+assert_not_empty "cc pro rate_limit is retriable" "$RETRY_OUT"
 
 RETRY_OUT=$(agent_is_retriable "$TMPDIR/nonfatal.jsonl" 0)
 assert_eq "cc clean log not retriable" "" "$RETRY_OUT"

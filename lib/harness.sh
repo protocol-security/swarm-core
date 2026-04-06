@@ -313,7 +313,7 @@ while true; do
         _retriable=""
         if [ "$MAX_RETRY_WAIT" -gt 0 ]; then
             if type -t agent_is_retriable &>/dev/null; then
-                _retriable=$(agent_is_retriable "$LOGFILE" "$AGENT_RUN_EXIT")
+                _retriable=$(agent_is_retriable "$LOGFILE" "$AGENT_RUN_EXIT" || true)
             fi
             # Zero-token exits are often transient (network loss,
             # DNS failure, temporary outage).  Allow retry.
@@ -359,7 +359,7 @@ while true; do
                     rm -f "$RETRY_FILE"
                     break
                 fi
-                _retriable=$(agent_is_retriable "$LOGFILE" "$AGENT_RUN_EXIT")
+                _retriable=$(agent_is_retriable "$LOGFILE" "$AGENT_RUN_EXIT" || true)
                 if [ -z "$_retriable" ]; then
                     hlog_err "fatal (non-retriable): ${FATAL_MSG}"
                     hlog_err "exiting due to unrecoverable error"
