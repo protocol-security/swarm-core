@@ -61,7 +61,7 @@ Per-group fields in `swarm.json` `agents` array:
 
 Top-level fields: `prompt`, `setup`, `max_idle`, `max_retry_wait`,
 `driver`, `inject_git_rules`, `claude_code_version`, `title`, `tag`,
-`pricing`, `post_process`.
+`pricing`, `docker_args`, `post_process`.
 
 ### Retry on rate limits
 
@@ -77,6 +77,24 @@ The backoff starts at 30 s, doubles each attempt, and caps at
 30 min per sleep.  When the cumulative wait exceeds
 `max_retry_wait`, the agent exits.  This also covers transient
 network failures.
+
+### Extra Docker arguments
+
+Pass arbitrary flags to every `docker run` invocation via the
+top-level `docker_args` array.  Each element is one shell token:
+
+```json
+{
+  "docker_args": [
+    "-v", "/var/run/docker.sock:/var/run/docker.sock",
+    "--privileged"
+  ]
+}
+```
+
+This is useful for mounting the host Docker socket, adding
+devices or capabilities, setting network modes, or passing any
+other flags that the harness does not manage natively.
 
 ## Dashboard
 

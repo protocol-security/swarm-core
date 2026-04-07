@@ -922,6 +922,58 @@ assert_eq "hetero pp auth" "oauth" "$(jq -r '.post_process.auth' "$CFG")"
 
 # ============================================================
 echo ""
+echo "=== 28. docker_args field ==="
+
+parse_docker_args() {
+    jq -r '.docker_args[]?' "$1" 2>/dev/null
+}
+
+cat > "$TMPDIR/docker_args.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "docker_args": ["-v", "/var/run/docker.sock:/var/run/docker.sock", "--privileged"],
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+
+DA=$(parse_docker_args "$TMPDIR/docker_args.json")
+DA1=$(echo "$DA" | sed -n '1p')
+DA2=$(echo "$DA" | sed -n '2p')
+DA3=$(echo "$DA" | sed -n '3p')
+DA_COUNT=$(echo "$DA" | wc -l | tr -d ' ')
+assert_eq "docker_args count"  "3"  "$DA_COUNT"
+assert_eq "docker_args[0]"    "-v"  "$DA1"
+assert_eq "docker_args[1]"    "/var/run/docker.sock:/var/run/docker.sock" "$DA2"
+assert_eq "docker_args[2]"    "--privileged" "$DA3"
+
+# No docker_args field — returns empty.
+DA_EMPTY=$(parse_docker_args "$TMPDIR/inject_default.json")
+assert_eq "docker_args absent" "" "$DA_EMPTY"
+
+# Empty docker_args array — returns empty.
+cat > "$TMPDIR/docker_args_empty.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "docker_args": [],
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+DA_EMPTY2=$(parse_docker_args "$TMPDIR/docker_args_empty.json")
+assert_eq "docker_args empty array" "" "$DA_EMPTY2"
+
+# Single element.
+cat > "$TMPDIR/docker_args_single.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "docker_args": ["--network=host"],
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+DA_SINGLE=$(parse_docker_args "$TMPDIR/docker_args_single.json")
+assert_eq "docker_args single" "--network=host" "$DA_SINGLE"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

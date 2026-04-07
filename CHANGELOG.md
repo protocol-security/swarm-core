@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.0 — 2026-04-07
+
+- **Extra Docker arguments.** New top-level `docker_args` array in
+  the swarmfile passes arbitrary flags to every `docker run`
+  invocation. Each element is one shell token. Useful for mounting
+  the host Docker socket (`-v /var/run/docker.sock:...`), adding
+  `--privileged`, `--network=host`, or any other Docker flag the
+  harness does not manage natively.
+
 ## 0.17.1 — 2026-04-06
 
 - **Fix rate-limit retry for Pro subscriptions.** Claude Code's

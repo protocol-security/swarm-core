@@ -95,6 +95,11 @@ NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
 SWARM_DRIVER_DEFAULT=$(jq -r '.driver // "claude-code"' "$CONFIG_FILE")
 MAX_RETRY_WAIT=$(jq -r '.max_retry_wait // 0' "$CONFIG_FILE")
 
+DOCKER_EXTRA_ARGS=()
+while IFS= read -r _da; do
+    [ -n "$_da" ] && DOCKER_EXTRA_ARGS+=("$_da")
+done < <(jq -r '.docker_args[]?' "$CONFIG_FILE" 2>/dev/null)
+
 parse_start_args() {
     OPEN_DASHBOARD=false
     while [ $# -gt 0 ]; do
@@ -279,6 +284,7 @@ cmd_start() {
             --name "$NAME" \
             -v "${BARE_REPO}:/upstream:rw" \
             "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
+            "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
             -e "SWARM_MODEL=${agent_model}" \
             -e "SWARM_EFFORT=${eff}" \
@@ -477,6 +483,7 @@ cmd_post_process() {
         --name "$NAME" \
         -v "${BARE_REPO}:/upstream:rw" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
+        "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
         -e "SWARM_MODEL=${pp_model}" \
         -e "SWARM_EFFORT=${pp_effort}" \
