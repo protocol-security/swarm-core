@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.17.1 — 2026-04-06
+
+- **Fix rate-limit retry for Pro subscriptions.** Claude Code's
+  Pro rate limit uses `"rate_limit"` and `"rate_limit_event"` in
+  its output, which the retriable-error detector did not match.
+  Additionally, when no pattern matched, `agent_is_retriable`
+  returned a non-zero exit code that crashed the harness under
+  `set -e`, silently killing the agent instead of retrying or
+  logging a fatal error.
+- **Compact retry status in dashboard.** Format retry wait/max
+  as short durations (e.g. `retry 0s/7h` instead of raw seconds)
+  so the Status column doesn't cause line wrapping on narrow
+  terminals.
+- **Clear retry status when session resumes.** The retry file was
+  only removed after the session ended, so the dashboard showed
+  stale "retry" status while the agent was actively working.
+
 ## 0.17.0 — 2026-04-04
 
 - **Push safety net for concurrent agents.** After each agent

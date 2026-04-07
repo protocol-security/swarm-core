@@ -172,6 +172,17 @@ format_duration_ms() {
     format_duration $(( ${1:-0} / 1000 ))
 }
 
+format_duration_short() {
+    local s=$1
+    if [ "$s" -ge 3600 ]; then
+        printf '%dh' $((s / 3600))
+    elif [ "$s" -ge 60 ]; then
+        printf '%dm' $((s / 60))
+    else
+        printf '%ds' "$s"
+    fi
+}
+
 format_tokens() {
     local n=${1:-0}
     if [ "$n" -ge 1000000 ]; then
@@ -428,7 +439,9 @@ draw() {
             running)
                 running_count=$((running_count + 1))
                 if [ -n "$retry_state" ]; then
-                    status_text="retry ${retry_state}s"
+                    local _rw _rm
+                    _rw=${retry_state%%/*}; _rm=${retry_state##*/}
+                    status_text="retry $(format_duration_short "$_rw")/$(format_duration_short "$_rm")"
                     status_color="$YELLOW"
                 elif [ -n "$idle_state" ]; then
                     status_text="idle ${idle_state}"

@@ -313,7 +313,7 @@ while true; do
         _retriable=""
         if [ "$MAX_RETRY_WAIT" -gt 0 ]; then
             if type -t agent_is_retriable &>/dev/null; then
-                _retriable=$(agent_is_retriable "$LOGFILE" "$AGENT_RUN_EXIT")
+                _retriable=$(agent_is_retriable "$LOGFILE" "$AGENT_RUN_EXIT" || true)
             fi
             # Zero-token exits are often transient (network loss,
             # DNS failure, temporary outage).  Allow retry.
@@ -334,6 +334,7 @@ while true; do
                     _backoff=1800
                 fi
                 hlog "retry: starting session"
+                rm -f "$RETRY_FILE"
                 AGENT_RUN_EXIT=0
                 agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
                     | /activity-filter.sh || AGENT_RUN_EXIT=$?
@@ -359,7 +360,7 @@ while true; do
                     rm -f "$RETRY_FILE"
                     break
                 fi
-                _retriable=$(agent_is_retriable "$LOGFILE" "$AGENT_RUN_EXIT")
+                _retriable=$(agent_is_retriable "$LOGFILE" "$AGENT_RUN_EXIT" || true)
                 if [ -z "$_retriable" ]; then
                     hlog_err "fatal (non-retriable): ${FATAL_MSG}"
                     hlog_err "exiting due to unrecoverable error"

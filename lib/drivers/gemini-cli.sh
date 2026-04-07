@@ -156,6 +156,7 @@ agent_is_retriable() {
         grep -qi 'rate.limit\|quota\|retry in\|too many requests' \
             "${logfile}.err" 2>/dev/null && echo "rate_limited" && return
     fi
+    return 0
 }
 
 # Gemini CLI has no effort flag.
