@@ -334,6 +334,7 @@ while true; do
                     _backoff=1800
                 fi
                 hlog "retry: starting session"
+                rm -f "$RETRY_FILE"
                 AGENT_RUN_EXIT=0
                 agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
                     | /activity-filter.sh || AGENT_RUN_EXIT=$?
