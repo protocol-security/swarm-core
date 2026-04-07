@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.1 — 2026-04-07
+
+- **Soften agent system prompt.** Replace urgency and fear-based
+  framing ("IMPORTANT", "will be lost") with calmer language that
+  normalizes push failures and mentions the harness safety net.
+  Motivated by Anthropic's interpretability research showing that
+  desperation-associated representations causally increase reward
+  hacking and misaligned behavior in Claude.
+
 ## 0.18.0 — 2026-04-07
 
 - **Extra Docker arguments.** New top-level `docker_args` array in
