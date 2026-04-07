@@ -937,6 +937,65 @@ assert_eq "pp tag env expansion" "expanded-pp" "$pp_expanded"
 
 # ============================================================
 echo ""
+echo "=== 33. docker_args array construction ==="
+
+# Mirrors the DOCKER_EXTRA_ARGS construction in launch.sh.
+build_docker_extra_args() {
+    local config_file="$1"
+    local DOCKER_EXTRA_ARGS=()
+    while IFS= read -r _da; do
+        [ -n "$_da" ] && DOCKER_EXTRA_ARGS+=("$_da")
+    done < <(jq -r '.docker_args[]?' "$config_file" 2>/dev/null)
+    echo "${DOCKER_EXTRA_ARGS[*]+"${DOCKER_EXTRA_ARGS[*]}"}"
+}
+
+cat > "$TMPDIR/da_full.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "docker_args": ["-v", "/var/run/docker.sock:/var/run/docker.sock", "--privileged"],
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+
+assert_eq "docker_args full" \
+    "-v /var/run/docker.sock:/var/run/docker.sock --privileged" \
+    "$(build_docker_extra_args "$TMPDIR/da_full.json")"
+
+# No docker_args — empty.
+cat > "$TMPDIR/da_none.json" <<'EOF'
+{ "prompt": "p.md", "agents": [{ "count": 1, "model": "m" }] }
+EOF
+assert_eq "docker_args absent" "" \
+    "$(build_docker_extra_args "$TMPDIR/da_none.json")"
+
+# Empty array — empty.
+cat > "$TMPDIR/da_empty.json" <<'EOF'
+{ "prompt": "p.md", "docker_args": [], "agents": [{ "count": 1, "model": "m" }] }
+EOF
+assert_eq "docker_args empty array" "" \
+    "$(build_docker_extra_args "$TMPDIR/da_empty.json")"
+
+# Single flag.
+cat > "$TMPDIR/da_single.json" <<'EOF'
+{ "prompt": "p.md", "docker_args": ["--network=host"], "agents": [{ "count": 1, "model": "m" }] }
+EOF
+assert_eq "docker_args single" "--network=host" \
+    "$(build_docker_extra_args "$TMPDIR/da_single.json")"
+
+# Multiple volume mounts + capabilities.
+cat > "$TMPDIR/da_complex.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "docker_args": ["-v", "/var/run/docker.sock:/var/run/docker.sock", "-v", "/tmp:/host-tmp:ro", "--cap-add", "SYS_PTRACE"],
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+assert_eq "docker_args complex" \
+    "-v /var/run/docker.sock:/var/run/docker.sock -v /tmp:/host-tmp:ro --cap-add SYS_PTRACE" \
+    "$(build_docker_extra_args "$TMPDIR/da_complex.json")"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
