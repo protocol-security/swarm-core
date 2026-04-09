@@ -46,8 +46,9 @@ assert_contains() {
 parse_prompt()     { jq -r '.prompt // empty' "$1"; }
 parse_setup()      { jq -r '.setup // empty' "$1"; }
 parse_max_idle()   { jq -r '.max_idle // 3' "$1"; }
-parse_git_name()   { jq -r '.git_user.name // "swarm-agent"' "$1"; }
-parse_git_email()  { jq -r '.git_user.email // "agent@swarm.local"' "$1"; }
+parse_git_name()        { jq -r '.git_user.name // "swarm-agent"' "$1"; }
+parse_git_email()       { jq -r '.git_user.email // "agent@swarm.local"' "$1"; }
+parse_signing_key()     { jq -r '.git_user.signing_key // empty' "$1"; }
 parse_num_agents()       { jq '[.agents[].count] | add' "$1"; }
 parse_inject_git_rules() { jq -r 'if has("inject_git_rules") then .inject_git_rules else true end' "$1"; }
 parse_title()            { jq -r '.title // empty' "$1"; }
@@ -1149,6 +1150,41 @@ if [ -f "$_default_path" ]; then
 else
     echo "  SKIP: ~/.codex/auth.json not present on host (default path test)"
 fi
+
+# ============================================================
+echo ""
+echo "=== 34. signing_key config ==="
+
+cat > "$TMPDIR/signing.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "swarm-agent",
+    "email": "agent@swarm.local",
+    "signing_key": "~/.ssh/swarm-agent-signing"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+
+assert_eq "signing key present" "~/.ssh/swarm-agent-signing" \
+    "$(parse_signing_key "$TMPDIR/signing.json")"
+assert_eq "signing key absent" "" \
+    "$(parse_signing_key "$TMPDIR/inject_default.json")"
+
+# git_user without signing_key still works.
+cat > "$TMPDIR/nosign.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": { "name": "bot", "email": "bot@test" },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+
+assert_eq "signing key missing from git_user" "" \
+    "$(parse_signing_key "$TMPDIR/nosign.json")"
+assert_eq "git name still works" "bot" \
+    "$(parse_git_name "$TMPDIR/nosign.json")"
 
 # ============================================================
 echo ""

@@ -94,6 +94,18 @@ MAX_IDLE=$(jq -r '.max_idle // 3' "$CONFIG_FILE")
 INJECT_GIT_RULES=$(jq -r 'if has("inject_git_rules") then .inject_git_rules else true end' "$CONFIG_FILE")
 GIT_USER_NAME=$(jq -r '.git_user.name // "swarm-agent"' "$CONFIG_FILE")
 GIT_USER_EMAIL=$(jq -r '.git_user.email // "agent@swarm.local"' "$CONFIG_FILE")
+GIT_SIGNING_KEY=$(jq -r '.git_user.signing_key // empty' "$CONFIG_FILE")
+
+# Resolve signing key path and build volume mount.
+SIGNING_KEY_ARGS=()
+if [ -n "$GIT_SIGNING_KEY" ]; then
+    GIT_SIGNING_KEY="${GIT_SIGNING_KEY/#\~/$HOME}"
+    if [ ! -f "$GIT_SIGNING_KEY" ]; then
+        echo "ERROR: signing key not found: $GIT_SIGNING_KEY" >&2
+        exit 1
+    fi
+    SIGNING_KEY_ARGS=(-v "${GIT_SIGNING_KEY}:/etc/swarm/signing_key:ro")
+fi
 NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
 SWARM_DRIVER_DEFAULT=$(jq -r '.driver // "claude-code"' "$CONFIG_FILE")
 MAX_RETRY_WAIT=$(jq -r '.max_retry_wait // 0' "$CONFIG_FILE")
@@ -293,6 +305,7 @@ cmd_start() {
             --name "$NAME" \
             -v "${BARE_REPO}:/upstream:rw" \
             "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
+            "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
             "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
             -e "SWARM_MODEL=${agent_model}" \
@@ -496,6 +509,7 @@ cmd_post_process() {
         --name "$NAME" \
         -v "${BARE_REPO}:/upstream:rw" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
+        "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
         "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
         -e "SWARM_MODEL=${pp_model}" \

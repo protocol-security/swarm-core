@@ -570,7 +570,44 @@ assert_eq "backoff capped at 1800" "1800" "$(simulate_backoff 10)"
 
 # ============================================================
 echo ""
-echo "=== 12. Push safety net — unpushed commit detection ==="
+echo "=== 12. SSH signing config ==="
+
+# Mirrors the signing detection logic in harness.sh.
+simulate_signing_config() {
+    local key_exists="$1"
+    local sandbox="$TMPDIR/sign-sandbox-$$-${RANDOM}"
+    local repo="$sandbox/repo"
+    mkdir -p "$repo"
+    HOME="$sandbox" git init -q "$repo"
+    HOME="$sandbox" git -C "$repo" config user.name "test"
+    HOME="$sandbox" git -C "$repo" config user.email "test@test"
+
+    if [ "$key_exists" = "true" ]; then
+        HOME="$sandbox" git -C "$repo" config gpg.format ssh
+        HOME="$sandbox" git -C "$repo" config user.signingkey /etc/swarm/signing_key
+        HOME="$sandbox" git -C "$repo" config commit.gpgsign true
+    else
+        HOME="$sandbox" git -C "$repo" config commit.gpgsign false
+    fi
+
+    local format sign gpgsign
+    format=$(HOME="$sandbox" git -C "$repo" config --get gpg.format 2>/dev/null || echo "none")
+    sign=$(HOME="$sandbox" git -C "$repo" config --get user.signingkey 2>/dev/null || echo "none")
+    gpgsign=$(HOME="$sandbox" git -C "$repo" config --get commit.gpgsign)
+    echo "${format}|${sign}|${gpgsign}"
+    rm -rf "$sandbox"
+}
+
+assert_eq "signing key present → ssh signing" \
+    "ssh|/etc/swarm/signing_key|true" \
+    "$(simulate_signing_config true)"
+assert_eq "signing key absent → gpgsign false" \
+    "none|none|false" \
+    "$(simulate_signing_config false)"
+
+# ============================================================
+echo ""
+echo "=== 13. Push safety net — unpushed commit detection ==="
 
 # Create a bare repo and a working clone to simulate the
 # harness post-session state where an agent committed locally
