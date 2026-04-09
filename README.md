@@ -1,6 +1,6 @@
 # claude-swarm
 
-[![CI](https://github.com/moodmosaic/claude-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/moodmosaic/claude-swarm/actions/workflows/ci.yml)
+[![CI](https://github.com/protocol-security/claude-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/protocol-security/claude-swarm/actions/workflows/ci.yml)
 
 N coding agents in Docker, coordinating through git.
 No orchestrator, no message passing.  Designed to support
@@ -24,7 +24,7 @@ For development: `shellcheck` for linting.
 Add as a submodule:
 
 ```bash
-git submodule add https://github.com/moodmosaic/claude-swarm.git tools/claude-swarm
+git submodule add https://github.com/protocol-security/claude-swarm.git tools/claude-swarm
 ```
 
 Or clone standalone and run from your project directory
