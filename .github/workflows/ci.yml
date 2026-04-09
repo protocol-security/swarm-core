@@ -34,3 +34,79 @@ jobs:
         run: brew install jq bash
       - name: Unit tests
         run: ./tests/test.sh --unit
+
+  commit-lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Validate commit messages
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          ok=true
+          while IFS= read -r sha; do
+            subject=$(git log -1 --format='%s' "$sha")
+            # Skip merge commits.
+            if git log -1 --format='%P' "$sha" | grep -q ' '; then
+              continue
+            fi
+            # Must start with uppercase.
+            if ! echo "$subject" | grep -qE '^[A-Z]'; then
+              echo "::error::Commit $sha: subject must start with uppercase: $subject"
+              ok=false
+            fi
+            # No trailing period.
+            if echo "$subject" | grep -qE '\.$'; then
+              echo "::error::Commit $sha: subject must not end with a period: $subject"
+              ok=false
+            fi
+            # Max 72 characters.
+            if [ "${#subject}" -gt 72 ]; then
+              echo "::error::Commit $sha: subject exceeds 72 characters (${#subject}): $subject"
+              ok=false
+            fi
+            # No fixup/squash leftovers.
+            if echo "$subject" | grep -qE '^(fixup|squash)!'; then
+              echo "::error::Commit $sha: fixup/squash commits must be cleaned up: $subject"
+              ok=false
+            fi
+          done < <(git rev-list "$base".."$head")
+          [ "$ok" = true ]
+
+  semver-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Validate semver and changelog
+        run: |
+          git fetch origin master --depth=1
+          new=$(cat VERSION | tr -d '[:space:]')
+          old=$(git show origin/master:VERSION 2>/dev/null | tr -d '[:space:]' || echo "0.0.0")
+          # If VERSION unchanged, nothing to check.
+          if [ "$new" = "$old" ]; then
+            echo "VERSION unchanged ($new), skipping."
+            exit 0
+          fi
+          # Validate semver format.
+          if ! echo "$new" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::VERSION '$new' is not valid semver (expected X.Y.Z)"
+            exit 1
+          fi
+          # Check version was incremented.
+          newer=$(printf '%s\n%s' "$old" "$new" | sort -V | tail -1)
+          if [ "$newer" != "$new" ] || [ "$new" = "$old" ]; then
+            echo "::error::VERSION must increment: $old -> $new"
+            exit 1
+          fi
+          # Check CHANGELOG has entry for new version.
+          if ! grep -qF "## $new" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md missing entry for version $new"
+            exit 1
+          fi
+          echo "Version bump OK: $old -> $new"
