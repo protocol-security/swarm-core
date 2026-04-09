@@ -437,8 +437,9 @@ cmd_wait() {
 }
 
 cmd_post_process() {
-    local pp_prompt pp_model pp_base_url pp_api_key pp_effort pp_auth pp_auth_token pp_tag pp_driver
+    local pp_prompt pp_model pp_base_url pp_api_key pp_effort pp_auth pp_auth_token pp_tag pp_driver pp_max_idle
     pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE")
+    pp_max_idle=$(jq -r '.post_process.max_idle // 1' "$CONFIG_FILE")
     pp_model=$(jq -r '.post_process.model // "claude-opus-4-6"' "$CONFIG_FILE")
     pp_base_url=$(jq -r '.post_process.base_url // empty' "$CONFIG_FILE")
     pp_api_key=$(jq -r '.post_process.api_key // empty' "$CONFIG_FILE")
@@ -521,7 +522,7 @@ cmd_post_process() {
         -e "CLAUDE_MODEL=${pp_model}" \
         -e "SWARM_PROMPT=${pp_prompt}" \
         -e "SWARM_SETUP=${SWARM_SETUP:-}" \
-        -e "MAX_IDLE=${MAX_IDLE}" \
+        -e "MAX_IDLE=${pp_max_idle}" \
         -e "MAX_RETRY_WAIT=${MAX_RETRY_WAIT}" \
         -e "GIT_USER_NAME=${GIT_USER_NAME}" \
         -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
