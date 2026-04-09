@@ -431,8 +431,10 @@ cmd_post_process() {
     fi
 
     if [ ! -d "$BARE_REPO" ]; then
-        echo "ERROR: ${BARE_REPO} not found." >&2
-        exit 1
+        echo "--- Creating bare repo for post-process ---"
+        git clone --bare "$REPO_ROOT" "$BARE_REPO"
+        git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
+        git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
     fi
 
     local NAME="${IMAGE_NAME}-post"

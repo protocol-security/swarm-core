@@ -996,6 +996,46 @@ assert_eq "docker_args complex" \
 
 # ============================================================
 echo ""
+echo "=== 34. Post-process creates bare repo when missing ==="
+
+# Simulate the bare-repo creation logic from cmd_post_process.
+pp_ensure_bare_repo() {
+    local repo_root="$1" bare_repo="$2"
+    if [ ! -d "$bare_repo" ]; then
+        git clone --bare "$repo_root" "$bare_repo" 2>/dev/null
+        git -C "$bare_repo" branch agent-work HEAD 2>/dev/null || true
+        git -C "$bare_repo" symbolic-ref HEAD refs/heads/agent-work
+    fi
+}
+
+# Set up a small git repo to clone from.
+_pp_repo="$TMPDIR/pp-src-repo"
+mkdir -p "$_pp_repo"
+git -C "$_pp_repo" init -q
+git -C "$_pp_repo" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
+
+_pp_bare="$TMPDIR/pp-bare-test.git"
+
+# Bare repo does not exist — should be created.
+rm -rf "$_pp_bare"
+pp_ensure_bare_repo "$_pp_repo" "$_pp_bare"
+assert_eq "pp creates bare repo" "true" \
+    "$([ -d "$_pp_bare" ] && echo true || echo false)"
+
+# Verify agent-work branch exists.
+_pp_aw=$(git -C "$_pp_bare" symbolic-ref HEAD 2>/dev/null || echo "")
+assert_eq "pp bare HEAD is agent-work" "refs/heads/agent-work" "$_pp_aw"
+
+# Bare repo already exists — should not fail or recreate.
+_pp_head_before=$(git -C "$_pp_bare" rev-parse HEAD 2>/dev/null)
+pp_ensure_bare_repo "$_pp_repo" "$_pp_bare"
+_pp_head_after=$(git -C "$_pp_bare" rev-parse HEAD 2>/dev/null)
+assert_eq "pp existing bare repo unchanged" "$_pp_head_before" "$_pp_head_after"
+
+rm -rf "$_pp_repo" "$_pp_bare"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
