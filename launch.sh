@@ -95,6 +95,10 @@ INJECT_GIT_RULES=$(jq -r 'if has("inject_git_rules") then .inject_git_rules else
 GIT_USER_NAME=$(jq -r '.git_user.name // "swarm-agent"' "$CONFIG_FILE")
 GIT_USER_EMAIL=$(jq -r '.git_user.email // "agent@swarm.local"' "$CONFIG_FILE")
 GIT_SIGNING_KEY=$(jq -r '.git_user.signing_key // empty' "$CONFIG_FILE")
+if [ -n "$GIT_SIGNING_KEY" ]; then
+    GIT_SIGNING_KEY="$(expand_env_ref "$GIT_SIGNING_KEY")"
+    GIT_SIGNING_KEY="${GIT_SIGNING_KEY:-$HOME/.ssh/swarm-agent-signing}"
+fi
 
 # Resolve signing key path and build volume mount.
 SIGNING_KEY_ARGS=()
