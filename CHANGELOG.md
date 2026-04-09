@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.2 — 2026-04-09
+
+- **Create bare repo on demand in post-process.** When
+  `launch.sh post-process` runs standalone (after harvest has
+  cleaned up), the bare repo no longer exists. Instead of
+  exiting with an error, create one from the local repo.
+
 ## 0.18.1 — 2026-04-07
 
 - **Soften agent system prompt.** Replace urgency and fear-based
