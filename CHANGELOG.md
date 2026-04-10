@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.3 — 2026-04-10
+
+- **Fix bare repo UID mismatch for container pushes.** The bare
+  repo is created by the host user, but the container's `agent`
+  user may have a different UID.  Set `core.sharedRepository=world`
+  and `chmod -R a+rwX` so any UID can push.  Fixes integration
+  test failures (`2-agents-sonnet`, `1-agent-effort`,
+  `2-agents-effort`) caused by `unable to create temporary object
+  directory` errors on GitHub Actions runners.
+
 ## 0.18.2 — 2026-04-09
 
 - **Create bare repo on demand in post-process.** When
