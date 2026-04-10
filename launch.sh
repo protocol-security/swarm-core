@@ -163,6 +163,11 @@ cmd_start() {
     git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
     git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
 
+    # Allow any UID to push.  The container's "agent" user (UID 1000)
+    # may differ from the host UID that created this bare repo.
+    git -C "$BARE_REPO" config core.sharedRepository world
+    chmod -R a+rwX "$BARE_REPO"
+
     # Mirror each submodule so containers can init without network.
     cd "$REPO_ROOT"
     git submodule foreach --quiet 'echo "$name|$toplevel/.git/modules/$sm_path"' | \
@@ -172,6 +177,7 @@ cmd_start() {
         rm -rf "$mirror"
         echo "--- Mirroring submodule: ${name} ---"
         git clone --bare "$gitdir" "$mirror"
+        chmod -R a+rwX "$mirror"
     done
 
     # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line).
@@ -435,6 +441,8 @@ cmd_post_process() {
         git clone --bare "$REPO_ROOT" "$BARE_REPO"
         git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
         git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
+        git -C "$BARE_REPO" config core.sharedRepository world
+        chmod -R a+rwX "$BARE_REPO"
     fi
 
     local NAME="${IMAGE_NAME}-post"

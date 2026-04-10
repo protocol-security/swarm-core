@@ -1036,6 +1036,44 @@ rm -rf "$_pp_repo" "$_pp_bare"
 
 # ============================================================
 echo ""
+echo "=== 35. Bare repo is world-writable after creation ==="
+
+# Simulate the bare-repo creation + permission fix from cmd_start.
+_wr_repo="$TMPDIR/wr-src-repo"
+mkdir -p "$_wr_repo"
+git -C "$_wr_repo" init -q
+git -C "$_wr_repo" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
+
+_wr_bare="$TMPDIR/wr-bare-test.git"
+rm -rf "$_wr_bare"
+git clone --bare "$_wr_repo" "$_wr_bare" 2>/dev/null
+git -C "$_wr_bare" branch agent-work HEAD 2>/dev/null || true
+git -C "$_wr_bare" symbolic-ref HEAD refs/heads/agent-work
+git -C "$_wr_bare" config core.sharedRepository world
+chmod -R a+rwX "$_wr_bare"
+
+# Verify core.sharedRepository is set to "world".
+_wr_shared=$(git -C "$_wr_bare" config core.sharedRepository 2>/dev/null || echo "")
+assert_eq "bare repo sharedRepository=world" "world" "$_wr_shared"
+
+# Verify objects directory is world-writable (o+w).
+_wr_obj_perms=$(stat -c '%A' "$_wr_bare/objects" 2>/dev/null \
+    || stat -f '%Sp' "$_wr_bare/objects" 2>/dev/null)
+_wr_other_w=$(echo "$_wr_obj_perms" | grep -c 'w.$' || true)
+assert_eq "bare repo objects/ is world-writable" "1" "$_wr_other_w"
+
+# Verify a different user (simulated) can create objects.
+# We can't switch UID in a unit test, but we can verify the
+# permission bits on a representative subdirectory.
+_wr_pack_perms=$(stat -c '%A' "$_wr_bare/objects/pack" 2>/dev/null \
+    || stat -f '%Sp' "$_wr_bare/objects/pack" 2>/dev/null)
+_wr_pack_w=$(echo "$_wr_pack_perms" | grep -c 'w.$' || true)
+assert_eq "bare repo objects/pack/ is world-writable" "1" "$_wr_pack_w"
+
+rm -rf "$_wr_repo" "$_wr_bare"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
