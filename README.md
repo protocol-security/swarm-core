@@ -12,7 +12,7 @@ Based on the agent-team pattern from
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/)
-- bash (4.0+), git, jq, bc
+- bash (5.0+), git, jq, bc
 - tput (ncurses) — used by the dashboard
 - An Anthropic API key, OAuth token, or compatible endpoint
 
@@ -131,5 +131,4 @@ Each driver implements a fixed role interface:
 
 Built-in drivers: `claude-code` (default), `gemini-cli`,
 `fake` (test double).  See [USAGE.md](USAGE.md#writing-a-new-driver)
-for the full 13-function interface and guide to writing a new
-driver.
+for the full interface and guide to writing a new driver.
