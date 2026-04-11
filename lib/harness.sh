@@ -268,8 +268,10 @@ while true; do
     fi
 
     AGENT_RUN_EXIT=0
+    _run_start=$SECONDS
     agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
         | /activity-filter.sh || AGENT_RUN_EXIT=$?
+    _run_elapsed_ms=$(( (SECONDS - _run_start) * 1000 ))
 
     # Extract usage stats via the driver.
     STATS_LINE=$(agent_extract_stats "$LOGFILE")
@@ -277,6 +279,9 @@ while true; do
     cost="${cost:-0}"; tok_in="${tok_in:-0}"; tok_out="${tok_out:-0}"
     cache_rd="${cache_rd:-0}"; cache_cr="${cache_cr:-0}"
     dur="${dur:-0}"; api_ms="${api_ms:-0}"; turns="${turns:-0}"
+    # Fall back to wall-clock time when the driver has no native timing.
+    [ "${dur:-0}" = "0" ] && dur="$_run_elapsed_ms"
+    [ "${api_ms:-0}" = "0" ] && api_ms="$_run_elapsed_ms"
 
     # Compute cost from token counts when the driver doesn't report
     # it natively (e.g. Gemini CLI).  Pricing is $/M tokens, passed
@@ -336,13 +341,17 @@ while true; do
                 hlog "retry: starting session"
                 rm -f "$RETRY_FILE"
                 AGENT_RUN_EXIT=0
+                _run_start=$SECONDS
                 agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
                     | /activity-filter.sh || AGENT_RUN_EXIT=$?
+                _run_elapsed_ms=$(( (SECONDS - _run_start) * 1000 ))
                 STATS_LINE=$(agent_extract_stats "$LOGFILE")
                 IFS=$'\t' read -r cost tok_in tok_out cache_rd cache_cr dur api_ms turns <<< "$STATS_LINE"
                 cost="${cost:-0}"; tok_in="${tok_in:-0}"; tok_out="${tok_out:-0}"
                 cache_rd="${cache_rd:-0}"; cache_cr="${cache_cr:-0}"
                 dur="${dur:-0}"; api_ms="${api_ms:-0}"; turns="${turns:-0}"
+                [ "${dur:-0}" = "0" ] && dur="$_run_elapsed_ms"
+                [ "${api_ms:-0}" = "0" ] && api_ms="$_run_elapsed_ms"
                 if [ -n "${SWARM_PRICE_INPUT:-}" ]; then
                     cost=$(awk "BEGIN {printf \"%.6f\",
                         (${tok_in} * ${SWARM_PRICE_INPUT} + ${tok_out} * ${SWARM_PRICE_OUTPUT:-0} + ${cache_rd} * ${SWARM_PRICE_CACHED:-0}) / 1000000}")
