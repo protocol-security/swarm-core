@@ -54,7 +54,7 @@ parse_inject_git_rules() { jq -r 'if has("inject_git_rules") then .inject_git_ru
 parse_title()            { jq -r '.title // empty' "$1"; }
 parse_pp_prompt()        { jq -r '.post_process.prompt // empty' "$1"; }
 parse_pp_model()         { jq -r '.post_process.model // "claude-opus-4-6"' "$1"; }
-parse_pp_max_idle()      { jq -r '.post_process.max_idle // 1' "$1"; }
+parse_pp_max_idle()      { jq -r '.post_process.max_idle // .max_idle // 3' "$1"; }
 
 parse_agents_cfg() {
     jq -r '.driver as $dd | .agents[] | range(.count) as $i |
@@ -263,10 +263,10 @@ EOF
 
 assert_eq "pp prompt"           "review.md"          "$(parse_pp_prompt "$TMPDIR/pp.json")"
 assert_eq "pp model"            "claude-sonnet-4-5"  "$(parse_pp_model "$TMPDIR/pp.json")"
-assert_eq "pp max_idle default" "1"                  "$(parse_pp_max_idle "$TMPDIR/pp.json")"
+assert_eq "pp max_idle default" "3"                  "$(parse_pp_max_idle "$TMPDIR/pp.json")"
 assert_eq "pp prompt absent"    ""                   "$(parse_pp_prompt "$TMPDIR/inject_default.json")"
 assert_eq "pp model default"    "claude-opus-4-6"    "$(parse_pp_model "$TMPDIR/inject_default.json")"
-assert_eq "pp max_idle absent"  "1"                  "$(parse_pp_max_idle "$TMPDIR/inject_default.json")"
+assert_eq "pp max_idle absent"  "3"                  "$(parse_pp_max_idle "$TMPDIR/inject_default.json")"
 
 cat > "$TMPDIR/pp_idle.json" <<'EOF'
 {
@@ -283,8 +283,23 @@ EOF
 
 assert_eq "pp max_idle explicit" "3" \
     "$(parse_pp_max_idle "$TMPDIR/pp_idle.json")"
-assert_eq "pp max_idle independent of top-level" "5" \
+assert_eq "top-level max_idle unchanged" "5" \
     "$(parse_max_idle "$TMPDIR/pp_idle.json")"
+
+cat > "$TMPDIR/pp_idle_inherit.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "max_idle": 7,
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": {
+    "prompt": "review.md",
+    "model": "claude-sonnet-4-5"
+  }
+}
+EOF
+
+assert_eq "pp max_idle inherits top-level" "7" \
+    "$(parse_pp_max_idle "$TMPDIR/pp_idle_inherit.json")"
 
 # ============================================================
 echo ""

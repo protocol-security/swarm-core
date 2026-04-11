@@ -40,7 +40,7 @@ parse_pp_model()    { jq -r '.post_process.model // "claude-opus-4-6"' "$1"; }
 parse_pp_base_url() { jq -r '.post_process.base_url // empty' "$1"; }
 parse_pp_api_key()  { jq -r '.post_process.api_key // empty' "$1"; }
 parse_pp_effort()   { jq -r '.post_process.effort // empty' "$1"; }
-parse_pp_max_idle() { jq -r '.post_process.max_idle // 1' "$1"; }
+parse_pp_max_idle() { jq -r '.post_process.max_idle // .max_idle // 3' "$1"; }
 
 parse_agents_cfg() {
     jq -r '.tag as $dt | .driver as $dd | .agents[] | range(.count) as $i |
@@ -158,11 +158,11 @@ cat > "$TMPDIR/pp_full.json" <<'EOF'
 }
 EOF
 
-assert_eq "pp prompt"   "review.md"            "$(parse_pp_prompt "$TMPDIR/pp_full.json")"
-assert_eq "pp model"    "claude-sonnet-4-5"    "$(parse_pp_model "$TMPDIR/pp_full.json")"
-assert_eq "pp base_url" "https://example.com"  "$(parse_pp_base_url "$TMPDIR/pp_full.json")"
-assert_eq "pp api_key"  "sk-pp-test"           "$(parse_pp_api_key "$TMPDIR/pp_full.json")"
-assert_eq "pp max_idle default" "1"            "$(parse_pp_max_idle "$TMPDIR/pp_full.json")"
+assert_eq "pp prompt"           "review.md"           "$(parse_pp_prompt "$TMPDIR/pp_full.json")"
+assert_eq "pp model"            "claude-sonnet-4-5"   "$(parse_pp_model "$TMPDIR/pp_full.json")"
+assert_eq "pp base_url"         "https://example.com" "$(parse_pp_base_url "$TMPDIR/pp_full.json")"
+assert_eq "pp api_key"          "sk-pp-test"          "$(parse_pp_api_key "$TMPDIR/pp_full.json")"
+assert_eq "pp max_idle default" "3"                   "$(parse_pp_max_idle "$TMPDIR/pp_full.json")"
 
 cat > "$TMPDIR/pp_minimal.json" <<'EOF'
 {
@@ -175,7 +175,7 @@ EOF
 assert_eq "pp model default"    "claude-opus-4-6"  "$(parse_pp_model "$TMPDIR/pp_minimal.json")"
 assert_eq "pp base_url empty"   ""                 "$(parse_pp_base_url "$TMPDIR/pp_minimal.json")"
 assert_eq "pp api_key empty"    ""                 "$(parse_pp_api_key "$TMPDIR/pp_minimal.json")"
-assert_eq "pp max_idle minimal" "1"                "$(parse_pp_max_idle "$TMPDIR/pp_minimal.json")"
+assert_eq "pp max_idle minimal" "3"                "$(parse_pp_max_idle "$TMPDIR/pp_minimal.json")"
 
 cat > "$TMPDIR/pp_idle.json" <<'EOF'
 {
@@ -189,12 +189,24 @@ EOF
 assert_eq "pp max_idle explicit" "3" \
     "$(parse_pp_max_idle "$TMPDIR/pp_idle.json")"
 
+cat > "$TMPDIR/pp_idle_inherit.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "max_idle": 7,
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": { "prompt": "review.md" }
+}
+EOF
+
+assert_eq "pp max_idle inherits top-level" "7" \
+    "$(parse_pp_max_idle "$TMPDIR/pp_idle_inherit.json")"
+
 cat > "$TMPDIR/no_pp.json" <<'EOF'
 { "prompt": "p.md", "agents": [{ "count": 1, "model": "m" }] }
 EOF
 
-assert_eq "no pp prompt"   "" "$(parse_pp_prompt "$TMPDIR/no_pp.json")"
-assert_eq "no pp max_idle" "1" "$(parse_pp_max_idle "$TMPDIR/no_pp.json")"
+assert_eq "no pp prompt"   ""  "$(parse_pp_prompt "$TMPDIR/no_pp.json")"
+assert_eq "no pp max_idle" "3" "$(parse_pp_max_idle "$TMPDIR/no_pp.json")"
 
 # ============================================================
 echo ""
@@ -1028,7 +1040,10 @@ pp_ensure_bare_repo() {
 _pp_repo="$TMPDIR/pp-src-repo"
 mkdir -p "$_pp_repo"
 git -C "$_pp_repo" init -q
-git -C "$_pp_repo" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
+git -C "$_pp_repo" config user.name "test"
+git -C "$_pp_repo" config user.email "test@test"
+git -C "$_pp_repo" config commit.gpgsign false
+git -C "$_pp_repo" commit --allow-empty -m "init" -q
 
 _pp_bare="$TMPDIR/pp-bare-test.git"
 
@@ -1058,7 +1073,10 @@ echo "=== 35. Bare repo is world-writable after creation ==="
 _wr_repo="$TMPDIR/wr-src-repo"
 mkdir -p "$_wr_repo"
 git -C "$_wr_repo" init -q
-git -C "$_wr_repo" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
+git -C "$_wr_repo" config user.name "test"
+git -C "$_wr_repo" config user.email "test@test"
+git -C "$_wr_repo" config commit.gpgsign false
+git -C "$_wr_repo" commit --allow-empty -m "init" -q
 
 _wr_bare="$TMPDIR/wr-bare-test.git"
 rm -rf "$_wr_bare"

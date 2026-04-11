@@ -236,12 +236,12 @@ The post-process agent clones the same bare repo, sees all
 commits on `agent-work`, runs its prompt, and pushes.
 
 `post_process` also accepts `base_url`, `api_key`,
-`auth_token`, `auth`, `tag`, and `driver` -- same fields as
-per-group agents -- to route post-processing through a
-different provider or credential. `max_idle` controls how many
-consecutive sessions with no commits before the post-processor
-exits (default: `1`). This is independent of the top-level
-`max_idle` (default: `3`) which applies to regular agents.
+`auth_token`, `auth`, `tag`, `driver`, and `max_idle` -- same
+fields as per-group agents -- to route post-processing through
+a different provider or credential. `max_idle` controls how
+many consecutive sessions with no commits before the
+post-processor exits. When omitted it inherits the top-level
+`max_idle` (default: `3`).
 
 ## Context modes
 
