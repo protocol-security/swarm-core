@@ -11,14 +11,14 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
 Usage: $0
 
 Always-on TUI dashboard for swarm agents.
-Refreshes every 2 seconds. Shows per-agent model, auth source,
-status, cost, token usage, cache hits, turns, and duration.
+Refreshes every 3 seconds. Shows per-agent model, auth source,
+status, cost, token usage, cache tokens, turns, and duration.
 
 Keybindings:
   q           Quit the dashboard.
   1-9         Tail logs for agent N.
   h           Harvest agent results into current branch.
-  s           Stop all agents.
+  s           Stop numbered agents (not post-process).
   p           Run post-processing agent.
 
 Environment:
@@ -319,7 +319,7 @@ emit_header() {
 }
 
 draw() {
-    # Re-read state file so display updates between test cases.
+    # Re-read state file so display updates on every refresh.
     if [ -f "$STATE_FILE" ]; then
         # shellcheck disable=SC1090
         source "$STATE_FILE"

@@ -102,7 +102,7 @@ other flags that the harness does not manage natively.
 ```
 
 Per-agent model, auth source, status, cost, tokens, cache,
-turns, throughput, and duration.  Updates every 2-3s.  The
+turns, throughput, and duration.  Updates every 3s.  The
 header shows a compact model summary on a single line.
 
 | Key | Action |
@@ -110,7 +110,7 @@ header shows a compact model summary on a single line.
 | `q` | Quit. |
 | `1`-`9` | Logs for agent N. |
 | `h` | Harvest results. |
-| `s` | Stop all agents. |
+| `s` | Stop numbered agents (not post-process). |
 | `p` | Post-process. |
 
 ## Activity streaming
