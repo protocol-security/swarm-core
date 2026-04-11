@@ -788,8 +788,8 @@ assert_eq "codex default" "gpt-5.4"   "$(agent_default_model)"
 CDX_JQ=$(agent_activity_jq)
 assert_not_empty "codex jq filter" "$CDX_JQ"
 assert_contains "codex jq has command_execution" "command_execution" "$CDX_JQ"
-assert_contains "codex jq has reasoning" "reasoning" "$CDX_JQ"
 assert_contains "codex jq has file_change" "file_change" "$CDX_JQ"
+assert_contains "codex jq has changes path" "changes" "$CDX_JQ"
 
 CDX_INSTALL=$(agent_install_cmd)
 assert_contains "codex install has npm" "npm" "$CDX_INSTALL"
@@ -969,26 +969,27 @@ echo "=== 37. Codex driver — activity jq filter via file boundary ==="
 source "$DRIVERS_DIR/codex-cli.sh"
 agent_activity_jq > "$TMPDIR/codex.jq"
 
-CODEX_CMD='{"type":"item.started","item":{"type":"command_execution","command":"npm test"}}'
+CODEX_CMD='{"type":"item.started","item":{"type":"command_execution","command":"npm test","id":"x1","status":"in_progress","aggregated_output":"","exit_code":null}}'
 CDX_CMD_OUT=$(echo "$CODEX_CMD" | \
     AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
     bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
 assert_contains "codex jq command_execution" "Shell:" "$CDX_CMD_OUT"
 assert_contains "codex jq command content" "npm test" "$CDX_CMD_OUT"
 
-CODEX_THINK='{"type":"item.started","item":{"type":"reasoning","text":"Analyzing the error in main.ts"}}'
-CDX_THINK_OUT=$(echo "$CODEX_THINK" | \
-    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
-    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
-assert_contains "codex jq reasoning" "Think:" "$CDX_THINK_OUT"
-assert_contains "codex jq reasoning content" "Analyzing the error" "$CDX_THINK_OUT"
-
-CODEX_EDIT='{"type":"item.completed","item":{"type":"file_change","file_path":"src/utils.ts"}}'
+# file_change: path lives in .changes[].path (verified from real output).
+CODEX_EDIT='{"type":"item.completed","item":{"type":"file_change","id":"x2","changes":[{"path":"/workspace/src/utils.ts","kind":"edit"}],"status":"completed"}}'
 CDX_EDIT_OUT=$(echo "$CODEX_EDIT" | \
     AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
     bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
 assert_contains "codex jq file_change" "Edit " "$CDX_EDIT_OUT"
-assert_contains "codex jq file_change path" "src/utils.ts" "$CDX_EDIT_OUT"
+assert_contains "codex jq file_change path" "/workspace/src/utils.ts" "$CDX_EDIT_OUT"
+
+# file_change with multiple changes uses first path.
+CODEX_MULTI='{"type":"item.completed","item":{"type":"file_change","id":"x3","changes":[{"path":"a.ts","kind":"add"},{"path":"b.ts","kind":"add"}],"status":"completed"}}'
+CDX_MULTI_OUT=$(echo "$CODEX_MULTI" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "codex jq multi file_change" "Edit a.ts" "$CDX_MULTI_OUT"
 
 CODEX_SEARCH='{"type":"item.started","item":{"type":"web_search","query":"node.js best practices"}}'
 CDX_SEARCH_OUT=$(echo "$CODEX_SEARCH" | \
@@ -1003,7 +1004,7 @@ CDX_MCP_OUT=$(echo "$CODEX_MCP" | \
 assert_contains "codex jq mcp_tool_call" "MCP:" "$CDX_MCP_OUT"
 
 # agent_message events should be silently skipped.
-CODEX_MSG='{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}'
+CODEX_MSG='{"type":"item.completed","item":{"type":"agent_message","id":"x4","text":"Done."}}'
 CDX_MSG_OUT=$(echo "$CODEX_MSG" | \
     AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
     bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)

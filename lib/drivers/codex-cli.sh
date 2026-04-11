@@ -89,7 +89,9 @@ agent_extract_stats() {
 
 # Return the jq program for parsing activity from Codex JSONL.
 # Codex emits item.started/item.completed events with item types:
-#   command_execution, reasoning, agent_message, file_change, etc.
+#   command_execution, agent_message, file_change, mcp_tool_call, etc.
+# File paths live in .changes[].path (not .file_path).
+# No separate reasoning type; thinking is internal to the model.
 agent_activity_jq() {
     cat <<'JQ'
 def truncate(n):
@@ -112,10 +114,8 @@ select(.type == "item.started" or .type == "item.completed") |
 .item |
 if .type == "command_execution" then
   "\(prefix) Shell: " + ((.command // "") | first_line | truncate(80)) + reset
-elif .type == "reasoning" then
-  "\(prefix) Think: " + ((.text // "") | first_line | truncate(80)) + reset
 elif .type == "file_change" then
-  "\(prefix) Edit " + (.file_path // "") + reset
+  "\(prefix) Edit " + ((.changes[0].path // "") | first_line) + reset
 elif .type == "mcp_tool_call" then
   "\(prefix) MCP: " + (.tool_name // "unknown") + reset
 elif .type == "web_search" then
