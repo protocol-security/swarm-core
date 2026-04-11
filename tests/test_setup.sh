@@ -27,12 +27,15 @@ assert_eq() {
 build_config() {
     local prompt="$1" setup="$2" max_idle="$3"
     local git_name="$4" git_email="$5" agents_json="$6"
+    local tag="${7:-}" driver="${8:-claude-code}"
     jq -n \
         --arg prompt "$prompt" \
         --arg setup "$setup" \
         --argjson max_idle "$max_idle" \
         --arg git_name "$git_name" \
         --arg git_email "$git_email" \
+        --arg tag "$tag" \
+        --arg driver "$driver" \
         --argjson agents "$agents_json" \
         '{
             prompt: $prompt,
@@ -40,7 +43,9 @@ build_config() {
             git_user: { name: $git_name, email: $git_email },
             agents: $agents
         }
-        | if $setup != "" then .setup = $setup else . end'
+        | if $setup != "" then .setup = $setup else . end
+        | if $tag != "" then .tag = $tag else . end
+        | if $driver != "claude-code" then .driver = $driver else . end'
 }
 
 add_post_process() {
@@ -334,6 +339,45 @@ assert_eq "pp effort blank"   "null"   "$(echo "$PP" | jq -r '.post_process.effo
 
 echo "$PP" > "$TMPDIR/pp-effort.json"
 assert_eq "pp effort JSON"    "true"   "$(jq empty "$TMPDIR/pp-effort.json" 2>/dev/null && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 13. Tag field ==="
+
+AGENTS=$(build_agents_json 1 "m")
+CONFIG=$(build_config "p.md" "" 3 "sa" "a@a" "$AGENTS" "v1.0")
+assert_eq "tag present"    "v1.0" "$(echo "$CONFIG" | jq -r '.tag')"
+
+CONFIG=$(build_config "p.md" "" 3 "sa" "a@a" "$AGENTS" '$MY_TAG')
+assert_eq "tag env ref"    '$MY_TAG' "$(echo "$CONFIG" | jq -r '.tag')"
+
+CONFIG=$(build_config "p.md" "" 3 "sa" "a@a" "$AGENTS" "")
+assert_eq "tag blank"      "null"  "$(echo "$CONFIG" | jq -r '.tag // "null"')"
+
+echo "$CONFIG" > "$TMPDIR/tag.json"
+assert_eq "tag config JSON" "true" "$(jq empty "$TMPDIR/tag.json" 2>/dev/null && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 14. Driver field ==="
+
+AGENTS=$(build_agents_json 2 "m")
+CONFIG=$(build_config "p.md" "" 3 "sa" "a@a" "$AGENTS" "" "gemini-cli")
+assert_eq "driver set"     "gemini-cli" "$(echo "$CONFIG" | jq -r '.driver')"
+
+CONFIG=$(build_config "p.md" "" 3 "sa" "a@a" "$AGENTS" "" "claude-code")
+assert_eq "driver default omitted" "null" "$(echo "$CONFIG" | jq -r '.driver // "null"')"
+
+CONFIG=$(build_config "p.md" "" 3 "sa" "a@a" "$AGENTS")
+assert_eq "driver unset omitted"   "null" "$(echo "$CONFIG" | jq -r '.driver // "null"')"
+
+# Tag + driver together
+CONFIG=$(build_config "p.md" "" 3 "sa" "a@a" "$AGENTS" "release-1" "gemini-cli")
+assert_eq "tag+driver tag"    "release-1"  "$(echo "$CONFIG" | jq -r '.tag')"
+assert_eq "tag+driver driver" "gemini-cli"  "$(echo "$CONFIG" | jq -r '.driver')"
+
+echo "$CONFIG" > "$TMPDIR/driver.json"
+assert_eq "driver config JSON" "true" "$(jq empty "$TMPDIR/driver.json" 2>/dev/null && echo true || echo false)"
 
 # ============================================================
 echo ""
