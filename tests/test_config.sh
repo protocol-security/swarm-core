@@ -7,6 +7,7 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
+FAILURES=""
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
@@ -22,6 +23,7 @@ assert_eq() {
         echo "        expected: ${expected}"
         echo "        actual:   ${actual}"
         FAIL=$((FAIL + 1))
+        FAILURES="${FAILURES}  - ${label} (expected '${expected}', got '${actual}')\n"
     fi
 }
 
@@ -35,6 +37,7 @@ assert_contains() {
         echo "        expected to contain: ${needle}"
         echo "        actual:              ${haystack}"
         FAIL=$((FAIL + 1))
+        FAILURES="${FAILURES}  - ${label} (missing '${needle}')\n"
     fi
 }
 
@@ -1151,6 +1154,11 @@ fi
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
+if [ "$FAIL" -gt 0 ]; then
+    echo ""
+    echo "  Failed:"
+    printf '%b' "$FAILURES"
+fi
 echo "==============================="
 
 [ "$FAIL" -eq 0 ]
