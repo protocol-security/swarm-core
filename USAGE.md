@@ -55,7 +55,6 @@ Per-group fields in `swarm.json` `agents` array:
 | `api_key` | key or `$VAR` | Per-group API key for third-party endpoints. |
 | `auth_token` | key or `$VAR` | Per-group Bearer token (OpenRouter-style). |
 | `base_url` | URL | Per-group API endpoint. |
-| `inject_git_rules` | `true`, `false` | Append git coordination rules to system prompt. |
 | `tag` | string or `$VAR` | Label for grouping runs (default: top-level). |
 | `driver` | driver name | Agent driver override (default: top-level or `claude-code`). |
 

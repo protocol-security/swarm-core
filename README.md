@@ -108,7 +108,7 @@ Groups without `api_key` use `ANTHROPIC_API_KEY` or
 
 **Per-group fields:** `model`, `count`, `effort`, `context`,
 `prompt`, `auth`, `api_key`, `auth_token`, `base_url`, `tag`,
-`driver`, `inject_git_rules`. See [USAGE.md](USAGE.md) for
+`driver`. See [USAGE.md](USAGE.md) for
 field reference, environment variables, auth modes, context
 modes, per-group prompts, and agent drivers.
 
