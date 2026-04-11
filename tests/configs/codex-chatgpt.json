@@ -1,0 +1,15 @@
+{
+  "prompt": "unused",
+  "driver": "codex-cli",
+  "pricing": {
+    "gpt-5.4":       {"input": 2.50,  "output": 15.00, "cached": 0.25},
+    "gpt-5.3-codex": {"input": 1.75,  "output": 14.00, "cached": 0.175}
+  },
+  "agents": [
+    {
+      "count": 2,
+      "model": "gpt-5.4",
+      "auth": "chatgpt"
+    }
+  ]
+}

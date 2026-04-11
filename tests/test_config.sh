@@ -25,6 +25,19 @@ assert_eq() {
     fi
 }
 
+assert_contains() {
+    local label="$1" needle="$2" haystack="$3"
+    if echo "$haystack" | grep -qF -- "$needle"; then
+        echo "  PASS: ${label}"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: ${label}"
+        echo "        expected to contain: ${needle}"
+        echo "        actual:              ${haystack}"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
 # --- Helpers: same jq expressions used in launch.sh ---
 
 parse_prompt()     { jq -r '.prompt // empty' "$1"; }
@@ -1011,6 +1024,118 @@ assert_eq "codex-mixed agent3 driver" "codex-cli" "$(echo "$MA3" | cut -d'|' -f2
 assert_eq "codex-mixed agent3 model"  "gpt-5.3-codex" "$(echo "$MA3" | cut -d'|' -f1)"
 assert_eq "codex-mixed agent4 driver" "codex-cli" "$(echo "$MA4" | cut -d'|' -f2)"
 assert_eq "codex-mixed agent4 model"  "gpt-5.2" "$(echo "$MA4" | cut -d'|' -f1)"
+
+# ============================================================
+echo ""
+echo "=== 31. Codex ChatGPT auth config ==="
+
+CFG="$TESTS_DIR/configs/codex-chatgpt.json"
+
+assert_eq "codex-chatgpt count"  "2"         "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "codex-chatgpt driver" "codex-cli" "$(jq -r '.driver' "$CFG")"
+assert_eq "codex-chatgpt model"  "gpt-5.4"   "$(jq -r '.agents[0].model' "$CFG")"
+assert_eq "codex-chatgpt auth"   "chatgpt"   "$(jq -r '.agents[0].auth' "$CFG")"
+
+# Verify pricing exists for the model used.
+assert_eq "codex-chatgpt pricing input" "2.5" \
+    "$(jq -r '.pricing["gpt-5.4"].input' "$CFG")"
+
+# All agents inherit chatgpt auth.
+_all_auths=$(jq -r '.agents[] | range(.count) as $i | (.auth // "auto")' "$CFG")
+_chatgpt_count=$(echo "$_all_auths" | grep -c "chatgpt" || true)
+assert_eq "codex-chatgpt all auth=chatgpt" "2" "$_chatgpt_count"
+
+# ============================================================
+echo ""
+echo "=== 32. Codex auth-mixed config ==="
+
+CFG="$TESTS_DIR/configs/codex-auth-mixed.json"
+
+assert_eq "codex-auth-mixed count" "3" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "codex-auth-mixed groups" "3" "$(jq '.agents | length' "$CFG")"
+
+# Group 1: explicit chatgpt auth.
+assert_eq "codex-auth-mixed[0] auth"  "chatgpt"    "$(jq -r '.agents[0].auth' "$CFG")"
+assert_eq "codex-auth-mixed[0] model" "gpt-5.4"     "$(jq -r '.agents[0].model' "$CFG")"
+
+# Group 2: explicit apikey auth.
+assert_eq "codex-auth-mixed[1] auth"  "apikey"      "$(jq -r '.agents[1].auth' "$CFG")"
+assert_eq "codex-auth-mixed[1] model" "gpt-5.3-codex" "$(jq -r '.agents[1].model' "$CFG")"
+
+# Group 3: no auth field (auto-detect at runtime).
+assert_eq "codex-auth-mixed[2] auth"  "null" "$(jq -r '.agents[2].auth // "null"' "$CFG")"
+assert_eq "codex-auth-mixed[2] model" "gpt-5.4" "$(jq -r '.agents[2].model' "$CFG")"
+
+# All inherit codex-cli driver.
+_all_drivers=$(jq -r '.driver as $dd | .agents[] | range(.count) as $i |
+    (.driver // $dd // "claude-code")' "$CFG")
+_codex_count=$(echo "$_all_drivers" | grep -c "codex-cli" || true)
+assert_eq "codex-auth-mixed all codex-cli" "3" "$_codex_count"
+
+# ============================================================
+echo ""
+echo "=== 33. Codex auth.json driver-level resolution ==="
+
+# Verify that agent_docker_auth correctly resolves auth modes
+# for each group in codex-auth-mixed.json.
+# This tests the driver function directly against config-derived args.
+
+source "$TESTS_DIR/../lib/drivers/codex-cli.sh"
+_fake_auth="$TMPDIR/fake-codex-auth.json"
+echo '{"access_token":"test-tok","expires_at":"2099-01-01"}' > "$_fake_auth"
+
+# Group 1 (auth=chatgpt): must mount the auth.json file.
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="$_fake_auth" \
+    agent_docker_auth "" "" "chatgpt" "")
+assert_contains "resolve chatgpt mounts" "$_fake_auth" "$AUTH_OUT"
+assert_contains "resolve chatgpt label"  "SWARM_AUTH_MODE=chatgpt" "$AUTH_OUT"
+_key_count=$(echo "$AUTH_OUT" | grep -c "OPENAI_API_KEY" || true)
+assert_eq "resolve chatgpt no key" "0" "$_key_count"
+
+# Group 2 (auth=apikey): must pass API key, no mount.
+AUTH_OUT=$(OPENAI_API_KEY="sk-test-key" CODEX_AUTH_JSON="$_fake_auth" \
+    agent_docker_auth "" "" "apikey" "")
+assert_contains "resolve apikey has key" "OPENAI_API_KEY=sk-test-key" "$AUTH_OUT"
+assert_contains "resolve apikey label"   "SWARM_AUTH_MODE=key" "$AUTH_OUT"
+_vol_count=$(echo "$AUTH_OUT" | grep -c -- "-v" || true)
+assert_eq "resolve apikey no mount" "0" "$_vol_count"
+
+# Group 3 (auth omitted, both creds available): auto-detect.
+AUTH_OUT=$(OPENAI_API_KEY="sk-auto-key" CODEX_AUTH_JSON="$_fake_auth" \
+    agent_docker_auth "" "" "" "")
+assert_contains "resolve auto has key"   "OPENAI_API_KEY=sk-auto-key" "$AUTH_OUT"
+assert_contains "resolve auto mounts"    "$_fake_auth" "$AUTH_OUT"
+assert_contains "resolve auto label"     "SWARM_AUTH_MODE=auto" "$AUTH_OUT"
+
+# Group 3 variant (auth omitted, only auth.json): chatgpt label.
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="$_fake_auth" \
+    agent_docker_auth "" "" "" "")
+assert_contains "resolve auto chatgpt-only mount" "$_fake_auth" "$AUTH_OUT"
+assert_contains "resolve auto chatgpt-only label" "SWARM_AUTH_MODE=chatgpt" "$AUTH_OUT"
+
+# CODEX_AUTH_JSON env var override: custom path is used.
+_custom_auth="$TMPDIR/custom-path-auth.json"
+echo '{"access_token":"custom"}' > "$_custom_auth"
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="$_custom_auth" \
+    agent_docker_auth "" "" "chatgpt" "")
+assert_contains "resolve custom path mounts" "$_custom_auth" "$AUTH_OUT"
+assert_contains "resolve custom path label"  "SWARM_AUTH_MODE=chatgpt" "$AUTH_OUT"
+
+# CODEX_AUTH_JSON pointing to nonexistent file: no mount, warning.
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="/tmp/nonexistent-auth.json" \
+    agent_docker_auth "" "" "chatgpt" "" 2>/dev/null)
+_vol_count=$(echo "$AUTH_OUT" | grep -c -- "-v" || true)
+assert_eq "resolve missing auth no mount" "0" "$_vol_count"
+
+# Default path fallback (~/.codex/auth.json): tested by unsetting CODEX_AUTH_JSON.
+_default_path="${HOME}/.codex/auth.json"
+if [ -f "$_default_path" ]; then
+    AUTH_OUT=$(unset CODEX_AUTH_JSON; OPENAI_API_KEY="" \
+        agent_docker_auth "" "" "chatgpt" "")
+    assert_contains "resolve default path mounts" "$_default_path" "$AUTH_OUT"
+else
+    echo "  SKIP: ~/.codex/auth.json not present on host (default path test)"
+fi
 
 # ============================================================
 echo ""
