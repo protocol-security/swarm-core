@@ -1097,8 +1097,8 @@ AUTH_OUT=$(OPENAI_API_KEY="sk-test-key" CODEX_AUTH_JSON="$_fake_auth" \
     agent_docker_auth "" "" "apikey" "")
 assert_contains "resolve apikey has key" "OPENAI_API_KEY=sk-test-key" "$AUTH_OUT"
 assert_contains "resolve apikey label"   "SWARM_AUTH_MODE=key" "$AUTH_OUT"
-_vol_count=$(echo "$AUTH_OUT" | grep -c -- "-v" || true)
-assert_eq "resolve apikey no mount" "0" "$_vol_count"
+_mount_count=$(echo "$AUTH_OUT" | grep -c -- "--mount" || true)
+assert_eq "resolve apikey no mount" "0" "$_mount_count"
 
 # Group 3 (auth omitted, both creds available): auto-detect.
 AUTH_OUT=$(OPENAI_API_KEY="sk-auto-key" CODEX_AUTH_JSON="$_fake_auth" \
@@ -1124,8 +1124,8 @@ assert_contains "resolve custom path label"  "SWARM_AUTH_MODE=chatgpt" "$AUTH_OU
 # CODEX_AUTH_JSON pointing to nonexistent file: no mount, warning.
 AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="/tmp/nonexistent-auth.json" \
     agent_docker_auth "" "" "chatgpt" "" 2>/dev/null)
-_vol_count=$(echo "$AUTH_OUT" | grep -c -- "-v" || true)
-assert_eq "resolve missing auth no mount" "0" "$_vol_count"
+_mount_count=$(echo "$AUTH_OUT" | grep -c -- "--mount" || true)
+assert_eq "resolve missing auth no mount" "0" "$_mount_count"
 
 # Default path fallback (~/.codex/auth.json): tested by unsetting CODEX_AUTH_JSON.
 _default_path="${HOME}/.codex/auth.json"

@@ -974,7 +974,7 @@ echo '{"token":"test"}' > "$_fake_auth"
 AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="$_fake_auth" \
     agent_docker_auth "" "" "chatgpt" "")
 assert_contains "codex chatgpt mounts auth.json" "$_fake_auth" "$AUTH_OUT"
-assert_contains "codex chatgpt volume flag" "-v" "$AUTH_OUT"
+assert_contains "codex chatgpt mount flag" "--mount" "$AUTH_OUT"
 assert_contains "codex chatgpt label" "SWARM_AUTH_MODE=chatgpt" "$AUTH_OUT"
 _key_count=$(echo "$AUTH_OUT" | grep -c "OPENAI_API_KEY" || true)
 assert_eq "codex chatgpt no api key" "0" "$_key_count"
@@ -982,8 +982,8 @@ assert_eq "codex chatgpt no api key" "0" "$_key_count"
 # ChatGPT mode but auth.json missing: warns, no mount.
 AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="/nonexistent" \
     agent_docker_auth "" "" "chatgpt" "" 2>/dev/null)
-_vol_count=$(echo "$AUTH_OUT" | grep -c "\-v" || true)
-assert_eq "codex chatgpt missing no mount" "0" "$_vol_count"
+_mount_count=$(echo "$AUTH_OUT" | grep -c "\-\-mount" || true)
+assert_eq "codex chatgpt missing no mount" "0" "$_mount_count"
 
 # Auto-detect: API key + auth.json both present.
 AUTH_OUT=$(OPENAI_API_KEY="sk-both" CODEX_AUTH_JSON="$_fake_auth" \

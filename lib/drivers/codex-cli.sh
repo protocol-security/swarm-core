@@ -199,10 +199,14 @@ agent_docker_auth() {
     local key="${api_key:-${OPENAI_API_KEY:-}}"
     local auth_json="${CODEX_AUTH_JSON:-${HOME}/.codex/auth.json}"
 
+    # Use --mount instead of -v so Docker errors out (rather than
+    # silently creating a directory) if the source file is missing.
+    local _mount_fmt='--mount\ntype=bind,source=%s,target=/home/agent/.codex/auth.json,readonly\n'
+
     case "${auth_mode}" in
         chatgpt)
             if [ -f "$auth_json" ]; then
-                printf -- '-v\n%s:/home/agent/.codex/auth.json:ro\n' "$auth_json"
+                printf -- "$_mount_fmt" "$auth_json"
                 label="chatgpt"
             else
                 echo "WARNING: auth=chatgpt but ${auth_json} not found" >&2
@@ -215,13 +219,12 @@ agent_docker_auth() {
             fi
             ;;
         *)
-            # Auto-detect: prefer auth.json if it exists, else API key.
             if [ -n "$key" ]; then
                 printf -- '-e\nOPENAI_API_KEY=%s\n' "$key"
                 label="key"
             fi
             if [ -f "$auth_json" ]; then
-                printf -- '-v\n%s:/home/agent/.codex/auth.json:ro\n' "$auth_json"
+                printf -- "$_mount_fmt" "$auth_json"
                 if [ -n "$label" ]; then label="auto"
                 else label="chatgpt"; fi
             fi
