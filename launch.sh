@@ -8,16 +8,18 @@ SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
-Usage: $0 COMMAND [OPTIONS]
+Usage: $0 [COMMAND] [OPTIONS]
 
 Orchestrate coding agents in Docker containers.
+Default command is 'start' when none is specified.
 
 Commands:
   start [OPTIONS]      Build image, create bare repo, launch agents.
   stop                 Stop all running agent containers.
   logs N               Tail logs for agent N (default: 1).
   status               Show running/stopped state for each agent.
-  wait                 Block until all agents exit, then harvest.
+  wait                 Block until all agents exit, then harvest
+                       (runs post-process first if configured).
   post-process         Run the post-processing agent from the config.
 
 Start options:
@@ -28,6 +30,7 @@ Environment:
   CLAUDE_CODE_OAUTH_TOKEN   OAuth token for subscription auth.
   SWARM_CONFIG              Path to swarmfile (or place swarm.json in repo root).
   SWARM_TITLE               Dashboard title override.
+  SWARM_SKIP_DEP_CHECK      Set to 1 to silence version warnings.
 HELP
     exit 0
 fi
