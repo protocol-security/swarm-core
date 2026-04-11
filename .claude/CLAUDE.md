@@ -27,6 +27,9 @@
        ## Summary
        - Bullet per logical change. What and why.
 
+       ## Changes
+       - Per-file summary: what changed and why.
+
        ## Test plan
        - [ ] Concrete verification steps.
 
@@ -51,11 +54,14 @@
 
 ## Releases
 
-- Tag every release as an annotated tag on the merge commit
-  that lands the version bump on master.
-- Format: `git tag -a v$VERSION $COMMIT -m "v$VERSION — summary"`.
-- Summary: terse, covers the headline feature(s).
-- Remind the user to push tags (`git push origin --tags`).
+- After every merge to master that changes VERSION,
+  immediately create an annotated tag on the merge commit:
+  `git tag -a v$VERSION $MERGE_COMMIT -m "v$VERSION — summary"`.
+- Verify: `git tag -l "v$(cat VERSION)"`.  If the tag is
+  missing, create it before doing anything else.
+- Always prompt the user to push: `git push origin --tags`.
+- Never skip tagging.  A version bump without a tag is
+  incomplete.
 
 ## Quality bars
 
