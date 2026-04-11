@@ -16,7 +16,8 @@ Generates a swarm.json config file in the repo root.
 
 Walks through: credentials, prompt file, agent groups (model,
 count, custom endpoints, auth source), advanced settings
-(setup script, idle limit, git user), and post-processing.
+(setup script, idle limit, git user, tag, driver), and
+post-processing.
 
 Output:
   \$REPO_ROOT/swarm.json   Generated config file.
@@ -219,12 +220,16 @@ SETUP_PATH=""
 MAX_IDLE=3
 GIT_NAME="swarm-agent"
 GIT_EMAIL="agent@swarm.local"
+TAG=""
+DRIVER="claude-code"
 
 if yesno "Configure advanced settings (setup script, idle limit, git user)?"; then
     SETUP_PATH=$(input "Setup script path (blank to skip)" "")
     MAX_IDLE=$(input "Max idle sessions before exit" "3")
     GIT_NAME=$(input "Git user name for agent commits" "swarm-agent")
     GIT_EMAIL=$(input "Git user email for agent commits" "agent@swarm.local")
+    TAG=$(input "Tag for agent branches (blank to skip, supports \$VAR)" "")
+    DRIVER=$(input "Default driver for all agents" "claude-code")
 fi
 
 # 5. Post-processing.
@@ -253,6 +258,8 @@ CONFIG=$(jq -n \
     --argjson max_idle "$MAX_IDLE" \
     --arg git_name "$GIT_NAME" \
     --arg git_email "$GIT_EMAIL" \
+    --arg tag "$TAG" \
+    --arg driver "$DRIVER" \
     --argjson agents "$AGENTS_JSON" \
     '{
         prompt: $prompt,
@@ -260,7 +267,9 @@ CONFIG=$(jq -n \
         git_user: { name: $git_name, email: $git_email },
         agents: $agents
     }
-    | if $setup != "" then .setup = $setup else . end')
+    | if $setup != "" then .setup = $setup else . end
+    | if $tag != "" then .tag = $tag else . end
+    | if $driver != "claude-code" then .driver = $driver else . end')
 
 if [ -n "$POST_PROMPT" ]; then
     CONFIG=$(echo "$CONFIG" | jq \
@@ -286,6 +295,10 @@ echo ""
 if yesno "Write ${OUTPUT}?"; then
     echo "$CONFIG" | jq . > "$OUTPUT"
     echo "Config written to ${OUTPUT}"
+    echo ""
+    echo "Tip: you can manually edit ${OUTPUT} to add advanced fields"
+    echo "     (claude_code_version, max_retry_wait, pricing, docker_args, etc.)"
+    echo "     See USAGE.md for the full reference."
     echo ""
     if yesno "Launch swarm now?"; then
         [ -n "$API_KEY" ] && export ANTHROPIC_API_KEY="$API_KEY"
