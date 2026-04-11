@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Print cost and usage summary for all swarm agents.
+# Print cost and usage summary for swarm containers.
 # Usage: ./costs.sh [--json]
 
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -10,7 +10,8 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
 Usage: $0 [--json]
 
-Print cost and usage summary for all swarm agents.
+Print cost and usage summary for swarm containers
+(numbered agents and the post-process container).
 
 Options:
   --json   Output as JSON instead of a formatted table.

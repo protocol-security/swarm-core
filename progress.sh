@@ -1,15 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# Show what agents have pushed to the bare repo.
+# Show recent commits on agent-work and running containers.
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
 Usage: $0
 
-Show what agents have pushed to the bare repo.
-Clones the bare repo to a temp directory, displays recent
-commits on agent-work, and lists running agent containers.
+Show recent commits on agent-work and running containers.
+Clones the bare repo to a temp directory, displays the last
+15 commits on agent-work, and lists running containers.
 HELP
     exit 0
 fi
