@@ -220,6 +220,7 @@ short_driver() {
     case "${1:-}" in
         claude-code) printf 'claude' ;;
         gemini-cli)  printf 'gemini' ;;
+        codex-cli)   printf 'codex'  ;;
         *)           printf '%s' "${1:-}" ;;
     esac
 }
