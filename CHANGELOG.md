@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.4 — 2026-04-11
+
+- **Tag and driver in setup wizard.** `setup.sh` now prompts for
+  the `tag` and `driver` fields under advanced settings. Tag
+  supports `$VAR` env expansion; driver defaults to `claude-code`
+  and is omitted from the config when unchanged. A tip after
+  writing the config points users to USAGE.md for additional
+  advanced fields.
+
 ## 0.18.3 — 2026-04-10
 
 - **Fix bare repo UID mismatch for container pushes.** The bare
