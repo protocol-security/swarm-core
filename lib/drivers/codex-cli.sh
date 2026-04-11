@@ -211,6 +211,13 @@ agent_docker_auth() {
     local key="${api_key:-${OPENAI_API_KEY:-}}"
     local auth_json="${CODEX_AUTH_JSON:-${HOME}/.codex/auth.json}"
 
+    # Guard: detect a corrupted auth.json (directory instead of file),
+    # which older code or a stale Docker -v mount may have created.
+    if [ -d "$auth_json" ]; then
+        echo "WARNING: ${auth_json} is a directory (should be a file)." >&2
+        echo "  Fix with: sudo rm -rf '${auth_json}'" >&2
+    fi
+
     # Use --mount instead of -v so Docker errors out (rather than
     # silently creating a directory) if the source file is missing.
     local _mount_fmt='--mount\ntype=bind,source=%s,target=/home/agent/.codex/auth.json,readonly\n'
