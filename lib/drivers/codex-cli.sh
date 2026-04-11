@@ -180,20 +180,49 @@ agent_is_retriable() {
 # Codex CLI has no effort flag.
 agent_docker_env() { :; }
 
-# Resolve auth credentials and emit Docker -e flags.
+# Resolve auth credentials and emit Docker flags.
 # Args: <api_key> <auth_token> <auth_mode> <base_url>
-# Reads host env: OPENAI_API_KEY
+# Reads host env: OPENAI_API_KEY, CODEX_AUTH_JSON
+#
+# Auth modes:
+#   chatgpt  — Mount ~/.codex/auth.json (ChatGPT subscription).
+#   apikey   — Use OPENAI_API_KEY only.
+#   (empty)  — Auto-detect: auth.json if found, else API key.
 agent_docker_auth() {
-    local api_key="$1"
-    # auth_token=$2, auth_mode=$3, base_url=$4 — unused;
-    # Codex CLI authenticates via OPENAI_API_KEY + codex login.
+    local api_key="$1" _auth_token="$2" auth_mode="$3" _base_url="$4"
 
     local label=""
     local key="${api_key:-${OPENAI_API_KEY:-}}"
-    if [ -n "$key" ]; then
-        printf -- '-e\nOPENAI_API_KEY=%s\n' "$key"
-        label="key"
-    fi
+    local auth_json="${CODEX_AUTH_JSON:-${HOME}/.codex/auth.json}"
+
+    case "${auth_mode}" in
+        chatgpt)
+            if [ -f "$auth_json" ]; then
+                printf -- '-v\n%s:/home/agent/.codex/auth.json:ro\n' "$auth_json"
+                label="chatgpt"
+            else
+                echo "WARNING: auth=chatgpt but ${auth_json} not found" >&2
+            fi
+            ;;
+        apikey)
+            if [ -n "$key" ]; then
+                printf -- '-e\nOPENAI_API_KEY=%s\n' "$key"
+                label="key"
+            fi
+            ;;
+        *)
+            # Auto-detect: prefer auth.json if it exists, else API key.
+            if [ -n "$key" ]; then
+                printf -- '-e\nOPENAI_API_KEY=%s\n' "$key"
+                label="key"
+            fi
+            if [ -f "$auth_json" ]; then
+                printf -- '-v\n%s:/home/agent/.codex/auth.json:ro\n' "$auth_json"
+                if [ -n "$label" ]; then label="auto"
+                else label="chatgpt"; fi
+            fi
+            ;;
+    esac
 
     printf -- '-e\nSWARM_AUTH_MODE=%s\n' "$label"
 }

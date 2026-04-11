@@ -33,6 +33,7 @@ Credentials stay as env vars (not in shell history).
 | `ANTHROPIC_API_KEY` | | API key (or use `CLAUDE_CODE_OAUTH_TOKEN`). |
 | `CLAUDE_CODE_OAUTH_TOKEN` | | OAuth token via `claude setup-token`. |
 | `OPENAI_API_KEY` | | OpenAI API key (for Codex CLI driver). |
+| `CODEX_AUTH_JSON` | `~/.codex/auth.json` | Path to Codex auth file (ChatGPT subscription). |
 | `GEMINI_API_KEY` | | Google API key (for Gemini CLI driver). |
 | `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
 | `SWARM_TITLE` | | Dashboard title override. |
@@ -53,7 +54,7 @@ Per-group fields in `swarm.json` `agents` array:
 | `effort` | `low`, `medium`, `high` | Adaptive reasoning depth. |
 | `context` | `full`, `slim`, `none` | How much of `.claude/` to keep (default: `full`). |
 | `prompt` | file path | Per-group prompt override (default: top-level). |
-| `auth` | `apikey`, `oauth`, omit | Which host credential to inject (see [Auth modes](#auth-modes)). |
+| `auth` | `apikey`, `oauth`, `chatgpt`, omit | Which host credential to inject (see [Auth modes](#auth-modes)). |
 | `api_key` | key or `$VAR` | Per-group API key for third-party endpoints. |
 | `auth_token` | key or `$VAR` | Per-group Bearer token (OpenRouter-style). |
 | `base_url` | URL | Per-group API endpoint. |
@@ -273,12 +274,9 @@ agent runs a different prompt to validate and normalize findings.
 
 Three credential mechanisms serve different purposes:
 
-- **`auth`** — Controls which host credential
-  (`ANTHROPIC_API_KEY` vs `CLAUDE_CODE_OAUTH_TOKEN`) is
-  forwarded to the container.  Use when both credentials are
-  set on the host and you want per-group billing control
-  (e.g. some agents on API, others on subscription).
-  Values: `apikey`, `oauth`, or omit (pass both).
+- **`auth`** — Controls which host credential is forwarded to
+  the container.  Values: `apikey`, `oauth`, `chatgpt`, or
+  omit (auto-detect).
 
 - **`api_key`** — Per-group API key for third-party endpoints
   (MiniMax, etc.).  Passed as `ANTHROPIC_API_KEY` inside the
@@ -289,17 +287,49 @@ Three credential mechanisms serve different purposes:
   `ANTHROPIC_API_KEY` so Claude Code enters third-party mode.
   Supports `$VAR` references.
 
+### Claude Code
+
+| `auth` value | Credential injected |
+|---|---|
+| `apikey` | `ANTHROPIC_API_KEY` only |
+| `oauth` | `CLAUDE_CODE_OAUTH_TOKEN` only |
+| omit | Both (CLI decides) |
+
 For subscription auth (Pro/Max/Teams/Enterprise), generate
 an OAuth token with `claude setup-token` and export
 `CLAUDE_CODE_OAUTH_TOKEN`.
+
+### Codex CLI
+
+| `auth` value | Credential injected |
+|---|---|
+| `apikey` | `OPENAI_API_KEY` only |
+| `chatgpt` | Mounts `~/.codex/auth.json` (ChatGPT subscription) |
+| omit | API key if set + auth.json if found |
+
+For ChatGPT subscription auth (Plus/Pro/Team/Enterprise),
+run `codex login` on the host to create `~/.codex/auth.json`,
+then set `"auth": "chatgpt"` in your swarm config:
+
+```json
+{
+  "driver": "codex-cli",
+  "agents": [{ "model": "gpt-5.4", "auth": "chatgpt" }]
+}
+```
+
+The auth file is bind-mounted read-only into containers.
+Override the path with `CODEX_AUTH_JSON=/path/to/auth.json`.
+
+### General rules
 
 Groups with `api_key` or `auth_token` ignore the `auth`
 field; their custom credential is always used.  When neither
 is set, `auth` determines which host credential to inject.
 
 The dashboard **Auth** column reflects the actual credential
-source: `key`, `oauth`, `token`, or `auto` (see Dashboard
-columns).
+source: `key`, `oauth`, `chatgpt`, `token`, or `auto` (see
+Dashboard columns).
 
 ## Git coordination
 
@@ -322,8 +352,9 @@ Stats collected per session inside each container
 Dashboard columns:
 
 - **Auth** — credential source: `key` (API key), `oauth`
-  (subscription token), `token` (Bearer / OpenRouter-style),
-  `auto` (both key + OAuth present, CLI decides).
+  (Claude subscription token), `chatgpt` (ChatGPT subscription),
+  `token` (Bearer / OpenRouter-style),
+  `auto` (multiple credentials present, CLI decides).
 - **Ctx** — context mode: `bare` (no `.claude/`), `slim`
   (only `CLAUDE.md`), or blank for full context.
 - **Cost** — cumulative API cost in USD.

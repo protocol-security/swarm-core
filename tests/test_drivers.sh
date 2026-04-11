@@ -28,7 +28,7 @@ assert_eq() {
 
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
-    if echo "$haystack" | grep -qF "$needle"; then
+    if echo "$haystack" | grep -qF -- "$needle"; then
         echo "  PASS: ${label}"
         PASS=$((PASS + 1))
     else
@@ -942,25 +942,59 @@ assert_eq "codex docker_env is no-op" "" "$CDX_ENV"
 echo ""
 echo "=== 36. Codex driver — agent_docker_auth ==="
 
-# API key from per-agent config.
-AUTH_OUT=$(OPENAI_API_KEY="" agent_docker_auth "sk-codex-key" "" "" "")
+# API key from per-agent config (explicit apikey mode).
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="/nonexistent" \
+    agent_docker_auth "sk-codex-key" "" "apikey" "")
 assert_contains "codex per-agent key" "OPENAI_API_KEY=sk-codex-key" "$AUTH_OUT"
 assert_contains "codex per-agent label" "SWARM_AUTH_MODE=key" "$AUTH_OUT"
 
-# API key from environment.
-AUTH_OUT=$(OPENAI_API_KEY="sk-env-key" agent_docker_auth "" "" "" "")
+# API key from environment (explicit apikey mode).
+AUTH_OUT=$(OPENAI_API_KEY="sk-env-key" CODEX_AUTH_JSON="/nonexistent" \
+    agent_docker_auth "" "" "apikey" "")
 assert_contains "codex env key" "OPENAI_API_KEY=sk-env-key" "$AUTH_OUT"
 assert_contains "codex env key label" "SWARM_AUTH_MODE=key" "$AUTH_OUT"
 
 # Per-agent overrides env.
-AUTH_OUT=$(OPENAI_API_KEY="sk-env" agent_docker_auth "sk-agent" "" "" "")
+AUTH_OUT=$(OPENAI_API_KEY="sk-env" CODEX_AUTH_JSON="/nonexistent" \
+    agent_docker_auth "sk-agent" "" "apikey" "")
 assert_contains "codex per-agent overrides env" "OPENAI_API_KEY=sk-agent" "$AUTH_OUT"
 
 # No credentials at all.
-AUTH_OUT=$(OPENAI_API_KEY="" agent_docker_auth "" "" "" "")
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="/nonexistent" \
+    agent_docker_auth "" "" "" "")
 assert_contains "codex no creds has auth mode" "SWARM_AUTH_MODE=" "$AUTH_OUT"
 _line_count=$(echo "$AUTH_OUT" | grep -c "OPENAI_API_KEY" || true)
 assert_eq "codex no creds no key flag" "0" "$_line_count"
+
+# ChatGPT subscription mode: mounts auth.json.
+_fake_auth="$TMPDIR/fake-auth.json"
+echo '{"token":"test"}' > "$_fake_auth"
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="$_fake_auth" \
+    agent_docker_auth "" "" "chatgpt" "")
+assert_contains "codex chatgpt mounts auth.json" "$_fake_auth" "$AUTH_OUT"
+assert_contains "codex chatgpt volume flag" "-v" "$AUTH_OUT"
+assert_contains "codex chatgpt label" "SWARM_AUTH_MODE=chatgpt" "$AUTH_OUT"
+_key_count=$(echo "$AUTH_OUT" | grep -c "OPENAI_API_KEY" || true)
+assert_eq "codex chatgpt no api key" "0" "$_key_count"
+
+# ChatGPT mode but auth.json missing: warns, no mount.
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="/nonexistent" \
+    agent_docker_auth "" "" "chatgpt" "" 2>/dev/null)
+_vol_count=$(echo "$AUTH_OUT" | grep -c "\-v" || true)
+assert_eq "codex chatgpt missing no mount" "0" "$_vol_count"
+
+# Auto-detect: API key + auth.json both present.
+AUTH_OUT=$(OPENAI_API_KEY="sk-both" CODEX_AUTH_JSON="$_fake_auth" \
+    agent_docker_auth "" "" "" "")
+assert_contains "codex auto has api key" "OPENAI_API_KEY=sk-both" "$AUTH_OUT"
+assert_contains "codex auto mounts auth.json" "$_fake_auth" "$AUTH_OUT"
+assert_contains "codex auto label" "SWARM_AUTH_MODE=auto" "$AUTH_OUT"
+
+# Auto-detect: only auth.json, no key.
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="$_fake_auth" \
+    agent_docker_auth "" "" "" "")
+assert_contains "codex auto chatgpt-only mount" "$_fake_auth" "$AUTH_OUT"
+assert_contains "codex auto chatgpt-only label" "SWARM_AUTH_MODE=chatgpt" "$AUTH_OUT"
 
 # ============================================================
 echo ""
