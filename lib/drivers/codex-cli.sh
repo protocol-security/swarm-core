@@ -41,18 +41,20 @@ agent_run() {
 }
 
 # Write agent-specific settings and authenticate.
+# Config goes to ~/.codex/ (where Codex CLI looks by default),
+# NOT /workspace/.codex/ (which is only for instructions.md).
 agent_settings() {
-    local workspace="$1"
-    mkdir -p "${workspace}/.codex"
+    local _workspace="$1"
+    local codex_home="${HOME}/.codex"
+    mkdir -p "$codex_home" 2>/dev/null \
+        || { sudo mkdir -p "$codex_home" && sudo chown "$(id -u):$(id -g)" "$codex_home"; }
 
-    # Store credentials as file (no keyring in containers).
-    cat > "${workspace}/.codex/config.toml" <<'TOML'
+    cat > "${codex_home}/config.toml" <<'TOML'
 cli_auth_credentials_store = "file"
 TOML
 
-    # Authenticate from OPENAI_API_KEY if available.
     if [ -n "${OPENAI_API_KEY:-}" ]; then
-        CODEX_HOME="${workspace}/.codex" \
+        CODEX_HOME="$codex_home" \
             printenv OPENAI_API_KEY \
             | codex login --with-api-key 2>/dev/null || true
     fi
@@ -154,7 +156,9 @@ agent_detect_fatal() {
     if [ -f "${logfile}.err" ]; then
         local err_msg
         err_msg=$(grep -i 'error\|invalid.*key\|unauthorized' \
-            "${logfile}.err" 2>/dev/null | head -1 || true)
+            "${logfile}.err" 2>/dev/null \
+            | grep -iv 'could not update PATH\|proceeding.*PATH' \
+            | head -1 || true)
         if [ -n "$err_msg" ] && \
                 ! grep -q '"type"[[:space:]]*:[[:space:]]*"turn.completed"' \
                 "$logfile" 2>/dev/null; then

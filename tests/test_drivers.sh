@@ -801,14 +801,16 @@ echo "=== 31. Codex driver — agent_settings ==="
 
 CWORK="$TMPDIR/codex-workspace"
 mkdir -p "$CWORK"
-agent_settings "$CWORK"
+_test_home="$TMPDIR/fakehome"
+mkdir -p "$_test_home"
+HOME="$_test_home" agent_settings "$CWORK"
 
 assert_eq "codex config dir created" "true" \
-    "$([ -d "$CWORK/.codex" ] && echo true || echo false)"
+    "$([ -d "$_test_home/.codex" ] && echo true || echo false)"
 assert_eq "codex config.toml created" "true" \
-    "$([ -f "$CWORK/.codex/config.toml" ] && echo true || echo false)"
+    "$([ -f "$_test_home/.codex/config.toml" ] && echo true || echo false)"
 assert_contains "codex config has file store" "file" \
-    "$(cat "$CWORK/.codex/config.toml")"
+    "$(cat "$_test_home/.codex/config.toml")"
 
 # ============================================================
 echo ""
