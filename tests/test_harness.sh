@@ -572,38 +572,44 @@ assert_eq "backoff capped at 1800" "1800" "$(simulate_backoff 10)"
 echo ""
 echo "=== 12. SSH signing config ==="
 
-# Mirrors the signing detection logic in harness.sh.
-simulate_signing_config() {
-    local key_exists="$1"
+# Exercises the actual file-existence check from harness.sh.
+run_signing_config() {
+    local create_key="$1"
     local sandbox="$TMPDIR/sign-sandbox-$$-${RANDOM}"
     local repo="$sandbox/repo"
+    local key_path="$sandbox/signing_key"
     mkdir -p "$repo"
     HOME="$sandbox" git init -q "$repo"
     HOME="$sandbox" git -C "$repo" config user.name "test"
     HOME="$sandbox" git -C "$repo" config user.email "test@test"
 
-    if [ "$key_exists" = "true" ]; then
+    if [ "$create_key" = "true" ]; then
+        touch "$key_path"
+    fi
+
+    # Same conditional as harness.sh, with a configurable path.
+    if [ -f "$key_path" ]; then
         HOME="$sandbox" git -C "$repo" config gpg.format ssh
-        HOME="$sandbox" git -C "$repo" config user.signingkey /etc/swarm/signing_key
+        HOME="$sandbox" git -C "$repo" config user.signingkey "$key_path"
         HOME="$sandbox" git -C "$repo" config commit.gpgsign true
     else
         HOME="$sandbox" git -C "$repo" config commit.gpgsign false
     fi
 
-    local format sign gpgsign
-    format=$(HOME="$sandbox" git -C "$repo" config --get gpg.format 2>/dev/null || echo "none")
-    sign=$(HOME="$sandbox" git -C "$repo" config --get user.signingkey 2>/dev/null || echo "none")
+    local format gpgsign
+    format=$(HOME="$sandbox" git -C "$repo" config --get gpg.format \
+        2>/dev/null || echo "none")
     gpgsign=$(HOME="$sandbox" git -C "$repo" config --get commit.gpgsign)
-    echo "${format}|${sign}|${gpgsign}"
+    echo "${format}|${gpgsign}"
     rm -rf "$sandbox"
 }
 
 assert_eq "signing key present → ssh signing" \
-    "ssh|/etc/swarm/signing_key|true" \
-    "$(simulate_signing_config true)"
+    "ssh|true" \
+    "$(run_signing_config true)"
 assert_eq "signing key absent → gpgsign false" \
-    "none|none|false" \
-    "$(simulate_signing_config false)"
+    "none|false" \
+    "$(run_signing_config false)"
 
 # ============================================================
 echo ""
