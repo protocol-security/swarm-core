@@ -995,17 +995,22 @@ echo "=== 30. Codex-mixed config ==="
 CFG="$TESTS_DIR/configs/codex-mixed.json"
 
 MIXED_COUNT=$(jq '[.agents[].count] | add' "$CFG")
-assert_eq "codex-mixed count" "3" "$MIXED_COUNT"
+assert_eq "codex-mixed count" "4" "$MIXED_COUNT"
 
 MIXED_AGENTS=$(jq -r '.driver as $dd | .agents[] | range(.count) as $i |
     [(.model), (.driver // $dd // "claude-code")] | join("|")' "$CFG")
 MA1=$(echo "$MIXED_AGENTS" | sed -n '1p')
 MA2=$(echo "$MIXED_AGENTS" | sed -n '2p')
 MA3=$(echo "$MIXED_AGENTS" | sed -n '3p')
+MA4=$(echo "$MIXED_AGENTS" | sed -n '4p')
 assert_eq "codex-mixed agent1 driver" "claude-code" "$(echo "$MA1" | cut -d'|' -f2)"
 assert_eq "codex-mixed agent1 model"  "claude-opus-4-6" "$(echo "$MA1" | cut -d'|' -f1)"
+assert_eq "codex-mixed agent2 driver" "codex-cli" "$(echo "$MA2" | cut -d'|' -f2)"
+assert_eq "codex-mixed agent2 model"  "gpt-5.4" "$(echo "$MA2" | cut -d'|' -f1)"
 assert_eq "codex-mixed agent3 driver" "codex-cli" "$(echo "$MA3" | cut -d'|' -f2)"
-assert_eq "codex-mixed agent3 model"  "gpt-5.4" "$(echo "$MA3" | cut -d'|' -f1)"
+assert_eq "codex-mixed agent3 model"  "gpt-5.3-codex" "$(echo "$MA3" | cut -d'|' -f1)"
+assert_eq "codex-mixed agent4 driver" "codex-cli" "$(echo "$MA4" | cut -d'|' -f2)"
+assert_eq "codex-mixed agent4 model"  "gpt-5.2" "$(echo "$MA4" | cut -d'|' -f1)"
 
 # ============================================================
 echo ""

@@ -39,7 +39,7 @@ done
 | `driver-post-process.json` | 2x gemini-2.5-pro (+ flash PP) | gemini-cli | `GEMINI_API_KEY` |
 | `heterogeneous-kitchen-sink.json` | Opus + 5x Gemini + Sonnet (+ PP) | mixed | `CLAUDE_CODE_OAUTH_TOKEN` + `ANTHROPIC_API_KEY` + `GEMINI_API_KEY` |
 | `codex-only.json` | 2x gpt-5.4 | codex-cli | `OPENAI_API_KEY` |
-| `codex-mixed.json` | 2x Opus + 1x gpt-5.4 | mixed | `CLAUDE_CODE_OAUTH_TOKEN` + `OPENAI_API_KEY` |
+| `codex-mixed.json` | Opus + gpt-5.4 + gpt-5.3-codex + gpt-5.2 | mixed | `CLAUDE_CODE_OAUTH_TOKEN` + `OPENAI_API_KEY` |
 
 ## Usage
 

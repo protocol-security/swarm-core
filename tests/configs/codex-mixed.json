@@ -19,7 +19,7 @@
   },
   "agents": [
     {
-      "count": 2,
+      "count": 1,
       "model": "claude-opus-4-6",
       "driver": "claude-code",
       "auth": "oauth"
@@ -27,6 +27,16 @@
     {
       "count": 1,
       "model": "gpt-5.4",
+      "driver": "codex-cli"
+    },
+    {
+      "count": 1,
+      "model": "gpt-5.3-codex",
+      "driver": "codex-cli"
+    },
+    {
+      "count": 1,
+      "model": "gpt-5.2",
       "driver": "codex-cli"
     }
   ]
