@@ -223,7 +223,8 @@ Add to `swarm.json`:
   "post_process": {
     "prompt": "prompts/review.md",
     "model": "claude-opus-4-6",
-    "effort": "low"
+    "effort": "low",
+    "max_idle": 2
   }
 }
 ```
@@ -237,7 +238,10 @@ commits on `agent-work`, runs its prompt, and pushes.
 `post_process` also accepts `base_url`, `api_key`,
 `auth_token`, `auth`, `tag`, and `driver` -- same fields as
 per-group agents -- to route post-processing through a
-different provider or credential.
+different provider or credential. `max_idle` controls how many
+consecutive sessions with no commits before the post-processor
+exits (default: `1`). This is independent of the top-level
+`max_idle` (default: `3`) which applies to regular agents.
 
 ## Context modes
 

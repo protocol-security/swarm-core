@@ -54,6 +54,7 @@ parse_inject_git_rules() { jq -r 'if has("inject_git_rules") then .inject_git_ru
 parse_title()            { jq -r '.title // empty' "$1"; }
 parse_pp_prompt()        { jq -r '.post_process.prompt // empty' "$1"; }
 parse_pp_model()         { jq -r '.post_process.model // "claude-opus-4-6"' "$1"; }
+parse_pp_max_idle()      { jq -r '.post_process.max_idle // 1' "$1"; }
 
 parse_agents_cfg() {
     jq -r '.driver as $dd | .agents[] | range(.count) as $i |
@@ -260,10 +261,30 @@ cat > "$TMPDIR/pp.json" <<'EOF'
 }
 EOF
 
-assert_eq "pp prompt"       "review.md"         "$(parse_pp_prompt "$TMPDIR/pp.json")"
-assert_eq "pp model"        "claude-sonnet-4-5"  "$(parse_pp_model "$TMPDIR/pp.json")"
-assert_eq "pp prompt absent" ""                  "$(parse_pp_prompt "$TMPDIR/inject_default.json")"
-assert_eq "pp model default" "claude-opus-4-6"   "$(parse_pp_model "$TMPDIR/inject_default.json")"
+assert_eq "pp prompt"           "review.md"          "$(parse_pp_prompt "$TMPDIR/pp.json")"
+assert_eq "pp model"            "claude-sonnet-4-5"  "$(parse_pp_model "$TMPDIR/pp.json")"
+assert_eq "pp max_idle default" "1"                  "$(parse_pp_max_idle "$TMPDIR/pp.json")"
+assert_eq "pp prompt absent"    ""                   "$(parse_pp_prompt "$TMPDIR/inject_default.json")"
+assert_eq "pp model default"    "claude-opus-4-6"    "$(parse_pp_model "$TMPDIR/inject_default.json")"
+assert_eq "pp max_idle absent"  "1"                  "$(parse_pp_max_idle "$TMPDIR/inject_default.json")"
+
+cat > "$TMPDIR/pp_idle.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "max_idle": 5,
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": {
+    "prompt": "review.md",
+    "model": "claude-sonnet-4-5",
+    "max_idle": 3
+  }
+}
+EOF
+
+assert_eq "pp max_idle explicit" "3" \
+    "$(parse_pp_max_idle "$TMPDIR/pp_idle.json")"
+assert_eq "pp max_idle independent of top-level" "5" \
+    "$(parse_max_idle "$TMPDIR/pp_idle.json")"
 
 # ============================================================
 echo ""
@@ -574,7 +595,8 @@ cat > "$TMPDIR/kitchen_sink.json" <<'EOF'
     "prompt": "prompts/post.md",
     "model": "claude-sonnet-4-6",
     "effort": "high",
-    "auth": "oauth"
+    "auth": "oauth",
+    "max_idle": 2
   }
 }
 EOF
@@ -685,10 +707,11 @@ assert_eq "ks12 auth_token" "\$OPENROUTER_API_KEY"        "$t"
 assert_eq "ks12 prompt"     "prompts/explore.md"          "$p"
 
 # Post-process section
-assert_eq "ks pp prompt" "prompts/post.md"         "$(parse_pp_prompt "$TMPDIR/kitchen_sink.json")"
-assert_eq "ks pp model"  "claude-sonnet-4-6"       "$(parse_pp_model "$TMPDIR/kitchen_sink.json")"
-assert_eq "ks pp effort" "high"                    "$(parse_pp_effort "$TMPDIR/kitchen_sink.json")"
-assert_eq "ks pp auth"   "oauth"                   "$(parse_pp_auth "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp prompt"   "prompts/post.md"    "$(parse_pp_prompt "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp model"    "claude-sonnet-4-6"  "$(parse_pp_model "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp effort"   "high"               "$(parse_pp_effort "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp auth"     "oauth"              "$(parse_pp_auth "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp max_idle" "2"                  "$(parse_pp_max_idle "$TMPDIR/kitchen_sink.json")"
 
 # ============================================================
 echo ""
