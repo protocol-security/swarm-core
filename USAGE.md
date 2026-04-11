@@ -58,9 +58,10 @@ Per-group fields in `swarm.json` `agents` array:
 | `tag` | string or `$VAR` | Label for grouping runs (default: top-level). |
 | `driver` | driver name | Agent driver override (default: top-level or `claude-code`). |
 
-Top-level fields: `prompt`, `setup`, `max_idle`, `max_retry_wait`,
-`driver`, `inject_git_rules`, `claude_code_version`, `title`, `tag`,
-`pricing`, `docker_args`, `post_process`.
+Top-level fields: `prompt`, `setup`, `max_idle` (default: `3`),
+`max_retry_wait`, `driver`, `inject_git_rules`,
+`git_user` (`name`, `email`), `claude_code_version`, `title`,
+`tag`, `pricing`, `docker_args`, `post_process`.
 
 ### Retry on rate limits
 
@@ -150,6 +151,7 @@ events only for models that support them.
 ./tests/test.sh --all                # Full matrix.
 ./tests/test.sh --config swarm.json  # Custom config.
 ./tests/test.sh --no-inject          # Explicit git prompt.
+./tests/test.sh --oauth              # OAuth-only smoke test.
 ```
 
 Flags combine: `./tests/test.sh --config f.json --no-inject`.
@@ -193,6 +195,11 @@ or automatically via `./launch.sh wait`.
 
 The post-process agent clones the same bare repo, sees all
 commits on `agent-work`, runs its prompt, and pushes.
+
+`post_process` also accepts `base_url`, `api_key`,
+`auth_token`, `auth`, `tag`, and `driver` -- same fields as
+per-group agents -- to route post-processing through a
+different provider or credential.
 
 ## Context modes
 
@@ -390,8 +397,11 @@ agent_is_retriable()    # Detect retriable errors (rate limits, overload)
 agent_activity_jq()     # Return jq filter for activity streaming
 agent_docker_env()      # Print -e flags for agent-specific env vars
 agent_docker_auth()     # Resolve credentials, emit Docker -e flags
-agent_install_cmd()     # Dockerfile fragment to install the CLI
+agent_install_cmd()     # Print install commands (documentation only)
 ```
+
+The Dockerfile hardcodes install steps for built-in drivers.
+New drivers require corresponding Dockerfile changes.
 
 See `lib/drivers/claude-code.sh` for the reference implementation
 and `lib/drivers/fake.sh` for a minimal test double.
@@ -443,15 +453,13 @@ After a swarm run, the following artifacts remain on disk:
 | Submodule mirrors | `/tmp/<project>-mirror-*.git` |
 | Agent containers | `<project>-agent-N` |
 | State file | `/tmp/<project>-swarm.env` |
-| Agent config | `/tmp/<project>-agents.cfg` |
-
 Remove everything for a fresh start:
 
 ```bash
 PROJECT=$(basename $(pwd))
 docker rm -f $(docker ps -aq --filter "name=${PROJECT}-agent-") 2>/dev/null
 rm -rf /tmp/${PROJECT}-upstream.git /tmp/${PROJECT}-mirror-*.git
-rm -f  /tmp/${PROJECT}-swarm.env /tmp/${PROJECT}-agents.cfg
+rm -f  /tmp/${PROJECT}-swarm.env
 ```
 
 ## Verify image
