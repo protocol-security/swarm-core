@@ -1199,13 +1199,13 @@ cat > "$TMPDIR/signing.json" <<'EOF'
   "git_user": {
     "name": "swarm-agent",
     "email": "agent@swarm.local",
-    "signing_key": "~/.ssh/swarm-agent-signing"
+    "signing_key": "/home/agent/.ssh/swarm-agent-signing"
   },
   "agents": [{ "count": 1, "model": "m" }]
 }
 EOF
 
-assert_eq "signing key present" "~/.ssh/swarm-agent-signing" \
+assert_eq "signing key present" "/home/agent/.ssh/swarm-agent-signing" \
     "$(parse_signing_key "$TMPDIR/signing.json")"
 assert_eq "signing key absent" "" \
     "$(parse_signing_key "$TMPDIR/inject_default.json")"
