@@ -184,7 +184,7 @@
   `SWARM_MODEL` is unset, removing the hardcoded Claude default.
 - **Conditional Dockerfile.** `SWARM_AGENTS` build arg controls which
   CLIs are installed: `claude-code` (default), `gemini-cli`, or both.
-  Node.js 20 is only installed when Gemini CLI is needed. `launch.sh`
+  Node.js 22 is only installed when Gemini CLI is needed. `launch.sh`
   derives the arg from config and passes it to `docker build`.
 - **Dashboard driver label.** `format_model()` shows a `[gem]` or
   `[fake]` suffix when the agent's driver is not the default

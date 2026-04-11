@@ -15,14 +15,14 @@ sessions until the agent is idle for MAX_IDLE cycles.
 
 Required environment:
   SWARM_PROMPT   Path to prompt file (relative to repo root).
-  SWARM_MODEL    Model to use for agent sessions.
 
 Optional environment:
+  SWARM_MODEL    Model (default: driver's default model).
   AGENT_ID       Agent identifier (default: unnamed).
   SWARM_DRIVER   Agent driver (default: claude-code).
   SWARM_SETUP    Setup script to run before first session.
   MAX_IDLE       Idle sessions before exit (default: 3).
-  MAX_RETRY_WAIT Max seconds to retry on rate limits (default: 0 = no retry).
+  MAX_RETRY_WAIT Max seconds to retry on fatal errors (default: 0 = no retry).
   INJECT_GIT_RULES  Inject git coordination rules (default: true).
   SWARM_CONTEXT  Context mode: full (default), slim, or none.
 HELP
@@ -324,7 +324,7 @@ while true; do
         if [ -n "$_retriable" ] && [ "$MAX_RETRY_WAIT" -gt 0 ]; then
             _backoff=30; _total_waited=0
             while [ "$_total_waited" -lt "$MAX_RETRY_WAIT" ]; do
-                hlog_err "rate limited: ${FATAL_MSG}"
+                hlog_err "retriable error: ${FATAL_MSG}"
                 hlog "retrying in ${_backoff}s (waited ${_total_waited}/${MAX_RETRY_WAIT}s)"
                 printf '%s/%s\n' "$_total_waited" "$MAX_RETRY_WAIT" > "$RETRY_FILE"
                 sleep "$_backoff"

@@ -223,7 +223,7 @@ GIT_EMAIL="agent@swarm.local"
 TAG=""
 DRIVER="claude-code"
 
-if yesno "Configure advanced settings (setup script, idle limit, git user)?"; then
+if yesno "Configure advanced settings (setup script, idle limit, git user, tag, driver)?"; then
     SETUP_PATH=$(input "Setup script path (blank to skip)" "")
     MAX_IDLE=$(input "Max idle sessions before exit" "3")
     GIT_NAME=$(input "Git user name for agent commits" "swarm-agent")
