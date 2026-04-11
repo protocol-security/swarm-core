@@ -7,8 +7,14 @@
   },
   "agents": [
     {
-      "count": 2,
+      "count": 1,
       "model": "gpt-5.4",
+      "auth": "chatgpt",
+      "effort": "high"
+    },
+    {
+      "count": 1,
+      "model": "gpt-5.3-codex",
       "auth": "chatgpt"
     }
   ]

@@ -30,11 +30,17 @@ agent_run() {
             2>/dev/null || true
     fi
 
+    local effort_args=()
+    if [ -n "${CODEX_EFFORT:-}" ]; then
+        effort_args=(-c "model_reasoning_effort=\"${CODEX_EFFORT}\"")
+    fi
+
     codex exec \
         --dangerously-bypass-approvals-and-sandbox \
         -m "$model" \
         --json \
         --skip-git-repo-check \
+        "${effort_args[@]+"${effort_args[@]}"}" \
         "$prompt_text" \
         2>"${logfile}.err" \
         | stdbuf -oL tee "$logfile"
@@ -181,8 +187,14 @@ agent_is_retriable() {
     return 0
 }
 
-# Codex CLI has no effort flag.
-agent_docker_env() { :; }
+# Map effort to Codex config override.
+# Args: <effort>
+agent_docker_env() {
+    local effort="${1:-}"
+    if [ -n "$effort" ]; then
+        printf -- '-e\nCODEX_EFFORT=%s\n' "$effort"
+    fi
+}
 
 # Resolve auth credentials and emit Docker flags.
 # Args: <api_key> <auth_token> <auth_mode> <base_url>

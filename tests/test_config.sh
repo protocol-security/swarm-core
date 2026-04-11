@@ -993,7 +993,10 @@ CFG="$TESTS_DIR/configs/codex-only.json"
 
 assert_eq "codex-only count" "2" "$(jq '[.agents[].count] | add' "$CFG")"
 assert_eq "codex-only driver" "codex-cli" "$(jq -r '.driver' "$CFG")"
-assert_eq "codex-only model" "gpt-5.4" "$(jq -r '.agents[0].model' "$CFG")"
+assert_eq "codex-only model[0]" "gpt-5.4" "$(jq -r '.agents[0].model' "$CFG")"
+assert_eq "codex-only model[1]" "gpt-5.3-codex" "$(jq -r '.agents[1].model' "$CFG")"
+assert_eq "codex-only effort[0]" "high" "$(jq -r '.agents[0].effort' "$CFG")"
+assert_eq "codex-only effort[1]" "low"  "$(jq -r '.agents[1].effort' "$CFG")"
 
 # Agents inherit top-level driver.
 CODEX_AGENTS=$(jq -r '.driver as $dd | .agents[] | range(.count) as $i |
@@ -1020,10 +1023,13 @@ assert_eq "codex-mixed agent1 driver" "claude-code" "$(echo "$MA1" | cut -d'|' -
 assert_eq "codex-mixed agent1 model"  "claude-opus-4-6" "$(echo "$MA1" | cut -d'|' -f1)"
 assert_eq "codex-mixed agent2 driver" "codex-cli" "$(echo "$MA2" | cut -d'|' -f2)"
 assert_eq "codex-mixed agent2 model"  "gpt-5.4" "$(echo "$MA2" | cut -d'|' -f1)"
+assert_eq "codex-mixed agent2 effort" "high" "$(jq -r '.agents[1].effort' "$CFG")"
 assert_eq "codex-mixed agent3 driver" "codex-cli" "$(echo "$MA3" | cut -d'|' -f2)"
 assert_eq "codex-mixed agent3 model"  "gpt-5.3-codex" "$(echo "$MA3" | cut -d'|' -f1)"
+assert_eq "codex-mixed agent3 effort" "medium" "$(jq -r '.agents[2].effort' "$CFG")"
 assert_eq "codex-mixed agent4 driver" "codex-cli" "$(echo "$MA4" | cut -d'|' -f2)"
 assert_eq "codex-mixed agent4 model"  "gpt-5.2" "$(echo "$MA4" | cut -d'|' -f1)"
+assert_eq "codex-mixed agent4 effort" "null" "$(jq -r '.agents[3].effort // null' "$CFG")"
 
 # ============================================================
 echo ""
@@ -1033,8 +1039,12 @@ CFG="$TESTS_DIR/configs/codex-chatgpt.json"
 
 assert_eq "codex-chatgpt count"  "2"         "$(jq '[.agents[].count] | add' "$CFG")"
 assert_eq "codex-chatgpt driver" "codex-cli" "$(jq -r '.driver' "$CFG")"
-assert_eq "codex-chatgpt model"  "gpt-5.4"   "$(jq -r '.agents[0].model' "$CFG")"
-assert_eq "codex-chatgpt auth"   "chatgpt"   "$(jq -r '.agents[0].auth' "$CFG")"
+assert_eq "codex-chatgpt model[0]"  "gpt-5.4"       "$(jq -r '.agents[0].model' "$CFG")"
+assert_eq "codex-chatgpt model[1]"  "gpt-5.3-codex" "$(jq -r '.agents[1].model' "$CFG")"
+assert_eq "codex-chatgpt auth[0]"   "chatgpt"   "$(jq -r '.agents[0].auth' "$CFG")"
+assert_eq "codex-chatgpt auth[1]"   "chatgpt"   "$(jq -r '.agents[1].auth' "$CFG")"
+assert_eq "codex-chatgpt effort[0]" "high"       "$(jq -r '.agents[0].effort' "$CFG")"
+assert_eq "codex-chatgpt effort[1]" "null"       "$(jq -r '.agents[1].effort // null' "$CFG")"
 
 # Verify pricing exists for the model used.
 assert_eq "codex-chatgpt pricing input" "2.5" \

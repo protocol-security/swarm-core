@@ -36,12 +36,14 @@
     {
       "count": 1,
       "model": "gpt-5.4",
-      "driver": "codex-cli"
+      "driver": "codex-cli",
+      "effort": "high"
     },
     {
       "count": 1,
       "model": "gpt-5.3-codex",
-      "driver": "codex-cli"
+      "driver": "codex-cli",
+      "effort": "medium"
     },
     {
       "count": 1,

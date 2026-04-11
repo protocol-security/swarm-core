@@ -938,7 +938,13 @@ echo ""
 echo "=== 35. Codex driver — agent_docker_env ==="
 
 CDX_ENV=$(agent_docker_env "high")
-assert_eq "codex docker_env is no-op" "" "$CDX_ENV"
+assert_contains "codex docker_env effort flag" "CODEX_EFFORT=high" "$CDX_ENV"
+
+CDX_ENV=$(agent_docker_env "low")
+assert_contains "codex docker_env effort low" "CODEX_EFFORT=low" "$CDX_ENV"
+
+CDX_ENV=$(agent_docker_env "")
+assert_eq "codex docker_env empty effort" "" "$CDX_ENV"
 
 # ============================================================
 echo ""
