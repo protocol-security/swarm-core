@@ -130,5 +130,6 @@ Each driver implements a fixed role interface:
 | `agent_activity_jq` | jq filter for activity display |
 
 Built-in drivers: `claude-code` (default), `gemini-cli`,
-`fake` (test double).  See [USAGE.md](USAGE.md#writing-a-new-driver)
-for the full interface and guide to writing a new driver.
+`codex-cli`, `fake` (test double).  See
+[USAGE.md](USAGE.md#writing-a-new-driver) for the full interface
+and guide to writing a new driver.

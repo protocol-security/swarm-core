@@ -1,0 +1,10 @@
+{
+  "prompt": "unused",
+  "driver": "codex-cli",
+  "agents": [
+    {
+      "count": 2,
+      "model": "gpt-5.4"
+    }
+  ]
+}

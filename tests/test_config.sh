@@ -974,6 +974,41 @@ assert_eq "docker_args single" "--network=host" "$DA_SINGLE"
 
 # ============================================================
 echo ""
+echo "=== 29. Codex-only config ==="
+
+CFG="$TESTS_DIR/configs/codex-only.json"
+
+assert_eq "codex-only count" "2" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "codex-only driver" "codex-cli" "$(jq -r '.driver' "$CFG")"
+assert_eq "codex-only model" "gpt-5.4" "$(jq -r '.agents[0].model' "$CFG")"
+
+# Agents inherit top-level driver.
+CODEX_AGENTS=$(jq -r '.driver as $dd | .agents[] | range(.count) as $i |
+    (.driver // $dd // "claude-code")' "$CFG")
+assert_eq "codex-only agent inherits driver" "codex-cli" \
+    "$(echo "$CODEX_AGENTS" | sed -n '1p')"
+
+# ============================================================
+echo ""
+echo "=== 30. Codex-mixed config ==="
+
+CFG="$TESTS_DIR/configs/codex-mixed.json"
+
+MIXED_COUNT=$(jq '[.agents[].count] | add' "$CFG")
+assert_eq "codex-mixed count" "3" "$MIXED_COUNT"
+
+MIXED_AGENTS=$(jq -r '.driver as $dd | .agents[] | range(.count) as $i |
+    [(.model), (.driver // $dd // "claude-code")] | join("|")' "$CFG")
+MA1=$(echo "$MIXED_AGENTS" | sed -n '1p')
+MA2=$(echo "$MIXED_AGENTS" | sed -n '2p')
+MA3=$(echo "$MIXED_AGENTS" | sed -n '3p')
+assert_eq "codex-mixed agent1 driver" "claude-code" "$(echo "$MA1" | cut -d'|' -f2)"
+assert_eq "codex-mixed agent1 model"  "claude-opus-4-6" "$(echo "$MA1" | cut -d'|' -f1)"
+assert_eq "codex-mixed agent3 driver" "codex-cli" "$(echo "$MA3" | cut -d'|' -f2)"
+assert_eq "codex-mixed agent3 model"  "gpt-5.4" "$(echo "$MA3" | cut -d'|' -f1)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

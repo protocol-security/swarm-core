@@ -1,0 +1,206 @@
+#!/bin/bash
+# shellcheck disable=SC2034
+# Agent driver: OpenAI Codex CLI
+# Implements the role interface for OpenAI's Codex CLI.
+
+# shellcheck source=_common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
+
+agent_default_model() { echo "gpt-5.4"; }
+agent_name()    { echo "Codex CLI"; }
+agent_cmd()     { echo "codex"; }
+
+agent_version() {
+    local v
+    v=$(codex --version 2>/dev/null || echo "unknown")
+    echo "${v%% *}"
+}
+
+# Run one agent session.
+# Args: <model> <prompt_text> <logfile> [append_system_prompt_file]
+agent_run() {
+    local model="$1" prompt_text="$2" logfile="$3"
+    local append_file="${4:-}"
+
+    # Codex reads .codex/instructions.md from the workspace for
+    # additional system-level context (like GEMINI.md for Gemini).
+    if [ -n "$append_file" ] && [ -f "$append_file" ]; then
+        mkdir -p /workspace/.codex
+        cp "$append_file" /workspace/.codex/instructions.md \
+            2>/dev/null || true
+    fi
+
+    codex exec \
+        --dangerously-bypass-approvals-and-sandbox \
+        -m "$model" \
+        --json \
+        --skip-git-repo-check \
+        "$prompt_text" \
+        2>"${logfile}.err" \
+        | stdbuf -oL tee "$logfile"
+}
+
+# Write agent-specific settings and authenticate.
+agent_settings() {
+    local workspace="$1"
+    mkdir -p "${workspace}/.codex"
+
+    # Store credentials as file (no keyring in containers).
+    cat > "${workspace}/.codex/config.toml" <<'TOML'
+cli_auth_credentials_store = "file"
+TOML
+
+    # Authenticate from OPENAI_API_KEY if available.
+    if [ -n "${OPENAI_API_KEY:-}" ]; then
+        CODEX_HOME="${workspace}/.codex" \
+            printenv OPENAI_API_KEY \
+            | codex login --with-api-key 2>/dev/null || true
+    fi
+}
+
+# Extract stats from Codex JSONL output.
+# Codex emits turn.completed events with usage; sum across turns.
+#   {"type":"turn.completed","usage":{"input_tokens":N,
+#    "cached_input_tokens":N,"output_tokens":N}}
+agent_extract_stats() {
+    local logfile="$1"
+    local stats
+    stats=$(grep '"type"[[:space:]]*:[[:space:]]*"turn.completed"' \
+        "$logfile" 2>/dev/null \
+        | jq -s '{
+            tok_in:  [.[].usage.input_tokens        // 0] | add,
+            tok_out: [.[].usage.output_tokens        // 0] | add,
+            cached:  [.[].usage.cached_input_tokens  // 0] | add,
+            turns:   length
+        }' 2>/dev/null || true)
+    if [ -z "$stats" ] || [ "$stats" = "null" ]; then
+        printf "0\t0\t0\t0\t0\t0\t0\t0"
+        return
+    fi
+    local tok_in tok_out cached turns
+    tok_in=$(echo "$stats" | jq -r '.tok_in // 0')
+    tok_out=$(echo "$stats" | jq -r '.tok_out // 0')
+    cached=$(echo "$stats" | jq -r '.cached // 0')
+    turns=$(echo "$stats" | jq -r '.turns // 0')
+    # No native cost or timing from Codex JSONL; use pricing config.
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s" \
+        "0" "$tok_in" "$tok_out" "$cached" "0" "0" "0" "$turns"
+}
+
+# Return the jq program for parsing activity from Codex JSONL.
+# Codex emits item.started/item.completed events with item types:
+#   command_execution, reasoning, agent_message, file_change, etc.
+agent_activity_jq() {
+    cat <<'JQ'
+def truncate(n):
+  if length > n then .[:n-3] + "..." else . end;
+
+def first_line:
+  split("\n")[0] // .;
+
+def ts:
+  now | strftime("%H:%M:%S");
+
+def prefix:
+  "\u001b[33m\(ts)   agent[\($id)]";
+
+def reset:
+  "\u001b[0m";
+
+fromjson? // empty |
+select(.type == "item.started" or .type == "item.completed") |
+.item |
+if .type == "command_execution" then
+  "\(prefix) Shell: " + ((.command // "") | first_line | truncate(80)) + reset
+elif .type == "reasoning" then
+  "\(prefix) Think: " + ((.text // "") | first_line | truncate(80)) + reset
+elif .type == "file_change" then
+  "\(prefix) Edit " + (.file_path // "") + reset
+elif .type == "mcp_tool_call" then
+  "\(prefix) MCP: " + (.tool_name // "unknown") + reset
+elif .type == "web_search" then
+  "\(prefix) Search: " + (.query // "") + reset
+elif .type == "agent_message" then
+  empty
+else empty
+end
+JQ
+}
+
+# Detect fatal errors in a Codex session log.
+# Checks for turn.failed and error events.
+agent_detect_fatal() {
+    local logfile="$1"
+
+    local fail_line
+    fail_line=$(grep '"type"[[:space:]]*:[[:space:]]*"turn.failed"' \
+        "$logfile" 2>/dev/null | head -1 || true)
+    if [ -n "$fail_line" ]; then
+        echo "$fail_line" | jq -r '.error // .message // "turn failed"' \
+            2>/dev/null || true
+        return
+    fi
+
+    local error_line
+    error_line=$(grep '"type"[[:space:]]*:[[:space:]]*"error"' \
+        "$logfile" 2>/dev/null | head -1 || true)
+    if [ -n "$error_line" ]; then
+        echo "$error_line" | jq -r '.message // .error // "unknown error"' \
+            2>/dev/null || true
+        return
+    fi
+
+    # Check stderr for errors when log is empty or has no tokens.
+    if [ -f "${logfile}.err" ]; then
+        local err_msg
+        err_msg=$(grep -i 'error\|invalid.*key\|unauthorized' \
+            "${logfile}.err" 2>/dev/null | head -1 || true)
+        if [ -n "$err_msg" ] && \
+                ! grep -q '"type"[[:space:]]*:[[:space:]]*"turn.completed"' \
+                "$logfile" 2>/dev/null; then
+            echo "$err_msg"
+        fi
+    fi
+}
+
+# Detect retriable errors (rate limits, quota).
+# Returns non-empty string if the error is retriable, empty if fatal.
+# Args: <logfile> <exit_code>
+agent_is_retriable() {
+    local logfile="$1"
+    grep -qi '429\|rate.limit\|too many requests\|quota' \
+        "$logfile" 2>/dev/null && echo "rate_limited" && return
+    if [ -f "${logfile}.err" ]; then
+        grep -qi 'rate.limit\|too many requests\|quota\|429' \
+            "${logfile}.err" 2>/dev/null && echo "rate_limited" && return
+    fi
+    return 0
+}
+
+# Codex CLI has no effort flag.
+agent_docker_env() { :; }
+
+# Resolve auth credentials and emit Docker -e flags.
+# Args: <api_key> <auth_token> <auth_mode> <base_url>
+# Reads host env: OPENAI_API_KEY
+agent_docker_auth() {
+    local api_key="$1"
+    # auth_token=$2, auth_mode=$3, base_url=$4 — unused;
+    # Codex CLI authenticates via OPENAI_API_KEY + codex login.
+
+    local label=""
+    local key="${api_key:-${OPENAI_API_KEY:-}}"
+    if [ -n "$key" ]; then
+        printf -- '-e\nOPENAI_API_KEY=%s\n' "$key"
+        label="key"
+    fi
+
+    printf -- '-e\nSWARM_AUTH_MODE=%s\n' "$label"
+}
+
+# Dockerfile fragment to install this agent's CLI.
+agent_install_cmd() {
+    cat <<'INSTALL'
+RUN npm install -g @openai/codex
+INSTALL
+}

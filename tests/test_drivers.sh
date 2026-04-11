@@ -57,6 +57,8 @@ assert_eq "claude-code driver exists" "true" \
     "$([ -f "$DRIVERS_DIR/claude-code.sh" ] && echo true || echo false)"
 assert_eq "fake driver exists" "true" \
     "$([ -f "$DRIVERS_DIR/fake.sh" ] && echo true || echo false)"
+assert_eq "codex driver exists" "true" \
+    "$([ -f "$DRIVERS_DIR/codex-cli.sh" ] && echo true || echo false)"
 assert_eq "_common.sh exists" "true" \
     "$([ -f "$DRIVERS_DIR/_common.sh" ] && echo true || echo false)"
 
@@ -389,6 +391,12 @@ for fn in "${_required_fns[@]}"; do
         "$(type -t "$fn" &>/dev/null && echo true || echo false)"
 done
 
+source "$DRIVERS_DIR/codex-cli.sh"
+for fn in "${_required_fns[@]}"; do
+    assert_eq "codex has $fn" "true" \
+        "$(type -t "$fn" &>/dev/null && echo true || echo false)"
+done
+
 # ============================================================
 echo ""
 echo "=== 17. Gemini CLI driver — role interface ==="
@@ -516,6 +524,9 @@ assert_eq "fake default model" "fake-model" "$(agent_default_model)"
 
 source "$DRIVERS_DIR/gemini-cli.sh"
 assert_eq "gemini default model" "gemini-2.5-pro" "$(agent_default_model)"
+
+source "$DRIVERS_DIR/codex-cli.sh"
+assert_eq "codex default model" "gpt-5.4" "$(agent_default_model)"
 
 # ============================================================
 echo ""
@@ -760,6 +771,268 @@ echo "=== 25. agent_is_retriable — Fake driver ==="
 source "$DRIVERS_DIR/fake.sh"
 RETRY_OUT=$(agent_is_retriable "$TMPDIR/cc-rate-limit.jsonl" 1)
 assert_eq "fake driver never retriable" "" "$RETRY_OUT"
+
+# ============================================================
+echo ""
+echo "=== 30. Codex driver — role interface ==="
+
+assert_eq "codex driver exists" "true" \
+    "$([ -f "$DRIVERS_DIR/codex-cli.sh" ] && echo true || echo false)"
+
+source "$DRIVERS_DIR/codex-cli.sh"
+
+assert_eq "codex name"    "Codex CLI"  "$(agent_name)"
+assert_eq "codex cmd"     "codex"      "$(agent_cmd)"
+assert_eq "codex default" "gpt-5.4"   "$(agent_default_model)"
+
+CDX_JQ=$(agent_activity_jq)
+assert_not_empty "codex jq filter" "$CDX_JQ"
+assert_contains "codex jq has command_execution" "command_execution" "$CDX_JQ"
+assert_contains "codex jq has reasoning" "reasoning" "$CDX_JQ"
+assert_contains "codex jq has file_change" "file_change" "$CDX_JQ"
+
+CDX_INSTALL=$(agent_install_cmd)
+assert_contains "codex install has npm" "npm" "$CDX_INSTALL"
+assert_contains "codex install has @openai/codex" "@openai/codex" "$CDX_INSTALL"
+
+# ============================================================
+echo ""
+echo "=== 31. Codex driver — agent_settings ==="
+
+CWORK="$TMPDIR/codex-workspace"
+mkdir -p "$CWORK"
+agent_settings "$CWORK"
+
+assert_eq "codex config dir created" "true" \
+    "$([ -d "$CWORK/.codex" ] && echo true || echo false)"
+assert_eq "codex config.toml created" "true" \
+    "$([ -f "$CWORK/.codex/config.toml" ] && echo true || echo false)"
+assert_contains "codex config has file store" "file" \
+    "$(cat "$CWORK/.codex/config.toml")"
+
+# ============================================================
+echo ""
+echo "=== 32. Codex driver — agent_extract_stats ==="
+
+cat > "$TMPDIR/codex-session.jsonl" <<'EOF'
+{"type":"turn.started","turn_id":"t1"}
+{"type":"item.started","item":{"type":"command_execution","command":"ls -la"}}
+{"type":"item.completed","item":{"type":"command_execution","command":"ls -la"}}
+{"type":"turn.completed","turn_id":"t1","usage":{"input_tokens":500,"output_tokens":200,"cached_input_tokens":100}}
+{"type":"turn.started","turn_id":"t2"}
+{"type":"item.started","item":{"type":"file_change","file_path":"src/main.ts"}}
+{"type":"item.completed","item":{"type":"file_change","file_path":"src/main.ts"}}
+{"type":"turn.completed","turn_id":"t2","usage":{"input_tokens":800,"output_tokens":300,"cached_input_tokens":400}}
+EOF
+
+CSTATS=$(agent_extract_stats "$TMPDIR/codex-session.jsonl")
+IFS=$'\t' read -r c_cost c_in c_out c_cache_rd c_cache_cr c_dur c_api_ms c_turns <<< "$CSTATS"
+
+assert_eq "codex cost is 0"        "0"    "$c_cost"
+assert_eq "codex tok_in summed"    "1300" "$c_in"
+assert_eq "codex tok_out summed"   "500"  "$c_out"
+assert_eq "codex cached summed"    "500"  "$c_cache_rd"
+assert_eq "codex cache_cr"         "0"    "$c_cache_cr"
+assert_eq "codex dur"              "0"    "$c_dur"
+assert_eq "codex api_ms"           "0"    "$c_api_ms"
+assert_eq "codex turns"            "2"    "$c_turns"
+
+# Empty log: all zeroes.
+: > "$TMPDIR/codex-empty.jsonl"
+CSTATS_EMPTY=$(agent_extract_stats "$TMPDIR/codex-empty.jsonl")
+IFS=$'\t' read -r c_cost c_in c_out c_cache_rd c_cache_cr c_dur c_api_ms c_turns <<< "$CSTATS_EMPTY"
+assert_eq "codex empty cost"  "0" "$c_cost"
+assert_eq "codex empty turns" "0" "$c_turns"
+
+# Single turn.
+cat > "$TMPDIR/codex-single.jsonl" <<'EOF'
+{"type":"turn.completed","turn_id":"t1","usage":{"input_tokens":100,"output_tokens":50,"cached_input_tokens":0}}
+EOF
+CSTATS_S=$(agent_extract_stats "$TMPDIR/codex-single.jsonl")
+IFS=$'\t' read -r c_cost c_in c_out c_cache_rd c_cache_cr c_dur c_api_ms c_turns <<< "$CSTATS_S"
+assert_eq "codex single tok_in"  "100" "$c_in"
+assert_eq "codex single tok_out" "50"  "$c_out"
+assert_eq "codex single turns"   "1"   "$c_turns"
+
+# ============================================================
+echo ""
+echo "=== 33. Codex driver — agent_detect_fatal ==="
+
+# Fatal: turn.failed event.
+cat > "$TMPDIR/codex-fatal.jsonl" <<'EOF'
+{"type":"turn.failed","turn_id":"t1","error":"authentication_error: Invalid API key"}
+EOF
+CFATAL=$(agent_detect_fatal "$TMPDIR/codex-fatal.jsonl" 1)
+assert_not_empty "codex turn.failed detected" "$CFATAL"
+assert_contains "codex fatal mentions auth" "authentication_error" "$CFATAL"
+
+# Fatal: generic error event.
+cat > "$TMPDIR/codex-error.jsonl" <<'EOF'
+{"type":"error","message":"model not found: gpt-99"}
+EOF
+CERR=$(agent_detect_fatal "$TMPDIR/codex-error.jsonl" 1)
+assert_not_empty "codex error event detected" "$CERR"
+assert_contains "codex error message" "model not found" "$CERR"
+
+# Fatal: stderr error with no successful turns.
+cat > "$TMPDIR/codex-stderr.jsonl" <<'EOF'
+EOF
+cat > "$TMPDIR/codex-stderr.jsonl.err" <<'EOF'
+Error: Unauthorized - invalid API key
+EOF
+CSTDERR=$(agent_detect_fatal "$TMPDIR/codex-stderr.jsonl" 1)
+assert_not_empty "codex stderr error detected" "$CSTDERR"
+assert_contains "codex stderr mentions unauthorized" "Unauthorized" "$CSTDERR"
+
+# Not fatal: successful turns present despite stderr noise.
+cat > "$TMPDIR/codex-ok.jsonl" <<'EOF'
+{"type":"turn.completed","turn_id":"t1","usage":{"input_tokens":100,"output_tokens":50,"cached_input_tokens":0}}
+EOF
+cat > "$TMPDIR/codex-ok.jsonl.err" <<'EOF'
+Warning: something non-fatal with error word
+EOF
+COK=$(agent_detect_fatal "$TMPDIR/codex-ok.jsonl" 0)
+assert_eq "codex ok not flagged" "" "$COK"
+
+# Clean log: no errors.
+cat > "$TMPDIR/codex-clean.jsonl" <<'EOF'
+{"type":"turn.completed","turn_id":"t1","usage":{"input_tokens":200,"output_tokens":100,"cached_input_tokens":0}}
+EOF
+CCLEAN=$(agent_detect_fatal "$TMPDIR/codex-clean.jsonl" 0)
+assert_eq "codex clean not flagged" "" "$CCLEAN"
+
+# ============================================================
+echo ""
+echo "=== 34. Codex driver — agent_is_retriable ==="
+
+cat > "$TMPDIR/codex-429.jsonl" <<'EOF'
+{"type":"error","message":"429 Too many requests - rate limit exceeded"}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/codex-429.jsonl" 1)
+assert_not_empty "codex 429 is retriable" "$RETRY_OUT"
+
+cat > "$TMPDIR/codex-quota.jsonl" <<'EOF'
+{"type":"turn.failed","error":"quota exceeded for model gpt-5.4"}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/codex-quota.jsonl" 1)
+assert_not_empty "codex quota is retriable" "$RETRY_OUT"
+
+cat > "$TMPDIR/codex-rate-stderr.jsonl" <<'EOF'
+EOF
+cat > "$TMPDIR/codex-rate-stderr.jsonl.err" <<'EOF'
+Error: rate limit exceeded, please retry later
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/codex-rate-stderr.jsonl" 1)
+assert_not_empty "codex rate limit in stderr is retriable" "$RETRY_OUT"
+
+cat > "$TMPDIR/codex-auth.jsonl" <<'EOF'
+{"type":"error","message":"Invalid API key"}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/codex-auth.jsonl" 1)
+assert_eq "codex auth not retriable" "" "$RETRY_OUT"
+
+# ============================================================
+echo ""
+echo "=== 35. Codex driver — agent_docker_env ==="
+
+CDX_ENV=$(agent_docker_env "high")
+assert_eq "codex docker_env is no-op" "" "$CDX_ENV"
+
+# ============================================================
+echo ""
+echo "=== 36. Codex driver — agent_docker_auth ==="
+
+# API key from per-agent config.
+AUTH_OUT=$(OPENAI_API_KEY="" agent_docker_auth "sk-codex-key" "" "" "")
+assert_contains "codex per-agent key" "OPENAI_API_KEY=sk-codex-key" "$AUTH_OUT"
+assert_contains "codex per-agent label" "SWARM_AUTH_MODE=key" "$AUTH_OUT"
+
+# API key from environment.
+AUTH_OUT=$(OPENAI_API_KEY="sk-env-key" agent_docker_auth "" "" "" "")
+assert_contains "codex env key" "OPENAI_API_KEY=sk-env-key" "$AUTH_OUT"
+assert_contains "codex env key label" "SWARM_AUTH_MODE=key" "$AUTH_OUT"
+
+# Per-agent overrides env.
+AUTH_OUT=$(OPENAI_API_KEY="sk-env" agent_docker_auth "sk-agent" "" "" "")
+assert_contains "codex per-agent overrides env" "OPENAI_API_KEY=sk-agent" "$AUTH_OUT"
+
+# No credentials at all.
+AUTH_OUT=$(OPENAI_API_KEY="" agent_docker_auth "" "" "" "")
+assert_contains "codex no creds has auth mode" "SWARM_AUTH_MODE=" "$AUTH_OUT"
+_line_count=$(echo "$AUTH_OUT" | grep -c "OPENAI_API_KEY" || true)
+assert_eq "codex no creds no key flag" "0" "$_line_count"
+
+# ============================================================
+echo ""
+echo "=== 37. Codex driver — activity jq filter via file boundary ==="
+
+source "$DRIVERS_DIR/codex-cli.sh"
+agent_activity_jq > "$TMPDIR/codex.jq"
+
+CODEX_CMD='{"type":"item.started","item":{"type":"command_execution","command":"npm test"}}'
+CDX_CMD_OUT=$(echo "$CODEX_CMD" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "codex jq command_execution" "Shell:" "$CDX_CMD_OUT"
+assert_contains "codex jq command content" "npm test" "$CDX_CMD_OUT"
+
+CODEX_THINK='{"type":"item.started","item":{"type":"reasoning","text":"Analyzing the error in main.ts"}}'
+CDX_THINK_OUT=$(echo "$CODEX_THINK" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "codex jq reasoning" "Think:" "$CDX_THINK_OUT"
+assert_contains "codex jq reasoning content" "Analyzing the error" "$CDX_THINK_OUT"
+
+CODEX_EDIT='{"type":"item.completed","item":{"type":"file_change","file_path":"src/utils.ts"}}'
+CDX_EDIT_OUT=$(echo "$CODEX_EDIT" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "codex jq file_change" "Edit " "$CDX_EDIT_OUT"
+assert_contains "codex jq file_change path" "src/utils.ts" "$CDX_EDIT_OUT"
+
+CODEX_SEARCH='{"type":"item.started","item":{"type":"web_search","query":"node.js best practices"}}'
+CDX_SEARCH_OUT=$(echo "$CODEX_SEARCH" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "codex jq web_search" "Search:" "$CDX_SEARCH_OUT"
+
+CODEX_MCP='{"type":"item.completed","item":{"type":"mcp_tool_call","tool_name":"readFile"}}'
+CDX_MCP_OUT=$(echo "$CODEX_MCP" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "codex jq mcp_tool_call" "MCP:" "$CDX_MCP_OUT"
+
+# agent_message events should be silently skipped.
+CODEX_MSG='{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}'
+CDX_MSG_OUT=$(echo "$CODEX_MSG" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_eq "codex jq agent_message silent" "" "$CDX_MSG_OUT"
+
+# ============================================================
+echo ""
+echo "=== 38. Codex driver in config parsing ==="
+
+cat > "$TMPDIR/codex_cfg.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "driver": "codex-cli",
+  "agents": [
+    { "count": 1, "model": "gpt-5.4" },
+    { "count": 1, "model": "claude-opus-4-6", "driver": "claude-code" }
+  ]
+}
+EOF
+
+TOP_DRIVER=$(jq -r '.driver // "claude-code"' "$TMPDIR/codex_cfg.json")
+assert_eq "codex top-level driver" "codex-cli" "$TOP_DRIVER"
+
+AGENTS=$(jq -r '.driver as $dd | .agents[] |
+    (.driver // $dd // "claude-code")' "$TMPDIR/codex_cfg.json")
+LINE1=$(echo "$AGENTS" | sed -n '1p')
+LINE2=$(echo "$AGENTS" | sed -n '2p')
+assert_eq "codex agent1 inherits top driver" "codex-cli"   "$LINE1"
+assert_eq "codex agent2 per-agent driver"    "claude-code" "$LINE2"
 
 # ============================================================
 echo ""

@@ -32,6 +32,8 @@ Credentials stay as env vars (not in shell history).
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | | API key (or use `CLAUDE_CODE_OAUTH_TOKEN`). |
 | `CLAUDE_CODE_OAUTH_TOKEN` | | OAuth token via `claude setup-token`. |
+| `OPENAI_API_KEY` | | OpenAI API key (for Codex CLI driver). |
+| `GEMINI_API_KEY` | | Google API key (for Gemini CLI driver). |
 | `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
 | `SWARM_TITLE` | | Dashboard title override. |
 | `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
@@ -348,6 +350,7 @@ Built-in drivers:
 |--------|-----|---------|
 | `claude-code` | `claude` | Yes |
 | `gemini-cli` | `gemini` | |
+| `codex-cli` | `codex` | |
 | `fake` | (none) | Test double for unit testing |
 
 Set the driver globally in `swarm.json`:
