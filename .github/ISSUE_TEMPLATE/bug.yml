@@ -28,6 +28,6 @@ body:
     attributes:
       label: Version
       description: Output of `cat VERSION` or git tag.
-      placeholder: "0.18.1"
+      placeholder: "cat VERSION"
     validations:
       required: true

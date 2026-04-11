@@ -14,7 +14,8 @@ jobs:
       - name: ShellCheck
         run: |
           shellcheck -s bash --severity=warning \
-            launch.sh dashboard.sh harvest.sh costs.sh \
+            launch.sh setup.sh dashboard.sh harvest.sh \
+            costs.sh progress.sh \
             lib/*.sh lib/drivers/*.sh \
             tests/test_*.sh tests/test.sh
 

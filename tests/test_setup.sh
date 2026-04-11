@@ -200,7 +200,7 @@ assert_eq "auth config valid" "true" \
 echo ""
 echo "=== 10. Auto auth from single credential ==="
 
-# Mirrors the agent-object auth logic from setup.sh lines 149-170:
+# Mirrors the agent-object auth logic from setup.sh:
 #   custom endpoint  → base_url/api_key (no auth field)
 #   both creds       → user picks (auto/apikey/oauth)
 #   oauth only       → auth: oauth
