@@ -27,6 +27,9 @@
        ## Summary
        - Bullet per logical change. What and why.
 
+       ## Changes
+       - Per-file summary: what changed and why.
+
        ## Test plan
        - [ ] Concrete verification steps.
 
