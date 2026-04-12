@@ -178,10 +178,11 @@ agent_detect_fatal() {
 # Args: <logfile> <exit_code>
 agent_is_retriable() {
     local logfile="$1"
-    grep -qi '429\|rate.limit\|too many requests\|quota' \
+    local _pattern='429\|rate.limit\|too many requests\|quota\|usage.limit\|hit your.*limit'
+    grep -qi "$_pattern" \
         "$logfile" 2>/dev/null && echo "rate_limited" && return
     if [ -f "${logfile}.err" ]; then
-        grep -qi 'rate.limit\|too many requests\|quota\|429' \
+        grep -qi "$_pattern" \
             "${logfile}.err" 2>/dev/null && echo "rate_limited" && return
     fi
     return 0

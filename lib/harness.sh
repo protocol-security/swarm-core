@@ -151,6 +151,26 @@ if [ ! -d "/workspace/.git" ]; then
         esac
     fi
 
+    # Install git hooks that re-strip context after pulls/checkouts.
+    # Without these, `git pull --rebase` restores the stripped files.
+    # Claude Code respects context internally, but other drivers
+    # (Codex, Gemini) see the raw filesystem.
+    if [ "$SWARM_CONTEXT" != "full" ]; then
+        cat > .git/hooks/_strip_context <<CTXHOOK
+#!/bin/bash
+case "$SWARM_CONTEXT" in
+    none) rm -rf .claude 2>/dev/null ;;
+    slim) [ -d .claude ] && find .claude -mindepth 1 -maxdepth 1 ! -name CLAUDE.md -exec rm -rf {} + 2>/dev/null ;;
+esac
+CTXHOOK
+        chmod +x .git/hooks/_strip_context
+        for _hook in post-merge post-checkout; do
+            printf '#!/bin/bash\n.git/hooks/_strip_context\n' \
+                > ".git/hooks/$_hook"
+            chmod +x ".git/hooks/$_hook"
+        done
+    fi
+
     # Run project-specific setup if provided.
     if [ -n "$SWARM_SETUP" ] && [ -f "$SWARM_SETUP" ]; then
         hlog "running setup ${SWARM_SETUP}"
@@ -207,6 +227,8 @@ ctx_label="$SWARM_CONTEXT"
     trailer+=$(printf '> Ctx: %s\n' "$ctx_label") || true
 git commit --amend --no-verify --no-edit -m "${msg}${trailer}" \
     --allow-empty >/dev/null 2>&1 || true
+# Re-strip .claude context after rebase (covers git pull --rebase).
+[ -x .git/hooks/_strip_context ] && .git/hooks/_strip_context
 HOOK
     chmod +x .git/hooks/post-rewrite
 
