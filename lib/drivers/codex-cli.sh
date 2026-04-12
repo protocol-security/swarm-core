@@ -13,7 +13,9 @@ agent_cmd()     { echo "codex"; }
 agent_version() {
     local v
     v=$(codex --version 2>/dev/null || echo "unknown")
-    echo "${v%% *}"
+    # `codex --version` prints "codex-cli 0.120.0"; extract the number.
+    v="${v##* }"
+    echo "${v:-unknown}"
 }
 
 # Run one agent session.
