@@ -27,7 +27,9 @@ assert_eq() {
 format_model() {
     local m="${1:-unknown}" effort="${2:-}"
     if [ -n "$effort" ]; then
-        printf '%s (%s)' "$m" "${effort:0:1}"
+        local e="${effort:0:1}"
+        [ "$effort" = "max" ] && e="M"
+        printf '%s (%s)' "$m" "$e"
     else
         printf '%s' "$m"
     fi
@@ -54,6 +56,9 @@ assert_eq "claude haiku"         "claude-haiku-3-5 (h)"   "$(format_model claude
 assert_eq "openai via openrouter" "openai/gpt-5.4"        "$(format_model openai/gpt-5.4 "")"
 assert_eq "minimax with effort"  "MiniMax-M2.5 (h)"       "$(format_model MiniMax-M2.5 high)"
 assert_eq "bare string medium"   "gpt-4o (m)"             "$(format_model gpt-4o medium)"
+assert_eq "claude opus max"      "claude-opus-4-6 (M)"    "$(format_model claude-opus-4-6 max)"
+assert_eq "codex xhigh"          "gpt-5.4 (x)"            "$(format_model gpt-5.4 xhigh)"
+assert_eq "codex none"           "gpt-5.4 (n)"            "$(format_model gpt-5.4 none)"
 assert_eq "no effort"            "claude-opus-4-6"         "$(format_model claude-opus-4-6 "")"
 assert_eq "unknown no effort"    "unknown"                 "$(format_model unknown "")"
 assert_eq "empty default"        "unknown"                 "$(format_model)"

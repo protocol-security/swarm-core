@@ -123,8 +123,10 @@ agent_is_retriable() {
         "$logfile" 2>/dev/null && echo "rate_limited" && return
     grep -q '"Too many requests"\|"rate limit"' \
         "$logfile" 2>/dev/null && echo "rate_limited" && return
+    grep -q '"api_error"\|"internal_error"\|"Internal server error"\|"api_error.*500"\|"500.*api_error"' \
+        "$logfile" 2>/dev/null && echo "server_error" && return
     if [ -f "${logfile}.err" ]; then
-        grep -qi 'rate.limit\|too many requests\|overloaded' \
+        grep -qi 'rate.limit\|too many requests\|overloaded\|internal.server.error\|api.error.*500\|500.*error' \
             "${logfile}.err" 2>/dev/null && echo "rate_limited" && return
     fi
     return 0

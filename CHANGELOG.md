@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.19.1 — 2026-04-13
+
+- **Retry on API 500 errors.** Claude Code driver now treats
+  `api_error`, `internal_error`, and HTTP 500 responses as
+  retriable, preventing agents from exiting on transient
+  Anthropic outages.
+- **Dashboard max-effort label.** `format_model` now displays
+  `(M)` for `effort: "max"` instead of `(m)`, disambiguating
+  it from medium.
+- **Remove setup.sh wizard.** Deleted the interactive `setup.sh`
+  and its tests. Copying a config from `tests/configs/` and
+  editing is simpler and better documented. Not treated as a
+  breaking change (would warrant 0.20.0) because no known
+  users rely on it.
+- **Weekly CI schedule.** CI now runs on a Monday morning cron
+  (`0 7 * * 1`) in addition to push/PR triggers.
+
 ## 0.19.0 — 2026-04-13
 
 - **Codex CLI driver.** New `codex-cli` driver

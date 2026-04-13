@@ -5,6 +5,8 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  schedule:
+    - cron: '0 7 * * 1'
 
 jobs:
   shellcheck:
@@ -14,7 +16,7 @@ jobs:
       - name: ShellCheck
         run: |
           shellcheck -s bash --severity=warning \
-            launch.sh setup.sh dashboard.sh harvest.sh \
+            launch.sh dashboard.sh harvest.sh \
             costs.sh progress.sh \
             lib/*.sh lib/drivers/*.sh \
             tests/test_*.sh tests/test.sh
