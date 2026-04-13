@@ -737,6 +737,14 @@ EOF
 RETRY_OUT=$(agent_is_retriable "$TMPDIR/cc-pro-rate-limit.jsonl" 0)
 assert_not_empty "cc pro rate_limit is retriable" "$RETRY_OUT"
 
+# API 500 internal server error is retriable.
+cat > "$TMPDIR/cc-500.jsonl" <<'EOF'
+{"type":"error","error":{"type":"api_error","message":"Internal server error"},"request_id":"req_test"}
+{"type":"result","subtype":"error","session_id":"s01","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0}}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/cc-500.jsonl" 1)
+assert_not_empty "cc api_error 500 is retriable" "$RETRY_OUT"
+
 RETRY_OUT=$(agent_is_retriable "$TMPDIR/nonfatal.jsonl" 0)
 assert_eq "cc clean log not retriable" "" "$RETRY_OUT"
 
