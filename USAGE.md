@@ -3,10 +3,7 @@
 ## Quick start
 
 ```bash
-# Interactive setup (generates swarm.json).
-./setup.sh
-
-# Or create a swarmfile manually and launch.
+# Create a swarmfile and launch.
 SWARM_CONFIG=swarm.json ./launch.sh start --dashboard
 ```
 
@@ -182,7 +179,6 @@ Unit tests (no Docker or API key):
 ./tests/test_harness.sh        # Stat extraction.
 ./tests/test_harvest.sh        # Harvest git ops.
 ./tests/test_launch.sh         # Launch logic.
-./tests/test_setup.sh          # Setup wizard.
 ```
 
 ## Post-processing

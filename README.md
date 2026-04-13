@@ -16,7 +16,6 @@ Based on the agent-team pattern from
 - tput (ncurses) — used by the dashboard
 - An Anthropic API key, OAuth token, or compatible endpoint
 
-Optional: `whiptail` for the interactive setup wizard TUI.
 For development: `shellcheck` for linting.
 
 ## Setup
@@ -62,10 +61,7 @@ see the changes on the next fetch.
 ## Quick start
 
 ```bash
-# Interactive setup (generates swarm.json).
-./setup.sh
-
-# Or create a swarmfile and launch.
+# Create a swarmfile and launch.
 SWARM_CONFIG=swarm.json ./launch.sh start --dashboard
 
 # Or place swarm.json in your repo root and launch.
