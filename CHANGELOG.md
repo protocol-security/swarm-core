@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.19.0 — 2026-04-13
+
+- **Codex CLI driver.** New `codex-cli` driver
+  (`lib/drivers/codex-cli.sh`) implements the full interface for
+  OpenAI's Codex CLI: headless mode with `codex exec --json`,
+  JSONL stats extraction (with cached-token deduplication for
+  accurate cost), activity parsing, fatal/retriable error
+  detection, and reasoning effort support.
+- **ChatGPT subscription auth.** Codex agents can authenticate
+  via `"auth": "chatgpt"` (mounts `~/.codex/auth.json`) or
+  `"auth": "apikey"` (uses `OPENAI_API_KEY`). Auto-detection
+  when both are present. Usage-limit errors from ChatGPT
+  subscriptions are retriable.
+- **Bridge .claude/ conventions to Codex.** When `AGENTS.md` is
+  absent, copies `.claude/CLAUDE.md` (or root `CLAUDE.md`) so
+  Codex picks up project instructions. When `.agents/skills/`
+  is absent, symlinks `.claude/skills/` so Codex discovers
+  existing skills. Both are git-excluded to avoid committing
+  bridged files.
+- **Context stripping hooks.** Git hooks (`post-merge`,
+  `post-checkout`, `post-rewrite`) re-strip `.claude/` after
+  `git pull --rebase`, preventing agents from seeing files
+  removed by `context: slim` or `context: none`.
+- **Stale rebase cleanup.** Push safety net cleans up stale
+  `.git/rebase-merge` and `.git/rebase-apply` before retries,
+  preventing repeated `git pull --rebase` failures.
+- **Inline system prompt for Codex.** System instructions are
+  prepended directly to the prompt text rather than relying on
+  project-level instruction files, ensuring rules are always
+  applied under `--skip-git-repo-check`.
+- **Document per-driver effort values.** USAGE.md now lists
+  valid effort values for each driver (Claude Code:
+  low/medium/high/max; Codex CLI: none/low/medium/high/xhigh).
+  Gemini CLI ignores the field.
+
 ## 0.18.4 — 2026-04-11
 
 - **Tag and driver in setup wizard.** `setup.sh` now prompts for
