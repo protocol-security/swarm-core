@@ -51,7 +51,7 @@ Per-group fields in `swarm.json` `agents` array:
 |-------|--------|-------|
 | `model` | model name | Required. |
 | `count` | integer | Number of agents in this group. |
-| `effort` | `low`, `medium`, `high` | Adaptive reasoning depth. |
+| `effort` | string | Reasoning depth (see below). |
 | `context` | `full`, `slim`, `none` | How much of `.claude/` to keep (default: `full`). |
 | `prompt` | file path | Per-group prompt override (default: top-level). |
 | `auth` | `apikey`, `oauth`, `chatgpt`, omit | Which host credential to inject (see [Auth modes](#auth-modes)). |
@@ -60,6 +60,12 @@ Per-group fields in `swarm.json` `agents` array:
 | `base_url` | URL | Per-group API endpoint. |
 | `tag` | string or `$VAR` | Label for grouping runs (default: top-level). |
 | `driver` | driver name | Agent driver override (default: top-level or `claude-code`). |
+
+**Effort values** are driver-dependent:
+
+- Claude Code: `low`, `medium`, `high`, `max` (Opus only).
+- Codex CLI: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`.
+- Gemini CLI: ignored.
 
 Top-level fields: `prompt`, `setup`, `max_idle` (default: `3`),
 `max_retry_wait`, `driver`, `inject_git_rules`,
