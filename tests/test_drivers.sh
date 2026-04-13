@@ -831,7 +831,7 @@ CSTATS=$(agent_extract_stats "$TMPDIR/codex-session.jsonl")
 IFS=$'\t' read -r c_cost c_in c_out c_cache_rd c_cache_cr c_dur c_api_ms c_turns <<< "$CSTATS"
 
 assert_eq "codex cost is 0"        "0"    "$c_cost"
-assert_eq "codex tok_in summed"    "1300" "$c_in"
+assert_eq "codex tok_in summed"    "800"  "$c_in"
 assert_eq "codex tok_out summed"   "500"  "$c_out"
 assert_eq "codex cached summed"    "500"  "$c_cache_rd"
 assert_eq "codex cache_cr"         "0"    "$c_cache_cr"

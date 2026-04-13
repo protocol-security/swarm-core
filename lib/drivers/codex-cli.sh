@@ -71,13 +71,17 @@ TOML
 # Codex emits turn.completed events with usage; sum across turns.
 #   {"type":"turn.completed","usage":{"input_tokens":N,
 #    "cached_input_tokens":N,"output_tokens":N}}
+# NOTE: OpenAI includes cached tokens inside input_tokens, but
+# the harness pricing formula treats them separately (like Claude).
+# Subtract cached from input so they aren't double-counted.
 agent_extract_stats() {
     local logfile="$1"
     local stats
     stats=$(grep '"type"[[:space:]]*:[[:space:]]*"turn.completed"' \
         "$logfile" 2>/dev/null \
         | jq -s '{
-            tok_in:  [.[].usage.input_tokens        // 0] | add,
+            tok_in:  (([.[].usage.input_tokens // 0] | add)
+                    - ([.[].usage.cached_input_tokens // 0] | add)),
             tok_out: [.[].usage.output_tokens        // 0] | add,
             cached:  [.[].usage.cached_input_tokens  // 0] | add,
             turns:   length
