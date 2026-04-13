@@ -24,12 +24,11 @@ agent_run() {
     local model="$1" prompt_text="$2" logfile="$3"
     local append_file="${4:-}"
 
-    # Codex reads .codex/instructions.md from the workspace for
-    # additional system-level context (like GEMINI.md for Gemini).
+    # Prepend system instructions directly into the prompt.
+    # codex exec with --skip-git-repo-check may not load
+    # .codex/instructions.md, so inline them to be safe.
     if [ -n "$append_file" ] && [ -f "$append_file" ]; then
-        mkdir -p /workspace/.codex
-        cp "$append_file" /workspace/.codex/instructions.md \
-            2>/dev/null || true
+        prompt_text="$(cat "$append_file")"$'\n\n'"$prompt_text"
     fi
 
     local effort_args=()
