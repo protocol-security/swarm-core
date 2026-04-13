@@ -423,6 +423,10 @@ while true; do
         _push_ok=false
         for _try in 1 2 3; do
             sleep $((RANDOM % 5 + 1))
+            # Clean up stale rebase state that blocks git pull --rebase.
+            if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+                git rebase --abort 2>/dev/null || rm -rf .git/rebase-merge .git/rebase-apply
+            fi
             if git pull --rebase origin agent-work 2>&1 | hlog_pipe \
                     && git push origin agent-work 2>&1 | hlog_pipe; then
                 _push_ok=true

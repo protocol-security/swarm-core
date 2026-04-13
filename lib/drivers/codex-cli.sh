@@ -120,20 +120,21 @@ def reset:
   "\u001b[0m";
 
 fromjson? // empty |
-select(.type == "item.started" or .type == "item.completed") |
-.item |
-if .type == "command_execution" then
-  "\(prefix) Shell: " + ((.command // "") | first_line | truncate(80)) + reset
-elif .type == "file_change" then
-  "\(prefix) Edit " + ((.changes[0].path // "") | first_line) + reset
-elif .type == "mcp_tool_call" then
-  "\(prefix) MCP: " + (.tool_name // "unknown") + reset
-elif .type == "web_search" then
-  "\(prefix) Search: " + (.query // "") + reset
-elif .type == "agent_message" then
-  empty
-else empty
-end
+if .type == "item.started" then
+  .item |
+  if .type == "command_execution" then
+    "\(prefix) Shell: " + ((.command // "") | first_line | truncate(80)) + reset
+  elif .type == "web_search" then
+    "\(prefix) Search: " + (.query // "") + reset
+  else empty end
+elif .type == "item.completed" then
+  .item |
+  if .type == "file_change" then
+    "\(prefix) Edit " + ((.changes[0].path // "") | first_line) + reset
+  elif .type == "mcp_tool_call" then
+    "\(prefix) MCP: " + (.tool_name // "unknown") + reset
+  else empty end
+else empty end
 JQ
 }
 
