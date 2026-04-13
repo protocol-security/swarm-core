@@ -60,6 +60,33 @@ agent_settings() {
 cli_auth_credentials_store = "file"
 TOML
 
+    # Codex reads AGENTS.md for project instructions, not
+    # .claude/CLAUDE.md.  Bridge the gap when AGENTS.md is absent.
+    if [ ! -f "${_workspace}/AGENTS.md" ]; then
+        local _src=""
+        [ -f "${_workspace}/.claude/CLAUDE.md" ] \
+            && _src="${_workspace}/.claude/CLAUDE.md"
+        [ -z "$_src" ] && [ -f "${_workspace}/CLAUDE.md" ] \
+            && _src="${_workspace}/CLAUDE.md"
+        if [ -n "$_src" ]; then
+            cp "$_src" "${_workspace}/AGENTS.md"
+            mkdir -p "${_workspace}/.git/info"
+            echo "AGENTS.md" >> "${_workspace}/.git/info/exclude"
+        fi
+    fi
+
+    # Codex reads skills from .agents/skills/, not .claude/skills/.
+    # Symlink when the Codex location is absent (Codex supports
+    # symlinked skill folders).  Only fires when .claude/skills/
+    # exists (context=full); slim/none strip it so this is a no-op.
+    if [ ! -d "${_workspace}/.agents/skills" ] \
+        && [ -d "${_workspace}/.claude/skills" ]; then
+        mkdir -p "${_workspace}/.agents"
+        ln -s "../.claude/skills" "${_workspace}/.agents/skills"
+        mkdir -p "${_workspace}/.git/info"
+        echo ".agents/" >> "${_workspace}/.git/info/exclude"
+    fi
+
     if [ -n "${OPENAI_API_KEY:-}" ]; then
         CODEX_HOME="$codex_home" \
             printenv OPENAI_API_KEY \

@@ -800,7 +800,7 @@ echo ""
 echo "=== 31. Codex driver — agent_settings ==="
 
 CWORK="$TMPDIR/codex-workspace"
-mkdir -p "$CWORK"
+mkdir -p "$CWORK/.git/info"
 _test_home="$TMPDIR/fakehome"
 mkdir -p "$_test_home"
 HOME="$_test_home" agent_settings "$CWORK"
@@ -811,6 +811,178 @@ assert_eq "codex config.toml created" "true" \
     "$([ -f "$_test_home/.codex/config.toml" ] && echo true || echo false)"
 assert_contains "codex config has file store" "file" \
     "$(cat "$_test_home/.codex/config.toml")"
+
+# 31b. AGENTS.md bridge: .claude/CLAUDE.md copied when no AGENTS.md.
+CWORK_B="$TMPDIR/codex-bridge"
+mkdir -p "$CWORK_B/.claude" "$CWORK_B/.git/info"
+echo "# Project rules" > "$CWORK_B/.claude/CLAUDE.md"
+HOME="$_test_home" agent_settings "$CWORK_B"
+assert_eq "AGENTS.md created from .claude/CLAUDE.md" "true" \
+    "$([ -f "$CWORK_B/AGENTS.md" ] && echo true || echo false)"
+assert_eq "AGENTS.md content matches" "# Project rules" \
+    "$(cat "$CWORK_B/AGENTS.md")"
+assert_contains "AGENTS.md in git exclude" "AGENTS.md" \
+    "$(cat "$CWORK_B/.git/info/exclude")"
+
+# 31c. AGENTS.md bridge: CLAUDE.md at root used as fallback.
+CWORK_C="$TMPDIR/codex-bridge-root"
+mkdir -p "$CWORK_C/.git/info"
+echo "# Root rules" > "$CWORK_C/CLAUDE.md"
+HOME="$_test_home" agent_settings "$CWORK_C"
+assert_eq "AGENTS.md from root CLAUDE.md" "# Root rules" \
+    "$(cat "$CWORK_C/AGENTS.md")"
+
+# 31d. AGENTS.md bridge: existing AGENTS.md not overwritten.
+CWORK_D="$TMPDIR/codex-bridge-existing"
+mkdir -p "$CWORK_D/.claude" "$CWORK_D/.git/info"
+echo "# Codex rules" > "$CWORK_D/AGENTS.md"
+echo "# Claude rules" > "$CWORK_D/.claude/CLAUDE.md"
+HOME="$_test_home" agent_settings "$CWORK_D"
+assert_eq "existing AGENTS.md preserved" "# Codex rules" \
+    "$(cat "$CWORK_D/AGENTS.md")"
+
+# 31e. AGENTS.md bridge: no CLAUDE.md at all, no AGENTS.md created.
+CWORK_E="$TMPDIR/codex-bridge-none"
+mkdir -p "$CWORK_E/.git/info"
+HOME="$_test_home" agent_settings "$CWORK_E"
+assert_eq "no AGENTS.md without CLAUDE.md" "false" \
+    "$([ -f "$CWORK_E/AGENTS.md" ] && echo true || echo false)"
+
+# 31f. Skills bridge: .claude/skills/ symlinked to .agents/skills/.
+CWORK_F="$TMPDIR/codex-skills"
+mkdir -p "$CWORK_F/.claude/skills/add-fuzz-target" "$CWORK_F/.git/info"
+echo "---" > "$CWORK_F/.claude/skills/add-fuzz-target/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_F"
+assert_eq "skills symlink created" "true" \
+    "$([ -L "$CWORK_F/.agents/skills" ] && echo true || echo false)"
+assert_eq "skills symlink target resolves" "true" \
+    "$([ -f "$CWORK_F/.agents/skills/add-fuzz-target/SKILL.md" ] && echo true || echo false)"
+assert_contains ".agents/ in git exclude" ".agents/" \
+    "$(cat "$CWORK_F/.git/info/exclude")"
+
+# 31g. Skills bridge: existing .agents/skills/ not overwritten.
+CWORK_G="$TMPDIR/codex-skills-existing"
+mkdir -p "$CWORK_G/.agents/skills/custom" "$CWORK_G/.claude/skills/other" "$CWORK_G/.git/info"
+echo "custom" > "$CWORK_G/.agents/skills/custom/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_G"
+assert_eq "existing .agents/skills preserved" "custom" \
+    "$(cat "$CWORK_G/.agents/skills/custom/SKILL.md")"
+assert_eq ".agents/skills not a symlink" "false" \
+    "$([ -L "$CWORK_G/.agents/skills" ] && echo true || echo false)"
+
+# 31h. Skills bridge: no .claude/skills/, no symlink created.
+CWORK_H="$TMPDIR/codex-skills-none"
+mkdir -p "$CWORK_H/.git/info"
+HOME="$_test_home" agent_settings "$CWORK_H"
+assert_eq "no .agents without .claude/skills" "false" \
+    "$([ -d "$CWORK_H/.agents" ] && echo true || echo false)"
+
+# 31i. Priority: .claude/CLAUDE.md wins over root CLAUDE.md.
+CWORK_I="$TMPDIR/codex-priority"
+mkdir -p "$CWORK_I/.claude" "$CWORK_I/.git/info"
+echo "# inner" > "$CWORK_I/.claude/CLAUDE.md"
+echo "# outer" > "$CWORK_I/CLAUDE.md"
+HOME="$_test_home" agent_settings "$CWORK_I"
+assert_eq ".claude/CLAUDE.md wins over root" "# inner" \
+    "$(cat "$CWORK_I/AGENTS.md")"
+
+# 31j. Full context: both .claude/CLAUDE.md and .claude/skills/
+#      present, no AGENTS.md, no .agents/skills/ → both bridged.
+CWORK_J="$TMPDIR/codex-full-both"
+mkdir -p "$CWORK_J/.claude/skills/triage" "$CWORK_J/.git/info"
+echo "# full rules" > "$CWORK_J/.claude/CLAUDE.md"
+echo "---" > "$CWORK_J/.claude/skills/triage/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_J"
+assert_eq "full: AGENTS.md bridged" "# full rules" \
+    "$(cat "$CWORK_J/AGENTS.md")"
+assert_eq "full: skills symlinked" "true" \
+    "$([ -L "$CWORK_J/.agents/skills" ] && echo true || echo false)"
+assert_eq "full: skill resolves" "---" \
+    "$(cat "$CWORK_J/.agents/skills/triage/SKILL.md")"
+
+# 31k. AGENTS.md exists + .claude/skills/ present → only skills
+#      bridged, AGENTS.md untouched.
+CWORK_K="$TMPDIR/codex-agents-exists-skills"
+mkdir -p "$CWORK_K/.claude/skills/build-poc" "$CWORK_K/.git/info"
+echo "# own agents" > "$CWORK_K/AGENTS.md"
+echo "# claude" > "$CWORK_K/.claude/CLAUDE.md"
+echo "---" > "$CWORK_K/.claude/skills/build-poc/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_K"
+assert_eq "AGENTS.md kept, not overwritten" "# own agents" \
+    "$(cat "$CWORK_K/AGENTS.md")"
+assert_eq "skills still bridged" "true" \
+    "$([ -L "$CWORK_K/.agents/skills" ] && echo true || echo false)"
+
+# 31l. .claude/CLAUDE.md present + .agents/skills/ exists → only
+#      AGENTS.md bridged, skills untouched.
+CWORK_L="$TMPDIR/codex-claude-exists-agentskills"
+mkdir -p "$CWORK_L/.claude" "$CWORK_L/.agents/skills/own" "$CWORK_L/.git/info"
+echo "# project" > "$CWORK_L/.claude/CLAUDE.md"
+echo "own-skill" > "$CWORK_L/.agents/skills/own/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_L"
+assert_eq "AGENTS.md bridged" "# project" \
+    "$(cat "$CWORK_L/AGENTS.md")"
+assert_eq ".agents/skills not a symlink" "false" \
+    "$([ -L "$CWORK_L/.agents/skills" ] && echo true || echo false)"
+assert_eq "own skill preserved" "own-skill" \
+    "$(cat "$CWORK_L/.agents/skills/own/SKILL.md")"
+
+# 31m. Both AGENTS.md and .agents/skills/ exist → nothing bridged.
+CWORK_M="$TMPDIR/codex-all-exist"
+mkdir -p "$CWORK_M/.claude/skills/x" "$CWORK_M/.agents/skills/y" "$CWORK_M/.git/info"
+echo "# codex agents" > "$CWORK_M/AGENTS.md"
+echo "# claude" > "$CWORK_M/.claude/CLAUDE.md"
+echo "x" > "$CWORK_M/.claude/skills/x/SKILL.md"
+echo "y" > "$CWORK_M/.agents/skills/y/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_M"
+assert_eq "all-exist: AGENTS.md untouched" "# codex agents" \
+    "$(cat "$CWORK_M/AGENTS.md")"
+assert_eq "all-exist: .agents/skills not symlink" "false" \
+    "$([ -L "$CWORK_M/.agents/skills" ] && echo true || echo false)"
+assert_eq "all-exist: own skill intact" "y" \
+    "$(cat "$CWORK_M/.agents/skills/y/SKILL.md")"
+
+# 31n. Only .claude/skills/ (no CLAUDE.md) → skills bridged,
+#      no AGENTS.md created.
+CWORK_N="$TMPDIR/codex-skills-only"
+mkdir -p "$CWORK_N/.claude/skills/scan" "$CWORK_N/.git/info"
+echo "---" > "$CWORK_N/.claude/skills/scan/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_N"
+assert_eq "skills-only: no AGENTS.md" "false" \
+    "$([ -f "$CWORK_N/AGENTS.md" ] && echo true || echo false)"
+assert_eq "skills-only: symlink created" "true" \
+    "$([ -L "$CWORK_N/.agents/skills" ] && echo true || echo false)"
+
+# 31o. Only AGENTS.md exists, no .claude/ at all → no bridging.
+CWORK_O="$TMPDIR/codex-agents-only"
+mkdir -p "$CWORK_O/.git/info"
+echo "# native" > "$CWORK_O/AGENTS.md"
+HOME="$_test_home" agent_settings "$CWORK_O"
+assert_eq "agents-only: AGENTS.md intact" "# native" \
+    "$(cat "$CWORK_O/AGENTS.md")"
+assert_eq "agents-only: no .agents dir" "false" \
+    "$([ -d "$CWORK_O/.agents" ] && echo true || echo false)"
+
+# 31p. .claude/CLAUDE.md + no skills, no .agents/ → only AGENTS.md
+#      bridged, no .agents/ dir created.
+CWORK_P="$TMPDIR/codex-claude-noskills"
+mkdir -p "$CWORK_P/.claude" "$CWORK_P/.git/info"
+echo "# rules" > "$CWORK_P/.claude/CLAUDE.md"
+HOME="$_test_home" agent_settings "$CWORK_P"
+assert_eq "noskills: AGENTS.md bridged" "# rules" \
+    "$(cat "$CWORK_P/AGENTS.md")"
+assert_eq "noskills: no .agents dir" "false" \
+    "$([ -d "$CWORK_P/.agents" ] && echo true || echo false)"
+
+# 31q. .agents/skills/ exists but no .claude/skills/ → untouched.
+CWORK_Q="$TMPDIR/codex-agentskills-noclaudeskills"
+mkdir -p "$CWORK_Q/.agents/skills/mine" "$CWORK_Q/.git/info"
+echo "kept" > "$CWORK_Q/.agents/skills/mine/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_Q"
+assert_eq "no-claude-skills: .agents preserved" "kept" \
+    "$(cat "$CWORK_Q/.agents/skills/mine/SKILL.md")"
+assert_eq "no-claude-skills: not a symlink" "false" \
+    "$([ -L "$CWORK_Q/.agents/skills" ] && echo true || echo false)"
 
 # ============================================================
 echo ""
