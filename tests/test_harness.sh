@@ -644,6 +644,113 @@ assert_eq "rebase+push reconciled" "$FINAL_LOCAL" "$FINAL"
 
 # ============================================================
 echo ""
+echo "=== 15. Context stripping hooks survive git pull ==="
+
+# Build a bare + working clone with .claude/ context files.
+CTX_BARE="$TMPDIR/ctx-bare.git"
+CTX_WORK="$TMPDIR/ctx-work"
+CTX_WORK2="$TMPDIR/ctx-work2"
+git init -q --bare "$CTX_BARE"
+git clone -q "$CTX_BARE" "$CTX_WORK"
+git -C "$CTX_WORK" config user.name "test"
+git -C "$CTX_WORK" config user.email "test@test"
+git -C "$CTX_WORK" config commit.gpgsign false
+
+mkdir -p "$CTX_WORK/.claude/skills" "$CTX_WORK/.claude/references"
+echo "# CLAUDE" > "$CTX_WORK/.claude/CLAUDE.md"
+echo "skill data" > "$CTX_WORK/.claude/skills/triage.md"
+echo "ref data" > "$CTX_WORK/.claude/references/known.md"
+echo "code" > "$CTX_WORK/main.go"
+git -C "$CTX_WORK" add -A
+git -C "$CTX_WORK" commit -q -m "initial with .claude context"
+git -C "$CTX_WORK" checkout -q -b agent-work
+git -C "$CTX_WORK" push -q origin agent-work
+
+# Install _strip_context hook for slim mode (mirrors harness).
+mkdir -p "$CTX_WORK/.git/hooks"
+cat > "$CTX_WORK/.git/hooks/_strip_context" <<'CTXHOOK'
+#!/bin/bash
+case "slim" in
+    none) rm -rf .claude 2>/dev/null ;;
+    slim) [ -d .claude ] && find .claude -mindepth 1 -maxdepth 1 ! -name CLAUDE.md -exec rm -rf {} + 2>/dev/null ;;
+esac
+CTXHOOK
+chmod +x "$CTX_WORK/.git/hooks/_strip_context"
+for _hook in post-merge post-checkout; do
+    printf '#!/bin/bash\n.git/hooks/_strip_context\n' \
+        > "$CTX_WORK/.git/hooks/$_hook"
+    chmod +x "$CTX_WORK/.git/hooks/$_hook"
+done
+
+# Strip context (simulates the harness initial strip).
+(cd "$CTX_WORK" && find .claude -mindepth 1 -maxdepth 1 ! -name CLAUDE.md -exec rm -rf {} +)
+
+assert_eq "slim: CLAUDE.md kept" "true" \
+    "$([ -f "$CTX_WORK/.claude/CLAUDE.md" ] && echo true || echo false)"
+assert_eq "slim: skills/ removed" "false" \
+    "$([ -d "$CTX_WORK/.claude/skills" ] && echo true || echo false)"
+
+# Second clone pushes a change (simulates another agent committing).
+git clone -q "$CTX_BARE" "$CTX_WORK2"
+git -C "$CTX_WORK2" config user.name "test2"
+git -C "$CTX_WORK2" config user.email "test2@test"
+git -C "$CTX_WORK2" config commit.gpgsign false
+git -C "$CTX_WORK2" checkout -q agent-work
+echo "new code" >> "$CTX_WORK2/main.go"
+git -C "$CTX_WORK2" add main.go
+git -C "$CTX_WORK2" commit -q -m "other agent work"
+git -C "$CTX_WORK2" push -q origin agent-work
+
+# First clone pulls — post-merge hook should re-strip.
+git -C "$CTX_WORK" pull -q origin agent-work
+
+assert_eq "slim post-merge: CLAUDE.md still kept" "true" \
+    "$([ -f "$CTX_WORK/.claude/CLAUDE.md" ] && echo true || echo false)"
+assert_eq "slim post-merge: skills/ re-stripped" "false" \
+    "$([ -d "$CTX_WORK/.claude/skills" ] && echo true || echo false)"
+assert_eq "slim post-merge: references/ re-stripped" "false" \
+    "$([ -d "$CTX_WORK/.claude/references" ] && echo true || echo false)"
+
+# Now test context=none mode.
+CTX_NONE="$TMPDIR/ctx-none"
+git clone -q "$CTX_BARE" "$CTX_NONE"
+git -C "$CTX_NONE" config user.name "test"
+git -C "$CTX_NONE" config user.email "test@test"
+git -C "$CTX_NONE" config commit.gpgsign false
+git -C "$CTX_NONE" checkout -q agent-work
+
+mkdir -p "$CTX_NONE/.git/hooks"
+cat > "$CTX_NONE/.git/hooks/_strip_context" <<'CTXHOOK'
+#!/bin/bash
+case "none" in
+    none) rm -rf .claude 2>/dev/null ;;
+    slim) [ -d .claude ] && find .claude -mindepth 1 -maxdepth 1 ! -name CLAUDE.md -exec rm -rf {} + 2>/dev/null ;;
+esac
+CTXHOOK
+chmod +x "$CTX_NONE/.git/hooks/_strip_context"
+for _hook in post-merge post-checkout; do
+    printf '#!/bin/bash\n.git/hooks/_strip_context\n' \
+        > "$CTX_NONE/.git/hooks/$_hook"
+    chmod +x "$CTX_NONE/.git/hooks/$_hook"
+done
+
+rm -rf "$CTX_NONE/.claude"
+assert_eq "none: .claude/ removed" "false" \
+    "$([ -d "$CTX_NONE/.claude" ] && echo true || echo false)"
+
+# Push another change from work2 to trigger a merge.
+echo "more code" >> "$CTX_WORK2/main.go"
+git -C "$CTX_WORK2" add main.go
+git -C "$CTX_WORK2" commit -q -m "yet more work"
+git -C "$CTX_WORK2" push -q origin agent-work
+
+git -C "$CTX_NONE" pull -q origin agent-work
+
+assert_eq "none post-merge: .claude/ re-removed" "false" \
+    "$([ -d "$CTX_NONE/.claude" ] && echo true || echo false)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

@@ -151,6 +151,26 @@ if [ ! -d "/workspace/.git" ]; then
         esac
     fi
 
+    # Install git hooks that re-strip context after pulls/checkouts.
+    # Without these, `git pull --rebase` restores the stripped files.
+    # Claude Code respects context internally, but other drivers
+    # (Codex, Gemini) see the raw filesystem.
+    if [ "$SWARM_CONTEXT" != "full" ]; then
+        cat > .git/hooks/_strip_context <<CTXHOOK
+#!/bin/bash
+case "$SWARM_CONTEXT" in
+    none) rm -rf .claude 2>/dev/null ;;
+    slim) [ -d .claude ] && find .claude -mindepth 1 -maxdepth 1 ! -name CLAUDE.md -exec rm -rf {} + 2>/dev/null ;;
+esac
+CTXHOOK
+        chmod +x .git/hooks/_strip_context
+        for _hook in post-merge post-checkout; do
+            printf '#!/bin/bash\n.git/hooks/_strip_context\n' \
+                > ".git/hooks/$_hook"
+            chmod +x ".git/hooks/$_hook"
+        done
+    fi
+
     # Run project-specific setup if provided.
     if [ -n "$SWARM_SETUP" ] && [ -f "$SWARM_SETUP" ]; then
         hlog "running setup ${SWARM_SETUP}"
@@ -207,6 +227,8 @@ ctx_label="$SWARM_CONTEXT"
     trailer+=$(printf '> Ctx: %s\n' "$ctx_label") || true
 git commit --amend --no-verify --no-edit -m "${msg}${trailer}" \
     --allow-empty >/dev/null 2>&1 || true
+# Re-strip .claude context after rebase (covers git pull --rebase).
+[ -x .git/hooks/_strip_context ] && .git/hooks/_strip_context
 HOOK
     chmod +x .git/hooks/post-rewrite
 
@@ -268,8 +290,10 @@ while true; do
     fi
 
     AGENT_RUN_EXIT=0
+    _run_start=$SECONDS
     agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
         | /activity-filter.sh || AGENT_RUN_EXIT=$?
+    _run_elapsed_ms=$(( (SECONDS - _run_start) * 1000 ))
 
     # Extract usage stats via the driver.
     STATS_LINE=$(agent_extract_stats "$LOGFILE")
@@ -277,6 +301,9 @@ while true; do
     cost="${cost:-0}"; tok_in="${tok_in:-0}"; tok_out="${tok_out:-0}"
     cache_rd="${cache_rd:-0}"; cache_cr="${cache_cr:-0}"
     dur="${dur:-0}"; api_ms="${api_ms:-0}"; turns="${turns:-0}"
+    # Fall back to wall-clock time when the driver has no native timing.
+    [ "${dur:-0}" = "0" ] && dur="$_run_elapsed_ms"
+    [ "${api_ms:-0}" = "0" ] && api_ms="$_run_elapsed_ms"
 
     # Compute cost from token counts when the driver doesn't report
     # it natively (e.g. Gemini CLI).  Pricing is $/M tokens, passed
@@ -336,13 +363,17 @@ while true; do
                 hlog "retry: starting session"
                 rm -f "$RETRY_FILE"
                 AGENT_RUN_EXIT=0
+                _run_start=$SECONDS
                 agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
                     | /activity-filter.sh || AGENT_RUN_EXIT=$?
+                _run_elapsed_ms=$(( (SECONDS - _run_start) * 1000 ))
                 STATS_LINE=$(agent_extract_stats "$LOGFILE")
                 IFS=$'\t' read -r cost tok_in tok_out cache_rd cache_cr dur api_ms turns <<< "$STATS_LINE"
                 cost="${cost:-0}"; tok_in="${tok_in:-0}"; tok_out="${tok_out:-0}"
                 cache_rd="${cache_rd:-0}"; cache_cr="${cache_cr:-0}"
                 dur="${dur:-0}"; api_ms="${api_ms:-0}"; turns="${turns:-0}"
+                [ "${dur:-0}" = "0" ] && dur="$_run_elapsed_ms"
+                [ "${api_ms:-0}" = "0" ] && api_ms="$_run_elapsed_ms"
                 if [ -n "${SWARM_PRICE_INPUT:-}" ]; then
                     cost=$(awk "BEGIN {printf \"%.6f\",
                         (${tok_in} * ${SWARM_PRICE_INPUT} + ${tok_out} * ${SWARM_PRICE_OUTPUT:-0} + ${cache_rd} * ${SWARM_PRICE_CACHED:-0}) / 1000000}")
@@ -392,6 +423,10 @@ while true; do
         _push_ok=false
         for _try in 1 2 3; do
             sleep $((RANDOM % 5 + 1))
+            # Clean up stale rebase state that blocks git pull --rebase.
+            if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+                git rebase --abort 2>/dev/null || rm -rf .git/rebase-merge .git/rebase-apply
+            fi
             if git pull --rebase origin agent-work 2>&1 | hlog_pipe \
                     && git push origin agent-work 2>&1 | hlog_pipe; then
                 _push_ok=true

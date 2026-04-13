@@ -30,13 +30,24 @@ RUN if echo ",$SWARM_AGENTS," | grep -q ",claude-code,"; then \
     fi
 ENV PATH="/home/agent/.local/bin:${PATH}"
 
-# --- Gemini CLI (requires Node.js) ---
+# --- Node.js (shared by Gemini CLI and Codex CLI) ---
 USER root
-RUN if echo ",$SWARM_AGENTS," | grep -q ",gemini-cli,"; then \
+RUN if echo ",$SWARM_AGENTS," | grep -qE ",(gemini-cli|codex-cli),"; then \
         curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
         && apt-get install -y --no-install-recommends nodejs \
-        && rm -rf /var/lib/apt/lists/* \
-        && npm install -g @google/gemini-cli; \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# --- Gemini CLI ---
+RUN if echo ",$SWARM_AGENTS," | grep -q ",gemini-cli,"; then \
+        npm install -g @google/gemini-cli; \
+    fi
+
+# --- Codex CLI ---
+RUN if echo ",$SWARM_AGENTS," | grep -q ",codex-cli,"; then \
+        npm install -g @openai/codex \
+        && mkdir -p /home/agent/.codex \
+        && chown agent:agent /home/agent/.codex; \
     fi
 USER agent
 

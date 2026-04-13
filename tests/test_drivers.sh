@@ -28,7 +28,7 @@ assert_eq() {
 
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
-    if echo "$haystack" | grep -qF "$needle"; then
+    if echo "$haystack" | grep -qF -- "$needle"; then
         echo "  PASS: ${label}"
         PASS=$((PASS + 1))
     else
@@ -57,6 +57,8 @@ assert_eq "claude-code driver exists" "true" \
     "$([ -f "$DRIVERS_DIR/claude-code.sh" ] && echo true || echo false)"
 assert_eq "fake driver exists" "true" \
     "$([ -f "$DRIVERS_DIR/fake.sh" ] && echo true || echo false)"
+assert_eq "codex driver exists" "true" \
+    "$([ -f "$DRIVERS_DIR/codex-cli.sh" ] && echo true || echo false)"
 assert_eq "_common.sh exists" "true" \
     "$([ -f "$DRIVERS_DIR/_common.sh" ] && echo true || echo false)"
 
@@ -389,6 +391,12 @@ for fn in "${_required_fns[@]}"; do
         "$(type -t "$fn" &>/dev/null && echo true || echo false)"
 done
 
+source "$DRIVERS_DIR/codex-cli.sh"
+for fn in "${_required_fns[@]}"; do
+    assert_eq "codex has $fn" "true" \
+        "$(type -t "$fn" &>/dev/null && echo true || echo false)"
+done
+
 # ============================================================
 echo ""
 echo "=== 17. Gemini CLI driver — role interface ==="
@@ -516,6 +524,9 @@ assert_eq "fake default model" "fake-model" "$(agent_default_model)"
 
 source "$DRIVERS_DIR/gemini-cli.sh"
 assert_eq "gemini default model" "gemini-2.5-pro" "$(agent_default_model)"
+
+source "$DRIVERS_DIR/codex-cli.sh"
+assert_eq "codex default model" "gpt-5.4" "$(agent_default_model)"
 
 # ============================================================
 echo ""
@@ -760,6 +771,483 @@ echo "=== 25. agent_is_retriable — Fake driver ==="
 source "$DRIVERS_DIR/fake.sh"
 RETRY_OUT=$(agent_is_retriable "$TMPDIR/cc-rate-limit.jsonl" 1)
 assert_eq "fake driver never retriable" "" "$RETRY_OUT"
+
+# ============================================================
+echo ""
+echo "=== 30. Codex driver — role interface ==="
+
+assert_eq "codex driver exists" "true" \
+    "$([ -f "$DRIVERS_DIR/codex-cli.sh" ] && echo true || echo false)"
+
+source "$DRIVERS_DIR/codex-cli.sh"
+
+assert_eq "codex name"    "Codex CLI"  "$(agent_name)"
+assert_eq "codex cmd"     "codex"      "$(agent_cmd)"
+assert_eq "codex default" "gpt-5.4"   "$(agent_default_model)"
+
+CDX_JQ=$(agent_activity_jq)
+assert_not_empty "codex jq filter" "$CDX_JQ"
+assert_contains "codex jq has command_execution" "command_execution" "$CDX_JQ"
+assert_contains "codex jq has file_change" "file_change" "$CDX_JQ"
+assert_contains "codex jq has changes path" "changes" "$CDX_JQ"
+
+CDX_INSTALL=$(agent_install_cmd)
+assert_contains "codex install has npm" "npm" "$CDX_INSTALL"
+assert_contains "codex install has @openai/codex" "@openai/codex" "$CDX_INSTALL"
+
+# ============================================================
+echo ""
+echo "=== 31. Codex driver — agent_settings ==="
+
+CWORK="$TMPDIR/codex-workspace"
+mkdir -p "$CWORK/.git/info"
+_test_home="$TMPDIR/fakehome"
+mkdir -p "$_test_home"
+HOME="$_test_home" agent_settings "$CWORK"
+
+assert_eq "codex config dir created" "true" \
+    "$([ -d "$_test_home/.codex" ] && echo true || echo false)"
+assert_eq "codex config.toml created" "true" \
+    "$([ -f "$_test_home/.codex/config.toml" ] && echo true || echo false)"
+assert_contains "codex config has file store" "file" \
+    "$(cat "$_test_home/.codex/config.toml")"
+
+# 31b. AGENTS.md bridge: .claude/CLAUDE.md copied when no AGENTS.md.
+CWORK_B="$TMPDIR/codex-bridge"
+mkdir -p "$CWORK_B/.claude" "$CWORK_B/.git/info"
+echo "# Project rules" > "$CWORK_B/.claude/CLAUDE.md"
+HOME="$_test_home" agent_settings "$CWORK_B"
+assert_eq "AGENTS.md created from .claude/CLAUDE.md" "true" \
+    "$([ -f "$CWORK_B/AGENTS.md" ] && echo true || echo false)"
+assert_eq "AGENTS.md content matches" "# Project rules" \
+    "$(cat "$CWORK_B/AGENTS.md")"
+assert_contains "AGENTS.md in git exclude" "AGENTS.md" \
+    "$(cat "$CWORK_B/.git/info/exclude")"
+
+# 31c. AGENTS.md bridge: CLAUDE.md at root used as fallback.
+CWORK_C="$TMPDIR/codex-bridge-root"
+mkdir -p "$CWORK_C/.git/info"
+echo "# Root rules" > "$CWORK_C/CLAUDE.md"
+HOME="$_test_home" agent_settings "$CWORK_C"
+assert_eq "AGENTS.md from root CLAUDE.md" "# Root rules" \
+    "$(cat "$CWORK_C/AGENTS.md")"
+
+# 31d. AGENTS.md bridge: existing AGENTS.md not overwritten.
+CWORK_D="$TMPDIR/codex-bridge-existing"
+mkdir -p "$CWORK_D/.claude" "$CWORK_D/.git/info"
+echo "# Codex rules" > "$CWORK_D/AGENTS.md"
+echo "# Claude rules" > "$CWORK_D/.claude/CLAUDE.md"
+HOME="$_test_home" agent_settings "$CWORK_D"
+assert_eq "existing AGENTS.md preserved" "# Codex rules" \
+    "$(cat "$CWORK_D/AGENTS.md")"
+
+# 31e. AGENTS.md bridge: no CLAUDE.md at all, no AGENTS.md created.
+CWORK_E="$TMPDIR/codex-bridge-none"
+mkdir -p "$CWORK_E/.git/info"
+HOME="$_test_home" agent_settings "$CWORK_E"
+assert_eq "no AGENTS.md without CLAUDE.md" "false" \
+    "$([ -f "$CWORK_E/AGENTS.md" ] && echo true || echo false)"
+
+# 31f. Skills bridge: .claude/skills/ symlinked to .agents/skills/.
+CWORK_F="$TMPDIR/codex-skills"
+mkdir -p "$CWORK_F/.claude/skills/add-fuzz-target" "$CWORK_F/.git/info"
+echo "---" > "$CWORK_F/.claude/skills/add-fuzz-target/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_F"
+assert_eq "skills symlink created" "true" \
+    "$([ -L "$CWORK_F/.agents/skills" ] && echo true || echo false)"
+assert_eq "skills symlink target resolves" "true" \
+    "$([ -f "$CWORK_F/.agents/skills/add-fuzz-target/SKILL.md" ] && echo true || echo false)"
+assert_contains ".agents/ in git exclude" ".agents/" \
+    "$(cat "$CWORK_F/.git/info/exclude")"
+
+# 31g. Skills bridge: existing .agents/skills/ not overwritten.
+CWORK_G="$TMPDIR/codex-skills-existing"
+mkdir -p "$CWORK_G/.agents/skills/custom" "$CWORK_G/.claude/skills/other" "$CWORK_G/.git/info"
+echo "custom" > "$CWORK_G/.agents/skills/custom/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_G"
+assert_eq "existing .agents/skills preserved" "custom" \
+    "$(cat "$CWORK_G/.agents/skills/custom/SKILL.md")"
+assert_eq ".agents/skills not a symlink" "false" \
+    "$([ -L "$CWORK_G/.agents/skills" ] && echo true || echo false)"
+
+# 31h. Skills bridge: no .claude/skills/, no symlink created.
+CWORK_H="$TMPDIR/codex-skills-none"
+mkdir -p "$CWORK_H/.git/info"
+HOME="$_test_home" agent_settings "$CWORK_H"
+assert_eq "no .agents without .claude/skills" "false" \
+    "$([ -d "$CWORK_H/.agents" ] && echo true || echo false)"
+
+# 31i. Priority: .claude/CLAUDE.md wins over root CLAUDE.md.
+CWORK_I="$TMPDIR/codex-priority"
+mkdir -p "$CWORK_I/.claude" "$CWORK_I/.git/info"
+echo "# inner" > "$CWORK_I/.claude/CLAUDE.md"
+echo "# outer" > "$CWORK_I/CLAUDE.md"
+HOME="$_test_home" agent_settings "$CWORK_I"
+assert_eq ".claude/CLAUDE.md wins over root" "# inner" \
+    "$(cat "$CWORK_I/AGENTS.md")"
+
+# 31j. Full context: both .claude/CLAUDE.md and .claude/skills/
+#      present, no AGENTS.md, no .agents/skills/ → both bridged.
+CWORK_J="$TMPDIR/codex-full-both"
+mkdir -p "$CWORK_J/.claude/skills/triage" "$CWORK_J/.git/info"
+echo "# full rules" > "$CWORK_J/.claude/CLAUDE.md"
+echo "---" > "$CWORK_J/.claude/skills/triage/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_J"
+assert_eq "full: AGENTS.md bridged" "# full rules" \
+    "$(cat "$CWORK_J/AGENTS.md")"
+assert_eq "full: skills symlinked" "true" \
+    "$([ -L "$CWORK_J/.agents/skills" ] && echo true || echo false)"
+assert_eq "full: skill resolves" "---" \
+    "$(cat "$CWORK_J/.agents/skills/triage/SKILL.md")"
+
+# 31k. AGENTS.md exists + .claude/skills/ present → only skills
+#      bridged, AGENTS.md untouched.
+CWORK_K="$TMPDIR/codex-agents-exists-skills"
+mkdir -p "$CWORK_K/.claude/skills/build-poc" "$CWORK_K/.git/info"
+echo "# own agents" > "$CWORK_K/AGENTS.md"
+echo "# claude" > "$CWORK_K/.claude/CLAUDE.md"
+echo "---" > "$CWORK_K/.claude/skills/build-poc/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_K"
+assert_eq "AGENTS.md kept, not overwritten" "# own agents" \
+    "$(cat "$CWORK_K/AGENTS.md")"
+assert_eq "skills still bridged" "true" \
+    "$([ -L "$CWORK_K/.agents/skills" ] && echo true || echo false)"
+
+# 31l. .claude/CLAUDE.md present + .agents/skills/ exists → only
+#      AGENTS.md bridged, skills untouched.
+CWORK_L="$TMPDIR/codex-claude-exists-agentskills"
+mkdir -p "$CWORK_L/.claude" "$CWORK_L/.agents/skills/own" "$CWORK_L/.git/info"
+echo "# project" > "$CWORK_L/.claude/CLAUDE.md"
+echo "own-skill" > "$CWORK_L/.agents/skills/own/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_L"
+assert_eq "AGENTS.md bridged" "# project" \
+    "$(cat "$CWORK_L/AGENTS.md")"
+assert_eq ".agents/skills not a symlink" "false" \
+    "$([ -L "$CWORK_L/.agents/skills" ] && echo true || echo false)"
+assert_eq "own skill preserved" "own-skill" \
+    "$(cat "$CWORK_L/.agents/skills/own/SKILL.md")"
+
+# 31m. Both AGENTS.md and .agents/skills/ exist → nothing bridged.
+CWORK_M="$TMPDIR/codex-all-exist"
+mkdir -p "$CWORK_M/.claude/skills/x" "$CWORK_M/.agents/skills/y" "$CWORK_M/.git/info"
+echo "# codex agents" > "$CWORK_M/AGENTS.md"
+echo "# claude" > "$CWORK_M/.claude/CLAUDE.md"
+echo "x" > "$CWORK_M/.claude/skills/x/SKILL.md"
+echo "y" > "$CWORK_M/.agents/skills/y/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_M"
+assert_eq "all-exist: AGENTS.md untouched" "# codex agents" \
+    "$(cat "$CWORK_M/AGENTS.md")"
+assert_eq "all-exist: .agents/skills not symlink" "false" \
+    "$([ -L "$CWORK_M/.agents/skills" ] && echo true || echo false)"
+assert_eq "all-exist: own skill intact" "y" \
+    "$(cat "$CWORK_M/.agents/skills/y/SKILL.md")"
+
+# 31n. Only .claude/skills/ (no CLAUDE.md) → skills bridged,
+#      no AGENTS.md created.
+CWORK_N="$TMPDIR/codex-skills-only"
+mkdir -p "$CWORK_N/.claude/skills/scan" "$CWORK_N/.git/info"
+echo "---" > "$CWORK_N/.claude/skills/scan/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_N"
+assert_eq "skills-only: no AGENTS.md" "false" \
+    "$([ -f "$CWORK_N/AGENTS.md" ] && echo true || echo false)"
+assert_eq "skills-only: symlink created" "true" \
+    "$([ -L "$CWORK_N/.agents/skills" ] && echo true || echo false)"
+
+# 31o. Only AGENTS.md exists, no .claude/ at all → no bridging.
+CWORK_O="$TMPDIR/codex-agents-only"
+mkdir -p "$CWORK_O/.git/info"
+echo "# native" > "$CWORK_O/AGENTS.md"
+HOME="$_test_home" agent_settings "$CWORK_O"
+assert_eq "agents-only: AGENTS.md intact" "# native" \
+    "$(cat "$CWORK_O/AGENTS.md")"
+assert_eq "agents-only: no .agents dir" "false" \
+    "$([ -d "$CWORK_O/.agents" ] && echo true || echo false)"
+
+# 31p. .claude/CLAUDE.md + no skills, no .agents/ → only AGENTS.md
+#      bridged, no .agents/ dir created.
+CWORK_P="$TMPDIR/codex-claude-noskills"
+mkdir -p "$CWORK_P/.claude" "$CWORK_P/.git/info"
+echo "# rules" > "$CWORK_P/.claude/CLAUDE.md"
+HOME="$_test_home" agent_settings "$CWORK_P"
+assert_eq "noskills: AGENTS.md bridged" "# rules" \
+    "$(cat "$CWORK_P/AGENTS.md")"
+assert_eq "noskills: no .agents dir" "false" \
+    "$([ -d "$CWORK_P/.agents" ] && echo true || echo false)"
+
+# 31q. .agents/skills/ exists but no .claude/skills/ → untouched.
+CWORK_Q="$TMPDIR/codex-agentskills-noclaudeskills"
+mkdir -p "$CWORK_Q/.agents/skills/mine" "$CWORK_Q/.git/info"
+echo "kept" > "$CWORK_Q/.agents/skills/mine/SKILL.md"
+HOME="$_test_home" agent_settings "$CWORK_Q"
+assert_eq "no-claude-skills: .agents preserved" "kept" \
+    "$(cat "$CWORK_Q/.agents/skills/mine/SKILL.md")"
+assert_eq "no-claude-skills: not a symlink" "false" \
+    "$([ -L "$CWORK_Q/.agents/skills" ] && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 32. Codex driver — agent_extract_stats ==="
+
+cat > "$TMPDIR/codex-session.jsonl" <<'EOF'
+{"type":"turn.started","turn_id":"t1"}
+{"type":"item.started","item":{"type":"command_execution","command":"ls -la"}}
+{"type":"item.completed","item":{"type":"command_execution","command":"ls -la"}}
+{"type":"turn.completed","turn_id":"t1","usage":{"input_tokens":500,"output_tokens":200,"cached_input_tokens":100}}
+{"type":"turn.started","turn_id":"t2"}
+{"type":"item.started","item":{"type":"file_change","file_path":"src/main.ts"}}
+{"type":"item.completed","item":{"type":"file_change","file_path":"src/main.ts"}}
+{"type":"turn.completed","turn_id":"t2","usage":{"input_tokens":800,"output_tokens":300,"cached_input_tokens":400}}
+EOF
+
+CSTATS=$(agent_extract_stats "$TMPDIR/codex-session.jsonl")
+IFS=$'\t' read -r c_cost c_in c_out c_cache_rd c_cache_cr c_dur c_api_ms c_turns <<< "$CSTATS"
+
+assert_eq "codex cost is 0"        "0"    "$c_cost"
+assert_eq "codex tok_in summed"    "800"  "$c_in"
+assert_eq "codex tok_out summed"   "500"  "$c_out"
+assert_eq "codex cached summed"    "500"  "$c_cache_rd"
+assert_eq "codex cache_cr"         "0"    "$c_cache_cr"
+assert_eq "codex dur"              "0"    "$c_dur"
+assert_eq "codex api_ms"           "0"    "$c_api_ms"
+assert_eq "codex turns"            "2"    "$c_turns"
+
+# Empty log: all zeroes.
+: > "$TMPDIR/codex-empty.jsonl"
+CSTATS_EMPTY=$(agent_extract_stats "$TMPDIR/codex-empty.jsonl")
+IFS=$'\t' read -r c_cost c_in c_out c_cache_rd c_cache_cr c_dur c_api_ms c_turns <<< "$CSTATS_EMPTY"
+assert_eq "codex empty cost"  "0" "$c_cost"
+assert_eq "codex empty turns" "0" "$c_turns"
+
+# Single turn.
+cat > "$TMPDIR/codex-single.jsonl" <<'EOF'
+{"type":"turn.completed","turn_id":"t1","usage":{"input_tokens":100,"output_tokens":50,"cached_input_tokens":0}}
+EOF
+CSTATS_S=$(agent_extract_stats "$TMPDIR/codex-single.jsonl")
+IFS=$'\t' read -r c_cost c_in c_out c_cache_rd c_cache_cr c_dur c_api_ms c_turns <<< "$CSTATS_S"
+assert_eq "codex single tok_in"  "100" "$c_in"
+assert_eq "codex single tok_out" "50"  "$c_out"
+assert_eq "codex single turns"   "1"   "$c_turns"
+
+# ============================================================
+echo ""
+echo "=== 33. Codex driver — agent_detect_fatal ==="
+
+# Fatal: turn.failed event.
+cat > "$TMPDIR/codex-fatal.jsonl" <<'EOF'
+{"type":"turn.failed","turn_id":"t1","error":"authentication_error: Invalid API key"}
+EOF
+CFATAL=$(agent_detect_fatal "$TMPDIR/codex-fatal.jsonl" 1)
+assert_not_empty "codex turn.failed detected" "$CFATAL"
+assert_contains "codex fatal mentions auth" "authentication_error" "$CFATAL"
+
+# Fatal: generic error event.
+cat > "$TMPDIR/codex-error.jsonl" <<'EOF'
+{"type":"error","message":"model not found: gpt-99"}
+EOF
+CERR=$(agent_detect_fatal "$TMPDIR/codex-error.jsonl" 1)
+assert_not_empty "codex error event detected" "$CERR"
+assert_contains "codex error message" "model not found" "$CERR"
+
+# Fatal: stderr error with no successful turns.
+cat > "$TMPDIR/codex-stderr.jsonl" <<'EOF'
+EOF
+cat > "$TMPDIR/codex-stderr.jsonl.err" <<'EOF'
+Error: Unauthorized - invalid API key
+EOF
+CSTDERR=$(agent_detect_fatal "$TMPDIR/codex-stderr.jsonl" 1)
+assert_not_empty "codex stderr error detected" "$CSTDERR"
+assert_contains "codex stderr mentions unauthorized" "Unauthorized" "$CSTDERR"
+
+# Not fatal: successful turns present despite stderr noise.
+cat > "$TMPDIR/codex-ok.jsonl" <<'EOF'
+{"type":"turn.completed","turn_id":"t1","usage":{"input_tokens":100,"output_tokens":50,"cached_input_tokens":0}}
+EOF
+cat > "$TMPDIR/codex-ok.jsonl.err" <<'EOF'
+Warning: something non-fatal with error word
+EOF
+COK=$(agent_detect_fatal "$TMPDIR/codex-ok.jsonl" 0)
+assert_eq "codex ok not flagged" "" "$COK"
+
+# Clean log: no errors.
+cat > "$TMPDIR/codex-clean.jsonl" <<'EOF'
+{"type":"turn.completed","turn_id":"t1","usage":{"input_tokens":200,"output_tokens":100,"cached_input_tokens":0}}
+EOF
+CCLEAN=$(agent_detect_fatal "$TMPDIR/codex-clean.jsonl" 0)
+assert_eq "codex clean not flagged" "" "$CCLEAN"
+
+# ============================================================
+echo ""
+echo "=== 34. Codex driver — agent_is_retriable ==="
+
+cat > "$TMPDIR/codex-429.jsonl" <<'EOF'
+{"type":"error","message":"429 Too many requests - rate limit exceeded"}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/codex-429.jsonl" 1)
+assert_not_empty "codex 429 is retriable" "$RETRY_OUT"
+
+cat > "$TMPDIR/codex-quota.jsonl" <<'EOF'
+{"type":"turn.failed","error":"quota exceeded for model gpt-5.4"}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/codex-quota.jsonl" 1)
+assert_not_empty "codex quota is retriable" "$RETRY_OUT"
+
+cat > "$TMPDIR/codex-rate-stderr.jsonl" <<'EOF'
+EOF
+cat > "$TMPDIR/codex-rate-stderr.jsonl.err" <<'EOF'
+Error: rate limit exceeded, please retry later
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/codex-rate-stderr.jsonl" 1)
+assert_not_empty "codex rate limit in stderr is retriable" "$RETRY_OUT"
+
+cat > "$TMPDIR/codex-auth.jsonl" <<'EOF'
+{"type":"error","message":"Invalid API key"}
+EOF
+RETRY_OUT=$(agent_is_retriable "$TMPDIR/codex-auth.jsonl" 1)
+assert_eq "codex auth not retriable" "" "$RETRY_OUT"
+
+# ============================================================
+echo ""
+echo "=== 35. Codex driver — agent_docker_env ==="
+
+CDX_ENV=$(agent_docker_env "high")
+assert_contains "codex docker_env effort flag" "CODEX_EFFORT=high" "$CDX_ENV"
+
+CDX_ENV=$(agent_docker_env "low")
+assert_contains "codex docker_env effort low" "CODEX_EFFORT=low" "$CDX_ENV"
+
+CDX_ENV=$(agent_docker_env "")
+assert_eq "codex docker_env empty effort" "" "$CDX_ENV"
+
+# ============================================================
+echo ""
+echo "=== 36. Codex driver — agent_docker_auth ==="
+
+# API key from per-agent config (explicit apikey mode).
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="/nonexistent" \
+    agent_docker_auth "sk-codex-key" "" "apikey" "")
+assert_contains "codex per-agent key" "OPENAI_API_KEY=sk-codex-key" "$AUTH_OUT"
+assert_contains "codex per-agent label" "SWARM_AUTH_MODE=key" "$AUTH_OUT"
+
+# API key from environment (explicit apikey mode).
+AUTH_OUT=$(OPENAI_API_KEY="sk-env-key" CODEX_AUTH_JSON="/nonexistent" \
+    agent_docker_auth "" "" "apikey" "")
+assert_contains "codex env key" "OPENAI_API_KEY=sk-env-key" "$AUTH_OUT"
+assert_contains "codex env key label" "SWARM_AUTH_MODE=key" "$AUTH_OUT"
+
+# Per-agent overrides env.
+AUTH_OUT=$(OPENAI_API_KEY="sk-env" CODEX_AUTH_JSON="/nonexistent" \
+    agent_docker_auth "sk-agent" "" "apikey" "")
+assert_contains "codex per-agent overrides env" "OPENAI_API_KEY=sk-agent" "$AUTH_OUT"
+
+# No credentials at all.
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="/nonexistent" \
+    agent_docker_auth "" "" "" "")
+assert_contains "codex no creds has auth mode" "SWARM_AUTH_MODE=" "$AUTH_OUT"
+_line_count=$(echo "$AUTH_OUT" | grep -c "OPENAI_API_KEY" || true)
+assert_eq "codex no creds no key flag" "0" "$_line_count"
+
+# ChatGPT subscription mode: mounts auth.json.
+_fake_auth="$TMPDIR/fake-auth.json"
+echo '{"token":"test"}' > "$_fake_auth"
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="$_fake_auth" \
+    agent_docker_auth "" "" "chatgpt" "")
+assert_contains "codex chatgpt mounts auth.json" "$_fake_auth" "$AUTH_OUT"
+assert_contains "codex chatgpt mount flag" "--mount" "$AUTH_OUT"
+assert_contains "codex chatgpt label" "SWARM_AUTH_MODE=chatgpt" "$AUTH_OUT"
+_key_count=$(echo "$AUTH_OUT" | grep -c "OPENAI_API_KEY" || true)
+assert_eq "codex chatgpt no api key" "0" "$_key_count"
+
+# ChatGPT mode but auth.json missing: warns, no mount.
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="/nonexistent" \
+    agent_docker_auth "" "" "chatgpt" "" 2>/dev/null)
+_mount_count=$(echo "$AUTH_OUT" | grep -c "\-\-mount" || true)
+assert_eq "codex chatgpt missing no mount" "0" "$_mount_count"
+
+# Auto-detect: API key + auth.json both present.
+AUTH_OUT=$(OPENAI_API_KEY="sk-both" CODEX_AUTH_JSON="$_fake_auth" \
+    agent_docker_auth "" "" "" "")
+assert_contains "codex auto has api key" "OPENAI_API_KEY=sk-both" "$AUTH_OUT"
+assert_contains "codex auto mounts auth.json" "$_fake_auth" "$AUTH_OUT"
+assert_contains "codex auto label" "SWARM_AUTH_MODE=auto" "$AUTH_OUT"
+
+# Auto-detect: only auth.json, no key.
+AUTH_OUT=$(OPENAI_API_KEY="" CODEX_AUTH_JSON="$_fake_auth" \
+    agent_docker_auth "" "" "" "")
+assert_contains "codex auto chatgpt-only mount" "$_fake_auth" "$AUTH_OUT"
+assert_contains "codex auto chatgpt-only label" "SWARM_AUTH_MODE=chatgpt" "$AUTH_OUT"
+
+# ============================================================
+echo ""
+echo "=== 37. Codex driver — activity jq filter via file boundary ==="
+
+source "$DRIVERS_DIR/codex-cli.sh"
+agent_activity_jq > "$TMPDIR/codex.jq"
+
+CODEX_CMD='{"type":"item.started","item":{"type":"command_execution","command":"npm test","id":"x1","status":"in_progress","aggregated_output":"","exit_code":null}}'
+CDX_CMD_OUT=$(echo "$CODEX_CMD" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "codex jq command_execution" "Shell:" "$CDX_CMD_OUT"
+assert_contains "codex jq command content" "npm test" "$CDX_CMD_OUT"
+
+# file_change: path lives in .changes[].path (verified from real output).
+CODEX_EDIT='{"type":"item.completed","item":{"type":"file_change","id":"x2","changes":[{"path":"/workspace/src/utils.ts","kind":"edit"}],"status":"completed"}}'
+CDX_EDIT_OUT=$(echo "$CODEX_EDIT" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "codex jq file_change" "Edit " "$CDX_EDIT_OUT"
+assert_contains "codex jq file_change path" "/workspace/src/utils.ts" "$CDX_EDIT_OUT"
+
+# file_change with multiple changes uses first path.
+CODEX_MULTI='{"type":"item.completed","item":{"type":"file_change","id":"x3","changes":[{"path":"a.ts","kind":"add"},{"path":"b.ts","kind":"add"}],"status":"completed"}}'
+CDX_MULTI_OUT=$(echo "$CODEX_MULTI" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "codex jq multi file_change" "Edit a.ts" "$CDX_MULTI_OUT"
+
+CODEX_SEARCH='{"type":"item.started","item":{"type":"web_search","query":"node.js best practices"}}'
+CDX_SEARCH_OUT=$(echo "$CODEX_SEARCH" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "codex jq web_search" "Search:" "$CDX_SEARCH_OUT"
+
+CODEX_MCP='{"type":"item.completed","item":{"type":"mcp_tool_call","tool_name":"readFile"}}'
+CDX_MCP_OUT=$(echo "$CODEX_MCP" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "codex jq mcp_tool_call" "MCP:" "$CDX_MCP_OUT"
+
+# agent_message events should be silently skipped.
+CODEX_MSG='{"type":"item.completed","item":{"type":"agent_message","id":"x4","text":"Done."}}'
+CDX_MSG_OUT=$(echo "$CODEX_MSG" | \
+    AGENT_ID=7 SWARM_JQ_FILTER_FILE="$TMPDIR/codex.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_eq "codex jq agent_message silent" "" "$CDX_MSG_OUT"
+
+# ============================================================
+echo ""
+echo "=== 38. Codex driver in config parsing ==="
+
+cat > "$TMPDIR/codex_cfg.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "driver": "codex-cli",
+  "agents": [
+    { "count": 1, "model": "gpt-5.4" },
+    { "count": 1, "model": "claude-opus-4-6", "driver": "claude-code" }
+  ]
+}
+EOF
+
+TOP_DRIVER=$(jq -r '.driver // "claude-code"' "$TMPDIR/codex_cfg.json")
+assert_eq "codex top-level driver" "codex-cli" "$TOP_DRIVER"
+
+AGENTS=$(jq -r '.driver as $dd | .agents[] |
+    (.driver // $dd // "claude-code")' "$TMPDIR/codex_cfg.json")
+LINE1=$(echo "$AGENTS" | sed -n '1p')
+LINE2=$(echo "$AGENTS" | sed -n '2p')
+assert_eq "codex agent1 inherits top driver" "codex-cli"   "$LINE1"
+assert_eq "codex agent2 per-agent driver"    "claude-code" "$LINE2"
 
 # ============================================================
 echo ""

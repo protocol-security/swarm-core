@@ -13,12 +13,13 @@ export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..."
 export OPENROUTER_API_KEY="sk-or-v1-..."
 export MINIMAX_API_KEY="sk-api-..."
 export GEMINI_API_KEY="AI..."
+export OPENAI_API_KEY="sk-..."
 ```
 
 Verify they're set:
 
 ```bash
-for v in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN OPENROUTER_API_KEY MINIMAX_API_KEY GEMINI_API_KEY; do
+for v in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN OPENROUTER_API_KEY MINIMAX_API_KEY GEMINI_API_KEY OPENAI_API_KEY; do
   printf "%-30s %s\n" "$v" "${!v:+(set)}"
 done
 ```
@@ -37,6 +38,10 @@ done
 | `driver-inheritance.json` | gemini-2.5-pro + gemini-2.5-flash | gemini-cli | `GEMINI_API_KEY` |
 | `driver-post-process.json` | 2x gemini-2.5-pro (+ flash PP) | gemini-cli | `GEMINI_API_KEY` |
 | `heterogeneous-kitchen-sink.json` | Opus + 5x Gemini + Sonnet (+ PP) | mixed | `CLAUDE_CODE_OAUTH_TOKEN` + `ANTHROPIC_API_KEY` + `GEMINI_API_KEY` |
+| `codex-only.json` | 2x gpt-5.4 | codex-cli | `OPENAI_API_KEY` |
+| `codex-chatgpt.json` | 2x gpt-5.4 (chatgpt auth) | codex-cli | `~/.codex/auth.json` |
+| `codex-auth-mixed.json` | gpt-5.4 (chatgpt) + gpt-5.3-codex (apikey) + gpt-5.4 (auto) | codex-cli | `~/.codex/auth.json` + `OPENAI_API_KEY` |
+| `codex-mixed.json` | Opus + gpt-5.4 + gpt-5.3-codex + gpt-5.2 | mixed | `CLAUDE_CODE_OAUTH_TOKEN` + `OPENAI_API_KEY` |
 
 ## Usage
 
@@ -51,6 +56,10 @@ done
 ./tests/test.sh --config tests/configs/driver-inheritance.json
 ./tests/test.sh --config tests/configs/driver-post-process.json
 ./tests/test.sh --config tests/configs/heterogeneous-kitchen-sink.json
+./tests/test.sh --config tests/configs/codex-only.json
+./tests/test.sh --config tests/configs/codex-chatgpt.json
+./tests/test.sh --config tests/configs/codex-auth-mixed.json
+./tests/test.sh --config tests/configs/codex-mixed.json
 ```
 
 The test runner injects its own prompt and setup script into the config,
