@@ -210,7 +210,9 @@ format_tps() {
 format_model() {
     local m="${1:-unknown}" effort="${2:-}"
     if [ -n "$effort" ]; then
-        printf '%s (%s)' "$m" "${effort:0:1}"
+        local e="${effort:0:1}"
+        [ "$effort" = "max" ] && e="M"
+        printf '%s (%s)' "$m" "$e"
     else
         printf '%s' "$m"
     fi
