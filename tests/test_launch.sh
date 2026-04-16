@@ -1040,10 +1040,10 @@ pp_ensure_bare_repo() {
 _pp_repo="$TMPDIR/pp-src-repo"
 mkdir -p "$_pp_repo"
 git -C "$_pp_repo" init -q
-git -C "$_pp_repo" config user.name "test"
-git -C "$_pp_repo" config user.email "test@test"
-git -C "$_pp_repo" config commit.gpgsign false
-git -C "$_pp_repo" commit --allow-empty -m "init" -q
+git -C "$_pp_repo" \
+    -c user.name="test" -c user.email="test@test" \
+    -c commit.gpgsign=false \
+    commit --allow-empty -m "init" -q
 
 _pp_bare="$TMPDIR/pp-bare-test.git"
 
@@ -1073,10 +1073,10 @@ echo "=== 35. Bare repo is world-writable after creation ==="
 _wr_repo="$TMPDIR/wr-src-repo"
 mkdir -p "$_wr_repo"
 git -C "$_wr_repo" init -q
-git -C "$_wr_repo" config user.name "test"
-git -C "$_wr_repo" config user.email "test@test"
-git -C "$_wr_repo" config commit.gpgsign false
-git -C "$_wr_repo" commit --allow-empty -m "init" -q
+git -C "$_wr_repo" \
+    -c user.name="test" -c user.email="test@test" \
+    -c commit.gpgsign=false \
+    commit --allow-empty -m "init" -q
 
 _wr_bare="$TMPDIR/wr-bare-test.git"
 rm -rf "$_wr_bare"
