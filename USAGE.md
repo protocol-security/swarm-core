@@ -148,6 +148,18 @@ depends on the model and configuration: Claude Code requires
 extended thinking to be enabled, and Gemini CLI emits thought
 events only for models that support them.
 
+On Opus 4.7 and later the Anthropic API default for
+`thinking.display` is `"omitted"`: the `thinking` field is
+empty and the full reasoning is returned encrypted in the
+`signature` field.  The claude-code driver opts out by
+writing `showThinkingSummaries: true` into the workspace's
+`.claude/settings.local.json`, which restores summaries.
+For any residual blocks that still arrive without a
+summary, the filter renders `Think: [encrypted]` (empty
+thinking with a signature present) or `Think: [empty]`
+(empty thinking and empty signature — anomalous), so the
+dashboard no longer shows a blank `Think:` line.
+
 ## Testing
 
 ```bash

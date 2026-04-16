@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **Opus 4.7 thinking summaries.** Claude Code driver now
+  writes `showThinkingSummaries: true` into the workspace's
+  `.claude/settings.local.json`, opting out of the new
+  Anthropic default (`thinking.display: "omitted"`, where
+  the `thinking` field is empty and the full reasoning
+  ships encrypted in `signature`). The dashboard no longer
+  shows a blank `Think:` line for Opus 4.7 agents, and
+  Opus 4.6 behaviour is unchanged. As a defence-in-depth
+  measure the activity filter (both `lib/activity-filter.sh`
+  and the driver's `agent_activity_jq`) now renders
+  `Think: [encrypted]` when `thinking` is empty but
+  `signature` is present, and `Think: [empty]` when both
+  are empty — so anomalous blocks are distinguishable from
+  the expected encrypted-reasoning case.
+
 ## 0.19.1 — 2026-04-13
 
 - **Retry on API 500 errors.** Claude Code driver now treats

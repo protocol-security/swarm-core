@@ -38,11 +38,17 @@ agent_run() {
 
 # Write agent-specific settings files into the workspace.
 # Disables Co-Authored-By, attribution header, and telemetry.
+# Enables thinking summaries: on Opus 4.7 and later, the API default
+# for thinking.display is "omitted" (empty thinking field + encrypted
+# signature) for latency reasons.  Setting showThinkingSummaries:true
+# opts out of the redact-thinking-2026-02-12 beta header so the
+# activity filter has real text to show.  No-op on Opus 4.6 and
+# earlier where summaries were already the default.
 agent_settings() {
     local workspace="$1"
     mkdir -p "${workspace}/.claude"
     cat > "${workspace}/.claude/settings.local.json" <<'SETTINGS'
-{"attribution":{"commit":"","pr":""},"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"0","CLAUDE_CODE_ENABLE_TELEMETRY":"0","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}
+{"attribution":{"commit":"","pr":""},"showThinkingSummaries":true,"env":{"CLAUDE_CODE_ATTRIBUTION_HEADER":"0","CLAUDE_CODE_ENABLE_TELEMETRY":"0","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}
 SETTINGS
 }
 
@@ -72,7 +78,14 @@ fromjson? // empty |
 select(.type == "assistant") |
 .message.content[]? |
 if .type == "thinking" then
-  "\(prefix) Think: " + ((.thinking // "") | first_line | truncate(80)) + reset
+  ((.thinking // "") | first_line | truncate(80)) as $s |
+  if ($s | length) > 0 then
+    "\(prefix) Think: " + $s + reset
+  elif ((.signature // "") | length) > 0 then
+    "\(prefix) Think: [encrypted]" + reset
+  else
+    "\(prefix) Think: [empty]" + reset
+  end
 elif .type == "tool_use" then
   if   .name == "Bash"  then "\(prefix) Shell: " + ((.input.command // "") | first_line | truncate(80)) + reset
   elif .name == "Read"  then "\(prefix) Read "  + (.input.file_path // .input.path // "") + reset
