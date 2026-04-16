@@ -1108,6 +1108,131 @@ rm -rf "$_wr_repo" "$_wr_bare"
 
 # ============================================================
 echo ""
+echo "=== 36. signing_key resolution ==="
+
+# Mirrors the signing-key resolution block in launch.sh.
+# Prints the resolved `-v` args (empty when no key configured),
+# returns 1 with an ERROR line on a missing file.
+resolve_signing_key_args() {
+    local cfg="$1"
+    local key
+    key=$(jq -r '.git_user.signing_key // empty' "$cfg")
+    key="$(expand_env_ref "$key")"
+    [ -z "$key" ] && return 0
+    key="${key/#\~/$HOME}"
+    if [ ! -f "$key" ]; then
+        echo "ERROR: signing key not found: $key" >&2
+        return 1
+    fi
+    printf -- '-v %s:/etc/swarm/signing_key:ro' "$key"
+}
+
+# No signing_key configured -> empty args.
+cat > "$TMPDIR/sign_none.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": { "name": "bot", "email": "bot@test" },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+assert_eq "no signing_key -> no args" "" \
+    "$(resolve_signing_key_args "$TMPDIR/sign_none.json")"
+
+# Literal path to existing file -> expanded args.
+_sk_dir="$TMPDIR/sk-$$"
+mkdir -p "$_sk_dir"
+touch "$_sk_dir/key"
+cat > "$TMPDIR/sign_literal.json" <<EOF
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "bot", "email": "bot@test",
+    "signing_key": "$_sk_dir/key"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+assert_eq "literal signing_key -> v args" \
+    "-v $_sk_dir/key:/etc/swarm/signing_key:ro" \
+    "$(resolve_signing_key_args "$TMPDIR/sign_literal.json")"
+
+# $VAR reference with var set -> env value expanded.
+SWARM_SK_TEST="$_sk_dir/key"
+cat > "$TMPDIR/sign_envref.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "bot", "email": "bot@test",
+    "signing_key": "$SWARM_SK_TEST"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+assert_eq "env-ref signing_key -> expanded args" \
+    "-v $_sk_dir/key:/etc/swarm/signing_key:ro" \
+    "$(resolve_signing_key_args "$TMPDIR/sign_envref.json")"
+
+# $VAR reference unset -> no args (no silent default fallback).
+unset SWARM_SK_MISSING 2>/dev/null || true
+cat > "$TMPDIR/sign_envref_missing.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "bot", "email": "bot@test",
+    "signing_key": "$SWARM_SK_MISSING"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+assert_eq "unset env-ref signing_key -> no args" "" \
+    "$(resolve_signing_key_args "$TMPDIR/sign_envref_missing.json")"
+
+# Tilde-prefixed path -> $HOME expanded.
+_sk_home="$TMPDIR/sk-home-$$"
+mkdir -p "$_sk_home/.ssh"
+touch "$_sk_home/.ssh/key"
+cat > "$TMPDIR/sign_tilde.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "bot", "email": "bot@test",
+    "signing_key": "~/.ssh/key"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+assert_eq "tilde signing_key -> HOME expanded" \
+    "-v $_sk_home/.ssh/key:/etc/swarm/signing_key:ro" \
+    "$(HOME="$_sk_home" resolve_signing_key_args "$TMPDIR/sign_tilde.json")"
+
+# Missing file -> error on stderr, non-zero return.
+cat > "$TMPDIR/sign_missing.json" <<EOF
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "bot", "email": "bot@test",
+    "signing_key": "$TMPDIR/does-not-exist"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+_missing_err=$(resolve_signing_key_args "$TMPDIR/sign_missing.json" 2>&1 \
+    >/dev/null || true)
+_missing_has_err=$(echo "$_missing_err" \
+    | grep -c "ERROR: signing key not found" || true)
+assert_eq "missing signing_key -> error line" "1" "$_missing_has_err"
+
+if resolve_signing_key_args "$TMPDIR/sign_missing.json" >/dev/null 2>&1; then
+    _missing_rc="zero"
+else
+    _missing_rc="nonzero"
+fi
+assert_eq "missing signing_key -> non-zero exit" "nonzero" "$_missing_rc"
+
+rm -rf "$_sk_dir" "$_sk_home"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
