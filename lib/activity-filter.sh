@@ -43,7 +43,14 @@ else
   select(.type == "assistant") |
   .message.content[]? |
   if .type == "thinking" then
-    "\(prefix) Think: " + ((.thinking // "") | first_line | truncate(80)) + reset
+    ((.thinking // "") | first_line | truncate(80)) as $s |
+    if ($s | length) > 0 then
+      "\(prefix) Think: " + $s + reset
+    elif ((.signature // "") | length) > 0 then
+      "\(prefix) Think: [encrypted]" + reset
+    else
+      "\(prefix) Think: [empty]" + reset
+    end
   elif .type == "tool_use" then
     if   .name == "Bash"  then "\(prefix) Shell: " + ((.input.command // "") | first_line | truncate(80)) + reset
     elif .name == "Read"  then "\(prefix) Read "  + (.input.file_path // .input.path // "") + reset

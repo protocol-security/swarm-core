@@ -129,6 +129,16 @@ assert_contains "thinking truncated" "..." "$OUT"
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Line one\nLine two\nLine three","signature":"sig"}]}}')
 assert_eq "thinking first line only" "agent[1] Think: Line one" "$OUT"
 
+# Empty thinking + signature: Opus 4.7 display:"omitted" default
+# (full thinking encrypted in signature, unavailable to the client).
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"abc"}]}}')
+assert_eq "encrypted thinking marker" "agent[1] Think: [encrypted]" "$OUT"
+
+# Empty thinking + empty signature: anomalous (neither summary nor
+# encrypted reasoning); surface a distinct marker for diagnostic.
+OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":""}]}}')
+assert_eq "empty thinking marker" "agent[1] Think: [empty]" "$OUT"
+
 # Thinking + tool_use in same message — both displayed.
 OUT=$(run_filter 1 '{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Plan the edit","signature":"sig"},{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"x.ts"}}]}}')
 LINES=$(echo "$OUT" | wc -l | tr -d ' ')

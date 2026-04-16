@@ -98,6 +98,8 @@ assert_eq "attribution commit empty" "" \
     "$(jq -r '.attribution.commit' "$WORK/.claude/settings.local.json")"
 assert_eq "telemetry off" "0" \
     "$(jq -r '.env.CLAUDE_CODE_ENABLE_TELEMETRY' "$WORK/.claude/settings.local.json")"
+assert_eq "thinking summaries on" "true" \
+    "$(jq -r '.showThinkingSummaries' "$WORK/.claude/settings.local.json")"
 
 # ============================================================
 echo ""
@@ -254,6 +256,22 @@ CC_THINK_OUT=$(echo "$CC_THINK" | \
     bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
 assert_contains "cc thinking via file boundary" "Think:" "$CC_THINK_OUT"
 assert_contains "cc thinking content" "Analyzing the error" "$CC_THINK_OUT"
+
+# Test 4a: Opus 4.7 display:"omitted" — empty thinking + signature.
+CC_THINK_ENCRYPTED='{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig"}]}}'
+CC_THINK_ENCRYPTED_OUT=$(echo "$CC_THINK_ENCRYPTED" | \
+    AGENT_ID=2 SWARM_JQ_FILTER_FILE="$TMPDIR/claude-code.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "cc encrypted thinking via file boundary" \
+    "Think: [encrypted]" "$CC_THINK_ENCRYPTED_OUT"
+
+# Test 4b: Anomalous — empty thinking + empty signature.
+CC_THINK_EMPTY='{"type":"assistant","session_id":"s","message":{"id":"m","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":""}]}}'
+CC_THINK_EMPTY_OUT=$(echo "$CC_THINK_EMPTY" | \
+    AGENT_ID=2 SWARM_JQ_FILTER_FILE="$TMPDIR/claude-code.jq" \
+    bash "$FILTER_DIR/activity-filter.sh" 2>/dev/null || true)
+assert_contains "cc empty thinking via file boundary" \
+    "Think: [empty]" "$CC_THINK_EMPTY_OUT"
 
 # Test 5: Fake driver's jq filter works via file boundary too.
 source "$DRIVERS_DIR/fake.sh"
