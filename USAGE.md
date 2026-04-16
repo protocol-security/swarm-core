@@ -151,14 +151,35 @@ events only for models that support them.
 On Opus 4.7 and later the Anthropic API default for
 `thinking.display` is `"omitted"`: the `thinking` field is
 empty and the full reasoning is returned encrypted in the
-`signature` field.  The claude-code driver opts out by
-writing `showThinkingSummaries: true` into the workspace's
-`.claude/settings.local.json`, which restores summaries.
-For any residual blocks that still arrive without a
-summary, the filter renders `Think: [encrypted]` (empty
-thinking with a signature present) or `Think: [empty]`
-(empty thinking and empty signature — anomalous), so the
-dashboard no longer shows a blank `Think:` line.
+`signature` field.  To restore summaries the client has to
+explicitly send `thinking: {"display": "summarized"}` on
+each Messages API request.
+
+The claude-code driver writes `"showThinkingSummaries": true`
+into the workspace's `.claude/settings.local.json` as a
+forward-compatible opt-in.  As of Claude Code 2.1.111 the
+CLI does not yet plumb that setting through to headless
+(`-p --output-format stream-json`) requests for Opus 4.7, so
+on today's releases this opt-in is effectively a no-op for
+our pipeline.  The setting is retained so that a future
+Claude Code release which wires it to the Messages API will
+restore summaries automatically with no further swarm change.
+
+While the client-side opt-in is missing, the activity filter
+classifies the otherwise-blank blocks to keep the dashboard
+informative:
+
+- `Think: [encrypted]` — `thinking` empty, `signature` present.
+  This is the expected Opus 4.7 `display:"omitted"` payload;
+  the full reasoning exists server-side but is unavailable
+  to the client.
+- `Think: [empty]` — `thinking` empty and `signature` empty.
+  Anomalous: neither summary nor encrypted reasoning; useful
+  diagnostic that something upstream is off.
+
+Blank `Think:` lines no longer reach the dashboard.  On
+Opus 4.6 and earlier, summaries were the default and continue
+to render as `Think: <summary>` unchanged.
 
 ## Testing
 

@@ -1,21 +1,29 @@
 # Changelog
 
-## Unreleased
+## 0.19.2 — 2026-04-16
 
-- **Opus 4.7 thinking summaries.** Claude Code driver now
-  writes `showThinkingSummaries: true` into the workspace's
-  `.claude/settings.local.json`, opting out of the new
-  Anthropic default (`thinking.display: "omitted"`, where
-  the `thinking` field is empty and the full reasoning
-  ships encrypted in `signature`). The dashboard no longer
-  shows a blank `Think:` line for Opus 4.7 agents, and
-  Opus 4.6 behaviour is unchanged. As a defence-in-depth
-  measure the activity filter (both `lib/activity-filter.sh`
-  and the driver's `agent_activity_jq`) now renders
-  `Think: [encrypted]` when `thinking` is empty but
-  `signature` is present, and `Think: [empty]` when both
-  are empty — so anomalous blocks are distinguishable from
-  the expected encrypted-reasoning case.
+- **No more blank `Think:` lines on Opus 4.7.** The activity
+  filter (both `lib/activity-filter.sh` and the driver's
+  `agent_activity_jq`) now renders `Think: [encrypted]` when
+  the `thinking` field is empty but `signature` is present
+  (the expected Opus 4.7 `display: "omitted"` payload where
+  the full reasoning ships encrypted server-side) and
+  `Think: [empty]` when both are empty — so anomalous blocks
+  are distinguishable from the expected encrypted-reasoning
+  case. Opus 4.6 and earlier still render their summary
+  text unchanged.
+- **Forward-compatible `showThinkingSummaries` opt-in.** The
+  claude-code driver's `.claude/settings.local.json` now
+  includes `"showThinkingSummaries": true`. On Claude Code
+  ≤ 2.1.111 this is a no-op on Opus 4.7 headless mode: the
+  CLI does not yet plumb the setting through to an explicit
+  `thinking.display: "summarized"` on the Messages API
+  request, so the API keeps returning empty thinking. The
+  opt-in is left in place so that a future Claude Code
+  release which wires the setting through will restore
+  summaries with no further swarm change. See
+  https://docs.anthropic.com/en/about-claude/models/whats-new-claude-4-7
+  and https://news.ycombinator.com/item?id=47664442.
 
 ## 0.19.1 — 2026-04-13
 
