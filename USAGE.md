@@ -66,8 +66,9 @@ Per-group fields in `swarm.json` `agents` array:
 
 Top-level fields: `prompt`, `setup`, `max_idle` (default: `3`),
 `max_retry_wait`, `driver`, `inject_git_rules`,
-`git_user` (`name`, `email`), `claude_code_version`, `title`,
-`tag`, `pricing`, `docker_args`, `post_process`.
+`git_user` (`name`, `email`, `signing_key`),
+`claude_code_version`, `title`, `tag`, `pricing`,
+`docker_args`, `post_process`.
 
 ### Retry on rate limits
 
@@ -101,6 +102,44 @@ top-level `docker_args` array.  Each element is one shell token:
 This is useful for mounting the host Docker socket, adding
 devices or capabilities, setting network modes, or passing any
 other flags that the harness does not manage natively.
+
+### Commit signing
+
+Set `git_user.signing_key` to an SSH private-key path on the
+host to sign every commit agents and post-processors make.
+Accepts a literal path, a bare `$VAR` reference (expanded from
+the host environment), or a path starting with `~/` (expanded
+to `$HOME` before mounting):
+
+```json
+{
+  "git_user": {
+    "name": "swarm-agent",
+    "email": "agent@swarm.local",
+    "signing_key": "~/.ssh/swarm-agent-signing"
+  }
+}
+```
+
+The key is bind-mounted read-only into each container at
+`/etc/swarm/signing_key`, and git inside the container is
+configured with:
+
+```
+gpg.format      = ssh
+user.signingkey = /etc/swarm/signing_key
+commit.gpgsign  = true
+```
+
+When `signing_key` is absent -- or resolves to empty via an
+unset `$VAR` -- signing is explicitly disabled inside the
+container (`commit.gpgsign = false`), overriding anything that
+might otherwise leak in from the image or a mounted config.
+
+The host key file must exist at `launch.sh start` time;
+otherwise launch fails with `ERROR: signing key not found`.
+The container image ships `openssh-client` for the
+`ssh-keygen -Y sign` that git invokes.
 
 ## Dashboard
 

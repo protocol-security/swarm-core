@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.20.0 — 2026-04-17
+
+- **Optional SSH commit signing.** New `git_user.signing_key`
+  field accepts a host-side path (literal, `$VAR`, or `~/...`)
+  to an SSH private key.  When set, the key is bind-mounted
+  read-only into each agent and post-processor container at
+  `/etc/swarm/signing_key` and git is configured with
+  `gpg.format=ssh`, `user.signingkey=/etc/swarm/signing_key`,
+  and `commit.gpgsign=true`.  When absent -- or when the field
+  resolves to empty via an unset `$VAR` -- signing is
+  explicitly disabled inside the container to prevent a host
+  signing config from leaking in.  `openssh-client` is now
+  installed in the container image for the `ssh-keygen -Y
+  sign` that git invokes.  Signing config is factored into
+  `lib/signing.sh` and shared between `lib/harness.sh` and the
+  harness test, so the production path and the regression
+  test exercise the same code.
+- **Per-post-processor `max_idle`.** `post_process.max_idle`
+  controls the idle-session threshold for the post-processor
+  independently of the top-level agent-facing `max_idle`.
+  Falls back to the top-level value when omitted, preserving
+  the prior behaviour for configs that don't set it.
+
 ## 0.19.2 — 2026-04-16
 
 - **No more blank `Think:` lines on Opus 4.7.** The activity
