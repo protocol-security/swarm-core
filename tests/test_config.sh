@@ -46,13 +46,15 @@ assert_contains() {
 parse_prompt()     { jq -r '.prompt // empty' "$1"; }
 parse_setup()      { jq -r '.setup // empty' "$1"; }
 parse_max_idle()   { jq -r '.max_idle // 3' "$1"; }
-parse_git_name()   { jq -r '.git_user.name // "swarm-agent"' "$1"; }
-parse_git_email()  { jq -r '.git_user.email // "agent@swarm.local"' "$1"; }
+parse_git_name()        { jq -r '.git_user.name // "swarm-agent"' "$1"; }
+parse_git_email()       { jq -r '.git_user.email // "agent@swarm.local"' "$1"; }
+parse_signing_key()     { jq -r '.git_user.signing_key // empty' "$1"; }
 parse_num_agents()       { jq '[.agents[].count] | add' "$1"; }
 parse_inject_git_rules() { jq -r 'if has("inject_git_rules") then .inject_git_rules else true end' "$1"; }
 parse_title()            { jq -r '.title // empty' "$1"; }
 parse_pp_prompt()        { jq -r '.post_process.prompt // empty' "$1"; }
 parse_pp_model()         { jq -r '.post_process.model // "claude-opus-4-6"' "$1"; }
+parse_pp_max_idle()      { jq -r '.post_process.max_idle // .max_idle // 3' "$1"; }
 
 parse_agents_cfg() {
     jq -r '.driver as $dd | .agents[] | range(.count) as $i |
@@ -259,10 +261,45 @@ cat > "$TMPDIR/pp.json" <<'EOF'
 }
 EOF
 
-assert_eq "pp prompt"       "review.md"         "$(parse_pp_prompt "$TMPDIR/pp.json")"
-assert_eq "pp model"        "claude-sonnet-4-5"  "$(parse_pp_model "$TMPDIR/pp.json")"
-assert_eq "pp prompt absent" ""                  "$(parse_pp_prompt "$TMPDIR/inject_default.json")"
-assert_eq "pp model default" "claude-opus-4-6"   "$(parse_pp_model "$TMPDIR/inject_default.json")"
+assert_eq "pp prompt"           "review.md"          "$(parse_pp_prompt "$TMPDIR/pp.json")"
+assert_eq "pp model"            "claude-sonnet-4-5"  "$(parse_pp_model "$TMPDIR/pp.json")"
+assert_eq "pp max_idle default" "3"                  "$(parse_pp_max_idle "$TMPDIR/pp.json")"
+assert_eq "pp prompt absent"    ""                   "$(parse_pp_prompt "$TMPDIR/inject_default.json")"
+assert_eq "pp model default"    "claude-opus-4-6"    "$(parse_pp_model "$TMPDIR/inject_default.json")"
+assert_eq "pp max_idle absent"  "3"                  "$(parse_pp_max_idle "$TMPDIR/inject_default.json")"
+
+cat > "$TMPDIR/pp_idle.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "max_idle": 5,
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": {
+    "prompt": "review.md",
+    "model": "claude-sonnet-4-5",
+    "max_idle": 3
+  }
+}
+EOF
+
+assert_eq "pp max_idle explicit" "3" \
+    "$(parse_pp_max_idle "$TMPDIR/pp_idle.json")"
+assert_eq "top-level max_idle unchanged" "5" \
+    "$(parse_max_idle "$TMPDIR/pp_idle.json")"
+
+cat > "$TMPDIR/pp_idle_inherit.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "max_idle": 7,
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": {
+    "prompt": "review.md",
+    "model": "claude-sonnet-4-5"
+  }
+}
+EOF
+
+assert_eq "pp max_idle inherits top-level" "7" \
+    "$(parse_pp_max_idle "$TMPDIR/pp_idle_inherit.json")"
 
 # ============================================================
 echo ""
@@ -573,7 +610,8 @@ cat > "$TMPDIR/kitchen_sink.json" <<'EOF'
     "prompt": "prompts/post.md",
     "model": "claude-sonnet-4-6",
     "effort": "high",
-    "auth": "oauth"
+    "auth": "oauth",
+    "max_idle": 2
   }
 }
 EOF
@@ -684,10 +722,11 @@ assert_eq "ks12 auth_token" "\$OPENROUTER_API_KEY"        "$t"
 assert_eq "ks12 prompt"     "prompts/explore.md"          "$p"
 
 # Post-process section
-assert_eq "ks pp prompt" "prompts/post.md"         "$(parse_pp_prompt "$TMPDIR/kitchen_sink.json")"
-assert_eq "ks pp model"  "claude-sonnet-4-6"       "$(parse_pp_model "$TMPDIR/kitchen_sink.json")"
-assert_eq "ks pp effort" "high"                    "$(parse_pp_effort "$TMPDIR/kitchen_sink.json")"
-assert_eq "ks pp auth"   "oauth"                   "$(parse_pp_auth "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp prompt"   "prompts/post.md"    "$(parse_pp_prompt "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp model"    "claude-sonnet-4-6"  "$(parse_pp_model "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp effort"   "high"               "$(parse_pp_effort "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp auth"     "oauth"              "$(parse_pp_auth "$TMPDIR/kitchen_sink.json")"
+assert_eq "ks pp max_idle" "2"                  "$(parse_pp_max_idle "$TMPDIR/kitchen_sink.json")"
 
 # ============================================================
 echo ""
@@ -1149,6 +1188,41 @@ if [ -f "$_default_path" ]; then
 else
     echo "  SKIP: ~/.codex/auth.json not present on host (default path test)"
 fi
+
+# ============================================================
+echo ""
+echo "=== 34. signing_key config ==="
+
+cat > "$TMPDIR/signing.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "swarm-agent",
+    "email": "agent@swarm.local",
+    "signing_key": "/home/agent/.ssh/swarm-agent-signing"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+
+assert_eq "signing key present" "/home/agent/.ssh/swarm-agent-signing" \
+    "$(parse_signing_key "$TMPDIR/signing.json")"
+assert_eq "signing key absent" "" \
+    "$(parse_signing_key "$TMPDIR/inject_default.json")"
+
+# git_user without signing_key still works.
+cat > "$TMPDIR/nosign.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": { "name": "bot", "email": "bot@test" },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+
+assert_eq "signing key missing from git_user" "" \
+    "$(parse_signing_key "$TMPDIR/nosign.json")"
+assert_eq "git name still works" "bot" \
+    "$(parse_git_name "$TMPDIR/nosign.json")"
 
 # ============================================================
 echo ""

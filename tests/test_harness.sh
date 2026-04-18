@@ -570,7 +570,55 @@ assert_eq "backoff capped at 1800" "1800" "$(simulate_backoff 10)"
 
 # ============================================================
 echo ""
-echo "=== 12. Push safety net — unpushed commit detection ==="
+echo "=== 12. SSH signing config ==="
+
+# shellcheck source=../lib/signing.sh
+source "$TESTS_DIR/../lib/signing.sh"
+
+# Exercises configure_git_signing from lib/signing.sh against
+# a sandboxed $HOME so --global writes land in a scratch dir
+# instead of the tester's real ~/.gitconfig.
+run_signing_config() {
+    local create_key="$1"
+    local sandbox="$TMPDIR/sign-sandbox-$$-${RANDOM}"
+    local key_path="$sandbox/signing_key"
+    mkdir -p "$sandbox"
+
+    if [ "$create_key" = "true" ]; then
+        touch "$key_path"
+    fi
+
+    HOME="$sandbox" configure_git_signing "$key_path"
+
+    local format gpgsign
+    format=$(HOME="$sandbox" git config --global --get gpg.format \
+        2>/dev/null || echo "none")
+    gpgsign=$(HOME="$sandbox" git config --global --get commit.gpgsign)
+    echo "${format}|${gpgsign}"
+    rm -rf "$sandbox"
+}
+
+assert_eq "signing key present -> ssh signing" \
+    "ssh|true" \
+    "$(run_signing_config true)"
+assert_eq "signing key absent -> gpgsign false" \
+    "none|false" \
+    "$(run_signing_config false)"
+
+# Defaults to /etc/swarm/signing_key when called with no arg;
+# verify by pointing HOME at a sandbox where that path doesn't
+# exist and expecting the "absent" branch.
+default_path_sandbox="$TMPDIR/sign-default-$$-${RANDOM}"
+mkdir -p "$default_path_sandbox"
+HOME="$default_path_sandbox" configure_git_signing
+assert_eq "default key path absent -> gpgsign false" \
+    "false" \
+    "$(HOME="$default_path_sandbox" git config --global --get commit.gpgsign)"
+rm -rf "$default_path_sandbox"
+
+# ============================================================
+echo ""
+echo "=== 13. Push safety net — unpushed commit detection ==="
 
 # Create a bare repo and a working clone to simulate the
 # harness post-session state where an agent committed locally

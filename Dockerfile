@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     jq \
     sudo \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Claude Code refuses --dangerously-skip-permissions as root.
@@ -56,6 +57,7 @@ RUN git config --global --add safe.directory '*' \
     && git config --global protocol.file.allow always
 
 COPY --chmod=755 lib/harness.sh /harness.sh
+COPY --chmod=755 lib/signing.sh /signing.sh
 COPY --chmod=755 lib/activity-filter.sh /activity-filter.sh
 COPY --chmod=644 lib/agent-system-prompt.md /agent-system-prompt.md
 COPY --chmod=644 VERSION /swarm-version

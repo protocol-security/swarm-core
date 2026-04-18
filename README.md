@@ -94,7 +94,8 @@ Place a `swarm.json` in your repo root:
   ],
   "post_process": {
     "prompt": "prompts/review.md",
-    "model": "claude-opus-4-6"
+    "model": "claude-opus-4-6",
+    "max_idle": 2
   }
 }
 ```

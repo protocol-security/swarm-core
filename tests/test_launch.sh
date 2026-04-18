@@ -40,6 +40,7 @@ parse_pp_model()    { jq -r '.post_process.model // "claude-opus-4-6"' "$1"; }
 parse_pp_base_url() { jq -r '.post_process.base_url // empty' "$1"; }
 parse_pp_api_key()  { jq -r '.post_process.api_key // empty' "$1"; }
 parse_pp_effort()   { jq -r '.post_process.effort // empty' "$1"; }
+parse_pp_max_idle() { jq -r '.post_process.max_idle // .max_idle // 3' "$1"; }
 
 parse_agents_cfg() {
     jq -r '.tag as $dt | .driver as $dd | .agents[] | range(.count) as $i |
@@ -157,10 +158,11 @@ cat > "$TMPDIR/pp_full.json" <<'EOF'
 }
 EOF
 
-assert_eq "pp prompt"   "review.md"           "$(parse_pp_prompt "$TMPDIR/pp_full.json")"
-assert_eq "pp model"    "claude-sonnet-4-5"    "$(parse_pp_model "$TMPDIR/pp_full.json")"
-assert_eq "pp base_url" "https://example.com"  "$(parse_pp_base_url "$TMPDIR/pp_full.json")"
-assert_eq "pp api_key"  "sk-pp-test"           "$(parse_pp_api_key "$TMPDIR/pp_full.json")"
+assert_eq "pp prompt"           "review.md"           "$(parse_pp_prompt "$TMPDIR/pp_full.json")"
+assert_eq "pp model"            "claude-sonnet-4-5"   "$(parse_pp_model "$TMPDIR/pp_full.json")"
+assert_eq "pp base_url"         "https://example.com" "$(parse_pp_base_url "$TMPDIR/pp_full.json")"
+assert_eq "pp api_key"          "sk-pp-test"          "$(parse_pp_api_key "$TMPDIR/pp_full.json")"
+assert_eq "pp max_idle default" "3"                   "$(parse_pp_max_idle "$TMPDIR/pp_full.json")"
 
 cat > "$TMPDIR/pp_minimal.json" <<'EOF'
 {
@@ -170,15 +172,41 @@ cat > "$TMPDIR/pp_minimal.json" <<'EOF'
 }
 EOF
 
-assert_eq "pp model default"    "claude-opus-4-6" "$(parse_pp_model "$TMPDIR/pp_minimal.json")"
+assert_eq "pp model default"    "claude-opus-4-6"  "$(parse_pp_model "$TMPDIR/pp_minimal.json")"
 assert_eq "pp base_url empty"   ""                 "$(parse_pp_base_url "$TMPDIR/pp_minimal.json")"
 assert_eq "pp api_key empty"    ""                 "$(parse_pp_api_key "$TMPDIR/pp_minimal.json")"
+assert_eq "pp max_idle minimal" "3"                "$(parse_pp_max_idle "$TMPDIR/pp_minimal.json")"
+
+cat > "$TMPDIR/pp_idle.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "max_idle": 5,
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": { "prompt": "review.md", "max_idle": 3 }
+}
+EOF
+
+assert_eq "pp max_idle explicit" "3" \
+    "$(parse_pp_max_idle "$TMPDIR/pp_idle.json")"
+
+cat > "$TMPDIR/pp_idle_inherit.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "max_idle": 7,
+  "agents": [{ "count": 1, "model": "m" }],
+  "post_process": { "prompt": "review.md" }
+}
+EOF
+
+assert_eq "pp max_idle inherits top-level" "7" \
+    "$(parse_pp_max_idle "$TMPDIR/pp_idle_inherit.json")"
 
 cat > "$TMPDIR/no_pp.json" <<'EOF'
 { "prompt": "p.md", "agents": [{ "count": 1, "model": "m" }] }
 EOF
 
-assert_eq "no pp prompt" "" "$(parse_pp_prompt "$TMPDIR/no_pp.json")"
+assert_eq "no pp prompt"   ""  "$(parse_pp_prompt "$TMPDIR/no_pp.json")"
+assert_eq "no pp max_idle" "3" "$(parse_pp_max_idle "$TMPDIR/no_pp.json")"
 
 # ============================================================
 echo ""
@@ -1012,7 +1040,10 @@ pp_ensure_bare_repo() {
 _pp_repo="$TMPDIR/pp-src-repo"
 mkdir -p "$_pp_repo"
 git -C "$_pp_repo" init -q
-git -C "$_pp_repo" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
+git -C "$_pp_repo" \
+    -c user.name="test" -c user.email="test@test" \
+    -c commit.gpgsign=false \
+    commit --allow-empty -m "init" -q
 
 _pp_bare="$TMPDIR/pp-bare-test.git"
 
@@ -1042,7 +1073,10 @@ echo "=== 35. Bare repo is world-writable after creation ==="
 _wr_repo="$TMPDIR/wr-src-repo"
 mkdir -p "$_wr_repo"
 git -C "$_wr_repo" init -q
-git -C "$_wr_repo" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
+git -C "$_wr_repo" \
+    -c user.name="test" -c user.email="test@test" \
+    -c commit.gpgsign=false \
+    commit --allow-empty -m "init" -q
 
 _wr_bare="$TMPDIR/wr-bare-test.git"
 rm -rf "$_wr_bare"
@@ -1071,6 +1105,131 @@ _wr_pack_w=$(echo "$_wr_pack_perms" | grep -c 'w.$' || true)
 assert_eq "bare repo objects/pack/ is world-writable" "1" "$_wr_pack_w"
 
 rm -rf "$_wr_repo" "$_wr_bare"
+
+# ============================================================
+echo ""
+echo "=== 36. signing_key resolution ==="
+
+# Mirrors the signing-key resolution block in launch.sh.
+# Prints the resolved `-v` args (empty when no key configured),
+# returns 1 with an ERROR line on a missing file.
+resolve_signing_key_args() {
+    local cfg="$1"
+    local key
+    key=$(jq -r '.git_user.signing_key // empty' "$cfg")
+    key="$(expand_env_ref "$key")"
+    [ -z "$key" ] && return 0
+    key="${key/#\~/$HOME}"
+    if [ ! -f "$key" ]; then
+        echo "ERROR: signing key not found: $key" >&2
+        return 1
+    fi
+    printf -- '-v %s:/etc/swarm/signing_key:ro' "$key"
+}
+
+# No signing_key configured -> empty args.
+cat > "$TMPDIR/sign_none.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": { "name": "bot", "email": "bot@test" },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+assert_eq "no signing_key -> no args" "" \
+    "$(resolve_signing_key_args "$TMPDIR/sign_none.json")"
+
+# Literal path to existing file -> expanded args.
+_sk_dir="$TMPDIR/sk-$$"
+mkdir -p "$_sk_dir"
+touch "$_sk_dir/key"
+cat > "$TMPDIR/sign_literal.json" <<EOF
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "bot", "email": "bot@test",
+    "signing_key": "$_sk_dir/key"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+assert_eq "literal signing_key -> v args" \
+    "-v $_sk_dir/key:/etc/swarm/signing_key:ro" \
+    "$(resolve_signing_key_args "$TMPDIR/sign_literal.json")"
+
+# $VAR reference with var set -> env value expanded.
+SWARM_SK_TEST="$_sk_dir/key"
+cat > "$TMPDIR/sign_envref.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "bot", "email": "bot@test",
+    "signing_key": "$SWARM_SK_TEST"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+assert_eq "env-ref signing_key -> expanded args" \
+    "-v $_sk_dir/key:/etc/swarm/signing_key:ro" \
+    "$(resolve_signing_key_args "$TMPDIR/sign_envref.json")"
+
+# $VAR reference unset -> no args (no silent default fallback).
+unset SWARM_SK_MISSING 2>/dev/null || true
+cat > "$TMPDIR/sign_envref_missing.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "bot", "email": "bot@test",
+    "signing_key": "$SWARM_SK_MISSING"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+assert_eq "unset env-ref signing_key -> no args" "" \
+    "$(resolve_signing_key_args "$TMPDIR/sign_envref_missing.json")"
+
+# Tilde-prefixed path -> $HOME expanded.
+_sk_home="$TMPDIR/sk-home-$$"
+mkdir -p "$_sk_home/.ssh"
+touch "$_sk_home/.ssh/key"
+cat > "$TMPDIR/sign_tilde.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "bot", "email": "bot@test",
+    "signing_key": "~/.ssh/key"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+assert_eq "tilde signing_key -> HOME expanded" \
+    "-v $_sk_home/.ssh/key:/etc/swarm/signing_key:ro" \
+    "$(HOME="$_sk_home" resolve_signing_key_args "$TMPDIR/sign_tilde.json")"
+
+# Missing file -> error on stderr, non-zero return.
+cat > "$TMPDIR/sign_missing.json" <<EOF
+{
+  "prompt": "p.md",
+  "git_user": {
+    "name": "bot", "email": "bot@test",
+    "signing_key": "$TMPDIR/does-not-exist"
+  },
+  "agents": [{ "count": 1, "model": "m" }]
+}
+EOF
+_missing_err=$(resolve_signing_key_args "$TMPDIR/sign_missing.json" 2>&1 \
+    >/dev/null || true)
+_missing_has_err=$(echo "$_missing_err" \
+    | grep -c "ERROR: signing key not found" || true)
+assert_eq "missing signing_key -> error line" "1" "$_missing_has_err"
+
+if resolve_signing_key_args "$TMPDIR/sign_missing.json" >/dev/null 2>&1; then
+    _missing_rc="zero"
+else
+    _missing_rc="nonzero"
+fi
+assert_eq "missing signing_key -> non-zero exit" "nonzero" "$_missing_rc"
+
+rm -rf "$_sk_dir" "$_sk_home"
 
 # ============================================================
 echo ""
