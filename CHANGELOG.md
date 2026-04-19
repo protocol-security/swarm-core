@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.20.2 — 2026-04-19
+
+- **Preserve agent work across session-end rebase.** The push path
+  in `lib/harness.sh` now runs `git -c rebase.autoStash=true pull
+  --rebase` instead of the bare form.  Without autoStash, `git pull
+  --rebase` refuses outright on a dirty working tree ("cannot pull
+  with rebase: You have unstaged changes"), the three-attempt retry
+  loop burns through all its tries without pushing, and the
+  subsequent between-session `git reset --hard origin/agent-work`
+  silently erases whatever in-flight edits, untracked scratch
+  files, or dirty submodule pointers the agent left behind.
+  autoStash stashes, rebases, and reapplies transparently, scoped
+  via `git -c` so no container-level config is touched.  The push
+  path also logs `git status --porcelain=v1` once before the retry
+  loop so operators can audit the exact uncommitted state at
+  session end.
+
+- **Reap driver process groups so the agent pipeline can drain.**
+  Agent CLIs (codex, claude, gemini) routinely spawn helper
+  subprocesses (MCP servers, reasoning workers, IPC brokers) that
+  inherit stdout.  When the CLI's main process exits without
+  waiting for those children, the children keep the pipe to `tee`
+  open, `tee` never sees EOF, and the downstream
+  `| /activity-filter.sh` pipeline wedges indefinitely — the
+  harness blocks on the pipe and no progress is made until the
+  container is externally killed.  A new shared helper
+  `_run_reaped` in `lib/drivers/_common.sh` puts each CLI in its
+  own process group via `setsid` and SIGKILLs the group after
+  `wait`, so surviving descendants release their FDs and the
+  pipeline observes EOF normally.  `claude-code.sh`, `codex-cli.sh`
+  and `gemini-cli.sh` now route through the helper; `fake.sh`
+  emits synthetic JSONL inline and is intentionally exempt.
+
 ## 0.20.1 — 2026-04-17
 
 - **Preserve environment across `sudo` in setup hook.** The
