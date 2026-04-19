@@ -821,30 +821,76 @@ assert_eq "setup hook does not drop -E" \
 
 # ============================================================
 echo ""
-echo "=== 17. Session-end push preserves dirty tree ==="
+echo "=== 17. Session-end push cleans dirty tree before rebase ==="
 
 # Session-end push path rebases onto origin/agent-work before pushing.
-# When the agent leaves the working tree dirty (untracked files,
-# dirty submodules, unstaged edits), `git pull --rebase` must run
-# with autoStash enabled or it refuses outright and the retry loop
-# wastes all three attempts. Pin both the positive invocation and
-# the absence of the bare (regression) form against the harness
-# source -- same grep-based technique as §16.
+# v0.20.2 used `rebase.autoStash=true`, but autoStash has three
+# documented gaps that caused real push failures on multi-agent
+# codex-cli swarms:
+#
+#   (1) `git stash` defaults to not stashing untracked files, so
+#       `?? <path>` survives and the rebase still refuses.
+#   (2) `git stash` does NOT capture submodule pointer drift
+#       (`M <submodule>`) -- regardless of flags.  The superproject
+#       gitlink diff is invisible to stash's default traversal.
+#   (3) The auto-pop step can conflict mid-rebase on
+#       "skipped previously applied commit".
+#
+# v0.20.4 replaces autoStash with an explicit pre-stash (with
+# --include-untracked), a `submodule update --force` to clear
+# gitlink drift, and a bare `git pull --rebase` against a
+# guaranteed-clean tree.  The stash is intentionally NOT popped;
+# the next session's opening `git reset --hard origin/agent-work`
+# wipes whatever was in-flight.
+#
+# Pin all four invariants against the harness source -- grep
+# technique from §16.
 
-assert_eq "push-path pull uses rebase.autoStash=true" \
+# (1) Positive: explicit pre-stash including untracked files.
+assert_eq "push path pre-stashes with --include-untracked" \
     "1" \
-    "$(grep -cE '^[[:space:]]*if git -c rebase\.autoStash=true pull --rebase origin agent-work' "$HARNESS_FILE")"
+    "$(grep -cE '^[[:space:]]*git stash push --include-untracked --quiet' "$HARNESS_FILE")"
 
-assert_eq "push-path pull is not the bare form" \
+# (2) Positive: submodule update --init --recursive --force after stash.
+assert_eq "push path force-syncs submodules" \
+    "1" \
+    "$(grep -cE '^[[:space:]]*git submodule update --init --recursive --force' "$HARNESS_FILE")"
+
+# (3) Positive: bare rebase -- pre-stashed state guarantees a clean tree.
+assert_eq "push-path pull is the bare form (no autoStash)" \
+    "1" \
+    "$(grep -cE '^[[:space:]]*if git pull --rebase origin agent-work' "$HARNESS_FILE")"
+
+# (4) Negative: autoStash must NOT come back as an invocation -- it
+# was the root cause of the failures this patch closes.  Match the
+# actual `git -c rebase.autoStash=...` pattern so mentions in
+# comments or commit-message-style prose don't trip the regression
+# test.
+assert_eq "push-path pull does not re-introduce autoStash" \
     "0" \
-    "$(grep -cE '^[[:space:]]*if git pull --rebase origin agent-work' "$HARNESS_FILE" || true)"
+    "$(grep -cE 'git -c rebase\.autoStash' "$HARNESS_FILE" || true)"
 
-# Operators need to see what uncommitted state the agent left behind
-# so dirty-tree surprises are auditable. The harness logs
-# `git status --porcelain=v1` once before the retry loop.
+# (5) Negative: the pre-push stash is intentionally NOT popped in the
+# push block -- pop is where autoStash failed, and the next session's
+# hard-reset wipes the tree anyway.  The regex allows `git stash pop`
+# to appear elsewhere in the file for legitimate reasons if ever added.
+assert_eq "push path does not pop the pre-push stash" \
+    "0" \
+    "$(awk '/^[[:space:]]*hlog "found unpushed local commits/,/^[[:space:]]*fi$/' "$HARNESS_FILE" | grep -cE 'git stash pop' || true)"
+
+# (6) Observability: operators need to see what uncommitted state the
+# agent left behind, so the harness logs `git status --porcelain=v1`
+# once before the stash.  Auditable dirty-tree surprises.
 assert_eq "push path logs porcelain status for observability" \
     "1" \
     "$(grep -cE 'git status --porcelain=v1' "$HARNESS_FILE")"
+
+# (7) Observability: when the stash actually captures something, the
+# stash ref is logged so an operator can `git stash show stash@{N}`
+# from the reflog.
+assert_eq "push path logs the pre-push stash ref when created" \
+    "1" \
+    "$(grep -cE 'pre-push stash: ' "$HARNESS_FILE")"
 
 # ============================================================
 echo ""

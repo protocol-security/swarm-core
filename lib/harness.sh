@@ -422,15 +422,73 @@ while true; do
     if [ "$_local_head" != "$AFTER" ] \
             && [ "$(git rev-list origin/agent-work..HEAD 2>/dev/null | wc -l)" -gt 0 ]; then
         hlog "found unpushed local commits, pushing"
-        # Log the uncommitted footprint the agent left behind (untracked
-        # files, dirty submodules, unstaged edits). autoStash below will
-        # preserve it across the rebase, but this line lets operators
-        # see exactly what was at risk if anything downstream fails.
+
+        # The session-end push rebases local commits onto origin/agent-work.
+        # Any dirty state in the working tree -- tracked mods, deletions,
+        # untracked scratch files, submodule pointer drift -- has to be
+        # cleaned out first or `git pull --rebase` will refuse with
+        # "cannot rebase: You have unstaged changes" and the retry loop
+        # burns through all three attempts without pushing.
+        #
+        # v0.20.2 tried to solve this with `rebase.autoStash=true`, but
+        # autoStash has three documented gaps that caused real push
+        # failures in production (see CHANGELOG 0.20.4 for the
+        # failure-mode breakdown):
+        #
+        #   (1) `git stash` defaults to NOT stashing untracked files, so
+        #       autoStash silently leaves `?? <path>` in the worktree and
+        #       the rebase refuses anyway.
+        #
+        #   (2) `git stash` does NOT capture submodule pointer drift
+        #       (`M <submodule>`) regardless of flags -- the superproject
+        #       gitlink diff is simply not visible to stash's default
+        #       traversal.  Agents that run `cargo build`, `git worktree
+        #       add`, or anything else that bumps a submodule HEAD trip
+        #       this every time.
+        #
+        #   (3) When autoStash does create a stash, the auto-pop after a
+        #       successful rebase is best-effort per git's own docs and
+        #       was observed failing mid-rebase on
+        #       "skipped previously applied commit" in multi-agent swarms.
+        #
+        # The fix below sidesteps all three by doing the stash explicitly
+        # (with --include-untracked), re-syncing submodule HEADs to what
+        # the superproject expects, and running the rebase against a
+        # guaranteed-clean tree.  We intentionally do NOT pop the stash:
+        # the next loop iteration runs `git reset --hard origin/agent-work`
+        # at the top, which would wipe a popped stash anyway, so popping
+        # here buys nothing while reintroducing the autoStash-pop conflict
+        # class.  The stash stays in reflog (`git stash list`) for
+        # forensic recovery if an operator needs to inspect what was
+        # in-flight.
         _dirty=$(git status --porcelain=v1 2>/dev/null)
         if [ -n "$_dirty" ]; then
             hlog "dirty worktree before push:"
             printf '%s\n' "$_dirty" | hlog_pipe
+
+            # (a) Stash everything `git stash` can reach -- tracked mods,
+            # tracked deletions, staged changes, untracked files.
+            # Count-before / count-after is the bulletproof way to
+            # detect "nothing was actually stashed" (all of the dirty
+            # state was submodule drift, which stash silently ignores).
+            _stash_before=$(git stash list 2>/dev/null | wc -l)
+            git stash push --include-untracked --quiet \
+                -m "claude-swarm pre-push $(date -u +%s)" 2>&1 | hlog_pipe || true
+            _stash_after=$(git stash list 2>/dev/null | wc -l)
+            if [ "$_stash_after" -gt "$_stash_before" ]; then
+                hlog "pre-push stash: $(git rev-parse 'stash@{0}' 2>/dev/null)"
+            fi
+
+            # (b) Re-sync submodule HEADs to the superproject's expected
+            # gitlink.  This is what clears `M <submodule>` from status
+            # -- stash cannot reach it.  --force is safe here because
+            # dirty submodule state is ephemeral build output; anything
+            # worth preserving should already be in a commit or in the
+            # stash above.  `|| true` so a submodule-less repo or a
+            # transient network hiccup doesn't abort the push path.
+            git submodule update --init --recursive --force 2>&1 | hlog_pipe || true
         fi
+
         _push_ok=false
         for _try in 1 2 3; do
             sleep $((RANDOM % 5 + 1))
@@ -438,13 +496,11 @@ while true; do
             if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
                 git rebase --abort 2>/dev/null || rm -rf .git/rebase-merge .git/rebase-apply
             fi
-            # autoStash preserves untracked files and dirty submodules
-            # across the rebase. Without it, `git pull --rebase` aborts
-            # with "cannot pull with rebase: You have unstaged changes"
-            # whenever the agent session ends on a non-clean tree -- a
-            # common state, since agents routinely leave scratch files
-            # and in-progress edits outside staged commits.
-            if git -c rebase.autoStash=true pull --rebase origin agent-work 2>&1 | hlog_pipe \
+            # Bare `git pull --rebase` -- the pre-stash + submodule-sync
+            # above guarantees a clean tree, so there is nothing for the
+            # rebase to trip on and autoStash is intentionally absent
+            # (see the comment block above for why).
+            if git pull --rebase origin agent-work 2>&1 | hlog_pipe \
                     && git push origin agent-work 2>&1 | hlog_pipe; then
                 _push_ok=true
                 break
