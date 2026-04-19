@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.20.4 — 2026-04-19
+
+- **Close the remaining session-end rebase failures on dirty trees.**
+  The `rebase.autoStash=true` fix shipped in 0.20.2 closed the common
+  unstaged-tracked-file case but left three adjacent failure modes
+  unhandled, each empirically observed across an 11-event,
+  2-hour / 4-agent codex-cli run on a repo with a submodule:
+  (1) `git stash` defaults to **not** stashing untracked files, so
+  `?? <path>` survives the autoStash and the rebase still refuses;
+  (2) `git stash` does **not** capture submodule pointer drift
+  (`M <submodule>`) regardless of flags -- the superproject gitlink
+  diff is invisible to stash's default traversal, which causes every
+  `cargo build` / `git worktree add` / etc. that bumps a submodule's
+  HEAD to block the next push; (3) when autoStash *does* create a
+  stash, the auto-pop after a successful rebase is best-effort per
+  git's own docs and was observed failing mid-rebase on "skipped
+  previously applied commit" in multi-agent swarms where commit
+  histories overlap.  The push block now sidesteps all three: it
+  runs an explicit `git stash push --include-untracked` to capture
+  tracked + untracked state, then `git submodule update --init
+  --recursive --force` to re-sync submodule HEADs to what the
+  superproject expects (the one thing stash cannot reach), then a
+  bare `git pull --rebase` against a guaranteed-clean tree.  The
+  pre-push stash is intentionally **not** popped -- the next
+  session's opening `git reset --hard origin/agent-work` wipes
+  whatever was in-flight anyway, and not popping removes the entire
+  autoStash-pop conflict class.  The stash stays in the reflog
+  (`git stash list` / `git stash show stash@{N}`) for forensic
+  recovery.  `tests/test_harness.sh` §17 now pins seven invariants
+  against the harness source: pre-stash with `--include-untracked`,
+  submodule force-sync, bare rebase, absence of `git -c
+  rebase.autoStash`, absence of `git stash pop` inside the push
+  block, porcelain status logging, and stash-ref logging.  Credit
+  to the operator who ran the 2h / 4-agent codex-cli smoke on a
+  superproject-with-submodule repo and filed the bug report with
+  raw harness logs and the empirical failure-mode breakdown that
+  made this fix straightforward to scope.
+
 ## 0.20.3 — 2026-04-19
 
 - **Tolerate missing `stdbuf`/`setsid` on macOS CI runners.** The
