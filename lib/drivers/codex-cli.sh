@@ -36,15 +36,17 @@ agent_run() {
         effort_args=(-c "model_reasoning_effort=\"${CODEX_EFFORT}\"")
     fi
 
-    codex exec \
+    # _run_reaped puts codex in its own process group and SIGKILLs
+    # the group after codex exits, so surviving children (MCP
+    # servers, reasoning workers) can't keep the downstream
+    # activity-filter pipeline blocked by holding stdout.
+    _run_reaped "$logfile" codex exec \
         --dangerously-bypass-approvals-and-sandbox \
         -m "$model" \
         --json \
         --skip-git-repo-check \
         "${effort_args[@]+"${effort_args[@]}"}" \
-        "$prompt_text" \
-        2>"${logfile}.err" \
-        | stdbuf -oL tee "$logfile"
+        "$prompt_text"
 }
 
 # Write agent-specific settings and authenticate.

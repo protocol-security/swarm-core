@@ -28,13 +28,15 @@ agent_run() {
         cp "$append_file" /workspace/GEMINI.md 2>/dev/null || true
     fi
 
-    gemini \
+    # _run_reaped puts gemini in its own process group and SIGKILLs
+    # the group after the main process exits, so any helper
+    # subprocesses that inherit stdout can't keep the downstream
+    # activity-filter pipeline blocked.
+    _run_reaped "$logfile" gemini \
         -p "$prompt_text" \
         -m "$model" \
         -y \
-        --output-format stream-json \
-        2>"${logfile}.err" \
-        | stdbuf -oL tee "$logfile"
+        --output-format stream-json
 }
 
 # Write agent-specific settings files into the workspace.
