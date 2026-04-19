@@ -801,6 +801,26 @@ assert_eq "none post-merge: .claude/ re-removed" "false" \
 
 # ============================================================
 echo ""
+echo "=== 16. Setup hook preserves env through sudo ==="
+
+# The setup hook runs as root via `sudo -E` so the container env
+# (including anything passed via `docker_args -e`) crosses the
+# sudo boundary into setup.sh. Default Debian sudoers' env_reset
+# otherwise strips everything except PATH, so dropping -E would
+# silently break any setup script that reads env vars. Pin the
+# exact invocation against the harness source.
+HARNESS_FILE="$TESTS_DIR/../lib/harness.sh"
+
+assert_eq "setup hook uses sudo -E" \
+    "1" \
+    "$(grep -cE '^[[:space:]]*sudo -E bash "\$SWARM_SETUP"' "$HARNESS_FILE")"
+
+assert_eq "setup hook does not drop -E" \
+    "0" \
+    "$(grep -cE '^[[:space:]]*sudo bash "\$SWARM_SETUP"' "$HARNESS_FILE" || true)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
