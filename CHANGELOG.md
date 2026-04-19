@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.20.3 — 2026-04-19
+
+- **Tolerate missing `stdbuf`/`setsid` on macOS CI runners.** The
+  `_run_reaped` helper introduced in 0.20.2 unconditionally piped
+  through `stdbuf -oL tee` and launched the CLI under `setsid`,
+  which broke `./tests/test.sh --unit` on the macOS GitHub Action
+  with "stdbuf: command not found" -- both are GNU utilities
+  (coreutils / util-linux) shipped with the production
+  `debian:bookworm-slim` container but absent from stock macOS.
+  `_run_reaped` now probes for each tool: missing `stdbuf` falls
+  back to bare `tee` (matching the pattern `fake.sh` already
+  uses), missing `setsid` runs the CLI in-line without the
+  group-kill (the zombie-reaping protection is only meaningful
+  inside the production container where `setsid` is always
+  present, so the in-line fallback is unit-test scaffolding
+  rather than a degraded production path).  §39's behavioural
+  block skips with a `SKIP` notice when either tool is
+  unavailable; the 7 structural grep pins still run on every
+  host so the bug cannot silently regress in source.
+
 ## 0.20.2 — 2026-04-19
 
 - **Preserve agent work across session-end rebase.** The push path
