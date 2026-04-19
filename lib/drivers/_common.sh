@@ -46,8 +46,13 @@ _run_reaped() {
     {
         setsid "$@" 2>"${logfile}.err" &
         local _cmd_pid=$!
-        wait "$_cmd_pid"
-        local _ec=$?
+        # `wait || _ec=$?` keeps set -e from firing on a non-zero
+        # CLI exit, which would terminate the subshell before the
+        # group kill below runs and leave surviving descendants
+        # holding the tee pipe open (empirically observed on
+        # exit-42 in unit tests).
+        local _ec=0
+        wait "$_cmd_pid" || _ec=$?
         # Group kill: -$_cmd_pid targets the process group whose
         # leader is the setsid'd command.  Swallow errors -- an
         # already-empty group is fine.

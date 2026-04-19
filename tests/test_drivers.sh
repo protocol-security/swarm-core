@@ -1277,6 +1277,72 @@ assert_eq "codex agent2 per-agent driver"    "claude-code" "$LINE2"
 
 # ============================================================
 echo ""
+echo "=== 39. _common.sh — process group reaper (_run_reaped) ==="
+
+# Agent CLIs commonly spawn helper children (MCP servers, reasoning
+# workers, IPC brokers) that inherit stdout. When the CLI's main
+# process exits without waiting, those children hold the pipe to
+# the downstream activity-filter, which wedges the harness until
+# the container is externally killed. _run_reaped puts each CLI in
+# its own process group so the harness can SIGKILL the group after
+# the main process exits, releasing surviving descendants' FDs.
+
+source "$DRIVERS_DIR/_common.sh"
+
+# --- Structural: helper is defined and callable.
+assert_eq "_run_reaped is defined" "function" \
+    "$(type -t _run_reaped || echo missing)"
+
+# --- Structural: real-CLI drivers call the helper, and the bare
+# `| stdbuf -oL tee "$logfile"` form is absent. Pin both per
+# driver. fake.sh is intentionally exempt -- it emits synthetic
+# JSONL inline and never spawns external children.
+for _drv in claude-code codex-cli gemini-cli; do
+    assert_eq "$_drv: adopts _run_reaped" "1" \
+        "$(grep -cE '^[[:space:]]*_run_reaped "\$logfile"' "$DRIVERS_DIR/$_drv.sh")"
+    assert_eq "$_drv: drops bare tee pipe" "0" \
+        "$(grep -cE 'stdbuf -oL tee "\$logfile"' "$DRIVERS_DIR/$_drv.sh" || true)"
+done
+
+# --- Behavioral: fake CLI that forks a surviving child and exits.
+# Without reaping, the child's stdout FD would keep the pipeline
+# blocked. With reaping, the pipeline drains immediately and the
+# CLI's exit code is propagated.  Sleep duration is deliberately
+# oddball so the cleanup pkill can match it unambiguously.
+cat > "$TMPDIR/reap_cli.sh" <<'CLI'
+#!/bin/bash
+echo "$2"
+( sleep 31337 ) &
+exit "${1:-0}"
+CLI
+chmod +x "$TMPDIR/reap_cli.sh"
+
+# Exit-0 path: pipeline drains, stdout tee'd, exit code preserved.
+_reap_start=$(date +%s)
+_run_reaped "$TMPDIR/reap_zero.log" "$TMPDIR/reap_cli.sh" 0 "hello from CLI"
+_reap_ec=$?
+_reap_elapsed=$(($(date +%s) - _reap_start))
+
+assert_eq "reaped run: exit code preserved (0)" "0" "$_reap_ec"
+assert_eq "reaped run: stdout captured in logfile" "hello from CLI" \
+    "$(cat "$TMPDIR/reap_zero.log")"
+# Generous bound for slow CI; actual drain is ~10-50ms.
+assert_eq "reaped run: drains despite surviving child" "true" \
+    "$([ "$_reap_elapsed" -lt 5 ] && echo true || echo false)"
+
+# Non-zero exit path: exit code is likewise propagated.
+# `|| _reap_ec=$?` keeps set -e from aborting the test script.
+_reap_ec=0
+_run_reaped "$TMPDIR/reap_nz.log" "$TMPDIR/reap_cli.sh" 42 "boom" \
+    || _reap_ec=$?
+assert_eq "reaped run: non-zero exit preserved (42)" "42" "$_reap_ec"
+
+# --- Defensive cleanup: if the kill-group regressed, sweep any
+# orphan `sleep 31337` so CI doesn't leak processes.
+pkill -f 'sleep 31337' 2>/dev/null || true
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
