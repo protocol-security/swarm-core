@@ -41,8 +41,31 @@
 # EXIT STATUS:
 #   Returns the CLI's wait-reported exit code (128+N for signalled
 #   exits), preserved across the tee pipe via PIPESTATUS.
+#
+# PORTABILITY:
+#   `stdbuf` and `setsid` are GNU utilities (coreutils / util-linux).
+#   They're always present on the production target (the
+#   debian:bookworm-slim container), but stock macOS ships neither.
+#   To keep unit tests runnable on non-Linux CI runners we degrade
+#   gracefully when either is absent:
+#     - no stdbuf -> bare `tee` (same fallback `fake.sh` uses);
+#     - no setsid -> run the command in-line and skip the group kill.
+#   The setsid fallback effectively disables the zombie-reaping
+#   protection, but that protection only matters inside the
+#   production container where setsid is always available.
 _run_reaped() {
     local logfile="$1"; shift
+
+    local _tee_cmd=(tee "$logfile")
+    if command -v stdbuf >/dev/null 2>&1; then
+        _tee_cmd=(stdbuf -oL tee "$logfile")
+    fi
+
+    if ! command -v setsid >/dev/null 2>&1; then
+        "$@" 2>"${logfile}.err" | "${_tee_cmd[@]}"
+        return "${PIPESTATUS[0]}"
+    fi
+
     {
         setsid "$@" 2>"${logfile}.err" &
         local _cmd_pid=$!
@@ -58,7 +81,7 @@ _run_reaped() {
         # already-empty group is fine.
         kill -KILL -- "-$_cmd_pid" 2>/dev/null || true
         exit "$_ec"
-    } | stdbuf -oL tee "$logfile"
+    } | "${_tee_cmd[@]}"
     return "${PIPESTATUS[0]}"
 }
 

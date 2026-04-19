@@ -1304,42 +1304,52 @@ for _drv in claude-code codex-cli gemini-cli; do
         "$(grep -cE 'stdbuf -oL tee "\$logfile"' "$DRIVERS_DIR/$_drv.sh" || true)"
 done
 
-# --- Behavioral: fake CLI that forks a surviving child and exits.
-# Without reaping, the child's stdout FD would keep the pipeline
-# blocked. With reaping, the pipeline drains immediately and the
-# CLI's exit code is propagated.  Sleep duration is deliberately
-# oddball so the cleanup pkill can match it unambiguously.
-cat > "$TMPDIR/reap_cli.sh" <<'CLI'
+# --- Behavioral tests below require `setsid` and `stdbuf` on the
+# host (both GNU utilities).  Stock macOS ships neither, so skip
+# these assertions when they're missing -- the structural pins
+# above are what prevent the bug from silently regressing; the
+# behavioural tests just provide end-to-end confidence on Linux CI.
+if ! command -v setsid >/dev/null 2>&1 \
+        || ! command -v stdbuf >/dev/null 2>&1; then
+    echo "  SKIP: reaper behavioural tests (setsid/stdbuf unavailable)"
+else
+    # --- Behavioral: fake CLI that forks a surviving child and exits.
+    # Without reaping, the child's stdout FD would keep the pipeline
+    # blocked. With reaping, the pipeline drains immediately and the
+    # CLI's exit code is propagated.  Sleep duration is deliberately
+    # oddball so the cleanup pkill can match it unambiguously.
+    cat > "$TMPDIR/reap_cli.sh" <<'CLI'
 #!/bin/bash
 echo "$2"
 ( sleep 31337 ) &
 exit "${1:-0}"
 CLI
-chmod +x "$TMPDIR/reap_cli.sh"
+    chmod +x "$TMPDIR/reap_cli.sh"
 
-# Exit-0 path: pipeline drains, stdout tee'd, exit code preserved.
-_reap_start=$(date +%s)
-_run_reaped "$TMPDIR/reap_zero.log" "$TMPDIR/reap_cli.sh" 0 "hello from CLI"
-_reap_ec=$?
-_reap_elapsed=$(($(date +%s) - _reap_start))
+    # Exit-0 path: pipeline drains, stdout tee'd, exit code preserved.
+    _reap_start=$(date +%s)
+    _run_reaped "$TMPDIR/reap_zero.log" "$TMPDIR/reap_cli.sh" 0 "hello from CLI"
+    _reap_ec=$?
+    _reap_elapsed=$(($(date +%s) - _reap_start))
 
-assert_eq "reaped run: exit code preserved (0)" "0" "$_reap_ec"
-assert_eq "reaped run: stdout captured in logfile" "hello from CLI" \
-    "$(cat "$TMPDIR/reap_zero.log")"
-# Generous bound for slow CI; actual drain is ~10-50ms.
-assert_eq "reaped run: drains despite surviving child" "true" \
-    "$([ "$_reap_elapsed" -lt 5 ] && echo true || echo false)"
+    assert_eq "reaped run: exit code preserved (0)" "0" "$_reap_ec"
+    assert_eq "reaped run: stdout captured in logfile" "hello from CLI" \
+        "$(cat "$TMPDIR/reap_zero.log")"
+    # Generous bound for slow CI; actual drain is ~10-50ms.
+    assert_eq "reaped run: drains despite surviving child" "true" \
+        "$([ "$_reap_elapsed" -lt 5 ] && echo true || echo false)"
 
-# Non-zero exit path: exit code is likewise propagated.
-# `|| _reap_ec=$?` keeps set -e from aborting the test script.
-_reap_ec=0
-_run_reaped "$TMPDIR/reap_nz.log" "$TMPDIR/reap_cli.sh" 42 "boom" \
-    || _reap_ec=$?
-assert_eq "reaped run: non-zero exit preserved (42)" "42" "$_reap_ec"
+    # Non-zero exit path: exit code is likewise propagated.
+    # `|| _reap_ec=$?` keeps set -e from aborting the test script.
+    _reap_ec=0
+    _run_reaped "$TMPDIR/reap_nz.log" "$TMPDIR/reap_cli.sh" 42 "boom" \
+        || _reap_ec=$?
+    assert_eq "reaped run: non-zero exit preserved (42)" "42" "$_reap_ec"
 
-# --- Defensive cleanup: if the kill-group regressed, sweep any
-# orphan `sleep 31337` so CI doesn't leak processes.
-pkill -f 'sleep 31337' 2>/dev/null || true
+    # --- Defensive cleanup: if the kill-group regressed, sweep any
+    # orphan `sleep 31337` so CI doesn't leak processes.
+    pkill -f 'sleep 31337' 2>/dev/null || true
+fi
 
 # ============================================================
 echo ""
