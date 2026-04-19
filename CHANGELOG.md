@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.20.1 — 2026-04-17
+
+- **Preserve environment across `sudo` in setup hook.** The
+  container's setup script now runs via `sudo -E bash`,
+  preserving the container environment across the `sudo`
+  boundary.  Previously default Debian sudoers' `env_reset`
+  stripped everything except `PATH`, so any variable set in
+  the container -- including vars passed via `docker_args
+  -e` and swarm-owned vars like `AGENT_ID`, `SWARM_MODEL`,
+  and `MAX_IDLE` -- was silently dropped before `setup.sh`
+  saw it.  Combined with docker's `-e VAR` inheritance form
+  (no `=value` inherits from the caller's env, omits when
+  unset), a single swarmfile can now be parameterized from
+  host env at launch time: `"docker_args": ["-e",
+  "TARGET_REPO"]` paired with `TARGET_REPO=...
+  ./launch.sh start`.
+
 ## 0.20.0 — 2026-04-17
 
 - **Optional SSH commit signing.** New `git_user.signing_key`
