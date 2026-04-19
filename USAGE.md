@@ -103,6 +103,39 @@ This is useful for mounting the host Docker socket, adding
 devices or capabilities, setting network modes, or passing any
 other flags that the harness does not manage natively.
 
+Docker's `-e` flag accepts two forms: `-e VAR=value` passes a
+literal value, and `-e VAR` (no `=value`) inherits `VAR` from the
+caller's environment at `launch.sh start` time, omitting it
+entirely when unset.  This lets you parameterize a single
+swarmfile with host env without templating:
+
+```json
+{
+  "setup": "scripts/setup.sh",
+  "docker_args": ["-e", "TARGET_REPO", "-e", "TARGET_REV"]
+}
+```
+
+```bash
+TARGET_REPO=git@github.com:org/repo.git TARGET_REV=abc123 \
+    ./launch.sh start
+```
+
+### Setup hook
+
+The `setup` script runs once at container startup as root, via
+`sudo -E bash <setup>`, so the full container environment crosses
+the `sudo` boundary into the script.  Any variable passed through
+`docker_args -e` (plus the swarm's own env like `AGENT_ID`,
+`SWARM_MODEL`, `MAX_IDLE`, ...) is visible inside `setup.sh`.
+Default Debian sudoers would otherwise strip everything except
+`PATH` via `env_reset`, so `-E` is what makes the example above
+work end-to-end.
+
+After `setup.sh` returns, the harness reclaims ownership of
+`/workspace` so subsequent agent runs can modify the tree as the
+non-root `agent` user.
+
 ### Commit signing
 
 Set `git_user.signing_key` to an SSH private-key path on the
