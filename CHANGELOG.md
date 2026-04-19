@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.20.3 — 2026-04-19
+
+- **Tolerate missing `stdbuf`/`setsid` on macOS CI runners.** The
+  `_run_reaped` helper introduced in 0.20.2 unconditionally piped
+  through `stdbuf -oL tee` and launched the CLI under `setsid`,
+  which broke `./tests/test.sh --unit` on the macOS GitHub Action
+  with "stdbuf: command not found" -- both are GNU utilities
+  (coreutils / util-linux) shipped with the production
+  `debian:bookworm-slim` container but absent from stock macOS.
+  `_run_reaped` now probes for each tool: missing `stdbuf` falls
+  back to bare `tee` (matching the pattern `fake.sh` already
+  uses), missing `setsid` runs the CLI in-line without the
+  group-kill (the zombie-reaping protection is only meaningful
+  inside the production container where `setsid` is always
+  present, so the in-line fallback is unit-test scaffolding
+  rather than a degraded production path).  §39's behavioural
+  block skips with a `SKIP` notice when either tool is
+  unavailable; the 7 structural grep pins still run on every
+  host so the bug cannot silently regress in source.
+
+## 0.20.2 — 2026-04-19
+
+- **Preserve agent work across session-end rebase.** The push path
+  in `lib/harness.sh` now runs `git -c rebase.autoStash=true pull
+  --rebase` instead of the bare form.  Without autoStash, `git pull
+  --rebase` refuses outright on a dirty working tree ("cannot pull
+  with rebase: You have unstaged changes"), the three-attempt retry
+  loop burns through all its tries without pushing, and the
+  subsequent between-session `git reset --hard origin/agent-work`
+  silently erases whatever in-flight edits, untracked scratch
+  files, or dirty submodule pointers the agent left behind.
+  autoStash stashes, rebases, and reapplies transparently, scoped
+  via `git -c` so no container-level config is touched.  The push
+  path also logs `git status --porcelain=v1` once before the retry
+  loop so operators can audit the exact uncommitted state at
+  session end.
+
+- **Reap driver process groups so the agent pipeline can drain.**
+  Agent CLIs (codex, claude, gemini) routinely spawn helper
+  subprocesses (MCP servers, reasoning workers, IPC brokers) that
+  inherit stdout.  When the CLI's main process exits without
+  waiting for those children, the children keep the pipe to `tee`
+  open, `tee` never sees EOF, and the downstream
+  `| /activity-filter.sh` pipeline wedges indefinitely — the
+  harness blocks on the pipe and no progress is made until the
+  container is externally killed.  A new shared helper
+  `_run_reaped` in `lib/drivers/_common.sh` puts each CLI in its
+  own process group via `setsid` and SIGKILLs the group after
+  `wait`, so surviving descendants release their FDs and the
+  pipeline observes EOF normally.  `claude-code.sh`, `codex-cli.sh`
+  and `gemini-cli.sh` now route through the helper; `fake.sh`
+  emits synthetic JSONL inline and is intentionally exempt.
+
 ## 0.20.1 — 2026-04-17
 
 - **Preserve environment across `sudo` in setup hook.** The

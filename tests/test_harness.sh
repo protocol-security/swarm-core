@@ -821,6 +821,33 @@ assert_eq "setup hook does not drop -E" \
 
 # ============================================================
 echo ""
+echo "=== 17. Session-end push preserves dirty tree ==="
+
+# Session-end push path rebases onto origin/agent-work before pushing.
+# When the agent leaves the working tree dirty (untracked files,
+# dirty submodules, unstaged edits), `git pull --rebase` must run
+# with autoStash enabled or it refuses outright and the retry loop
+# wastes all three attempts. Pin both the positive invocation and
+# the absence of the bare (regression) form against the harness
+# source -- same grep-based technique as §16.
+
+assert_eq "push-path pull uses rebase.autoStash=true" \
+    "1" \
+    "$(grep -cE '^[[:space:]]*if git -c rebase\.autoStash=true pull --rebase origin agent-work' "$HARNESS_FILE")"
+
+assert_eq "push-path pull is not the bare form" \
+    "0" \
+    "$(grep -cE '^[[:space:]]*if git pull --rebase origin agent-work' "$HARNESS_FILE" || true)"
+
+# Operators need to see what uncommitted state the agent left behind
+# so dirty-tree surprises are auditable. The harness logs
+# `git status --porcelain=v1` once before the retry loop.
+assert_eq "push path logs porcelain status for observability" \
+    "1" \
+    "$(grep -cE 'git status --porcelain=v1' "$HARNESS_FILE")"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

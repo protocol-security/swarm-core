@@ -422,6 +422,15 @@ while true; do
     if [ "$_local_head" != "$AFTER" ] \
             && [ "$(git rev-list origin/agent-work..HEAD 2>/dev/null | wc -l)" -gt 0 ]; then
         hlog "found unpushed local commits, pushing"
+        # Log the uncommitted footprint the agent left behind (untracked
+        # files, dirty submodules, unstaged edits). autoStash below will
+        # preserve it across the rebase, but this line lets operators
+        # see exactly what was at risk if anything downstream fails.
+        _dirty=$(git status --porcelain=v1 2>/dev/null)
+        if [ -n "$_dirty" ]; then
+            hlog "dirty worktree before push:"
+            printf '%s\n' "$_dirty" | hlog_pipe
+        fi
         _push_ok=false
         for _try in 1 2 3; do
             sleep $((RANDOM % 5 + 1))
@@ -429,7 +438,13 @@ while true; do
             if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
                 git rebase --abort 2>/dev/null || rm -rf .git/rebase-merge .git/rebase-apply
             fi
-            if git pull --rebase origin agent-work 2>&1 | hlog_pipe \
+            # autoStash preserves untracked files and dirty submodules
+            # across the rebase. Without it, `git pull --rebase` aborts
+            # with "cannot pull with rebase: You have unstaged changes"
+            # whenever the agent session ends on a non-clean tree -- a
+            # common state, since agents routinely leave scratch files
+            # and in-progress edits outside staged commits.
+            if git -c rebase.autoStash=true pull --rebase origin agent-work 2>&1 | hlog_pipe \
                     && git push origin agent-work 2>&1 | hlog_pipe; then
                 _push_ok=true
                 break

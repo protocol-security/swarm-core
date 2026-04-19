@@ -32,8 +32,11 @@ agent_run() {
         args+=(--append-system-prompt-file "$append_file")
     fi
 
-    claude "${args[@]}" 2>"${logfile}.err" \
-        | stdbuf -oL tee "$logfile"
+    # _run_reaped puts claude in its own process group and SIGKILLs
+    # the group after the main process exits, so any MCP or helper
+    # subprocesses that inherit stdout can't keep the downstream
+    # activity-filter pipeline blocked.
+    _run_reaped "$logfile" claude "${args[@]}"
 }
 
 # Write agent-specific settings files into the workspace.
