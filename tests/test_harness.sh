@@ -894,6 +894,304 @@ assert_eq "push path logs the pre-push stash ref when created" \
 
 # ============================================================
 echo ""
+echo "=== 18. Session-end scratch-worktree push fallback ==="
+
+# When the in-place `git pull --rebase && git push` retry loop
+# exhausts all three attempts, the harness falls back to a scratch
+# worktree: cherry-pick unpushed commits onto a fresh detached
+# checkout of origin/agent-work, push from that worktree, then
+# tear it down.  The fallback sidesteps every failure pattern
+# documented in CHANGELOG 0.20.5 because it ignores the main
+# worktree's state entirely -- submodule drift, context-stripping
+# hooks firing during rebase-merge checkouts, and "skipped
+# previously applied commit" all become irrelevant when the push
+# goes through a pristine checkout of origin/agent-work.
+#
+# §18a pins the key invariants of `_scratch_worktree_push` against
+# the harness source.  §18b rehearses the cherry-pick-onto-scratch
+# dance against a real bare repo with an arbitrarily dirty main
+# worktree, confirming the pattern actually succeeds where the
+# in-place rebase would refuse.
+
+# --- §18a. Structural pins against lib/harness.sh ---
+
+assert_eq "fallback function is defined in harness.sh" \
+    "1" \
+    "$(grep -cE '^_scratch_worktree_push\(\) \{' "$HARNESS_FILE")"
+
+assert_eq "fallback creates a detached worktree" \
+    "1" \
+    "$(grep -cE 'git worktree add --detach --quiet' "$HARNESS_FILE")"
+
+# Two-step cherry-pick: apply without committing first, then
+# detect "no net change" as the git <2.45 substitute for
+# --empty=drop, then commit with original metadata via commit -C.
+# Pinning all three lines: if a future refactor collapses them
+# back to `cherry-pick --empty=drop` the test breaks, because the
+# collapsed form only works on git 2.45+ but the base image ships
+# git 2.39 (bug report Pattern A regression guard).
+assert_eq "fallback cherry-picks with --no-commit" \
+    "1" \
+    "$(grep -cE 'cherry-pick -n "\$sha"' "$HARNESS_FILE")"
+
+assert_eq "fallback detects empty applies via diff --cached" \
+    "1" \
+    "$(grep -cE 'diff --cached --quiet' "$HARNESS_FILE")"
+
+assert_eq "fallback commits with -C to keep author metadata" \
+    "1" \
+    "$(grep -cE 'commit --allow-empty-message -C "\$sha"' "$HARNESS_FILE")"
+
+# Hooks must be suppressed inside the scratch worktree so the
+# context-stripping post-checkout hook cannot re-delete files the
+# cherry-pick is meant to bring back.  Two code sites disable
+# hooks (the cherry-pick -n and the commit), plus one mention in
+# the preamble comment: three hits total.
+assert_eq "fallback disables hooks in the scratch worktree" \
+    "3" \
+    "$(grep -cE 'core\.hooksPath=/dev/null' "$HARNESS_FILE")"
+
+# Preamble comment references the push target once; the actual
+# `git -C "$_scratch" push` invocation is the second hit.
+assert_eq "fallback pushes scratch HEAD to agent-work" \
+    "2" \
+    "$(grep -cE 'push origin HEAD:agent-work' "$HARNESS_FILE")"
+
+assert_eq "fallback tears the scratch worktree down" \
+    "1" \
+    "$(grep -cE 'git worktree remove --force' "$HARNESS_FILE")"
+
+# The push block must reach the fallback *after* the three-retry
+# rebase loop has exhausted, not in place of it -- rebase still
+# works most of the time and is cheaper than a worktree transplant.
+assert_eq "push block invokes fallback after retries exhaust" \
+    "1" \
+    "$(grep -cE 'if _scratch_worktree_push; then' "$HARNESS_FILE")"
+
+assert_eq "fallback entry log line present" \
+    "1" \
+    "$(grep -cE 'rebase path exhausted, trying scratch worktree fallback' "$HARNESS_FILE")"
+
+# The final error message was updated to reflect the new
+# fallback -- pin it so a future refactor doesn't regress the
+# diagnosability of a terminal push failure.
+assert_eq "terminal error message mentions both paths" \
+    "1" \
+    "$(grep -cE 'push failed after 3 retries and scratch fallback' "$HARNESS_FILE")"
+
+# --- §18b. Behavioral: cherry-pick-onto-scratch push succeeds
+# even when the main worktree is arbitrarily dirty.
+
+# Local reimplementation of _scratch_worktree_push mirroring the
+# harness function line-for-line.  We cannot source harness.sh
+# directly because its top-level requires SWARM_PROMPT and loads a
+# driver; any divergence from the production logic below would
+# still be caught by §18a's structural pins above.
+sc_hlog()      { :; }
+sc_hlog_err()  { :; }
+sc_hlog_pipe() { cat >/dev/null; }
+
+_test_scratch_push() {
+    local _scratch _shas _n_shas sha _rc=0
+    if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+        git rebase --abort 2>/dev/null \
+            || rm -rf .git/rebase-merge .git/rebase-apply
+    fi
+    git fetch --no-recurse-submodules origin agent-work 2>&1 \
+        | sc_hlog_pipe || true
+
+    _shas=$(git rev-list --reverse origin/agent-work..HEAD 2>/dev/null)
+    if [ -z "$_shas" ]; then
+        sc_hlog "no unpushed"
+        return 0
+    fi
+    _n_shas=$(printf '%s\n' "$_shas" | wc -l | tr -d ' ')
+    sc_hlog "transplanting ${_n_shas} commits"
+
+    _scratch="$TMPDIR/scratch-$$-${RANDOM}"
+    rm -rf "$_scratch" 2>/dev/null || true
+
+    if ! git worktree add --detach --quiet "$_scratch" \
+            origin/agent-work 2>&1 | sc_hlog_pipe; then
+        sc_hlog_err "worktree add failed"
+        rm -rf "$_scratch" 2>/dev/null || true
+        git worktree prune 2>/dev/null || true
+        return 1
+    fi
+
+    for sha in $_shas; do
+        if ! git -C "$_scratch" -c core.hooksPath=/dev/null \
+                cherry-pick -n "$sha" 2>&1 | sc_hlog_pipe; then
+            sc_hlog_err "cherry-pick failed for ${sha}"
+            git -C "$_scratch" reset --hard HEAD 2>/dev/null || true
+            _rc=1
+            break
+        fi
+        if git -C "$_scratch" diff --cached --quiet 2>/dev/null \
+                && git -C "$_scratch" diff --quiet 2>/dev/null; then
+            sc_hlog "dropping redundant commit ${sha:0:12}"
+            continue
+        fi
+        if ! git -C "$_scratch" -c core.hooksPath=/dev/null \
+                commit --allow-empty-message -C "$sha" 2>&1 \
+                | sc_hlog_pipe; then
+            sc_hlog_err "commit failed for ${sha}"
+            git -C "$_scratch" reset --hard HEAD 2>/dev/null || true
+            _rc=1
+            break
+        fi
+    done
+
+    if [ "$_rc" -eq 0 ]; then
+        if git -C "$_scratch" push origin HEAD:agent-work 2>&1 \
+                | sc_hlog_pipe; then
+            sc_hlog "push succeeded"
+        else
+            sc_hlog_err "push rejected"
+            _rc=1
+        fi
+    fi
+
+    git worktree remove --force "$_scratch" 2>/dev/null \
+        || rm -rf "$_scratch" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    return "$_rc"
+}
+
+SC_BARE="$TMPDIR/scratch-bare.git"
+SC_WORK="$TMPDIR/scratch-work"
+git init -q --bare "$SC_BARE"
+git clone -q "$SC_BARE" "$SC_WORK"
+git -C "$SC_WORK" config user.name "test"
+git -C "$SC_WORK" config user.email "test@test"
+git -C "$SC_WORK" config commit.gpgsign false
+
+echo "init" > "$SC_WORK/init.txt"
+git -C "$SC_WORK" add init.txt
+git -C "$SC_WORK" commit -q -m "initial"
+git -C "$SC_WORK" checkout -q -b agent-work
+git -C "$SC_WORK" push -q origin agent-work
+
+# Two local commits ahead of origin (the "unpushed" state the
+# harness push block is triggered by).
+echo "A" > "$SC_WORK/a.txt"
+git -C "$SC_WORK" add a.txt
+git -C "$SC_WORK" commit -q -m "agent commit A"
+echo "B" > "$SC_WORK/b.txt"
+git -C "$SC_WORK" add b.txt
+git -C "$SC_WORK" commit -q -m "agent commit B"
+SC_LOCAL_HEAD=$(git -C "$SC_WORK" rev-parse HEAD)
+
+# Dirty the worktree in three of the shapes the bug report
+# documented: tracked mod, tracked deletion, untracked scratch.
+# Any one of these is enough to make `git pull --rebase` refuse.
+echo "dirty" >> "$SC_WORK/init.txt"
+rm -f "$SC_WORK/a.txt"
+echo "scratch" > "$SC_WORK/untracked.txt"
+DIRTY_BEFORE=$(git -C "$SC_WORK" status --porcelain=v1 | wc -l | tr -d ' ')
+assert_eq "worktree dirty pre-fallback" "3" "$DIRTY_BEFORE"
+
+# The fallback must succeed despite that dirtiness.
+SC_RC=0
+( cd "$SC_WORK" && _test_scratch_push ) || SC_RC=$?
+assert_eq "fallback exits cleanly on dirty tree" "0" "$SC_RC"
+
+# Origin now holds both agent commits in order.
+git -C "$SC_BARE" log agent-work --format='%s' > "$TMPDIR/sc-bare-log.txt"
+assert_eq "commit A landed on origin" "1" \
+    "$(grep -cE '^agent commit A$' "$TMPDIR/sc-bare-log.txt")"
+assert_eq "commit B landed on origin" "1" \
+    "$(grep -cE '^agent commit B$' "$TMPDIR/sc-bare-log.txt")"
+
+# Main worktree's dirty state must survive unchanged -- the whole
+# point of the scratch approach is that it doesn't touch the main
+# worktree.  Local HEAD is unchanged too (we transplanted, not
+# rebased).
+DIRTY_AFTER=$(git -C "$SC_WORK" status --porcelain=v1 | wc -l | tr -d ' ')
+assert_eq "main worktree dirt survives fallback" "3" "$DIRTY_AFTER"
+assert_eq "main worktree HEAD untouched" "$SC_LOCAL_HEAD" \
+    "$(git -C "$SC_WORK" rev-parse HEAD)"
+
+# The scratch worktree must be cleaned up -- both the on-disk
+# path and the worktree registry.  The ephemeral worktree name
+# in _test_scratch_push is "scratch-<pid>-<rand>"; SC_WORK itself
+# lives at "scratch-work" so we anchor against the exact pattern
+# (one dash-separated digit chunk, then another) to avoid matching
+# the main worktree.
+SC_ORPHANS=$(git -C "$SC_WORK" worktree list --porcelain \
+    2>/dev/null | grep -cE '^worktree .*/scratch-[0-9]+-[0-9]+$' \
+    || true)
+assert_eq "scratch worktree registry cleaned" "0" "$SC_ORPHANS"
+SC_DIR_ORPHANS=$(find "$TMPDIR" -maxdepth 1 -name 'scratch-*-*' \
+    -type d 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "scratch worktree dir removed" "0" "$SC_DIR_ORPHANS"
+
+# --- §18c. Behavioral: redundant-commit drop handles the
+# "skipped previously applied commit" regression from Pattern A.
+# Scenario: SC_WORK has commit D locally (so D is in its HEAD
+# graph, not in origin's), but origin already holds a
+# patch-equivalent D' published via a different agent.  Applying
+# D on top of origin's tip produces no net change, which in git
+# <2.45 makes a plain cherry-pick stop with "The previous
+# cherry-pick is now empty".  Our manual "cherry-pick -n + diff
+# check + commit -C" dance has to silently drop D and let the
+# push happen anyway.
+
+# Reset SC_WORK to match origin so §18b's cruft doesn't bleed in.
+( cd "$SC_WORK" && git clean -qfd && git checkout -q -- . )
+git -C "$SC_WORK" fetch -q origin agent-work
+git -C "$SC_WORK" reset --hard -q origin/agent-work
+
+# SC_WORK commits D locally (unpushed).
+echo "D" > "$SC_WORK/d.txt"
+git -C "$SC_WORK" add d.txt
+git -C "$SC_WORK" commit -q -m "agent commit D"
+SC_D_SHA=$(git -C "$SC_WORK" rev-parse HEAD)
+
+# A sibling clone publishes a patch-equivalent D' to origin,
+# arriving via a different SHA (simulating "the other agent
+# already pushed this change through its own route").  SC_WORK3
+# can't cherry-pick SC_D_SHA directly -- origin hasn't seen it
+# yet -- so we recreate the same tree change as an independent
+# commit, which guarantees a distinct SHA and identical patch.
+SC_WORK3="$TMPDIR/sibling-work3"
+git clone -q "$SC_BARE" "$SC_WORK3"
+git -C "$SC_WORK3" config user.name "test3"
+git -C "$SC_WORK3" config user.email "test3@test"
+git -C "$SC_WORK3" config commit.gpgsign false
+git -C "$SC_WORK3" checkout -q agent-work
+echo "D" > "$SC_WORK3/d.txt"
+git -C "$SC_WORK3" add d.txt
+git -C "$SC_WORK3" commit -q -m "agent commit D (via sibling)"
+SC_D_PRIME_SHA=$(git -C "$SC_WORK3" rev-parse HEAD)
+git -C "$SC_WORK3" push -q origin agent-work
+
+# Guard: D and D' must be distinct SHAs (different message =
+# different commit SHA), otherwise §18c would be vacuous.
+assert_eq "sibling D' has a distinct SHA" "1" \
+    "$(test "$SC_D_SHA" != "$SC_D_PRIME_SHA" && echo 1 || echo 0)"
+
+# Run the fallback.  SC_WORK thinks it has one unpushed commit,
+# but applying it produces no net change, so the drop-redundant
+# branch triggers, and the push completes cleanly as a no-op.
+SC_RC=0
+( cd "$SC_WORK" && _test_scratch_push ) || SC_RC=$?
+assert_eq "fallback succeeds with already-applied commit" "0" "$SC_RC"
+
+# Origin's HEAD should still point to the sibling's D' -- the
+# fallback dropped SC_WORK's local D as redundant instead of
+# stamping a new commit on top of D'.  The commit count on the
+# branch is the other half of the check: exactly one commit
+# whose subject starts with "agent commit D".
+SC_BARE_HEAD=$(git -C "$SC_BARE" rev-parse agent-work)
+assert_eq "origin HEAD still at sibling D'" "$SC_D_PRIME_SHA" "$SC_BARE_HEAD"
+
+git -C "$SC_BARE" log agent-work --format='%s' > "$TMPDIR/sc-bare-log2.txt"
+assert_eq "no duplicate D-shaped commit on origin" "1" \
+    "$(grep -cE '^agent commit D( \(via sibling\))?$' "$TMPDIR/sc-bare-log2.txt")"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

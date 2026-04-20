@@ -35,6 +35,9 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
 | `SWARM_TITLE` | | Dashboard title override. |
 | `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
+| `SWARM_ACTIVITY_TIMEOUT` | `0` | Seconds of logfile silence before the in-container watchdog SIGTERMs the agent CLI's process group.  `0` disables.  See [Activity watchdog](#activity-watchdog). |
+| `SWARM_ACTIVITY_POLL` | `10` | Watchdog mtime-poll interval, in seconds.  Rarely needs tuning. |
+| `SWARM_WATCHDOG_GRACE` | `10` | Grace window between watchdog SIGTERM and SIGKILL.  Rarely needs tuning. |
 
 Per-group credentials (`api_key`, `auth_token`, `base_url`)
 are set in the swarmfile.  Use `$VAR` references to pull
@@ -84,6 +87,34 @@ The backoff starts at 30 s, doubles each attempt, and caps at
 30 min per sleep.  When the cumulative wait exceeds
 `max_retry_wait`, the agent exits.  This also covers transient
 network failures.
+
+### Activity watchdog
+
+Some CLIs (observed on `codex-cli`, occasionally `claude-code`)
+can deadlock mid-request -- the process stays alive but stops
+emitting output, so the harness's post-`wait` process-group
+kill never fires and the container sits idle until an operator
+notices and runs `docker stop`.  Setting
+`SWARM_ACTIVITY_TIMEOUT` to a positive integer enables a
+watchdog inside `_run_reaped` that polls the CLI's logfile
+mtime; if the mtime doesn't advance for that many seconds the
+watchdog SIGTERMs the CLI's process group, then SIGKILLs after
+`SWARM_WATCHDOG_GRACE` seconds if the group hasn't exited.
+Default is `0` (disabled); 300-600 is a sensible starting point
+for production swarms:
+
+```bash
+SWARM_ACTIVITY_TIMEOUT=600 ./launch.sh start --dashboard
+```
+
+The watchdog's kill decision is written to the CLI's stderr
+file (`/workspace/*.log.err` inside the container, visible via
+`docker logs`) so an operator investigating an agent that
+exited early can tell a watchdog-killed exit from a
+crashed-on-its-own exit.  `SWARM_ACTIVITY_POLL` (default 10 s)
+tunes how often the watchdog checks mtime;
+`SWARM_WATCHDOG_GRACE` (default 10 s) tunes the SIGTERM→SIGKILL
+gap.  Both rarely need adjustment outside the test suite.
 
 ### Extra Docker arguments
 

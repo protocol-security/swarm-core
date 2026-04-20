@@ -88,6 +88,143 @@ hlog_pipe() {
     done
 }
 
+# Ship unpushed local commits via a scratch worktree.
+#
+# Fallback for when the in-place `git pull --rebase && git push`
+# retry loop in the session-end push block has exhausted all three
+# tries.  A scratch worktree doesn't need the main worktree to be
+# clean -- it's a fresh detached checkout of origin/agent-work that
+# we cherry-pick onto, then push from.
+#
+# WHY THIS EXISTS:
+#   Empirically (see CHANGELOG 0.20.5 for the full trace) the
+#   in-place rebase path fails on real-world codex-cli swarms that
+#   run against a superproject with submodules and context-stripping
+#   git hooks: stash + submodule-sync put the tree clean, but by the
+#   time the rebase's pre-apply check runs, something -- most likely
+#   the post-checkout hook firing during the rebase's internal
+#   checkouts under .git/rebase-merge/ -- has re-dirtied the tree.
+#   The commits are already in .git/objects; we don't need the main
+#   worktree at all to ship them upstream.
+#
+#   The agents themselves already use this pattern manually inside a
+#   session (e.g. `git -C /tmp/agent1-rankpush-XYZ cherry-pick ...
+#   && git push origin HEAD:agent-work`); hoisting the same dance
+#   into the harness turns the retry loop's "fail 3 times and lose
+#   the commits" terminal state into a "one more attempt via a
+#   pristine checkout" rescue.
+#
+# WHY IT WORKS:
+#   The scratch worktree is a fresh detached checkout of
+#   origin/agent-work (after an explicit refetch), and hooks are
+#   suppressed in it via core.hooksPath=/dev/null so the context-
+#   stripping post-checkout hook cannot re-delete files the cherry-
+#   pick is meant to bring back.  Each unpushed commit is applied
+#   via `cherry-pick -n` (no-commit); if the apply produces no net
+#   change against HEAD the commit is dropped silently (equivalent
+#   to git 2.45's `cherry-pick --empty=drop`, done by hand so we
+#   stay portable to the git 2.39 on Debian bookworm), otherwise
+#   it's committed with the original author/message via
+#   `git commit -C`.  That handles the "skipped previously applied
+#   commit" case from bug report Pattern A.  Submodules are
+#   intentionally not checked out in the scratch worktree -- the
+#   push only cares about the superproject's gitlinks, and keeping
+#   the worktree submodule-free sidesteps the submodule-drift
+#   dirtiness that tripped Pattern C.
+#
+# Returns: 0 on successful push, 1 on any failure.
+_scratch_worktree_push() {
+    local _scratch _shas _n_shas sha _rc=0
+
+    # The retry loop may have left a half-rebased state behind.
+    # Clean it up so `origin/agent-work..HEAD` below names the
+    # original local commits, not partially-applied copies.
+    if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+        git rebase --abort 2>/dev/null \
+            || rm -rf .git/rebase-merge .git/rebase-apply
+    fi
+
+    # Refetch origin/agent-work so the scratch worktree starts from
+    # the current tip.  A stale ref here would mean cherry-picking
+    # onto an older base and getting the push rejected for non-ff.
+    git fetch --no-recurse-submodules origin agent-work 2>&1 \
+        | hlog_pipe || true
+
+    _shas=$(git rev-list --reverse origin/agent-work..HEAD 2>/dev/null)
+    if [ -z "$_shas" ]; then
+        hlog "scratch push: no unpushed commits (already in sync)"
+        return 0
+    fi
+    _n_shas=$(printf '%s\n' "$_shas" | wc -l | tr -d ' ')
+    hlog "scratch push: transplanting ${_n_shas} commit(s)"
+
+    _scratch="/tmp/swarm-push-${AGENT_ID}-$$-${RANDOM}"
+    # Clean any prior path at this exact name (shouldn't exist, but
+    # `git worktree add` refuses if it does).
+    rm -rf "$_scratch" 2>/dev/null || true
+
+    if ! git worktree add --detach --quiet "$_scratch" \
+            origin/agent-work 2>&1 | hlog_pipe; then
+        hlog_err "scratch push: worktree add failed"
+        rm -rf "$_scratch" 2>/dev/null || true
+        git worktree prune 2>/dev/null || true
+        return 1
+    fi
+
+    # Cherry-pick each commit in two steps: apply-without-commit,
+    # then commit preserving the original metadata.  This lets us
+    # detect commits that produce no net change (because an
+    # equivalent patch is already upstream via a different SHA --
+    # the "skipped previously applied commit" case from bug report
+    # Pattern A) and silently drop them.  `cherry-pick --empty=drop`
+    # would be the direct equivalent but wasn't added until git
+    # 2.45; Debian bookworm (the base image) ships git 2.39, so we
+    # do the drop manually and stay portable to git >= 2.12.
+    for sha in $_shas; do
+        if ! git -C "$_scratch" -c core.hooksPath=/dev/null \
+                cherry-pick -n "$sha" 2>&1 | hlog_pipe; then
+            hlog_err "scratch push: cherry-pick failed for ${sha}"
+            git -C "$_scratch" reset --hard HEAD 2>/dev/null || true
+            _rc=1
+            break
+        fi
+        # If the apply produced no net change (both the index and
+        # the worktree match HEAD), this commit's diff is already
+        # present upstream -- drop it silently and move on.
+        if git -C "$_scratch" diff --cached --quiet 2>/dev/null \
+                && git -C "$_scratch" diff --quiet 2>/dev/null; then
+            hlog "scratch push: dropping redundant commit ${sha:0:12}"
+            continue
+        fi
+        if ! git -C "$_scratch" -c core.hooksPath=/dev/null \
+                commit --allow-empty-message -C "$sha" 2>&1 \
+                | hlog_pipe; then
+            hlog_err "scratch push: commit failed for ${sha}"
+            git -C "$_scratch" reset --hard HEAD 2>/dev/null || true
+            _rc=1
+            break
+        fi
+    done
+
+    if [ "$_rc" -eq 0 ]; then
+        if git -C "$_scratch" push origin HEAD:agent-work 2>&1 \
+                | hlog_pipe; then
+            hlog "scratch push: succeeded"
+        else
+            hlog_err "scratch push: push rejected"
+            _rc=1
+        fi
+    fi
+
+    # Tear down regardless of outcome so /tmp doesn't accumulate
+    # dozens of orphan worktrees across a long swarm run.
+    git worktree remove --force "$_scratch" 2>/dev/null \
+        || rm -rf "$_scratch" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+
+    return "$_rc"
+}
+
 GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-agent@swarm.local}"
 git config --global user.name "$GIT_USER_NAME"
@@ -507,11 +644,30 @@ while true; do
             fi
             hlog "push retry ${_try}/3"
         done
+
+        # Fallback: if all three in-place rebase attempts failed, ship
+        # the unpushed commits via a scratch worktree.  This path
+        # ignores the main worktree's state entirely -- it cherry-
+        # picks onto a fresh checkout of origin/agent-work, so
+        # whatever is re-dirtying the rebase (submodule drift,
+        # context-stripping hooks firing during .git/rebase-merge
+        # checkouts, a commit already upstream tripping "skipped
+        # previously applied commit") cannot affect it.  Empirically
+        # turns the 0.20.4 "100% data loss on push failure" state
+        # into "push succeeds via transplant" for every failure
+        # pattern we've observed in production.
+        if [ "$_push_ok" != true ]; then
+            hlog "rebase path exhausted, trying scratch worktree fallback"
+            if _scratch_worktree_push; then
+                _push_ok=true
+            fi
+        fi
+
         if [ "$_push_ok" = true ]; then
             git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
             AFTER=$(git rev-parse origin/agent-work)
         else
-            hlog_err "push failed after 3 retries"
+            hlog_err "push failed after 3 retries and scratch fallback"
         fi
     fi
 

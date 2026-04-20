@@ -326,6 +326,9 @@ cmd_start() {
             -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
             -e "SWARM_CFG_PROMPT=${effective_prompt}" \
             -e "SWARM_CFG_SETUP=${SWARM_SETUP}" \
+            -e "SWARM_ACTIVITY_TIMEOUT=${SWARM_ACTIVITY_TIMEOUT:-0}" \
+            -e "SWARM_ACTIVITY_POLL=${SWARM_ACTIVITY_POLL:-10}" \
+            -e "SWARM_WATCHDOG_GRACE=${SWARM_WATCHDOG_GRACE:-10}" \
             ${price_input:+-e "SWARM_PRICE_INPUT=${price_input}"} \
             ${price_output:+-e "SWARM_PRICE_OUTPUT=${price_output}"} \
             ${price_cached:+-e "SWARM_PRICE_CACHED=${price_cached}"} \
@@ -530,6 +533,9 @@ cmd_post_process() {
         -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
         -e "SWARM_CFG_PROMPT=${pp_prompt}" \
         -e "SWARM_CFG_SETUP=${SWARM_SETUP:-}" \
+        -e "SWARM_ACTIVITY_TIMEOUT=${SWARM_ACTIVITY_TIMEOUT:-0}" \
+        -e "SWARM_ACTIVITY_POLL=${SWARM_ACTIVITY_POLL:-10}" \
+        -e "SWARM_WATCHDOG_GRACE=${SWARM_WATCHDOG_GRACE:-10}" \
         ${price_input:+-e "SWARM_PRICE_INPUT=${price_input}"} \
         ${price_output:+-e "SWARM_PRICE_OUTPUT=${price_output}"} \
         ${price_cached:+-e "SWARM_PRICE_CACHED=${price_cached}"} \
