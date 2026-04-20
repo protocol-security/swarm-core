@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.20.5 — 2026-04-20
+
+- **Cherry-pick-onto-scratch fallback when session-end rebase
+  exhausts its retries.**  On a 12-event dirty-tree bug-report
+  run against an 0.20.4 swarm the in-place `git pull --rebase
+  && git push` path failed in 12/12 cases across three distinct
+  patterns: (A) submodule pointer drift that `git stash` cannot
+  capture (`M <submodule>` on the gitlink); (B) context-stripping
+  hooks firing during the rebase's internal checkouts under
+  `.git/rebase-merge/` re-dirtying the tree between the pre-apply
+  clean state and the rebase's own integrity check; (C) "skipped
+  previously applied commit" interactions with multi-agent swarms
+  whose commit graphs overlap.  Each ended with the three-attempt
+  retry loop burning out and the next session's opening
+  `git reset --hard origin/agent-work` erasing the in-flight
+  work.  0.20.5 adds `_scratch_worktree_push` in `lib/harness.sh`:
+  after the existing retry loop gives up, the harness fetches
+  `origin/agent-work` fresh, spins up a detached `git worktree
+  add` at that tip in `/tmp/swarm-push-<agent>-<pid>-<rand>`,
+  cherry-picks each unpushed commit via `cherry-pick -n` +
+  redundancy check + `commit --allow-empty-message -C`, pushes
+  `HEAD:agent-work` from the scratch, and tears the worktree
+  down.  Hooks are suppressed in the scratch via
+  `core.hooksPath=/dev/null` so the context-stripping post-
+  checkout hook that caused pattern B cannot re-delete files the
+  cherry-pick is meant to bring back.  Submodules are
+  deliberately not initialised in the scratch -- the push only
+  cares about the superproject's gitlinks, and a submodule-free
+  worktree sidesteps pattern A entirely.  The two-step cherry
+  pick + `commit -C` dance is a manual equivalent of git 2.45's
+  `cherry-pick --empty=drop` done by hand so it stays portable
+  to the git 2.39 on Debian bookworm (the base image); the
+  "dropping redundant commit" branch specifically handles
+  pattern C.  Behavioural coverage in `tests/test_harness.sh`
+  §18b sets up a bare + working clone with a three-shape dirty
+  tree (tracked mod, tracked deletion, untracked scratch),
+  drives the fallback, and verifies the commits land on origin
+  while the main worktree's dirty state survives untouched;
+  §18c simulates pattern A by publishing a patch-equivalent D'
+  via a sibling clone and asserts the fallback drops the local
+  D instead of stamping a duplicate on top.
+
+- **Activity watchdog inside `_run_reaped` for silent CLI
+  hangs.**  On the same bug-report run one codex-cli agent went
+  silent for 4h22m (SESSION_TIMEOUT=0 on that invocation) before
+  the operator noticed and ran `docker stop`; the CLI was alive
+  but deadlocked internally (stuck model request or blocked MCP
+  tool), so `wait "$_cmd_pid"` in `_run_reaped` never returned,
+  the post-wait group-kill never fired, and the harness sat on
+  the `| tee` pipe indefinitely.  0.20.5 adds `_reap_watchdog`
+  in `lib/drivers/_common.sh`: a sibling background process
+  polls `<logfile>`'s mtime every `$SWARM_ACTIVITY_POLL` seconds
+  (default 10), and if no advance is seen for
+  `$SWARM_ACTIVITY_TIMEOUT` seconds it SIGTERMs the CLI's
+  process group, polls for up to `$SWARM_WATCHDOG_GRACE` seconds
+  (default 10), then SIGKILLs.  The kill decision is tee'd into
+  `<logfile>.err` so operators can distinguish a watchdog-killed
+  exit from a crashed-on-its-own exit after the fact.  Opt-in
+  via `SWARM_ACTIVITY_TIMEOUT` -- 0 (the default) disables the
+  watchdog and preserves pre-0.20.5 behaviour; 300-600 is a
+  sensible starting point for production codex-cli / claude-code
+  swarms.  `SWARM_ACTIVITY_POLL` and `SWARM_WATCHDOG_GRACE` are
+  exposed primarily so the behavioural test suite can drive the
+  full escalation in ~3s rather than the production 20s floor.
+  `tests/test_drivers.sh` §40 adds 15 structural pins (mtime
+  probe with BSD fallback, SIGTERM-before-SIGKILL escalation,
+  poll-for-exit rather than fixed sleep, env-var validation,
+  watchdog backgrounding + cleanup) plus 6 behavioural
+  assertions (full-escalation path, pre-kill output preserved,
+  dormant-when-disabled, non-numeric-degrades-safely).
+
+- **Test coverage growth.**  `tests/test_harness.sh` goes from
+  124 to 147 assertions (+23 in §18); `tests/test_drivers.sh`
+  from 300 to 321 (+21 in §40).  Full `./tests/test.sh --unit`
+  runtime increases by roughly 3 s on Linux (mostly the §40b
+  watchdog escalation rehearsal), unchanged on macOS (the
+  setsid/stdbuf behavioural blocks skip cleanly).
+
 ## 0.20.4 — 2026-04-19
 
 - **Close the remaining session-end rebase failures on dirty trees.**
