@@ -163,8 +163,16 @@ _scratch_worktree_push() {
     # `git worktree add` refuses if it does).
     rm -rf "$_scratch" 2>/dev/null || true
 
-    if ! git worktree add --detach --quiet "$_scratch" \
-            origin/agent-work 2>&1 | hlog_pipe; then
+    # core.hooksPath=/dev/null is essential: `git worktree add` fires
+    # post-checkout in the new worktree, and in a linked worktree
+    # `.git` is a gitfile pointing at the superproject's worktrees
+    # dir, not a directory. Any consumer-installed post-checkout
+    # hook that references `.git/hooks/<relative-path>` therefore
+    # fails with "Not a directory" and tanks the whole worktree-add.
+    # Hooks are irrelevant for a detached scratch worktree anyway --
+    # we only use it to cherry-pick and push.
+    if ! git -c core.hooksPath=/dev/null worktree add --detach --quiet \
+            "$_scratch" origin/agent-work 2>&1 | hlog_pipe; then
         hlog_err "scratch push: worktree add failed"
         rm -rf "$_scratch" 2>/dev/null || true
         git worktree prune 2>/dev/null || true

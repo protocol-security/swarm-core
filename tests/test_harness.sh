@@ -921,7 +921,18 @@ assert_eq "fallback function is defined in harness.sh" \
 
 assert_eq "fallback creates a detached worktree" \
     "1" \
-    "$(grep -cE 'git worktree add --detach --quiet' "$HARNESS_FILE")"
+    "$(grep -cE 'worktree add --detach --quiet' "$HARNESS_FILE")"
+
+# Regression guard for the 0.20.5 "scratch push: worktree add failed"
+# bug: the `git worktree add` invocation must suppress hooks, because
+# in a linked worktree `.git` is a gitfile (not a directory), so any
+# post-checkout hook that references `.git/hooks/*` by relative path
+# fails with "Not a directory" during worktree creation. Without this
+# flag, every fallback attempt fails in consumers that install such
+# a hook (§18d exercises this end-to-end).
+assert_eq "worktree add suppresses hooks (0.20.5 regression guard)" \
+    "1" \
+    "$(grep -cE 'git -c core\.hooksPath=/dev/null worktree add' "$HARNESS_FILE")"
 
 # Two-step cherry-pick: apply without committing first, then
 # detect "no net change" as the git <2.45 substitute for
@@ -942,13 +953,14 @@ assert_eq "fallback commits with -C to keep author metadata" \
     "1" \
     "$(grep -cE 'commit --allow-empty-message -C "\$sha"' "$HARNESS_FILE")"
 
-# Hooks must be suppressed inside the scratch worktree so the
-# context-stripping post-checkout hook cannot re-delete files the
-# cherry-pick is meant to bring back.  Two code sites disable
-# hooks (the cherry-pick -n and the commit), plus one mention in
-# the preamble comment: three hits total.
+# Hooks must be suppressed at every code site where git operates
+# on the scratch worktree so the context-stripping post-checkout
+# hook cannot interfere.  Five hits total: the preamble comment,
+# the worktree-add inline comment, the `git worktree add` itself
+# (0.20.6 fix for the "worktree add failed" regression), the
+# cherry-pick -n, and the commit.
 assert_eq "fallback disables hooks in the scratch worktree" \
-    "3" \
+    "5" \
     "$(grep -cE 'core\.hooksPath=/dev/null' "$HARNESS_FILE")"
 
 # Preamble comment references the push target once; the actual
@@ -1011,8 +1023,8 @@ _test_scratch_push() {
     _scratch="$TMPDIR/scratch-$$-${RANDOM}"
     rm -rf "$_scratch" 2>/dev/null || true
 
-    if ! git worktree add --detach --quiet "$_scratch" \
-            origin/agent-work 2>&1 | sc_hlog_pipe; then
+    if ! git -c core.hooksPath=/dev/null worktree add --detach --quiet \
+            "$_scratch" origin/agent-work 2>&1 | sc_hlog_pipe; then
         sc_hlog_err "worktree add failed"
         rm -rf "$_scratch" 2>/dev/null || true
         git worktree prune 2>/dev/null || true
@@ -1189,6 +1201,83 @@ assert_eq "origin HEAD still at sibling D'" "$SC_D_PRIME_SHA" "$SC_BARE_HEAD"
 git -C "$SC_BARE" log agent-work --format='%s' > "$TMPDIR/sc-bare-log2.txt"
 assert_eq "no duplicate D-shaped commit on origin" "1" \
     "$(grep -cE '^agent commit D( \(via sibling\))?$' "$TMPDIR/sc-bare-log2.txt")"
+
+# --- §18d. Behavioral: worktree add must survive a consumer-
+# installed post-checkout hook. 0.20.5 regression: if the consumer
+# repo has a post-checkout hook that references another hook via
+# a relative path (e.g. `.git/hooks/<script>`), the reference
+# resolves against the linked worktree's gitfile `.git`, not a
+# real directory, and fails with "Not a directory". Without
+# `-c core.hooksPath=/dev/null` on the `git worktree add`, the
+# hook fires and fails the entire worktree creation, and the
+# fallback bombs with "worktree add failed".
+
+# Reset to a clean state between §18c and §18d.
+( cd "$SC_WORK" && git clean -qfd && git checkout -q -- . )
+git -C "$SC_WORK" fetch -q origin agent-work
+git -C "$SC_WORK" reset --hard -q origin/agent-work
+
+# Install a hostile post-checkout hook that references a relative
+# path under `.git/hooks/`. In the superproject this works fine
+# because `.git` is a directory; in a linked worktree `.git` is a
+# gitfile, so `.git/hooks/<anything>` errors with "Not a directory"
+# and tanks the checkout.
+cat > "$SC_WORK/.git/hooks/post-checkout" <<'HOOK'
+#!/bin/bash
+# Simulates a consumer-installed post-checkout that chains to
+# another hook via a relative path. Works in the superproject
+# (`.git` is a directory), fails in any linked worktree (`.git`
+# is a gitfile).
+.git/hooks/relative-ref-that-does-not-exist
+HOOK
+chmod +x "$SC_WORK/.git/hooks/post-checkout"
+
+# Queue one unpushed commit so the fallback has something to do.
+echo "E" > "$SC_WORK/e.txt"
+git -C "$SC_WORK" add e.txt
+git -C "$SC_WORK" commit -q -m "agent commit E"
+
+# The fallback must still succeed -- the fix suppresses hooks at
+# worktree-add time so the hostile hook never runs.
+SC_RC=0
+( cd "$SC_WORK" && _test_scratch_push ) || SC_RC=$?
+assert_eq "fallback succeeds despite hostile post-checkout hook" \
+    "0" "$SC_RC"
+
+git -C "$SC_BARE" log agent-work --format='%s' > "$TMPDIR/sc-bare-log3.txt"
+assert_eq "commit E landed on origin via hook-hostile path" "1" \
+    "$(grep -cE '^agent commit E$' "$TMPDIR/sc-bare-log3.txt")"
+
+# Negative control: with the hook-suppression flag removed, the
+# same setup must fail. This guards against a future refactor
+# that silently drops `-c core.hooksPath=/dev/null` -- the
+# structural pin above would still match a misplaced flag, but
+# this behavioral check confirms the flag is actually working.
+_test_scratch_push_no_suppress() {
+    local _scratch
+    _scratch="$TMPDIR/scratch-nosuppress-$$-${RANDOM}"
+    rm -rf "$_scratch" 2>/dev/null || true
+    if git worktree add --detach --quiet "$_scratch" \
+            origin/agent-work 2>/dev/null; then
+        rm -rf "$_scratch" 2>/dev/null || true
+        git worktree prune 2>/dev/null || true
+        return 0
+    fi
+    git worktree prune 2>/dev/null || true
+    return 1
+}
+
+# Queue another commit so the control has a fresh unpushed state.
+echo "F" > "$SC_WORK/f.txt"
+git -C "$SC_WORK" add f.txt
+git -C "$SC_WORK" commit -q -m "agent commit F"
+
+SC_RC=0
+( cd "$SC_WORK" && _test_scratch_push_no_suppress ) || SC_RC=$?
+assert_eq "negative control: plain worktree add fails under hostile hook" \
+    "1" "$SC_RC"
+
+rm -f "$SC_WORK/.git/hooks/post-checkout"
 
 # ============================================================
 echo ""
