@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.20.6 — 2026-04-21
+
+- **Fix `scratch push: worktree add failed` under consumer-
+  installed post-checkout hooks.**  0.20.5's
+  `_scratch_worktree_push` passes `-c core.hooksPath=/dev/null`
+  to the `cherry-pick` and `commit` invocations but not to the
+  preceding `git worktree add`.  That omission was benign in
+  most cases but fatal for any consumer that installs a
+  post-checkout hook referencing another hook via a relative
+  path: in a linked worktree `.git` is a gitfile (not a
+  directory), so `.git/hooks/<anything>` resolves to "Not a
+  directory" at the syscall level and the entire worktree-add
+  aborts before cherry-pick ever runs.  Observed in practice
+  as 100% fallback failure with the log line `scratch push:
+  worktree add failed` immediately followed by `push failed
+  after 3 retries and scratch fallback` -- the scratch path
+  was effectively dead on arrival for affected consumers,
+  reverting 0.20.5 to 0.20.4 behaviour (commit loss at session
+  close).
+
+  Fix: add `-c core.hooksPath=/dev/null` to the `git worktree
+  add` call in `lib/harness.sh`.  One-line code change; hooks
+  were already irrelevant in the scratch worktree.
+
+  Tests: `tests/test_harness.sh` §18a pins the flag on the
+  worktree-add site structurally and §18d exercises the
+  failure mode end-to-end -- installs a hostile post-checkout
+  hook, runs the fallback, asserts it still succeeds, then
+  repeats with a flag-free control to confirm the hostile hook
+  does break worktree-add when suppression is off.  (See
+  §18d's "negative control" assertion.)
+
 ## 0.20.5 — 2026-04-20
 
 - **Cherry-pick-onto-scratch fallback when session-end rebase
