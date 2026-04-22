@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.20.7 — 2026-04-22
+
+- **Fix: codex-cli SSE stream drops treated as unrecoverable
+  despite `max_retry_wait` being set.**  Codex CLI's own
+  reconnect budget is a hard-coded 5 attempts; after 2 of those
+  are consumed on a transient OpenAI 5xx / SSE drop it emits
+  `fatal: Reconnecting... 2/5 (stream disconnected before
+  completion: An error occurred while processing your request...
+  You can retry your request...)` and exits.  0.20.6's
+  `agent_is_retriable` for codex-cli only matched rate-limit /
+  quota wording, so the harness classified this as fatal and
+  exited the agent container immediately — bypassing the
+  backoff loop entirely even when the operator set
+  `max_retry_wait: 1800` in the swarmfile.  Observed in practice
+  as a validator container dying at T+3h15m of a 5h production
+  run on a transient network blip, leaving the swarm one role
+  short for the rest of the run.
+
+  Fix: `agent_is_retriable` in `lib/drivers/codex-cli.sh` now
+  recognises a `transient` class alongside `rate_limited`,
+  covering SSE stream drops (`stream disconnected`,
+  `Reconnecting...`), connection layer errors (`connection
+  reset|closed|refused`, `timed out`), upstream 5xx gateway
+  signals (`bad gateway`, `service unavailable`, `50[234]`),
+  and OpenAI's generic retry hint (`processing your request`).
+  Genuinely fatal conditions (invalid auth, model not found,
+  etc.) still return empty so the harness exits fast on config
+  bugs.
+
+  Tests: `tests/test_harness.sh` §14b sources the driver, feeds
+  probe strings for each pattern class, and asserts the
+  classifier returns `rate_limited` / `transient` / `""`
+  respectively.
+
+- **Fix: cherry-pick conflicts in `_scratch_worktree_push` drop
+  the agent's commits on the floor.**  0.20.6's fallback aborts
+  the cherry-pick on conflict, resets the scratch worktree, and
+  returns 1.  The local commits live on in the agent's working
+  repo, but the *next* session's opening
+  `git reset --hard origin/agent-work` erases them — the
+  hands-free recovery path assumed the next pull-rebase would
+  succeed, and when a real conflict persists across sessions it
+  does not.  Observed as 3 lost commits across a 23-transplant
+  5h production run (all were low-value journal/claim markers,
+  but the failure mode is indistinguishable from losing a
+  finding).
+
+  Fix: when the scratch transplant fails at any step
+  (cherry-pick, commit, or final push) `_scratch_worktree_push`
+  now pushes the agent's local HEAD to a salvage ref on origin
+  named `agent-parked/<agent-id>-<UTC-timestamp>` before tearing
+  down.  The parked branch holds the agent's original SHAs (not
+  the discarded cherry-pick replays), so harvest and manual
+  inspection see the exact commits the agent made.  The push
+  step proper still returns 1 — `agent-work` is not advanced,
+  which keeps dedup / fetch semantics unchanged — but the work
+  is no longer lost.  If the parking push itself fails
+  (unreachable origin, auth, etc.) the commits remain in the
+  agent's local repo, which is exactly where they started, and
+  an error is logged so the operator can investigate.
+
+  Tests: `tests/test_harness.sh` §18e stages a genuine textual
+  conflict (both-added file at identical path with incompatible
+  content), runs the fallback against a bare repo, and asserts
+  (a) the fallback returns 1, (b) exactly one
+  `agent-parked/<agent>-*` ref was created on origin, (c) its
+  tip is the original local SHA, (d) `agent-work` was not
+  advanced.  Structural pins against `lib/harness.sh` verify
+  the parking code path exists in the production function, not
+  just in the test rig.
+
 ## 0.20.6 — 2026-04-21
 
 - **Fix `scratch push: worktree add failed` under consumer-
