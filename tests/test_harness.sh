@@ -568,6 +568,56 @@ assert_eq "backoff after 2 doubles" "120" "$(simulate_backoff 2)"
 assert_eq "backoff after 3 doubles" "240" "$(simulate_backoff 3)"
 assert_eq "backoff capped at 1800" "1800" "$(simulate_backoff 10)"
 
+# --- 14b. codex-cli agent_is_retriable classification ---
+#
+# Regression guard: 0.20.6's pattern only matched rate-limit /
+# quota signals, so an SSE stream drop ("fatal: Reconnecting... N/5
+# (stream disconnected before completion)") was classified as
+# fatal and the harness exited immediately despite
+# MAX_RETRY_WAIT > 0.  0.20.7 adds a transient class covering
+# SSE/5xx/connection-reset so the backoff loop gets a chance.
+(
+    # Subshell so sourcing the driver doesn't clobber earlier
+    # assertions' shell state.
+    source "$TESTS_DIR/../lib/drivers/codex-cli.sh"
+
+    probe_retriable() {
+        local log="$TMPDIR/codex-retriable-$$-${RANDOM}.log"
+        printf '%s\n' "$1" > "$log"
+        agent_is_retriable "$log" 1
+        rm -f "$log"
+    }
+
+    # Rate-limit class (existing behaviour) stays intact.
+    assert_eq "retriable: 429 response" "rate_limited" \
+        "$(probe_retriable 'HTTP 429 Too Many Requests')"
+    assert_eq "retriable: quota exhaustion" "rate_limited" \
+        "$(probe_retriable 'You have hit your usage limit')"
+
+    # Transient class (new in 0.20.7) — each pattern is the
+    # actual wording codex-cli emits on the respective failure.
+    assert_eq "retriable: SSE stream drop" "transient" \
+        "$(probe_retriable 'fatal: Reconnecting... 2/5 (stream disconnected before completion)')"
+    assert_eq "retriable: OpenAI generic retry hint" "transient" \
+        "$(probe_retriable 'An error occurred while processing your request')"
+    assert_eq "retriable: 502 bad gateway" "transient" \
+        "$(probe_retriable 'HTTP 502 Bad Gateway')"
+    assert_eq "retriable: 503 service unavailable" "transient" \
+        "$(probe_retriable 'HTTP 503 Service Unavailable')"
+    assert_eq "retriable: connection reset" "transient" \
+        "$(probe_retriable 'connection reset by peer')"
+    assert_eq "retriable: request timeout" "transient" \
+        "$(probe_retriable 'request timed out after 60s')"
+
+    # Genuinely fatal errors must NOT be reclassified as
+    # transient.  Auth failures, model-not-found, invalid-key etc.
+    # need to fail fast so operators see the configuration bug.
+    assert_eq "non-retriable: auth error" "" \
+        "$(probe_retriable 'invalid_api_key: incorrect credentials')"
+    assert_eq "non-retriable: model not found" "" \
+        "$(probe_retriable 'model_not_found: gpt-unknown is not available')"
+)
+
 # ============================================================
 echo ""
 echo "=== 12. SSH signing config ==="
@@ -1278,6 +1328,138 @@ assert_eq "negative control: plain worktree add fails under hostile hook" \
     "1" "$SC_RC"
 
 rm -f "$SC_WORK/.git/hooks/post-checkout"
+
+# --- §18e. Behavioral: cherry-pick conflict parks the local
+# commits on origin so they are not lost.  0.20.6 regression:
+# when the scratch cherry-pick hits a real textual conflict with
+# upstream, `_scratch_worktree_push` reset the scratch, returned 1,
+# and the caller moved on — the agent's commits survived only in
+# its local repo and were erased by the next session's pre-session
+# `git reset --hard origin/agent-work`.  0.20.7 adds a salvage
+# push to `refs/heads/agent-parked/<agent>-<ts>` so the original
+# SHAs land on origin before the scratch is torn down.
+
+# Mirrors the production `_scratch_worktree_push` with the 0.20.7
+# parking step appended.  Kept in-file (rather than sourcing
+# harness.sh) for the same reason as _test_scratch_push above:
+# harness.sh's top-level needs SWARM_PROMPT and a driver.
+_test_scratch_push_with_park() {
+    local agent_id="$1"
+    local _scratch _shas _n_shas sha _rc=0
+    if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+        git rebase --abort 2>/dev/null \
+            || rm -rf .git/rebase-merge .git/rebase-apply
+    fi
+    git fetch --no-recurse-submodules origin agent-work 2>&1 \
+        | sc_hlog_pipe || true
+    _shas=$(git rev-list --reverse origin/agent-work..HEAD 2>/dev/null)
+    if [ -z "$_shas" ]; then return 0; fi
+    _n_shas=$(printf '%s\n' "$_shas" | wc -l | tr -d ' ')
+    _scratch="$TMPDIR/scratch-$$-${RANDOM}"
+    rm -rf "$_scratch" 2>/dev/null || true
+    if ! git -c core.hooksPath=/dev/null worktree add --detach --quiet \
+            "$_scratch" origin/agent-work 2>&1 | sc_hlog_pipe; then
+        rm -rf "$_scratch" 2>/dev/null || true
+        git worktree prune 2>/dev/null || true
+        return 1
+    fi
+    for sha in $_shas; do
+        if ! git -C "$_scratch" -c core.hooksPath=/dev/null \
+                cherry-pick -n "$sha" 2>&1 | sc_hlog_pipe; then
+            git -C "$_scratch" reset --hard HEAD 2>/dev/null || true
+            _rc=1; break
+        fi
+        if git -C "$_scratch" diff --cached --quiet 2>/dev/null \
+                && git -C "$_scratch" diff --quiet 2>/dev/null; then
+            continue
+        fi
+        if ! git -C "$_scratch" -c core.hooksPath=/dev/null \
+                commit --allow-empty-message -C "$sha" 2>&1 \
+                | sc_hlog_pipe; then
+            git -C "$_scratch" reset --hard HEAD 2>/dev/null || true
+            _rc=1; break
+        fi
+    done
+    if [ "$_rc" -eq 0 ]; then
+        git -C "$_scratch" push origin HEAD:agent-work 2>&1 \
+            | sc_hlog_pipe || _rc=1
+    fi
+    if [ "$_rc" -ne 0 ] && [ -n "$_shas" ]; then
+        local _park_ref
+        _park_ref="refs/heads/agent-parked/${agent_id}-$(date -u +%Y%m%dT%H%M%SZ)"
+        git push origin "HEAD:${_park_ref}" 2>&1 | sc_hlog_pipe || true
+    fi
+    git worktree remove --force "$_scratch" 2>/dev/null \
+        || rm -rf "$_scratch" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    return "$_rc"
+}
+
+# Reset SC_WORK to origin, then engineer a cherry-pick conflict:
+# local commit on file g.txt, a patch-incompatible sibling commit
+# on the same file published to origin.
+( cd "$SC_WORK" && git clean -qfd && git checkout -q -- . )
+git -C "$SC_WORK" fetch -q origin agent-work
+git -C "$SC_WORK" reset --hard -q origin/agent-work
+
+# Sibling publishes an initial g.txt first.
+SC_WORK4="$TMPDIR/sibling-work4"
+git clone -q "$SC_BARE" "$SC_WORK4"
+git -C "$SC_WORK4" config user.name "test4"
+git -C "$SC_WORK4" config user.email "test4@test"
+git -C "$SC_WORK4" config commit.gpgsign false
+git -C "$SC_WORK4" checkout -q agent-work
+printf 'upstream line 1\nupstream line 2\n' > "$SC_WORK4/g.txt"
+git -C "$SC_WORK4" add g.txt
+git -C "$SC_WORK4" commit -q -m "sibling seeds g.txt"
+git -C "$SC_WORK4" push -q origin agent-work
+
+# Local agent also creates g.txt with incompatible content, based
+# on the older origin tip (before the sibling push).  The scratch
+# worktree will fetch the fresh origin and try to cherry-pick the
+# local commit onto the sibling's tip, which fails — both sides
+# added the same file with different content ("both added" conflict).
+printf 'local line 1\nlocal line 2\n' > "$SC_WORK/g.txt"
+git -C "$SC_WORK" add g.txt
+git -C "$SC_WORK" commit -q -m "agent commit G (will conflict)"
+SC_G_SHA=$(git -C "$SC_WORK" rev-parse HEAD)
+
+# Run the fallback: cherry-pick must fail (real conflict), then
+# the parking step must push local HEAD to an agent-parked ref.
+SC_RC=0
+( cd "$SC_WORK" && _test_scratch_push_with_park "agent-99" ) \
+    || SC_RC=$?
+assert_eq "fallback returns 1 on genuine cherry-pick conflict" \
+    "1" "$SC_RC"
+
+# Origin should now have exactly one `agent-parked/agent-99-*`
+# branch, and its tip must be the local SHA that failed to apply.
+SC_PARK_REFS=$(git -C "$SC_BARE" for-each-ref \
+    --format='%(refname:short)' 'refs/heads/agent-parked/agent-99-*' \
+    | wc -l | tr -d ' ')
+assert_eq "exactly one parked ref created" "1" "$SC_PARK_REFS"
+
+SC_PARK_REF=$(git -C "$SC_BARE" for-each-ref \
+    --format='%(refname:short)' 'refs/heads/agent-parked/agent-99-*' \
+    | head -1)
+SC_PARK_HEAD=$(git -C "$SC_BARE" rev-parse "$SC_PARK_REF")
+assert_eq "parked ref tip is the agent's local SHA" \
+    "$SC_G_SHA" "$SC_PARK_HEAD"
+
+# And origin/agent-work must NOT contain the conflicting commit —
+# parking is a side-channel, the integration branch stays clean.
+git -C "$SC_BARE" log agent-work --format='%H' > "$TMPDIR/sc-bare-log4.txt"
+assert_eq "conflicting commit did not land on agent-work" \
+    "0" "$(grep -c "^${SC_G_SHA}$" "$TMPDIR/sc-bare-log4.txt")"
+
+# Structural pin: the harness function must contain the parking
+# step, not just the test's local copy.
+assert_eq "harness parks unpushed commits on transplant failure" \
+    "1" \
+    "$(grep -cE 'refs/heads/agent-parked/' "$HARNESS_FILE")"
+assert_eq "harness logs the parked ref name" \
+    "1" \
+    "$(grep -cE 'scratch push: parked .* commit\(s\) at' "$HARNESS_FILE")"
 
 # ============================================================
 echo ""

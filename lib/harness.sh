@@ -224,6 +224,24 @@ _scratch_worktree_push() {
         fi
     fi
 
+    # Salvage step: if the transplant failed (cherry-pick conflict,
+    # commit failure, or final push rejection) park the local
+    # unpushed commits on origin under `agent-parked/<agent>-<ts>`.
+    # The park ref holds the agent's original SHAs (not the replay
+    # attempts in the scratch worktree, which were reset), so
+    # harvest and manual recovery see the exact commits the agent
+    # made.  Without this, a cherry-pick conflict on the integration
+    # branch drops the agent's work on the floor.
+    if [ "$_rc" -ne 0 ] && [ -n "$_shas" ]; then
+        local _park_ref
+        _park_ref="refs/heads/agent-parked/${AGENT_ID}-$(date -u +%Y%m%dT%H%M%SZ)"
+        if git push origin "HEAD:${_park_ref}" 2>&1 | hlog_pipe; then
+            hlog "scratch push: parked ${_n_shas} commit(s) at ${_park_ref#refs/heads/}"
+        else
+            hlog_err "scratch push: parking also failed; commits remain in local repo"
+        fi
+    fi
+
     # Tear down regardless of outcome so /tmp doesn't accumulate
     # dozens of orphan worktrees across a long swarm run.
     git worktree remove --force "$_scratch" 2>/dev/null \
