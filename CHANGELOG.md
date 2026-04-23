@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.20.8 — 2026-04-23
+
+- **Fix: `harvest.sh` aborts mid-preview when `agent-work` has
+  a large commit log.**  `harvest.sh` runs under
+  `set -euo pipefail` and line 55 emits a preview of the
+  incoming commits with `echo "$COMMIT_LOG" | head -20`.  When
+  `agent-work` has more than 20 new commits and the oneline
+  log exceeds the 64 KiB kernel pipe buffer, `head` closes
+  stdin after its 20-line slice, `echo` gets SIGPIPE (exit
+  141), pipefail propagates the failure to the pipeline, and
+  `set -e` exits the script before the `... and N more`
+  overflow line can print and before the actual `git merge`
+  runs.  A user harvesting a large swarm sees the first 20
+  commits printed and an unexplained non-zero exit with no
+  merge performed.
+
+  Fix: append `|| true` to the preview pipeline, matching the
+  `grep -c . || true` idiom one line above.  Short logs render
+  unchanged; long logs now advance to the merge step.
+
+  Tests: `tests/test_harvest.sh` §6 pins the `|| true` on the
+  preview line structurally, §7 seeds 100 empty commits with
+  ~1 KiB subject padding so the oneline log exceeds the pipe
+  buffer and runs the real `harvest.sh --dry` against the
+  fixture (asserts exit 0 and the `... and 80 more` overflow
+  line), and §8 pipes a synthetic 250 KiB log through the
+  guarded and unguarded forms of the idiom to document the
+  class of bug.
+
+  Credit: Fredrik (@fredrik0x) spotted and fixed the SIGPIPE.
+
 ## 0.20.7 — 2026-04-22
 
 - **Fix: codex-cli SSE stream drops treated as unrecoverable

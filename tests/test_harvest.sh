@@ -7,7 +7,14 @@ set -euo pipefail
 PASS=0
 FAIL=0
 TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HARVEST_SH="$REPO_ROOT/harvest.sh"
+HARVEST_BARE=""
+cleanup() {
+    rm -rf "$TMPDIR"
+    [ -n "${HARVEST_BARE:-}" ] && rm -rf "$HARVEST_BARE"
+}
+trap cleanup EXIT
 
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
@@ -149,6 +156,122 @@ parse_dry_flag() {
 assert_eq "no flag"    "false" "$(parse_dry_flag)"
 assert_eq "--dry flag" "true"  "$(parse_dry_flag --dry)"
 assert_eq "other flag" "false" "$(parse_dry_flag --verbose)"
+
+# ============================================================
+echo ""
+echo "=== 6. Structural: preview pipe guarded against SIGPIPE ==="
+
+preview_line=$(grep -E 'head -20' "$HARVEST_SH" | head -1)
+assert_eq "preview line exists" \
+    "true" \
+    "$([ -n "$preview_line" ] && echo true || echo false)"
+assert_eq "preview pipe ends with || true" \
+    "true" \
+    "$(printf '%s' "$preview_line" | grep -qE '\|\|[[:space:]]*true[[:space:]]*$' \
+        && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 7. Behavioural: harvest.sh --dry survives >20 commits ==="
+
+HARVEST_PROJECT="swarmtest-harvest-sigpipe-$$"
+HARVEST_WORK="$TMPDIR/$HARVEST_PROJECT"
+HARVEST_BARE="/tmp/${HARVEST_PROJECT}-upstream.git"
+
+rm -rf "$HARVEST_BARE" "$HARVEST_WORK"
+mkdir -p "$HARVEST_WORK"
+git init -q "$HARVEST_WORK"
+cd "$HARVEST_WORK"
+git -c user.name=test -c user.email=t@t -c commit.gpgsign=false \
+    commit -q --allow-empty -m "init"
+git clone -q --bare "$HARVEST_WORK" "$HARVEST_BARE"
+git -C "$HARVEST_BARE" branch agent-work HEAD 2>/dev/null || true
+
+# Seed 100 commits with ~1 KiB subject padding so the
+# `git log --oneline` output (~100 KiB) exceeds the kernel
+# pipe buffer (64 KiB) and has many more than 20 lines.  Both
+# conditions are needed to make the preview pipe on harvest.sh
+# line 55 trigger SIGPIPE without the `|| true` guard.  Empty
+# commits keep setup fast (~0.15 s).
+HARVEST_AGENT="$TMPDIR/harvest-sigpipe-agent"
+rm -rf "$HARVEST_AGENT"
+git clone -q "$HARVEST_BARE" "$HARVEST_AGENT"
+cd "$HARVEST_AGENT"
+git checkout -q agent-work
+LONG_PAD=$(awk 'BEGIN { for (i = 0; i < 1000; i++) printf "x" }')
+for i in $(seq 1 100); do
+    git -c user.name=agent -c user.email=a@a -c commit.gpgsign=false \
+        commit -q --allow-empty -m "Agent commit $i $LONG_PAD"
+done
+git push -q origin agent-work
+
+cd "$HARVEST_WORK"
+if output=$(bash "$HARVEST_SH" --dry 2>&1); then
+    rc=0
+else
+    rc=$?
+fi
+
+assert_eq "harvest.sh --dry exits 0 on oversized log" "0" "$rc"
+assert_eq "shows 100 new commits header" "true" \
+    "$(printf '%s\n' "$output" | grep -q '^100 new commits on agent-work:' \
+        && echo true || echo false)"
+assert_eq "shows overflow tail" "true" \
+    "$(printf '%s\n' "$output" | grep -qE '\.\.\. and 80 more' \
+        && echo true || echo false)"
+assert_eq "shows dry-run notice" "true" \
+    "$(printf '%s\n' "$output" | grep -q 'dry run' \
+        && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 8. SIGPIPE regression: guarded pipe survives big log ==="
+
+# Synthetic log large enough to overflow the kernel pipe buffer
+# (typically 64 KiB on Linux).  5000 lines x ~50 bytes ≈ 250 KiB.
+# Written to a file so we can feed it to subshells without
+# blowing ARG_MAX.
+big_log_file="$TMPDIR/big_log.txt"
+awk 'BEGIN { for (i = 0; i < 5000; i++)
+    print "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }' \
+    > "$big_log_file"
+
+# The contract we actually care about: under `set -euo pipefail`
+# the unguarded form must abort before the next statement runs,
+# and the guarded form must not.  The exit code varies by
+# platform -- bash builtins that hit EPIPE may report 141
+# (SIGPIPE) on Linux/newer bash or 1 (generic write error) on
+# macOS/bash-3.2 -- so we test the observable behaviour instead
+# of pinning a specific code.
+set +e
+bash -c '
+    set -euo pipefail
+    LOG=$(cat "$1")
+    echo "$LOG" | head -20 >/dev/null
+    echo REACHED_AFTER_PIPE
+' _ "$big_log_file" > "$TMPDIR/unguarded.out" 2>&1
+unguarded_rc=$?
+set -e
+assert_eq "unguarded pipe exits non-zero" "true" \
+    "$([ "$unguarded_rc" -ne 0 ] && echo true || echo false)"
+assert_eq "unguarded pipe aborts before next statement" "false" \
+    "$(grep -q '^REACHED_AFTER_PIPE$' "$TMPDIR/unguarded.out" \
+        && echo true || echo false)"
+
+# The actual harvest.sh idiom (line 55): `|| true` must recover.
+set +e
+bash -c '
+    set -euo pipefail
+    LOG=$(cat "$1")
+    echo "$LOG" | head -20 >/dev/null || true
+    echo REACHED_AFTER_PIPE
+' _ "$big_log_file" > "$TMPDIR/guarded.out" 2>&1
+guarded_rc=$?
+set -e
+assert_eq "guarded pipe exits 0" "0" "$guarded_rc"
+assert_eq "guarded pipe continues past the preview" "true" \
+    "$(grep -q '^REACHED_AFTER_PIPE$' "$TMPDIR/guarded.out" \
+        && echo true || echo false)"
 
 # ============================================================
 echo ""
