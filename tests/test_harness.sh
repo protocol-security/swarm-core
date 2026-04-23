@@ -568,6 +568,56 @@ assert_eq "backoff after 2 doubles" "120" "$(simulate_backoff 2)"
 assert_eq "backoff after 3 doubles" "240" "$(simulate_backoff 3)"
 assert_eq "backoff capped at 1800" "1800" "$(simulate_backoff 10)"
 
+# --- 14b. codex-cli agent_is_retriable classification ---
+#
+# Regression guard: 0.20.6's pattern only matched rate-limit /
+# quota signals, so an SSE stream drop ("fatal: Reconnecting... N/5
+# (stream disconnected before completion)") was classified as
+# fatal and the harness exited immediately despite
+# MAX_RETRY_WAIT > 0.  0.20.7 adds a transient class covering
+# SSE/5xx/connection-reset so the backoff loop gets a chance.
+(
+    # Subshell so sourcing the driver doesn't clobber earlier
+    # assertions' shell state.
+    source "$TESTS_DIR/../lib/drivers/codex-cli.sh"
+
+    probe_retriable() {
+        local log="$TMPDIR/codex-retriable-$$-${RANDOM}.log"
+        printf '%s\n' "$1" > "$log"
+        agent_is_retriable "$log" 1
+        rm -f "$log"
+    }
+
+    # Rate-limit class (existing behaviour) stays intact.
+    assert_eq "retriable: 429 response" "rate_limited" \
+        "$(probe_retriable 'HTTP 429 Too Many Requests')"
+    assert_eq "retriable: quota exhaustion" "rate_limited" \
+        "$(probe_retriable 'You have hit your usage limit')"
+
+    # Transient class (new in 0.20.7) — each pattern is the
+    # actual wording codex-cli emits on the respective failure.
+    assert_eq "retriable: SSE stream drop" "transient" \
+        "$(probe_retriable 'fatal: Reconnecting... 2/5 (stream disconnected before completion)')"
+    assert_eq "retriable: OpenAI generic retry hint" "transient" \
+        "$(probe_retriable 'An error occurred while processing your request')"
+    assert_eq "retriable: 502 bad gateway" "transient" \
+        "$(probe_retriable 'HTTP 502 Bad Gateway')"
+    assert_eq "retriable: 503 service unavailable" "transient" \
+        "$(probe_retriable 'HTTP 503 Service Unavailable')"
+    assert_eq "retriable: connection reset" "transient" \
+        "$(probe_retriable 'connection reset by peer')"
+    assert_eq "retriable: request timeout" "transient" \
+        "$(probe_retriable 'request timed out after 60s')"
+
+    # Genuinely fatal errors must NOT be reclassified as
+    # transient.  Auth failures, model-not-found, invalid-key etc.
+    # need to fail fast so operators see the configuration bug.
+    assert_eq "non-retriable: auth error" "" \
+        "$(probe_retriable 'invalid_api_key: incorrect credentials')"
+    assert_eq "non-retriable: model not found" "" \
+        "$(probe_retriable 'model_not_found: gpt-unknown is not available')"
+)
+
 # ============================================================
 echo ""
 echo "=== 12. SSH signing config ==="
@@ -821,30 +871,595 @@ assert_eq "setup hook does not drop -E" \
 
 # ============================================================
 echo ""
-echo "=== 17. Session-end push preserves dirty tree ==="
+echo "=== 17. Session-end push cleans dirty tree before rebase ==="
 
 # Session-end push path rebases onto origin/agent-work before pushing.
-# When the agent leaves the working tree dirty (untracked files,
-# dirty submodules, unstaged edits), `git pull --rebase` must run
-# with autoStash enabled or it refuses outright and the retry loop
-# wastes all three attempts. Pin both the positive invocation and
-# the absence of the bare (regression) form against the harness
-# source -- same grep-based technique as §16.
+# v0.20.2 used `rebase.autoStash=true`, but autoStash has three
+# documented gaps that caused real push failures on multi-agent
+# codex-cli swarms:
+#
+#   (1) `git stash` defaults to not stashing untracked files, so
+#       `?? <path>` survives and the rebase still refuses.
+#   (2) `git stash` does NOT capture submodule pointer drift
+#       (`M <submodule>`) -- regardless of flags.  The superproject
+#       gitlink diff is invisible to stash's default traversal.
+#   (3) The auto-pop step can conflict mid-rebase on
+#       "skipped previously applied commit".
+#
+# v0.20.4 replaces autoStash with an explicit pre-stash (with
+# --include-untracked), a `submodule update --force` to clear
+# gitlink drift, and a bare `git pull --rebase` against a
+# guaranteed-clean tree.  The stash is intentionally NOT popped;
+# the next session's opening `git reset --hard origin/agent-work`
+# wipes whatever was in-flight.
+#
+# Pin all four invariants against the harness source -- grep
+# technique from §16.
 
-assert_eq "push-path pull uses rebase.autoStash=true" \
+# (1) Positive: explicit pre-stash including untracked files.
+assert_eq "push path pre-stashes with --include-untracked" \
     "1" \
-    "$(grep -cE '^[[:space:]]*if git -c rebase\.autoStash=true pull --rebase origin agent-work' "$HARNESS_FILE")"
+    "$(grep -cE '^[[:space:]]*git stash push --include-untracked --quiet' "$HARNESS_FILE")"
 
-assert_eq "push-path pull is not the bare form" \
+# (2) Positive: submodule update --init --recursive --force after stash.
+assert_eq "push path force-syncs submodules" \
+    "1" \
+    "$(grep -cE '^[[:space:]]*git submodule update --init --recursive --force' "$HARNESS_FILE")"
+
+# (3) Positive: bare rebase -- pre-stashed state guarantees a clean tree.
+assert_eq "push-path pull is the bare form (no autoStash)" \
+    "1" \
+    "$(grep -cE '^[[:space:]]*if git pull --rebase origin agent-work' "$HARNESS_FILE")"
+
+# (4) Negative: autoStash must NOT come back as an invocation -- it
+# was the root cause of the failures this patch closes.  Match the
+# actual `git -c rebase.autoStash=...` pattern so mentions in
+# comments or commit-message-style prose don't trip the regression
+# test.
+assert_eq "push-path pull does not re-introduce autoStash" \
     "0" \
-    "$(grep -cE '^[[:space:]]*if git pull --rebase origin agent-work' "$HARNESS_FILE" || true)"
+    "$(grep -cE 'git -c rebase\.autoStash' "$HARNESS_FILE" || true)"
 
-# Operators need to see what uncommitted state the agent left behind
-# so dirty-tree surprises are auditable. The harness logs
-# `git status --porcelain=v1` once before the retry loop.
+# (5) Negative: the pre-push stash is intentionally NOT popped in the
+# push block -- pop is where autoStash failed, and the next session's
+# hard-reset wipes the tree anyway.  The regex allows `git stash pop`
+# to appear elsewhere in the file for legitimate reasons if ever added.
+assert_eq "push path does not pop the pre-push stash" \
+    "0" \
+    "$(awk '/^[[:space:]]*hlog "found unpushed local commits/,/^[[:space:]]*fi$/' "$HARNESS_FILE" | grep -cE 'git stash pop' || true)"
+
+# (6) Observability: operators need to see what uncommitted state the
+# agent left behind, so the harness logs `git status --porcelain=v1`
+# once before the stash.  Auditable dirty-tree surprises.
 assert_eq "push path logs porcelain status for observability" \
     "1" \
     "$(grep -cE 'git status --porcelain=v1' "$HARNESS_FILE")"
+
+# (7) Observability: when the stash actually captures something, the
+# stash ref is logged so an operator can `git stash show stash@{N}`
+# from the reflog.
+assert_eq "push path logs the pre-push stash ref when created" \
+    "1" \
+    "$(grep -cE 'pre-push stash: ' "$HARNESS_FILE")"
+
+# ============================================================
+echo ""
+echo "=== 18. Session-end scratch-worktree push fallback ==="
+
+# When the in-place `git pull --rebase && git push` retry loop
+# exhausts all three attempts, the harness falls back to a scratch
+# worktree: cherry-pick unpushed commits onto a fresh detached
+# checkout of origin/agent-work, push from that worktree, then
+# tear it down.  The fallback sidesteps every failure pattern
+# documented in CHANGELOG 0.20.5 because it ignores the main
+# worktree's state entirely -- submodule drift, context-stripping
+# hooks firing during rebase-merge checkouts, and "skipped
+# previously applied commit" all become irrelevant when the push
+# goes through a pristine checkout of origin/agent-work.
+#
+# §18a pins the key invariants of `_scratch_worktree_push` against
+# the harness source.  §18b rehearses the cherry-pick-onto-scratch
+# dance against a real bare repo with an arbitrarily dirty main
+# worktree, confirming the pattern actually succeeds where the
+# in-place rebase would refuse.
+
+# --- §18a. Structural pins against lib/harness.sh ---
+
+assert_eq "fallback function is defined in harness.sh" \
+    "1" \
+    "$(grep -cE '^_scratch_worktree_push\(\) \{' "$HARNESS_FILE")"
+
+assert_eq "fallback creates a detached worktree" \
+    "1" \
+    "$(grep -cE 'worktree add --detach --quiet' "$HARNESS_FILE")"
+
+# Regression guard for the 0.20.5 "scratch push: worktree add failed"
+# bug: the `git worktree add` invocation must suppress hooks, because
+# in a linked worktree `.git` is a gitfile (not a directory), so any
+# post-checkout hook that references `.git/hooks/*` by relative path
+# fails with "Not a directory" during worktree creation. Without this
+# flag, every fallback attempt fails in consumers that install such
+# a hook (§18d exercises this end-to-end).
+assert_eq "worktree add suppresses hooks (0.20.5 regression guard)" \
+    "1" \
+    "$(grep -cE 'git -c core\.hooksPath=/dev/null worktree add' "$HARNESS_FILE")"
+
+# Two-step cherry-pick: apply without committing first, then
+# detect "no net change" as the git <2.45 substitute for
+# --empty=drop, then commit with original metadata via commit -C.
+# Pinning all three lines: if a future refactor collapses them
+# back to `cherry-pick --empty=drop` the test breaks, because the
+# collapsed form only works on git 2.45+ but the base image ships
+# git 2.39 (bug report Pattern A regression guard).
+assert_eq "fallback cherry-picks with --no-commit" \
+    "1" \
+    "$(grep -cE 'cherry-pick -n "\$sha"' "$HARNESS_FILE")"
+
+assert_eq "fallback detects empty applies via diff --cached" \
+    "1" \
+    "$(grep -cE 'diff --cached --quiet' "$HARNESS_FILE")"
+
+assert_eq "fallback commits with -C to keep author metadata" \
+    "1" \
+    "$(grep -cE 'commit --allow-empty-message -C "\$sha"' "$HARNESS_FILE")"
+
+# Hooks must be suppressed at every code site where git operates
+# on the scratch worktree so the context-stripping post-checkout
+# hook cannot interfere.  Five hits total: the preamble comment,
+# the worktree-add inline comment, the `git worktree add` itself
+# (0.20.6 fix for the "worktree add failed" regression), the
+# cherry-pick -n, and the commit.
+assert_eq "fallback disables hooks in the scratch worktree" \
+    "5" \
+    "$(grep -cE 'core\.hooksPath=/dev/null' "$HARNESS_FILE")"
+
+# Preamble comment references the push target once; the actual
+# `git -C "$_scratch" push` invocation is the second hit.
+assert_eq "fallback pushes scratch HEAD to agent-work" \
+    "2" \
+    "$(grep -cE 'push origin HEAD:agent-work' "$HARNESS_FILE")"
+
+assert_eq "fallback tears the scratch worktree down" \
+    "1" \
+    "$(grep -cE 'git worktree remove --force' "$HARNESS_FILE")"
+
+# The push block must reach the fallback *after* the three-retry
+# rebase loop has exhausted, not in place of it -- rebase still
+# works most of the time and is cheaper than a worktree transplant.
+assert_eq "push block invokes fallback after retries exhaust" \
+    "1" \
+    "$(grep -cE 'if _scratch_worktree_push; then' "$HARNESS_FILE")"
+
+assert_eq "fallback entry log line present" \
+    "1" \
+    "$(grep -cE 'rebase path exhausted, trying scratch worktree fallback' "$HARNESS_FILE")"
+
+# The final error message was updated to reflect the new
+# fallback -- pin it so a future refactor doesn't regress the
+# diagnosability of a terminal push failure.
+assert_eq "terminal error message mentions both paths" \
+    "1" \
+    "$(grep -cE 'push failed after 3 retries and scratch fallback' "$HARNESS_FILE")"
+
+# --- §18b. Behavioral: cherry-pick-onto-scratch push succeeds
+# even when the main worktree is arbitrarily dirty.
+
+# Local reimplementation of _scratch_worktree_push mirroring the
+# harness function line-for-line.  We cannot source harness.sh
+# directly because its top-level requires SWARM_PROMPT and loads a
+# driver; any divergence from the production logic below would
+# still be caught by §18a's structural pins above.
+sc_hlog()      { :; }
+sc_hlog_err()  { :; }
+sc_hlog_pipe() { cat >/dev/null; }
+
+_test_scratch_push() {
+    local _scratch _shas _n_shas sha _rc=0
+    if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+        git rebase --abort 2>/dev/null \
+            || rm -rf .git/rebase-merge .git/rebase-apply
+    fi
+    git fetch --no-recurse-submodules origin agent-work 2>&1 \
+        | sc_hlog_pipe || true
+
+    _shas=$(git rev-list --reverse origin/agent-work..HEAD 2>/dev/null)
+    if [ -z "$_shas" ]; then
+        sc_hlog "no unpushed"
+        return 0
+    fi
+    _n_shas=$(printf '%s\n' "$_shas" | wc -l | tr -d ' ')
+    sc_hlog "transplanting ${_n_shas} commits"
+
+    _scratch="$TMPDIR/scratch-$$-${RANDOM}"
+    rm -rf "$_scratch" 2>/dev/null || true
+
+    if ! git -c core.hooksPath=/dev/null worktree add --detach --quiet \
+            "$_scratch" origin/agent-work 2>&1 | sc_hlog_pipe; then
+        sc_hlog_err "worktree add failed"
+        rm -rf "$_scratch" 2>/dev/null || true
+        git worktree prune 2>/dev/null || true
+        return 1
+    fi
+
+    for sha in $_shas; do
+        if ! git -C "$_scratch" -c core.hooksPath=/dev/null \
+                cherry-pick -n "$sha" 2>&1 | sc_hlog_pipe; then
+            sc_hlog_err "cherry-pick failed for ${sha}"
+            git -C "$_scratch" reset --hard HEAD 2>/dev/null || true
+            _rc=1
+            break
+        fi
+        if git -C "$_scratch" diff --cached --quiet 2>/dev/null \
+                && git -C "$_scratch" diff --quiet 2>/dev/null; then
+            sc_hlog "dropping redundant commit ${sha:0:12}"
+            continue
+        fi
+        if ! git -C "$_scratch" -c core.hooksPath=/dev/null \
+                commit --allow-empty-message -C "$sha" 2>&1 \
+                | sc_hlog_pipe; then
+            sc_hlog_err "commit failed for ${sha}"
+            git -C "$_scratch" reset --hard HEAD 2>/dev/null || true
+            _rc=1
+            break
+        fi
+    done
+
+    if [ "$_rc" -eq 0 ]; then
+        if git -C "$_scratch" push origin HEAD:agent-work 2>&1 \
+                | sc_hlog_pipe; then
+            sc_hlog "push succeeded"
+        else
+            sc_hlog_err "push rejected"
+            _rc=1
+        fi
+    fi
+
+    git worktree remove --force "$_scratch" 2>/dev/null \
+        || rm -rf "$_scratch" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    return "$_rc"
+}
+
+SC_BARE="$TMPDIR/scratch-bare.git"
+SC_WORK="$TMPDIR/scratch-work"
+git init -q --bare "$SC_BARE"
+git clone -q "$SC_BARE" "$SC_WORK"
+git -C "$SC_WORK" config user.name "test"
+git -C "$SC_WORK" config user.email "test@test"
+git -C "$SC_WORK" config commit.gpgsign false
+
+echo "init" > "$SC_WORK/init.txt"
+git -C "$SC_WORK" add init.txt
+git -C "$SC_WORK" commit -q -m "initial"
+git -C "$SC_WORK" checkout -q -b agent-work
+git -C "$SC_WORK" push -q origin agent-work
+
+# Two local commits ahead of origin (the "unpushed" state the
+# harness push block is triggered by).
+echo "A" > "$SC_WORK/a.txt"
+git -C "$SC_WORK" add a.txt
+git -C "$SC_WORK" commit -q -m "agent commit A"
+echo "B" > "$SC_WORK/b.txt"
+git -C "$SC_WORK" add b.txt
+git -C "$SC_WORK" commit -q -m "agent commit B"
+SC_LOCAL_HEAD=$(git -C "$SC_WORK" rev-parse HEAD)
+
+# Dirty the worktree in three of the shapes the bug report
+# documented: tracked mod, tracked deletion, untracked scratch.
+# Any one of these is enough to make `git pull --rebase` refuse.
+echo "dirty" >> "$SC_WORK/init.txt"
+rm -f "$SC_WORK/a.txt"
+echo "scratch" > "$SC_WORK/untracked.txt"
+DIRTY_BEFORE=$(git -C "$SC_WORK" status --porcelain=v1 | wc -l | tr -d ' ')
+assert_eq "worktree dirty pre-fallback" "3" "$DIRTY_BEFORE"
+
+# The fallback must succeed despite that dirtiness.
+SC_RC=0
+( cd "$SC_WORK" && _test_scratch_push ) || SC_RC=$?
+assert_eq "fallback exits cleanly on dirty tree" "0" "$SC_RC"
+
+# Origin now holds both agent commits in order.
+git -C "$SC_BARE" log agent-work --format='%s' > "$TMPDIR/sc-bare-log.txt"
+assert_eq "commit A landed on origin" "1" \
+    "$(grep -cE '^agent commit A$' "$TMPDIR/sc-bare-log.txt")"
+assert_eq "commit B landed on origin" "1" \
+    "$(grep -cE '^agent commit B$' "$TMPDIR/sc-bare-log.txt")"
+
+# Main worktree's dirty state must survive unchanged -- the whole
+# point of the scratch approach is that it doesn't touch the main
+# worktree.  Local HEAD is unchanged too (we transplanted, not
+# rebased).
+DIRTY_AFTER=$(git -C "$SC_WORK" status --porcelain=v1 | wc -l | tr -d ' ')
+assert_eq "main worktree dirt survives fallback" "3" "$DIRTY_AFTER"
+assert_eq "main worktree HEAD untouched" "$SC_LOCAL_HEAD" \
+    "$(git -C "$SC_WORK" rev-parse HEAD)"
+
+# The scratch worktree must be cleaned up -- both the on-disk
+# path and the worktree registry.  The ephemeral worktree name
+# in _test_scratch_push is "scratch-<pid>-<rand>"; SC_WORK itself
+# lives at "scratch-work" so we anchor against the exact pattern
+# (one dash-separated digit chunk, then another) to avoid matching
+# the main worktree.
+SC_ORPHANS=$(git -C "$SC_WORK" worktree list --porcelain \
+    2>/dev/null | grep -cE '^worktree .*/scratch-[0-9]+-[0-9]+$' \
+    || true)
+assert_eq "scratch worktree registry cleaned" "0" "$SC_ORPHANS"
+SC_DIR_ORPHANS=$(find "$TMPDIR" -maxdepth 1 -name 'scratch-*-*' \
+    -type d 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "scratch worktree dir removed" "0" "$SC_DIR_ORPHANS"
+
+# --- §18c. Behavioral: redundant-commit drop handles the
+# "skipped previously applied commit" regression from Pattern A.
+# Scenario: SC_WORK has commit D locally (so D is in its HEAD
+# graph, not in origin's), but origin already holds a
+# patch-equivalent D' published via a different agent.  Applying
+# D on top of origin's tip produces no net change, which in git
+# <2.45 makes a plain cherry-pick stop with "The previous
+# cherry-pick is now empty".  Our manual "cherry-pick -n + diff
+# check + commit -C" dance has to silently drop D and let the
+# push happen anyway.
+
+# Reset SC_WORK to match origin so §18b's cruft doesn't bleed in.
+( cd "$SC_WORK" && git clean -qfd && git checkout -q -- . )
+git -C "$SC_WORK" fetch -q origin agent-work
+git -C "$SC_WORK" reset --hard -q origin/agent-work
+
+# SC_WORK commits D locally (unpushed).
+echo "D" > "$SC_WORK/d.txt"
+git -C "$SC_WORK" add d.txt
+git -C "$SC_WORK" commit -q -m "agent commit D"
+SC_D_SHA=$(git -C "$SC_WORK" rev-parse HEAD)
+
+# A sibling clone publishes a patch-equivalent D' to origin,
+# arriving via a different SHA (simulating "the other agent
+# already pushed this change through its own route").  SC_WORK3
+# can't cherry-pick SC_D_SHA directly -- origin hasn't seen it
+# yet -- so we recreate the same tree change as an independent
+# commit, which guarantees a distinct SHA and identical patch.
+SC_WORK3="$TMPDIR/sibling-work3"
+git clone -q "$SC_BARE" "$SC_WORK3"
+git -C "$SC_WORK3" config user.name "test3"
+git -C "$SC_WORK3" config user.email "test3@test"
+git -C "$SC_WORK3" config commit.gpgsign false
+git -C "$SC_WORK3" checkout -q agent-work
+echo "D" > "$SC_WORK3/d.txt"
+git -C "$SC_WORK3" add d.txt
+git -C "$SC_WORK3" commit -q -m "agent commit D (via sibling)"
+SC_D_PRIME_SHA=$(git -C "$SC_WORK3" rev-parse HEAD)
+git -C "$SC_WORK3" push -q origin agent-work
+
+# Guard: D and D' must be distinct SHAs (different message =
+# different commit SHA), otherwise §18c would be vacuous.
+assert_eq "sibling D' has a distinct SHA" "1" \
+    "$(test "$SC_D_SHA" != "$SC_D_PRIME_SHA" && echo 1 || echo 0)"
+
+# Run the fallback.  SC_WORK thinks it has one unpushed commit,
+# but applying it produces no net change, so the drop-redundant
+# branch triggers, and the push completes cleanly as a no-op.
+SC_RC=0
+( cd "$SC_WORK" && _test_scratch_push ) || SC_RC=$?
+assert_eq "fallback succeeds with already-applied commit" "0" "$SC_RC"
+
+# Origin's HEAD should still point to the sibling's D' -- the
+# fallback dropped SC_WORK's local D as redundant instead of
+# stamping a new commit on top of D'.  The commit count on the
+# branch is the other half of the check: exactly one commit
+# whose subject starts with "agent commit D".
+SC_BARE_HEAD=$(git -C "$SC_BARE" rev-parse agent-work)
+assert_eq "origin HEAD still at sibling D'" "$SC_D_PRIME_SHA" "$SC_BARE_HEAD"
+
+git -C "$SC_BARE" log agent-work --format='%s' > "$TMPDIR/sc-bare-log2.txt"
+assert_eq "no duplicate D-shaped commit on origin" "1" \
+    "$(grep -cE '^agent commit D( \(via sibling\))?$' "$TMPDIR/sc-bare-log2.txt")"
+
+# --- §18d. Behavioral: worktree add must survive a consumer-
+# installed post-checkout hook. 0.20.5 regression: if the consumer
+# repo has a post-checkout hook that references another hook via
+# a relative path (e.g. `.git/hooks/<script>`), the reference
+# resolves against the linked worktree's gitfile `.git`, not a
+# real directory, and fails with "Not a directory". Without
+# `-c core.hooksPath=/dev/null` on the `git worktree add`, the
+# hook fires and fails the entire worktree creation, and the
+# fallback bombs with "worktree add failed".
+
+# Reset to a clean state between §18c and §18d.
+( cd "$SC_WORK" && git clean -qfd && git checkout -q -- . )
+git -C "$SC_WORK" fetch -q origin agent-work
+git -C "$SC_WORK" reset --hard -q origin/agent-work
+
+# Install a hostile post-checkout hook that references a relative
+# path under `.git/hooks/`. In the superproject this works fine
+# because `.git` is a directory; in a linked worktree `.git` is a
+# gitfile, so `.git/hooks/<anything>` errors with "Not a directory"
+# and tanks the checkout.
+cat > "$SC_WORK/.git/hooks/post-checkout" <<'HOOK'
+#!/bin/bash
+# Simulates a consumer-installed post-checkout that chains to
+# another hook via a relative path. Works in the superproject
+# (`.git` is a directory), fails in any linked worktree (`.git`
+# is a gitfile).
+.git/hooks/relative-ref-that-does-not-exist
+HOOK
+chmod +x "$SC_WORK/.git/hooks/post-checkout"
+
+# Queue one unpushed commit so the fallback has something to do.
+echo "E" > "$SC_WORK/e.txt"
+git -C "$SC_WORK" add e.txt
+git -C "$SC_WORK" commit -q -m "agent commit E"
+
+# The fallback must still succeed -- the fix suppresses hooks at
+# worktree-add time so the hostile hook never runs.
+SC_RC=0
+( cd "$SC_WORK" && _test_scratch_push ) || SC_RC=$?
+assert_eq "fallback succeeds despite hostile post-checkout hook" \
+    "0" "$SC_RC"
+
+git -C "$SC_BARE" log agent-work --format='%s' > "$TMPDIR/sc-bare-log3.txt"
+assert_eq "commit E landed on origin via hook-hostile path" "1" \
+    "$(grep -cE '^agent commit E$' "$TMPDIR/sc-bare-log3.txt")"
+
+# Negative control: with the hook-suppression flag removed, the
+# same setup must fail. This guards against a future refactor
+# that silently drops `-c core.hooksPath=/dev/null` -- the
+# structural pin above would still match a misplaced flag, but
+# this behavioral check confirms the flag is actually working.
+_test_scratch_push_no_suppress() {
+    local _scratch
+    _scratch="$TMPDIR/scratch-nosuppress-$$-${RANDOM}"
+    rm -rf "$_scratch" 2>/dev/null || true
+    if git worktree add --detach --quiet "$_scratch" \
+            origin/agent-work 2>/dev/null; then
+        rm -rf "$_scratch" 2>/dev/null || true
+        git worktree prune 2>/dev/null || true
+        return 0
+    fi
+    git worktree prune 2>/dev/null || true
+    return 1
+}
+
+# Queue another commit so the control has a fresh unpushed state.
+echo "F" > "$SC_WORK/f.txt"
+git -C "$SC_WORK" add f.txt
+git -C "$SC_WORK" commit -q -m "agent commit F"
+
+SC_RC=0
+( cd "$SC_WORK" && _test_scratch_push_no_suppress ) || SC_RC=$?
+assert_eq "negative control: plain worktree add fails under hostile hook" \
+    "1" "$SC_RC"
+
+rm -f "$SC_WORK/.git/hooks/post-checkout"
+
+# --- §18e. Behavioral: cherry-pick conflict parks the local
+# commits on origin so they are not lost.  0.20.6 regression:
+# when the scratch cherry-pick hits a real textual conflict with
+# upstream, `_scratch_worktree_push` reset the scratch, returned 1,
+# and the caller moved on — the agent's commits survived only in
+# its local repo and were erased by the next session's pre-session
+# `git reset --hard origin/agent-work`.  0.20.7 adds a salvage
+# push to `refs/heads/agent-parked/<agent>-<ts>` so the original
+# SHAs land on origin before the scratch is torn down.
+
+# Mirrors the production `_scratch_worktree_push` with the 0.20.7
+# parking step appended.  Kept in-file (rather than sourcing
+# harness.sh) for the same reason as _test_scratch_push above:
+# harness.sh's top-level needs SWARM_PROMPT and a driver.
+_test_scratch_push_with_park() {
+    local agent_id="$1"
+    local _scratch _shas _n_shas sha _rc=0
+    if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+        git rebase --abort 2>/dev/null \
+            || rm -rf .git/rebase-merge .git/rebase-apply
+    fi
+    git fetch --no-recurse-submodules origin agent-work 2>&1 \
+        | sc_hlog_pipe || true
+    _shas=$(git rev-list --reverse origin/agent-work..HEAD 2>/dev/null)
+    if [ -z "$_shas" ]; then return 0; fi
+    _n_shas=$(printf '%s\n' "$_shas" | wc -l | tr -d ' ')
+    _scratch="$TMPDIR/scratch-$$-${RANDOM}"
+    rm -rf "$_scratch" 2>/dev/null || true
+    if ! git -c core.hooksPath=/dev/null worktree add --detach --quiet \
+            "$_scratch" origin/agent-work 2>&1 | sc_hlog_pipe; then
+        rm -rf "$_scratch" 2>/dev/null || true
+        git worktree prune 2>/dev/null || true
+        return 1
+    fi
+    for sha in $_shas; do
+        if ! git -C "$_scratch" -c core.hooksPath=/dev/null \
+                cherry-pick -n "$sha" 2>&1 | sc_hlog_pipe; then
+            git -C "$_scratch" reset --hard HEAD 2>/dev/null || true
+            _rc=1; break
+        fi
+        if git -C "$_scratch" diff --cached --quiet 2>/dev/null \
+                && git -C "$_scratch" diff --quiet 2>/dev/null; then
+            continue
+        fi
+        if ! git -C "$_scratch" -c core.hooksPath=/dev/null \
+                commit --allow-empty-message -C "$sha" 2>&1 \
+                | sc_hlog_pipe; then
+            git -C "$_scratch" reset --hard HEAD 2>/dev/null || true
+            _rc=1; break
+        fi
+    done
+    if [ "$_rc" -eq 0 ]; then
+        git -C "$_scratch" push origin HEAD:agent-work 2>&1 \
+            | sc_hlog_pipe || _rc=1
+    fi
+    if [ "$_rc" -ne 0 ] && [ -n "$_shas" ]; then
+        local _park_ref
+        _park_ref="refs/heads/agent-parked/${agent_id}-$(date -u +%Y%m%dT%H%M%SZ)"
+        git push origin "HEAD:${_park_ref}" 2>&1 | sc_hlog_pipe || true
+    fi
+    git worktree remove --force "$_scratch" 2>/dev/null \
+        || rm -rf "$_scratch" 2>/dev/null || true
+    git worktree prune 2>/dev/null || true
+    return "$_rc"
+}
+
+# Reset SC_WORK to origin, then engineer a cherry-pick conflict:
+# local commit on file g.txt, a patch-incompatible sibling commit
+# on the same file published to origin.
+( cd "$SC_WORK" && git clean -qfd && git checkout -q -- . )
+git -C "$SC_WORK" fetch -q origin agent-work
+git -C "$SC_WORK" reset --hard -q origin/agent-work
+
+# Sibling publishes an initial g.txt first.
+SC_WORK4="$TMPDIR/sibling-work4"
+git clone -q "$SC_BARE" "$SC_WORK4"
+git -C "$SC_WORK4" config user.name "test4"
+git -C "$SC_WORK4" config user.email "test4@test"
+git -C "$SC_WORK4" config commit.gpgsign false
+git -C "$SC_WORK4" checkout -q agent-work
+printf 'upstream line 1\nupstream line 2\n' > "$SC_WORK4/g.txt"
+git -C "$SC_WORK4" add g.txt
+git -C "$SC_WORK4" commit -q -m "sibling seeds g.txt"
+git -C "$SC_WORK4" push -q origin agent-work
+
+# Local agent also creates g.txt with incompatible content, based
+# on the older origin tip (before the sibling push).  The scratch
+# worktree will fetch the fresh origin and try to cherry-pick the
+# local commit onto the sibling's tip, which fails — both sides
+# added the same file with different content ("both added" conflict).
+printf 'local line 1\nlocal line 2\n' > "$SC_WORK/g.txt"
+git -C "$SC_WORK" add g.txt
+git -C "$SC_WORK" commit -q -m "agent commit G (will conflict)"
+SC_G_SHA=$(git -C "$SC_WORK" rev-parse HEAD)
+
+# Run the fallback: cherry-pick must fail (real conflict), then
+# the parking step must push local HEAD to an agent-parked ref.
+SC_RC=0
+( cd "$SC_WORK" && _test_scratch_push_with_park "agent-99" ) \
+    || SC_RC=$?
+assert_eq "fallback returns 1 on genuine cherry-pick conflict" \
+    "1" "$SC_RC"
+
+# Origin should now have exactly one `agent-parked/agent-99-*`
+# branch, and its tip must be the local SHA that failed to apply.
+SC_PARK_REFS=$(git -C "$SC_BARE" for-each-ref \
+    --format='%(refname:short)' 'refs/heads/agent-parked/agent-99-*' \
+    | wc -l | tr -d ' ')
+assert_eq "exactly one parked ref created" "1" "$SC_PARK_REFS"
+
+SC_PARK_REF=$(git -C "$SC_BARE" for-each-ref \
+    --format='%(refname:short)' 'refs/heads/agent-parked/agent-99-*' \
+    | head -1)
+SC_PARK_HEAD=$(git -C "$SC_BARE" rev-parse "$SC_PARK_REF")
+assert_eq "parked ref tip is the agent's local SHA" \
+    "$SC_G_SHA" "$SC_PARK_HEAD"
+
+# And origin/agent-work must NOT contain the conflicting commit —
+# parking is a side-channel, the integration branch stays clean.
+git -C "$SC_BARE" log agent-work --format='%H' > "$TMPDIR/sc-bare-log4.txt"
+assert_eq "conflicting commit did not land on agent-work" \
+    "0" "$(grep -c "^${SC_G_SHA}$" "$TMPDIR/sc-bare-log4.txt")"
+
+# Structural pin: the harness function must contain the parking
+# step, not just the test's local copy.
+assert_eq "harness parks unpushed commits on transplant failure" \
+    "1" \
+    "$(grep -cE 'refs/heads/agent-parked/' "$HARNESS_FILE")"
+assert_eq "harness logs the parked ref name" \
+    "1" \
+    "$(grep -cE 'scratch push: parked .* commit\(s\) at' "$HARNESS_FILE")"
 
 # ============================================================
 echo ""

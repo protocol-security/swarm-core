@@ -1,5 +1,224 @@
 # Changelog
 
+## 0.20.7 — 2026-04-22
+
+- **Fix: codex-cli SSE stream drops treated as unrecoverable
+  despite `max_retry_wait` being set.**  Codex CLI's own
+  reconnect budget is a hard-coded 5 attempts; after 2 of those
+  are consumed on a transient OpenAI 5xx / SSE drop it emits
+  `fatal: Reconnecting... 2/5 (stream disconnected before
+  completion: An error occurred while processing your request...
+  You can retry your request...)` and exits.  0.20.6's
+  `agent_is_retriable` for codex-cli only matched rate-limit /
+  quota wording, so the harness classified this as fatal and
+  exited the agent container immediately — bypassing the
+  backoff loop entirely even when the operator set
+  `max_retry_wait: 1800` in the swarmfile.  Observed in practice
+  as a validator container dying at T+3h15m of a 5h production
+  run on a transient network blip, leaving the swarm one role
+  short for the rest of the run.
+
+  Fix: `agent_is_retriable` in `lib/drivers/codex-cli.sh` now
+  recognises a `transient` class alongside `rate_limited`,
+  covering SSE stream drops (`stream disconnected`,
+  `Reconnecting...`), connection layer errors (`connection
+  reset|closed|refused`, `timed out`), upstream 5xx gateway
+  signals (`bad gateway`, `service unavailable`, `50[234]`),
+  and OpenAI's generic retry hint (`processing your request`).
+  Genuinely fatal conditions (invalid auth, model not found,
+  etc.) still return empty so the harness exits fast on config
+  bugs.
+
+  Tests: `tests/test_harness.sh` §14b sources the driver, feeds
+  probe strings for each pattern class, and asserts the
+  classifier returns `rate_limited` / `transient` / `""`
+  respectively.
+
+- **Fix: cherry-pick conflicts in `_scratch_worktree_push` drop
+  the agent's commits on the floor.**  0.20.6's fallback aborts
+  the cherry-pick on conflict, resets the scratch worktree, and
+  returns 1.  The local commits live on in the agent's working
+  repo, but the *next* session's opening
+  `git reset --hard origin/agent-work` erases them — the
+  hands-free recovery path assumed the next pull-rebase would
+  succeed, and when a real conflict persists across sessions it
+  does not.  Observed as 3 lost commits across a 23-transplant
+  5h production run (all were low-value journal/claim markers,
+  but the failure mode is indistinguishable from losing a
+  finding).
+
+  Fix: when the scratch transplant fails at any step
+  (cherry-pick, commit, or final push) `_scratch_worktree_push`
+  now pushes the agent's local HEAD to a salvage ref on origin
+  named `agent-parked/<agent-id>-<UTC-timestamp>` before tearing
+  down.  The parked branch holds the agent's original SHAs (not
+  the discarded cherry-pick replays), so harvest and manual
+  inspection see the exact commits the agent made.  The push
+  step proper still returns 1 — `agent-work` is not advanced,
+  which keeps dedup / fetch semantics unchanged — but the work
+  is no longer lost.  If the parking push itself fails
+  (unreachable origin, auth, etc.) the commits remain in the
+  agent's local repo, which is exactly where they started, and
+  an error is logged so the operator can investigate.
+
+  Tests: `tests/test_harness.sh` §18e stages a genuine textual
+  conflict (both-added file at identical path with incompatible
+  content), runs the fallback against a bare repo, and asserts
+  (a) the fallback returns 1, (b) exactly one
+  `agent-parked/<agent>-*` ref was created on origin, (c) its
+  tip is the original local SHA, (d) `agent-work` was not
+  advanced.  Structural pins against `lib/harness.sh` verify
+  the parking code path exists in the production function, not
+  just in the test rig.
+
+## 0.20.6 — 2026-04-21
+
+- **Fix `scratch push: worktree add failed` under consumer-
+  installed post-checkout hooks.**  0.20.5's
+  `_scratch_worktree_push` passes `-c core.hooksPath=/dev/null`
+  to the `cherry-pick` and `commit` invocations but not to the
+  preceding `git worktree add`.  That omission was benign in
+  most cases but fatal for any consumer that installs a
+  post-checkout hook referencing another hook via a relative
+  path: in a linked worktree `.git` is a gitfile (not a
+  directory), so `.git/hooks/<anything>` resolves to "Not a
+  directory" at the syscall level and the entire worktree-add
+  aborts before cherry-pick ever runs.  Observed in practice
+  as 100% fallback failure with the log line `scratch push:
+  worktree add failed` immediately followed by `push failed
+  after 3 retries and scratch fallback` -- the scratch path
+  was effectively dead on arrival for affected consumers,
+  reverting 0.20.5 to 0.20.4 behaviour (commit loss at session
+  close).
+
+  Fix: add `-c core.hooksPath=/dev/null` to the `git worktree
+  add` call in `lib/harness.sh`.  One-line code change; hooks
+  were already irrelevant in the scratch worktree.
+
+  Tests: `tests/test_harness.sh` §18a pins the flag on the
+  worktree-add site structurally and §18d exercises the
+  failure mode end-to-end -- installs a hostile post-checkout
+  hook, runs the fallback, asserts it still succeeds, then
+  repeats with a flag-free control to confirm the hostile hook
+  does break worktree-add when suppression is off.  (See
+  §18d's "negative control" assertion.)
+
+## 0.20.5 — 2026-04-20
+
+- **Cherry-pick-onto-scratch fallback when session-end rebase
+  exhausts its retries.**  On a 12-event dirty-tree bug-report
+  run against an 0.20.4 swarm the in-place `git pull --rebase
+  && git push` path failed in 12/12 cases across three distinct
+  patterns: (A) submodule pointer drift that `git stash` cannot
+  capture (`M <submodule>` on the gitlink); (B) context-stripping
+  hooks firing during the rebase's internal checkouts under
+  `.git/rebase-merge/` re-dirtying the tree between the pre-apply
+  clean state and the rebase's own integrity check; (C) "skipped
+  previously applied commit" interactions with multi-agent swarms
+  whose commit graphs overlap.  Each ended with the three-attempt
+  retry loop burning out and the next session's opening
+  `git reset --hard origin/agent-work` erasing the in-flight
+  work.  0.20.5 adds `_scratch_worktree_push` in `lib/harness.sh`:
+  after the existing retry loop gives up, the harness fetches
+  `origin/agent-work` fresh, spins up a detached `git worktree
+  add` at that tip in `/tmp/swarm-push-<agent>-<pid>-<rand>`,
+  cherry-picks each unpushed commit via `cherry-pick -n` +
+  redundancy check + `commit --allow-empty-message -C`, pushes
+  `HEAD:agent-work` from the scratch, and tears the worktree
+  down.  Hooks are suppressed in the scratch via
+  `core.hooksPath=/dev/null` so the context-stripping post-
+  checkout hook that caused pattern B cannot re-delete files the
+  cherry-pick is meant to bring back.  Submodules are
+  deliberately not initialised in the scratch -- the push only
+  cares about the superproject's gitlinks, and a submodule-free
+  worktree sidesteps pattern A entirely.  The two-step cherry
+  pick + `commit -C` dance is a manual equivalent of git 2.45's
+  `cherry-pick --empty=drop` done by hand so it stays portable
+  to the git 2.39 on Debian bookworm (the base image); the
+  "dropping redundant commit" branch specifically handles
+  pattern C.  Behavioural coverage in `tests/test_harness.sh`
+  §18b sets up a bare + working clone with a three-shape dirty
+  tree (tracked mod, tracked deletion, untracked scratch),
+  drives the fallback, and verifies the commits land on origin
+  while the main worktree's dirty state survives untouched;
+  §18c simulates pattern A by publishing a patch-equivalent D'
+  via a sibling clone and asserts the fallback drops the local
+  D instead of stamping a duplicate on top.
+
+- **Activity watchdog inside `_run_reaped` for silent CLI
+  hangs.**  On the same bug-report run one codex-cli agent went
+  silent for 4h22m (SESSION_TIMEOUT=0 on that invocation) before
+  the operator noticed and ran `docker stop`; the CLI was alive
+  but deadlocked internally (stuck model request or blocked MCP
+  tool), so `wait "$_cmd_pid"` in `_run_reaped` never returned,
+  the post-wait group-kill never fired, and the harness sat on
+  the `| tee` pipe indefinitely.  0.20.5 adds `_reap_watchdog`
+  in `lib/drivers/_common.sh`: a sibling background process
+  polls `<logfile>`'s mtime every `$SWARM_ACTIVITY_POLL` seconds
+  (default 10), and if no advance is seen for
+  `$SWARM_ACTIVITY_TIMEOUT` seconds it SIGTERMs the CLI's
+  process group, polls for up to `$SWARM_WATCHDOG_GRACE` seconds
+  (default 10), then SIGKILLs.  The kill decision is tee'd into
+  `<logfile>.err` so operators can distinguish a watchdog-killed
+  exit from a crashed-on-its-own exit after the fact.  Opt-in
+  via `SWARM_ACTIVITY_TIMEOUT` -- 0 (the default) disables the
+  watchdog and preserves pre-0.20.5 behaviour; 300-600 is a
+  sensible starting point for production codex-cli / claude-code
+  swarms.  `SWARM_ACTIVITY_POLL` and `SWARM_WATCHDOG_GRACE` are
+  exposed primarily so the behavioural test suite can drive the
+  full escalation in ~3s rather than the production 20s floor.
+  `tests/test_drivers.sh` §40 adds 15 structural pins (mtime
+  probe with BSD fallback, SIGTERM-before-SIGKILL escalation,
+  poll-for-exit rather than fixed sleep, env-var validation,
+  watchdog backgrounding + cleanup) plus 6 behavioural
+  assertions (full-escalation path, pre-kill output preserved,
+  dormant-when-disabled, non-numeric-degrades-safely).
+
+- **Test coverage growth.**  `tests/test_harness.sh` goes from
+  124 to 147 assertions (+23 in §18); `tests/test_drivers.sh`
+  from 300 to 321 (+21 in §40).  Full `./tests/test.sh --unit`
+  runtime increases by roughly 3 s on Linux (mostly the §40b
+  watchdog escalation rehearsal), unchanged on macOS (the
+  setsid/stdbuf behavioural blocks skip cleanly).
+
+## 0.20.4 — 2026-04-19
+
+- **Close the remaining session-end rebase failures on dirty trees.**
+  The `rebase.autoStash=true` fix shipped in 0.20.2 closed the common
+  unstaged-tracked-file case but left three adjacent failure modes
+  unhandled, each empirically observed across an 11-event,
+  2-hour / 4-agent codex-cli run on a repo with a submodule:
+  (1) `git stash` defaults to **not** stashing untracked files, so
+  `?? <path>` survives the autoStash and the rebase still refuses;
+  (2) `git stash` does **not** capture submodule pointer drift
+  (`M <submodule>`) regardless of flags -- the superproject gitlink
+  diff is invisible to stash's default traversal, which causes every
+  `cargo build` / `git worktree add` / etc. that bumps a submodule's
+  HEAD to block the next push; (3) when autoStash *does* create a
+  stash, the auto-pop after a successful rebase is best-effort per
+  git's own docs and was observed failing mid-rebase on "skipped
+  previously applied commit" in multi-agent swarms where commit
+  histories overlap.  The push block now sidesteps all three: it
+  runs an explicit `git stash push --include-untracked` to capture
+  tracked + untracked state, then `git submodule update --init
+  --recursive --force` to re-sync submodule HEADs to what the
+  superproject expects (the one thing stash cannot reach), then a
+  bare `git pull --rebase` against a guaranteed-clean tree.  The
+  pre-push stash is intentionally **not** popped -- the next
+  session's opening `git reset --hard origin/agent-work` wipes
+  whatever was in-flight anyway, and not popping removes the entire
+  autoStash-pop conflict class.  The stash stays in the reflog
+  (`git stash list` / `git stash show stash@{N}`) for forensic
+  recovery.  `tests/test_harness.sh` §17 now pins seven invariants
+  against the harness source: pre-stash with `--include-untracked`,
+  submodule force-sync, bare rebase, absence of `git -c
+  rebase.autoStash`, absence of `git stash pop` inside the push
+  block, porcelain status logging, and stash-ref logging.  Credit
+  to the operator who ran the 2h / 4-agent codex-cli smoke on a
+  superproject-with-submodule repo and filed the bug report with
+  raw harness logs and the empirical failure-mode breakdown that
+  made this fix straightforward to scope.
+
 ## 0.20.3 — 2026-04-19
 
 - **Tolerate missing `stdbuf`/`setsid` on macOS CI runners.** The

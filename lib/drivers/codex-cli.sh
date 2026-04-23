@@ -208,18 +208,32 @@ agent_detect_fatal() {
     fi
 }
 
-# Detect retriable errors (rate limits, quota).
+# Detect retriable errors.
 # Returns non-empty string if the error is retriable, empty if fatal.
 # Args: <logfile> <exit_code>
+#
+# Two retriable classes:
+#   * rate_limited — quota / rate-limit / usage-cap signals.
+#   * transient    — SSE stream drops, 5xx gateway errors, connection
+#                    resets, DNS flaps, and OpenAI's generic "An error
+#                    occurred while processing your request. You can
+#                    retry your request" signature.  Codex CLI itself
+#                    only retries SSE reconnects 2/5 before giving up
+#                    and printing `fatal: Reconnecting... N/5 (stream
+#                    disconnected ...)`; without a transient class
+#                    here, the harness exits on that message even
+#                    though MAX_RETRY_WAIT is non-zero.
 agent_is_retriable() {
     local logfile="$1"
-    local _pattern='429\|rate.limit\|too many requests\|quota\|usage.limit\|hit your.*limit'
-    grep -qi "$_pattern" \
-        "$logfile" 2>/dev/null && echo "rate_limited" && return
-    if [ -f "${logfile}.err" ]; then
-        grep -qi "$_pattern" \
-            "${logfile}.err" 2>/dev/null && echo "rate_limited" && return
-    fi
+    local _rate='429\|rate.limit\|too many requests\|quota\|usage.limit\|hit your.*limit'
+    local _transient='stream disconnected\|reconnecting\.\.\.\|connection reset\|connection closed\|connection refused\|processing your request\|gateway timeout\|bad gateway\|service unavailable\|\b50[234]\b\|timed out\|temporarily unavailable'
+    for f in "$logfile" "${logfile}.err"; do
+        [ -f "$f" ] || continue
+        grep -qi "$_rate" "$f" 2>/dev/null \
+            && echo "rate_limited" && return
+        grep -qi "$_transient" "$f" 2>/dev/null \
+            && echo "transient" && return
+    done
     return 0
 }
 
