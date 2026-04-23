@@ -52,7 +52,7 @@ COMMIT_LOG=$(git log --oneline "$REMOTE_NAME/agent-work" ^HEAD)
 NEW_COMMITS=$(echo "$COMMIT_LOG" | grep -c . || true)
 echo ""
 echo "${NEW_COMMITS} new commits on agent-work:"
-echo "$COMMIT_LOG" | head -20
+echo "$COMMIT_LOG" | head -20 || true
 if [ "$NEW_COMMITS" -gt 20 ]; then
     echo "  ... and $((NEW_COMMITS - 20)) more"
 fi
