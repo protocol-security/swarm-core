@@ -907,9 +907,11 @@ assert_eq "push path force-syncs submodules" \
     "$(grep -cE '^[[:space:]]*git submodule update --init --recursive --force' "$HARNESS_FILE")"
 
 # (3) Positive: bare rebase -- pre-stashed state guarantees a clean tree.
+# The leading `-c core.hooksPath=/dev/null` override was added in the
+# 0.20.10 fix for issue #82 and is now part of the bare-form shape.
 assert_eq "push-path pull is the bare form (no autoStash)" \
     "1" \
-    "$(grep -cE '^[[:space:]]*if git pull --rebase origin agent-work' "$HARNESS_FILE")"
+    "$(grep -cE '^[[:space:]]*if git( -c core\.hooksPath=/dev/null)? pull --rebase origin agent-work' "$HARNESS_FILE")"
 
 # (4) Negative: autoStash must NOT come back as an invocation -- it
 # was the root cause of the failures this patch closes.  Match the
@@ -1004,14 +1006,27 @@ assert_eq "fallback commits with -C to keep author metadata" \
     "$(grep -cE 'commit --allow-empty-message -C "\$sha"' "$HARNESS_FILE")"
 
 # Hooks must be suppressed at every code site where git operates
-# on the scratch worktree so the context-stripping post-checkout
-# hook cannot interfere.  Five hits total: the preamble comment,
-# the worktree-add inline comment, the `git worktree add` itself
-# (0.20.6 fix for the "worktree add failed" regression), the
-# cherry-pick -n, and the commit.
+# on the scratch worktree AND on the primary session-end rebase
+# path so consumer-installed post-checkout / post-rewrite hooks
+# cannot interfere.  Nine hits total across comments and code:
+#   - preamble comment (§_scratch_worktree_push docstring)
+#   - worktree-add inline comment
+#   - `git worktree add` (0.20.6 fix for "worktree add failed")
+#   - cherry-pick -n
+#   - cherry-pick's follow-up commit
+#   - primary rebase-path preamble comment (0.20.10 #82 fix)
+#   - primary rebase-path inline reference
+#   - `git pull --rebase` on the primary path
+#   - `git push` on the primary path
 assert_eq "fallback disables hooks in the scratch worktree" \
-    "5" \
+    "9" \
     "$(grep -cE 'core\.hooksPath=/dev/null' "$HARNESS_FILE")"
+# Tighter pin: count only the actual `git -c core.hooksPath=/dev/null`
+# invocations (ignore comment prose).  Five on the primary+scratch
+# code paths.
+assert_eq "five git -c core.hooksPath=/dev/null invocations total" \
+    "5" \
+    "$(grep -cE 'git (-C "[^"]+" )?-c core\.hooksPath=/dev/null' "$HARNESS_FILE")"
 
 # Preamble comment references the push target once; the actual
 # `git -C "$_scratch" push` invocation is the second hit.
