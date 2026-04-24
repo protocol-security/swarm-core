@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.20.9 — 2026-04-23
+
+- **Fix: `dashboard.sh` / `costs.sh` / `lib/harness.sh` die with
+  `printf: <n>.<m>: invalid number` on hosts using `,` as the
+  decimal separator.**  All three scripts format decimals the
+  same way -- `printf '%.1f' "$(echo ... | bc -l)"` in the shell
+  tier, `awk "BEGIN { printf \"%.6f\" ... }"` for per-session
+  cost accounting in the harness -- and `bc` / most `awk`
+  implementations always emit `.` regardless of locale.  Bash's
+  builtin `printf` and GNU awk's `printf`, however, parse `%f`
+  arguments per LC_NUMERIC, so on a host with LC_ALL unset and
+  LANG pointing at a locale that uses `,` as the decimal
+  separator (de_DE, fr_FR, sv_SE, nl_NL, ...) the dashboard
+  greeted the operator with a garbled error line instead of a
+  tokens-per-second value, and the harness would silently
+  miscount session cost on any container running gawk under an
+  affected locale.
+
+  Fix: export `LC_NUMERIC=C` at the top of each entry point
+  (directly under `set -euo pipefail`, before any function is
+  defined or any `bc`/`awk`/`printf` runs), so internal number
+  parsing and formatting use `.` as the decimal separator
+  regardless of the operator's locale.  LC_ALL, LANG,
+  LC_MESSAGES, LC_TIME, and LC_COLLATE are left untouched, so
+  timestamps, error messages, and UI text still render in the
+  operator's language.
+
+  Tests: `tests/test_locale.sh` §1 pins the `export LC_NUMERIC=C`
+  literally on all three scripts (structural); §2 bootstraps a
+  comma-decimal locale either from the host's available locales
+  or via unprivileged `localedef` into a per-test `LOCPATH`
+  (glibc-only; skips gracefully on macOS); §3 reproduces the bug
+  by sourcing the formatting helpers under the broken locale
+  without the fix and asserts the subshell exits non-zero with
+  an `invalid number` error on stderr; §4 re-enables the fix in
+  the same subshell and asserts `format_tps`, `format_tokens`
+  (both the `M` and `k` branches), and `format_cost` all produce
+  `.`-separated output.
+
+  Reported by @friedger.
+
 ## 0.20.8 — 2026-04-23
 
 - **Fix: `harvest.sh` aborts mid-preview when `agent-work` has

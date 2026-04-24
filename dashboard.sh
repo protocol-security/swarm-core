@@ -1,6 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+# Force C numeric locale so `bc`, `awk`, and `printf '%f'` all
+# parse and format decimals with `.` regardless of the user's
+# LC_NUMERIC.  Otherwise locales with `,` as the decimal
+# separator (e.g. de_DE, fr_FR, sv_SE) break `printf '%.1f'
+# "$(bc -l ...)"` with `printf: <n>.<m>: invalid number`
+# because `bc` always emits `.` but `printf` parses per
+# LC_NUMERIC.  LC_ALL is left untouched so dates, messages,
+# and collation still render in the user's locale.
+export LC_NUMERIC=C
+
 # Always-on TUI dashboard for swarm agents.
 # Pure bash with ANSI escape codes and tput.
 
