@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.20.10 — 2026-04-23
+
+- **Fix: session-end `git pull --rebase && git push` fails every
+  retry when the target repo installs worktree-touching hooks.**
+  The push path in `lib/harness.sh` ran the primary rebase and
+  push with client-side hooks active.  When the consumer repo
+  installed a `post-checkout` or `post-rewrite` hook that
+  regenerates docs, stamps build artifacts, or otherwise
+  modifies tracked files, those hooks fired during the rebase's
+  internal checkouts under `.git/rebase-merge/` and re-dirtied
+  the tree that the pre-rebase stash + submodule-sync had just
+  cleaned.  Every one of the three primary retries hit the same
+  dirty-tree trap.  The `_scratch_worktree_push` fallback
+  recovered because it already passed `-c core.hooksPath=/dev/null`
+  on its `git worktree add`, cherry-pick, and commit -- but the
+  common case paid the cost of the rare case, and when
+  `/upstream` had any other transient issue on top (the reporter
+  hit a momentarily corrupt loose object from a concurrent
+  unpack on the bare repo) the fallback also failed and the
+  salvage-park push dropped the commit: scratch push rejected,
+  park push rejected too, harness logged "commits remain in
+  local repo", and the ephemeral container exited with the
+  agent's work lost.
+
+  Fix, part 1: pass `-c core.hooksPath=/dev/null` to both `git
+  pull --rebase` and `git push` on the primary session-end path,
+  matching what the scratch fallback already does.  Suppression
+  is safe: the swarm's own `prepare-commit-msg` and
+  `post-rewrite` hooks are both no-ops on commits that already
+  carry a `Model:` trailer, and every agent commit does because
+  `prepare-commit-msg` runs at commit time.  The override is
+  client-side only, so server-side hooks on `/upstream`
+  (pre-receive, update, post-receive) still run.
+
+  Fix, part 2: wrap the salvage-park push inside
+  `_scratch_worktree_push` in the same bounded
+  `for _ptry in 1 2 3` retry with 1..5s jitter that the primary
+  path uses, and gate the "parking also failed" error on a
+  `_park_ok` flag so a successful attempt 2 or 3 no longer gets
+  reported as a loss.  A transient `/upstream` hiccup now has
+  three chances to drain before the container exits.
+
+  Tests: `tests/test_session_end_push.sh` §1 pins
+  `-c core.hooksPath=/dev/null` on both primary git invocations
+  and on the scratch-fallback `worktree add` structurally; §2
+  pins the park retry loop's shape, backoff, logging, and
+  `_park_ok` gating against a regex-extracted slice of
+  `lib/harness.sh`; §3 proves the hook-suppression mechanism at
+  the elementary level (repo with a `post-checkout` hook fires
+  twice without the flag, zero times with it); §4 reproduces
+  the bug end-to-end by setting up two clones of a bare remote
+  that diverge on `agent-work`, installing a hostile
+  `post-checkout` hook in the second clone that rewrites a
+  tracked file, and asserting that without the fix `git pull
+  --rebase` leaves the tree dirty or fails, whereas with the
+  fix the rebase exits 0, the worktree is clean, HEAD is the
+  local commit correctly rebased onto the remote tip, and the
+  subsequent push lands; §5 drives the park retry idiom with a
+  fake `git` that fails a configurable number of push attempts
+  and asserts the loop survives 2 transient rejections with
+  `park_ok=true`, returns after 1 attempt when push succeeds
+  immediately, and exhausts with `park_ok=false` after 3
+  rejections.  `tests/test_harness.sh` pre-existing invariants
+  updated to match the new shape.
+
+  Reported by @BowTiedRadone (#82).
+
 ## 0.20.9 — 2026-04-23
 
 - **Fix: `dashboard.sh` / `costs.sh` / `lib/harness.sh` die with
