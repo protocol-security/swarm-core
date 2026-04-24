@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
+# Force C numeric locale so `awk` / `printf '%f'` parse and
+# format decimals with `.` regardless of the container's
+# LC_NUMERIC.  See dashboard.sh header for details.
+export LC_NUMERIC=C
+
 # Container entrypoint: clone, setup, loop agent sessions.
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then

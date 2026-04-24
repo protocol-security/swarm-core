@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
+# Force C numeric locale so `bc`, `awk`, and `printf '%f'` all
+# parse and format decimals with `.` regardless of the user's
+# LC_NUMERIC.  See dashboard.sh header for details.
+export LC_NUMERIC=C
+
 # Print cost and usage summary for swarm containers.
 # Usage: ./costs.sh [--json]
 
