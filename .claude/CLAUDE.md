@@ -80,3 +80,5 @@
   `fixup!`/`squash!` prefixes (enforced by CI).
 - Commit bodies: motivation, not just what changed.
 - Sentences in commit bodies end with a dot.
+
+<!-- CANARY: 114c1e52b479dc2795c42b655f73a15fd26d747d -->
