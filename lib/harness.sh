@@ -240,9 +240,24 @@ _scratch_worktree_push() {
     if [ "$_rc" -ne 0 ] && [ -n "$_shas" ]; then
         local _park_ref
         _park_ref="refs/heads/agent-parked/${AGENT_ID}-$(date -u +%Y%m%dT%H%M%SZ)"
-        if git push origin "HEAD:${_park_ref}" 2>&1 | hlog_pipe; then
-            hlog "scratch push: parked ${_n_shas} commit(s) at ${_park_ref#refs/heads/}"
-        else
+        # Retry the park push with the same bounded backoff as the
+        # primary rebase path.  Without this, a transient /upstream
+        # hiccup (e.g. a momentarily corrupt loose object during a
+        # concurrent unpack on the bare repo) silently drops the
+        # parked commit on the floor: scratch push already failed,
+        # harness logs "commits remain in local repo", and the
+        # container is ephemeral so the commit dies with it.
+        local _park_ok=false
+        for _ptry in 1 2 3; do
+            sleep $((RANDOM % 5 + 1))
+            if git push origin "HEAD:${_park_ref}" 2>&1 | hlog_pipe; then
+                hlog "scratch push: parked ${_n_shas} commit(s) at ${_park_ref#refs/heads/}"
+                _park_ok=true
+                break
+            fi
+            hlog "scratch push: park retry ${_ptry}/3"
+        done
+        if [ "$_park_ok" != true ]; then
             hlog_err "scratch push: parking also failed; commits remain in local repo"
         fi
     fi
@@ -668,8 +683,23 @@ while true; do
             # above guarantees a clean tree, so there is nothing for the
             # rebase to trip on and autoStash is intentionally absent
             # (see the comment block above for why).
-            if git pull --rebase origin agent-work 2>&1 | hlog_pipe \
-                    && git push origin agent-work 2>&1 | hlog_pipe; then
+            #
+            # core.hooksPath=/dev/null is also essential here.  Rebase
+            # drives internal checkouts through .git/rebase-merge/,
+            # firing post-checkout / post-rewrite on every pick.
+            # Consumer-installed hooks that touch the worktree
+            # (regenerate docs, stamp build artifacts, etc.) therefore
+            # re-dirty the tree mid-rebase and fail every retry.  Our
+            # own prepare-commit-msg / post-rewrite hooks (installed
+            # above) are no-ops for commits that already carry a
+            # `Model:` trailer, and every agent-made commit does,
+            # because prepare-commit-msg ran at commit time -- so
+            # suppressing both during the session-end rebase is safe.
+            # The `-c core.hooksPath=/dev/null` override only disables
+            # client-side hooks; server-side hooks on /upstream
+            # (pre-receive, etc.) still run.
+            if git -c core.hooksPath=/dev/null pull --rebase origin agent-work 2>&1 | hlog_pipe \
+                    && git -c core.hooksPath=/dev/null push origin agent-work 2>&1 | hlog_pipe; then
                 _push_ok=true
                 break
             fi
