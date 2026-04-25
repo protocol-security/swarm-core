@@ -1233,6 +1233,179 @@ rm -rf "$_sk_dir" "$_sk_home"
 
 # ============================================================
 echo ""
+echo "=== 37. bare preflight: stale vs unharvested ==="
+
+# Mirrors the divergence guard in launch.sh.  The `--is-ancestor`
+# check runs in the local repo (not in the bare) so the stale
+# case -- where LOCAL_HEAD is a commit that only exists in local
+# -- resolves correctly; running the check inside the bare would
+# fail to resolve LOCAL_HEAD and collapse stale into unharvested.
+# Returns 0 when the guard would allow the run, 1 (with an ERROR
+# line on stderr) when it would refuse.
+check_bare_preflight() {
+    local bare="$1" local_repo="$2"
+    [ -d "$bare" ] || return 0
+    local bare_head local_head
+    bare_head=$(git -C "$bare" rev-parse --verify --quiet \
+        refs/heads/agent-work 2>/dev/null || true)
+    local_head=$(git -C "$local_repo" rev-parse HEAD \
+        2>/dev/null || true)
+    [ -z "$bare_head" ] && return 0
+    [ "$bare_head" = "$local_head" ] && return 0
+    if git -C "$local_repo" merge-base --is-ancestor \
+            "$bare_head" HEAD 2>/dev/null; then
+        echo "ERROR: ${bare} is stale (agent-work" \
+             "${bare_head:0:7} behind local HEAD" \
+             "${local_head:0:7})." >&2
+        echo "       Remove it to start a fresh run from" \
+             "current HEAD:" >&2
+        echo "       rm -rf ${bare}" >&2
+    else
+        echo "ERROR: ${bare} has unharvested agent commits" \
+             "(agent-work ${bare_head:0:7} vs local HEAD" \
+             "${local_head:0:7})." >&2
+        echo "       Run harvest.sh first, or if you've" \
+             "already integrated those commits:" >&2
+        echo "       rm -rf ${bare}" >&2
+    fi
+    return 1
+}
+
+# Build a local repo with commits A, B on HEAD (where B is
+# LOCAL_HEAD).  A bare clone taken at B mirrors the happy path;
+# moving bare's agent-work forward to a fresh commit C created
+# in the bare itself models the unharvested case; advancing
+# local past B to D models the stale case; combining both models
+# divergence.
+_bp_local="$TMPDIR/bp-local"
+_bp_bare="$TMPDIR/bp-bare.git"
+git init -q -b main "$_bp_local"
+git -C "$_bp_local" -c user.name=t -c user.email=t@t \
+    commit --allow-empty -q -m "A"
+git -C "$_bp_local" -c user.name=t -c user.email=t@t \
+    commit --allow-empty -q -m "B"
+_bp_B=$(git -C "$_bp_local" rev-parse HEAD)
+
+# ------ 37.1 equal (guard does not fire) ------
+git clone -q --bare "$_bp_local" "$_bp_bare"
+git -C "$_bp_bare" branch -q agent-work "$_bp_B" 2>/dev/null \
+    || git -C "$_bp_bare" update-ref refs/heads/agent-work "$_bp_B"
+if check_bare_preflight "$_bp_bare" "$_bp_local" 2>/dev/null; then
+    _bp_eq_rc="zero"
+else
+    _bp_eq_rc="nonzero"
+fi
+assert_eq "equal BARE_HEAD / LOCAL_HEAD -> guard allows run" \
+    "zero" "$_bp_eq_rc"
+
+# ------ 37.2 unharvested (bare has a commit local doesn't) ------
+# Create commit C inside the bare on agent-work, mirroring an
+# agent push.  Uses `git -C $bare commit-tree` with B's tree so
+# the new commit's object lives only in the bare's objects/.
+_bp_C=$(git -C "$_bp_bare" commit-tree \
+    -p "$_bp_B" -m "C (agent)" "${_bp_B}^{tree}")
+git -C "$_bp_bare" update-ref refs/heads/agent-work "$_bp_C"
+_bp_unh_err=$(check_bare_preflight "$_bp_bare" "$_bp_local" \
+    2>&1 >/dev/null || true)
+assert_eq "unharvested -> 'has unharvested agent commits'" "1" \
+    "$(echo "$_bp_unh_err" \
+        | grep -cE 'has unharvested agent commits' || true)"
+assert_eq "unharvested -> names short BARE_HEAD" "1" \
+    "$(echo "$_bp_unh_err" \
+        | grep -cE "agent-work ${_bp_C:0:7}" || true)"
+assert_eq "unharvested -> names short LOCAL_HEAD" "1" \
+    "$(echo "$_bp_unh_err" \
+        | grep -cE "local HEAD ${_bp_B:0:7}" || true)"
+assert_eq "unharvested -> rm -rf remediation still offered" "1" \
+    "$(echo "$_bp_unh_err" \
+        | grep -cE "rm -rf ${_bp_bare}" || true)"
+if check_bare_preflight "$_bp_bare" "$_bp_local" \
+        >/dev/null 2>&1; then
+    _bp_unh_rc="zero"
+else
+    _bp_unh_rc="nonzero"
+fi
+assert_eq "unharvested -> non-zero exit" "nonzero" "$_bp_unh_rc"
+
+# ------ 37.3 stale (local has commit D that bare doesn't) ------
+# Reset bare back to B; advance local to D.
+git -C "$_bp_bare" update-ref refs/heads/agent-work "$_bp_B"
+git -C "$_bp_local" -c user.name=t -c user.email=t@t \
+    commit --allow-empty -q -m "D (local-only)"
+_bp_D=$(git -C "$_bp_local" rev-parse HEAD)
+_bp_stale_err=$(check_bare_preflight "$_bp_bare" "$_bp_local" \
+    2>&1 >/dev/null || true)
+assert_eq "stale -> 'is stale' wording" "1" \
+    "$(echo "$_bp_stale_err" \
+        | grep -cE 'is stale \(agent-work' || true)"
+assert_eq "stale -> 'behind local HEAD' wording" "1" \
+    "$(echo "$_bp_stale_err" \
+        | grep -cE 'behind local HEAD' || true)"
+assert_eq "stale -> leads with rm -rf as remediation" "1" \
+    "$(echo "$_bp_stale_err" \
+        | grep -cE 'Remove it to start a fresh run' || true)"
+assert_eq "stale -> does NOT instruct to run harvest.sh" "0" \
+    "$(echo "$_bp_stale_err" \
+        | grep -cE 'Run harvest\.sh first' || true)"
+assert_eq "stale -> names short BARE_HEAD" "1" \
+    "$(echo "$_bp_stale_err" \
+        | grep -cE "agent-work ${_bp_B:0:7}" || true)"
+assert_eq "stale -> names short LOCAL_HEAD" "1" \
+    "$(echo "$_bp_stale_err" \
+        | grep -cE "local HEAD ${_bp_D:0:7}" || true)"
+if check_bare_preflight "$_bp_bare" "$_bp_local" \
+        >/dev/null 2>&1; then
+    _bp_stale_rc="zero"
+else
+    _bp_stale_rc="nonzero"
+fi
+assert_eq "stale -> non-zero exit" "nonzero" "$_bp_stale_rc"
+
+# ------ 37.4 divergent (each side has commits the other lacks) ------
+# Give bare its own E on top of B while local still sits on D.
+_bp_E=$(git -C "$_bp_bare" commit-tree \
+    -p "$_bp_B" -m "E (agent)" "${_bp_B}^{tree}")
+git -C "$_bp_bare" update-ref refs/heads/agent-work "$_bp_E"
+_bp_div_err=$(check_bare_preflight "$_bp_bare" "$_bp_local" \
+    2>&1 >/dev/null || true)
+# Divergent collapses into the unharvested branch per spec --
+# the goal is only that the operator sees both SHAs and knows
+# rm -rf is available.
+assert_eq "divergent -> falls through to unharvested wording" "1" \
+    "$(echo "$_bp_div_err" \
+        | grep -cE 'has unharvested agent commits' || true)"
+assert_eq "divergent -> names short BARE_HEAD" "1" \
+    "$(echo "$_bp_div_err" \
+        | grep -cE "agent-work ${_bp_E:0:7}" || true)"
+assert_eq "divergent -> names short LOCAL_HEAD" "1" \
+    "$(echo "$_bp_div_err" \
+        | grep -cE "local HEAD ${_bp_D:0:7}" || true)"
+
+# ------ 37.5 bare absent (guard is a no-op) ------
+rm -rf "$_bp_bare"
+if check_bare_preflight "$_bp_bare" "$_bp_local" \
+        >/dev/null 2>&1; then
+    _bp_abs_rc="zero"
+else
+    _bp_abs_rc="nonzero"
+fi
+assert_eq "bare missing -> guard is a no-op" "zero" "$_bp_abs_rc"
+
+# ------ 37.6 bare exists but agent-work ref missing (guard no-op) ------
+git init -q --bare "$_bp_bare"
+if check_bare_preflight "$_bp_bare" "$_bp_local" \
+        >/dev/null 2>&1; then
+    _bp_noref_rc="zero"
+else
+    _bp_noref_rc="nonzero"
+fi
+assert_eq "bare without agent-work ref -> guard is a no-op" \
+    "zero" "$_bp_noref_rc"
+
+rm -rf "$_bp_local" "$_bp_bare"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

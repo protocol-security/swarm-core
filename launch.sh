@@ -160,14 +160,36 @@ cmd_start() {
         fi
     done <<< "$group_prompts"
 
-    # Refuse to overwrite a bare repo that has unharvested commits.
+    # Refuse to overwrite a bare repo that diverges from local HEAD.
+    # Distinguish two directions so the message leads with the remediation
+    # that actually works.  The `--is-ancestor` check runs in the local
+    # repo, not in the bare: in the "local ahead" case LOCAL_HEAD is not
+    # in the bare's object db, so running the check in the bare would
+    # always return non-zero and collapse the stale case into the
+    # unharvested branch.  Running in local works across all three cases
+    # because bare's objects are either (a) still in local (inherited at
+    # clone time, so ancestry is resolvable -> stale) or (b) only in
+    # bare (agent-produced post-clone, so BARE_HEAD errors out here ->
+    # unharvested, which also catches the truly-divergent case).
     if [ -d "$BARE_REPO" ]; then
-        BARE_HEAD=$(git -C "$BARE_REPO" rev-parse refs/heads/agent-work 2>/dev/null || true)
+        BARE_HEAD=$(git -C "$BARE_REPO" rev-parse --verify --quiet refs/heads/agent-work 2>/dev/null || true)
         LOCAL_HEAD=$(git rev-parse HEAD 2>/dev/null || true)
         if [ -n "$BARE_HEAD" ] && [ "$BARE_HEAD" != "$LOCAL_HEAD" ]; then
-            echo "ERROR: ${BARE_REPO} has unharvested agent commits." >&2
-            echo "       Run harvest.sh first, or remove it manually:" >&2
-            echo "       rm -rf ${BARE_REPO}" >&2
+            if git merge-base --is-ancestor "$BARE_HEAD" HEAD 2>/dev/null; then
+                echo "ERROR: ${BARE_REPO} is stale (agent-work" \
+                     "${BARE_HEAD:0:7} behind local HEAD" \
+                     "${LOCAL_HEAD:0:7})." >&2
+                echo "       Remove it to start a fresh run from" \
+                     "current HEAD:" >&2
+                echo "       rm -rf ${BARE_REPO}" >&2
+            else
+                echo "ERROR: ${BARE_REPO} has unharvested agent" \
+                     "commits (agent-work ${BARE_HEAD:0:7} vs local" \
+                     "HEAD ${LOCAL_HEAD:0:7})." >&2
+                echo "       Run harvest.sh first, or if you've" \
+                     "already integrated those commits:" >&2
+                echo "       rm -rf ${BARE_REPO}" >&2
+            fi
             exit 1
         fi
     fi
