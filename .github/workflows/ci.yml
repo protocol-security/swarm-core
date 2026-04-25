@@ -44,7 +44,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+
+      - name: Fetch master
+        run: |
+          git fetch origin master:refs/remotes/origin/master
+
+      - name: Ensure branch is up to date with master
+        run: |
+          head="${{ github.event.pull_request.head.sha }}"
+          if ! git merge-base --is-ancestor origin/master "$head"; then
+            echo "::error::PR branch is behind master. Please rebase onto"
+            echo "::error::master (we keep master linear -- don't merge"
+            echo "::error::master into your branch)."
+            exit 1
+          fi
+
       - name: Validate commit messages
         run: |
           base="${{ github.event.pull_request.base.sha }}"
@@ -56,24 +72,9 @@ jobs:
             if git log -1 --format='%P' "$sha" | grep -q ' '; then
               continue
             fi
-            # Must start with uppercase.
-            if ! echo "$subject" | grep -qE '^[A-Z]'; then
-              echo "::error::Commit $sha: subject must start with uppercase: $subject"
-              ok=false
-            fi
-            # No trailing period.
-            if echo "$subject" | grep -qE '\.$'; then
-              echo "::error::Commit $sha: subject must not end with a period: $subject"
-              ok=false
-            fi
-            # Max 72 characters.
-            if [ "${#subject}" -gt 72 ]; then
-              echo "::error::Commit $sha: subject exceeds 72 characters (${#subject}): $subject"
-              ok=false
-            fi
-            # No fixup/squash leftovers.
-            if echo "$subject" | grep -qE '^(fixup|squash)!'; then
-              echo "::error::Commit $sha: fixup/squash commits must be cleaned up: $subject"
+            # Reject cleanup commits that should not land in history.
+            if echo "$subject" | grep -qEi '^(fixup|squash|wip)!?'; then
+              echo "::error::Commit $sha must be cleaned up: $subject"
               ok=false
             fi
           done < <(git rev-list "$base".."$head")
