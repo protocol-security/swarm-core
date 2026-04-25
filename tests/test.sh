@@ -290,6 +290,18 @@ cmd_unit() {
             [ -n "$n" ] && total_tests=$((total_tests + n))
         else
             printf "  FAIL  %-24s\n" "$name"
+            # Surface explicit FAIL: lines (with the expected/actual
+            # context printed by assert_eq/assert_contains) before
+            # the tail snippet -- when many assertions run after the
+            # failing one, tail -20 buries the FAIL: marker and CI
+            # logs lose the only diagnostic.
+            local fail_lines
+            fail_lines=$(printf '%s\n' "$output" \
+                | grep -A 2 '^  FAIL:' || true)
+            if [ -n "$fail_lines" ]; then
+                printf '%s\n' "$fail_lines" | sed 's/^/        /'
+                echo "        ---"
+            fi
             printf '%s\n' "$output" | tail -20 | sed 's/^/        /'
             fail=$((fail + 1))
         fi
