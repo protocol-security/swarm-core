@@ -1302,7 +1302,11 @@ assert_eq "equal BARE_HEAD / LOCAL_HEAD -> guard allows run" \
 # Create commit C inside the bare on agent-work, mirroring an
 # agent push.  Uses `git -C $bare commit-tree` with B's tree so
 # the new commit's object lives only in the bare's objects/.
-_bp_C=$(git -C "$_bp_bare" commit-tree \
+# Pass -c user.{name,email} explicitly: commit-tree refuses to
+# stamp without an identity, and CI runners may have neither a
+# global git config nor a usable getpwuid gecos fallback.
+_bp_C=$(git -c user.name=t -c user.email=t@t \
+    -C "$_bp_bare" commit-tree \
     -p "$_bp_B" -m "C (agent)" "${_bp_B}^{tree}")
 git -C "$_bp_bare" update-ref refs/heads/agent-work "$_bp_C"
 _bp_unh_err=$(check_bare_preflight "$_bp_bare" "$_bp_local" \
@@ -1363,7 +1367,8 @@ assert_eq "stale -> non-zero exit" "nonzero" "$_bp_stale_rc"
 
 # ------ 37.4 divergent (each side has commits the other lacks) ------
 # Give bare its own E on top of B while local still sits on D.
-_bp_E=$(git -C "$_bp_bare" commit-tree \
+_bp_E=$(git -c user.name=t -c user.email=t@t \
+    -C "$_bp_bare" commit-tree \
     -p "$_bp_B" -m "E (agent)" "${_bp_B}^{tree}")
 git -C "$_bp_bare" update-ref refs/heads/agent-work "$_bp_E"
 _bp_div_err=$(check_bare_preflight "$_bp_bare" "$_bp_local" \
