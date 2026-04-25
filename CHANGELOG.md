@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.20.11 — 2026-04-24
+
+- **Fix: `launch.sh` bare-repo preflight sends the operator
+  at `harvest.sh` even when local HEAD is strictly ahead of
+  the bare.**  The divergence guard refused every
+  `BARE_HEAD != LOCAL_HEAD` case with the same message, but
+  when local is ahead of the bare `harvest.sh` has nothing
+  to collect and the only workable remediation is `rm -rf`
+  on the bare.  Post-harvest cherry-picks of recovered
+  `agent-parked/*` refs (routine under 0.20.10's retry park),
+  squash/rebase of the harvested branch before the next phase,
+  and topic branches forked from post-harvest state all land
+  here.
+
+  Fix: distinguish the two directions with `git merge-base
+  --is-ancestor $BARE_HEAD HEAD` in the local repo.  Running
+  the check in the bare (as first drafted in the report) would
+  fail to resolve `LOCAL_HEAD` in the stale case -- local's new
+  commit is not in the bare's object db -- and collapse stale
+  into unharvested, leaving the bug in place.  In local,
+  ancestry resolves cleanly across all three cases:
+  `BARE_HEAD` in local and ancestor of `HEAD` -> stale;
+  `BARE_HEAD` absent from local -> unharvested (which also
+  covers true divergence).  Both messages name short
+  `BARE_HEAD` and `LOCAL_HEAD` so the operator can verify at
+  a glance, and the stale branch leads with `rm -rf` as the
+  primary remediation.
+
+  Also switch the `rev-parse refs/heads/agent-work` call to
+  `--verify --quiet`.  Without it, a bare that exists but
+  lacks the `agent-work` ref captures the literal pathspec
+  (`refs/heads/agent-work`) into `BARE_HEAD`, the divergence
+  test sees a non-empty value, and the guard fires on an
+  otherwise-empty bare with a garbage SHA.
+
+  Tests: `tests/test_launch.sh` §37 mirrors the guard as a
+  helper and drives it against six scenarios: equal (guard
+  allows), unharvested (bare has a commit local doesn't),
+  stale (local has a commit bare doesn't), divergent (each
+  side has unique commits), bare absent (no-op), bare present
+  without `agent-work` ref (no-op).  Each failure branch pins
+  both the wording and the presence of both short SHAs in
+  the output.
+
 ## 0.20.10 — 2026-04-23
 
 - **Fix: session-end `git pull --rebase && git push` fails every
