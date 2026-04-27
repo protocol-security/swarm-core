@@ -260,7 +260,7 @@ cmd_start() {
     local _cc_version
     _cc_version=$(jq -r '.claude_code_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
     local _codex_cli_version
-    _codex_cli_version=$(jq -r '._codex_cli_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    _codex_cli_version=$(jq -r '.codex_cli_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
 
     echo "--- Building agent image (agents: ${_swarm_agents}) ---"
     docker build -t "$IMAGE_NAME" \
