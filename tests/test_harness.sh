@@ -655,6 +655,33 @@ assert_eq "signing key absent -> gpgsign false" \
     "none|false" \
     "$(run_signing_config false)"
 
+# Source key is world-readable (e.g. 0644 from a host bind
+# mount); the function must copy it to a swarm-owned scratch
+# path with 0600 perms and point user.signingkey at the copy,
+# so ssh-keygen does not reject it as "UNPROTECTED PRIVATE KEY
+# FILE".
+copy_sandbox="$TMPDIR/sign-copy-$$-${RANDOM}"
+mkdir -p "$copy_sandbox"
+copy_src="$copy_sandbox/src_key"
+copy_dst="$copy_sandbox/dst_key"
+echo "fake-key-bytes" > "$copy_src"
+chmod 644 "$copy_src"
+HOME="$copy_sandbox" configure_git_signing "$copy_src" "$copy_dst"
+assert_eq "key copied to scratch location" \
+    "yes" \
+    "$([ -f "$copy_dst" ] && echo yes || echo no)"
+assert_eq "key copy has 0600 perms" \
+    "600" \
+    "$(stat -c '%a' "$copy_dst" 2>/dev/null \
+        || stat -f '%Lp' "$copy_dst" 2>/dev/null)"
+assert_eq "user.signingkey points at copy" \
+    "$copy_dst" \
+    "$(HOME="$copy_sandbox" git config --global --get user.signingkey)"
+assert_eq "no swarm key written under \$HOME" \
+    "no" \
+    "$([ -e "$copy_sandbox/.ssh/swarm-signing-key" ] && echo yes || echo no)"
+rm -rf "$copy_sandbox"
+
 # Defaults to /etc/swarm/signing_key when called with no arg;
 # verify by pointing HOME at a sandbox where that path doesn't
 # exist and expecting the "absent" branch.
