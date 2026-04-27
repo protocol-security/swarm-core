@@ -5,6 +5,12 @@ set -euo pipefail
 # Unit tests for launch.sh parsing logic.
 # No Docker or API key required.
 
+# Isolate from host gitconfig (signing keys, hooks, templates).
+# Several tests build scratch repos and run `git commit` /
+# `commit-tree`;
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
 PASS=0
 FAIL=0
 TMPDIR=$(mktemp -d)
