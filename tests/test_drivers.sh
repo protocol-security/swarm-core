@@ -820,6 +820,7 @@ assert_contains "codex jq has changes path" "changes" "$CDX_JQ"
 CDX_INSTALL=$(agent_install_cmd)
 assert_contains "codex install has npm" "npm" "$CDX_INSTALL"
 assert_contains "codex install has @openai/codex" "@openai/codex" "$CDX_INSTALL"
+assert_contains "codex install supports version" "CODEX_CLI_VERSION" "$CDX_INSTALL"
 
 # ============================================================
 echo ""
