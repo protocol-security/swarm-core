@@ -13,7 +13,8 @@
 # The destination lives outside $HOME on purpose.  $HOME is the
 # agent's namespace, not the harness's.  Default is /dev/shm
 # (tmpfs, RAM-backed, per-container in Docker) so the private
-# key bytes never hit disk; 0600 perms keep it from other users.
+# key bytes never hit disk; 0600 perms keep it from any other
+# UID that might run alongside the agent in the same container.
 #
 # Sourced by lib/harness.sh inside the container (source key
 # at /etc/swarm/signing_key) and by tests/test_harness.sh with
