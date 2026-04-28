@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.20.13 — 2026-04-28
+
+- **Fix: codex-cli driver misclassifies "Selected model is at
+  capacity" as non-retriable.** OpenAI's fleet-saturation
+  response is `{"message": "Selected model is at capacity.
+  Please try a different model."}` -- a genuine short-lived
+  transient.  `agent_is_retriable` in
+  `lib/drivers/codex-cli.sh` only matched the rate-limit/quota
+  class and v0.20.7's transient class (SSE drops, 5xx,
+  connection layer), so the capacity message fell through to
+  non-retriable and killed the agent with `exiting due to
+  unrecoverable error`.
+
+  Worst at quota-reset boundaries: when every quota-bound
+  client retries simultaneously, the model fleet is briefly
+  saturated and capacity errors land on the first post-reset
+  session attempt -- exactly the moment the backoff loop
+  should be re-entering, not exiting.  Observed in production
+  swarm runs as silent agent loss with no clean recovery path
+  (container has to be `docker start`ed by hand) and outcomes
+  that depend on which retry happens to land a few seconds
+  later when capacity frees up.
+
+  Fix: extend the `_transient` regex with `at capacity` and
+  `please try a different model`.  Either substring alone
+  classifies the response as transient, so an OpenAI wording
+  tweak that drops one half doesn't reintroduce the
+  regression.  Genuinely fatal conditions (invalid auth,
+  model not found, etc.) still return empty.
+
+  Tests: `tests/test_harness.sh` §14b adds three assertions
+  matching the issue's reproduction: the full JSON message,
+  the `at capacity` substring alone, and the `please try a
+  different model` substring alone.  Existing non-retriable
+  counter-tests (auth error, model not found) still pass, so
+  the change is additive.  Closes #85.
+
 ## 0.20.12 — 2026-04-28
 
 - **Fix: codex agents commit unsigned even when `signing_key`
