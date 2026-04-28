@@ -70,8 +70,8 @@ Per-group fields in `swarm.json` `agents` array:
 Top-level fields: `prompt`, `setup`, `max_idle` (default: `3`),
 `max_retry_wait`, `driver`, `inject_git_rules`,
 `git_user` (`name`, `email`, `signing_key`),
-`claude_code_version`, `title`, `tag`, `pricing`,
-`docker_args`, `post_process`.
+`claude_code_version`, `codex_cli_version`, `title`, `tag`,
+`pricing`, `docker_args`, `post_process`.
 
 ### Retry on rate limits
 
@@ -186,14 +186,25 @@ to `$HOME` before mounting):
 ```
 
 The key is bind-mounted read-only into each container at
-`/etc/swarm/signing_key`, and git inside the container is
-configured with:
+`/etc/swarm/signing_key`.  The harness then copies it to
+`/dev/shm/swarm-signing-key` with `0600` perms before
+configuring git:
 
 ```
 gpg.format      = ssh
-user.signingkey = /etc/swarm/signing_key
+user.signingkey = /dev/shm/swarm-signing-key
 commit.gpgsign  = true
 ```
+
+The copy step exists because `ssh-keygen -Y sign` refuses
+world-readable keys with `UNPROTECTED PRIVATE KEY FILE`, and
+the bind mount inherits host perms (often `0644` for shared
+swarm-bot keys).  `/dev/shm` is tmpfs, RAM-backed, and
+per-container in Docker, so the private key bytes never hit
+disk.  Without the copy, signing fails inside the container,
+and Codex CLI silently retries with `--no-gpg-sign`
+([openai/codex#6199](https://github.com/openai/codex/issues/6199)),
+landing commits without a signature.
 
 When `signing_key` is absent -- or resolves to empty via an
 unset `$VAR` -- signing is explicitly disabled inside the
@@ -555,6 +566,20 @@ swarmfile:
 ```json
 { "claude_code_version": "1.0.30" }
 ```
+
+### Pinning Codex CLI version
+
+By default the Docker image installs the latest Codex CLI.
+To pin a specific version, set `codex_cli_version` in the
+swarmfile:
+
+```json
+{ "codex_cli_version": "0.125.0" }
+```
+
+The value is forwarded to `npm install -g @openai/codex@<ver>`
+inside the image build.  Leave the field unset (or empty) to
+keep the default "latest published release" behavior.
 
 ### Writing a new driver
 
