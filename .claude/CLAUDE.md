@@ -112,7 +112,7 @@ Drafting the PR:
   `CHANGELOG.md`.  Code lives in its own preceding commit.
 - After every merge to master that changes VERSION,
   immediately create an annotated tag on the merge commit:
-  `git tag -a v$VERSION $MERGE_COMMIT -m "v$VERSION — summary"`.
+  `git tag -a v$VERSION $MERGE_COMMIT -m "v$VERSION -- summary"`.
 - Verify: `git tag -l "v$(cat VERSION)"`.  If the tag is
   missing, create it before doing anything else.
 - Always prompt the user to push: `git push origin --tags`.
