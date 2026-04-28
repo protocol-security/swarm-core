@@ -23,7 +23,11 @@ configure_git_signing() {
     local src_key="${1:-/etc/swarm/signing_key}"
     local dst_key="${2:-/dev/shm/swarm-signing-key}"
     if [ -f "$src_key" ]; then
-        install -m 0600 "$src_key" "$dst_key"
+        # Fail-fast on install errors (missing /dev/shm, full
+        # tmpfs, perms): otherwise user.signingkey would point
+        # at a non-existent file and every later commit would
+        # silently fail to sign.
+        install -m 0600 "$src_key" "$dst_key" || return 1
         git config --global gpg.format ssh
         git config --global user.signingkey "$dst_key"
         git config --global commit.gpgsign true
