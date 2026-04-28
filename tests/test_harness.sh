@@ -632,13 +632,14 @@ run_signing_config() {
     local create_key="$1"
     local sandbox="$TMPDIR/sign-sandbox-$$-${RANDOM}"
     local key_path="$sandbox/signing_key"
+    local dst_path="$sandbox/dst_key"
     mkdir -p "$sandbox"
 
     if [ "$create_key" = "true" ]; then
         touch "$key_path"
     fi
 
-    HOME="$sandbox" configure_git_signing "$key_path"
+    HOME="$sandbox" configure_git_signing "$key_path" "$dst_path"
 
     local format gpgsign
     format=$(HOME="$sandbox" git config --global --get gpg.format \
@@ -681,6 +682,27 @@ assert_eq "no swarm key written under \$HOME" \
     "no" \
     "$([ -e "$copy_sandbox/.ssh/swarm-signing-key" ] && echo yes || echo no)"
 rm -rf "$copy_sandbox"
+
+# When install fails (dst dir missing), the function must return
+# non-zero AND must NOT poison user.signingkey with a path that
+# doesn't exist -- otherwise every later commit silently fails
+# to sign.
+fail_sandbox="$TMPDIR/sign-fail-$$-${RANDOM}"
+mkdir -p "$fail_sandbox"
+fail_src="$fail_sandbox/src_key"
+fail_dst="$fail_sandbox/no/such/dir/dst_key"
+touch "$fail_src"
+fail_rc=0
+HOME="$fail_sandbox" configure_git_signing "$fail_src" "$fail_dst" \
+    >/dev/null 2>&1 || fail_rc=$?
+assert_eq "install failure -> non-zero return" \
+    "1" \
+    "$fail_rc"
+assert_eq "install failure -> user.signingkey not set" \
+    "" \
+    "$(HOME="$fail_sandbox" git config --global --get user.signingkey \
+        2>/dev/null)"
+rm -rf "$fail_sandbox"
 
 # Defaults to /etc/swarm/signing_key when called with no arg;
 # verify by pointing HOME at a sandbox where that path doesn't
