@@ -822,6 +822,17 @@ assert_contains "codex install has npm" "npm" "$CDX_INSTALL"
 assert_contains "codex install has @openai/codex" "@openai/codex" "$CDX_INSTALL"
 assert_contains "codex install supports version" "CODEX_CLI_VERSION" "$CDX_INSTALL"
 
+# Behavioral check: simulate Docker's expansion of the heredoc to guard against
+# a future typo in ${CODEX_CLI_VERSION:+@$CODEX_CLI_VERSION}. Strip the leading
+# "RUN " so we can eval the install line in a subshell.
+CDX_INSTALL_LINE="${CDX_INSTALL#RUN }"
+assert_eq "codex install: empty version -> @openai/codex (no @)" \
+    "npm install -g @openai/codex" \
+    "$(CODEX_CLI_VERSION="" eval "echo $CDX_INSTALL_LINE")"
+assert_eq "codex install: pinned version -> @openai/codex@<ver>" \
+    "npm install -g @openai/codex@0.125.0" \
+    "$(CODEX_CLI_VERSION="0.125.0" eval "echo $CDX_INSTALL_LINE")"
+
 # ============================================================
 echo ""
 echo "=== 31. Codex driver — agent_settings ==="
