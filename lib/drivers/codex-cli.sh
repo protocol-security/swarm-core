@@ -226,7 +226,7 @@ agent_detect_fatal() {
 agent_is_retriable() {
     local logfile="$1"
     local _rate='429\|rate.limit\|too many requests\|quota\|usage.limit\|hit your.*limit'
-    local _transient='stream disconnected\|reconnecting\.\.\.\|connection reset\|connection closed\|connection refused\|processing your request\|gateway timeout\|bad gateway\|service unavailable\|\b50[234]\b\|timed out\|temporarily unavailable'
+    local _transient='stream disconnected\|reconnecting\.\.\.\|connection reset\|connection closed\|connection refused\|processing your request\|gateway timeout\|bad gateway\|service unavailable\|\b50[234]\b\|timed out\|temporarily unavailable\|at capacity\|please try a different model'
     for f in "$logfile" "${logfile}.err"; do
         [ -f "$f" ] || continue
         grep -qi "$_rate" "$f" 2>/dev/null \

@@ -609,6 +609,22 @@ assert_eq "backoff capped at 1800" "1800" "$(simulate_backoff 10)"
     assert_eq "retriable: request timeout" "transient" \
         "$(probe_retriable 'request timed out after 60s')"
 
+    # Capacity-throttle (#85): OpenAI's fleet-saturation
+    # response is a genuine transient -- short-lived, retrying
+    # in seconds-to-minutes generally succeeds.  Pre-fix, the
+    # codex-cli driver fell through to non-retriable on this
+    # message and killed the agent at quota-reset boundaries
+    # when many clients contended for the same fleet.  The
+    # full message and either substring alone must classify as
+    # transient so future OpenAI wording tweaks don't regress
+    # the fix.
+    assert_eq "retriable: at-capacity full message" "transient" \
+        "$(probe_retriable '{"message": "Selected model is at capacity. Please try a different model."}')"
+    assert_eq "retriable: at-capacity substring" "transient" \
+        "$(probe_retriable 'Selected model is at capacity.')"
+    assert_eq "retriable: try-different-model substring" "transient" \
+        "$(probe_retriable 'Please try a different model.')"
+
     # Genuinely fatal errors must NOT be reclassified as
     # transient.  Auth failures, model-not-found, invalid-key etc.
     # need to fail fast so operators see the configuration bug.
