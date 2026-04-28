@@ -5,6 +5,12 @@ set -euo pipefail
 # Unit tests for launch.sh parsing logic.
 # No Docker or API key required.
 
+# Isolate from host gitconfig (signing keys, hooks, templates).
+# Several tests build scratch repos and run `git commit` /
+# `commit-tree`;
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
 PASS=0
 FAIL=0
 TMPDIR=$(mktemp -d)
@@ -826,6 +832,30 @@ JSON
 
 assert_eq "cc version absent" "" \
     "$(jq -r '.claude_code_version // empty' "$TMPDIR/cc_no_version.json")"
+
+# Mirror of the cc version test for the codex_cli_version field
+# parsed by launch.sh's --build-arg plumbing -- pins the jq filter
+# so a future typo in either path is caught immediately.
+cat > "$TMPDIR/codex_pinned.json" <<'JSON'
+{
+  "prompt": "unused",
+  "codex_cli_version": "0.125.0",
+  "agents": [{"count": 1, "driver": "codex-cli", "model": "gpt-5.4"}]
+}
+JSON
+
+assert_eq "codex version present" "0.125.0" \
+    "$(jq -r '.codex_cli_version // empty' "$TMPDIR/codex_pinned.json")"
+
+cat > "$TMPDIR/codex_no_version.json" <<'JSON'
+{
+  "prompt": "unused",
+  "agents": [{"count": 1, "driver": "codex-cli", "model": "gpt-5.4"}]
+}
+JSON
+
+assert_eq "codex version absent" "" \
+    "$(jq -r '.codex_cli_version // empty' "$TMPDIR/codex_no_version.json")"
 
 # ============================================================
 echo ""

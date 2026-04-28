@@ -304,8 +304,9 @@ agent_docker_auth() {
 }
 
 # Dockerfile fragment to install this agent's CLI.
+# CODEX_CLI_VERSION is a Docker build-arg; empty = latest.
 agent_install_cmd() {
     cat <<'INSTALL'
-RUN npm install -g @openai/codex
+RUN npm install -g "@openai/codex${CODEX_CLI_VERSION:+@$CODEX_CLI_VERSION}"
 INSTALL
 }

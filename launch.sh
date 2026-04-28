@@ -259,11 +259,14 @@ cmd_start() {
 
     local _cc_version
     _cc_version=$(jq -r '.claude_code_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    local _codex_cli_version
+    _codex_cli_version=$(jq -r '.codex_cli_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
 
     echo "--- Building agent image (agents: ${_swarm_agents}) ---"
     docker build -t "$IMAGE_NAME" \
         --build-arg "SWARM_AGENTS=${_swarm_agents}" \
         ${_cc_version:+--build-arg "CLAUDE_CODE_VERSION=${_cc_version}"} \
+        ${_codex_cli_version:+--build-arg "CODEX_CLI_VERSION=${_codex_cli_version}"} \
         -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
 
     # Build mirror volume args from discovered submodules.

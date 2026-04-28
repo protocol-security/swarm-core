@@ -632,13 +632,14 @@ run_signing_config() {
     local create_key="$1"
     local sandbox="$TMPDIR/sign-sandbox-$$-${RANDOM}"
     local key_path="$sandbox/signing_key"
+    local dst_path="$sandbox/dst_key"
     mkdir -p "$sandbox"
 
     if [ "$create_key" = "true" ]; then
         touch "$key_path"
     fi
 
-    HOME="$sandbox" configure_git_signing "$key_path"
+    HOME="$sandbox" configure_git_signing "$key_path" "$dst_path"
 
     local format gpgsign
     format=$(HOME="$sandbox" git config --global --get gpg.format \
@@ -654,6 +655,54 @@ assert_eq "signing key present -> ssh signing" \
 assert_eq "signing key absent -> gpgsign false" \
     "none|false" \
     "$(run_signing_config false)"
+
+# Source key is world-readable (e.g. 0644 from a host bind
+# mount); the function must copy it to a swarm-owned scratch
+# path with 0600 perms and point user.signingkey at the copy,
+# so ssh-keygen does not reject it as "UNPROTECTED PRIVATE KEY
+# FILE".
+copy_sandbox="$TMPDIR/sign-copy-$$-${RANDOM}"
+mkdir -p "$copy_sandbox"
+copy_src="$copy_sandbox/src_key"
+copy_dst="$copy_sandbox/dst_key"
+echo "fake-key-bytes" > "$copy_src"
+chmod 644 "$copy_src"
+HOME="$copy_sandbox" configure_git_signing "$copy_src" "$copy_dst"
+assert_eq "key copied to scratch location" \
+    "yes" \
+    "$([ -f "$copy_dst" ] && echo yes || echo no)"
+assert_eq "key copy has 0600 perms" \
+    "600" \
+    "$(stat -c '%a' "$copy_dst" 2>/dev/null \
+        || stat -f '%Lp' "$copy_dst" 2>/dev/null)"
+assert_eq "user.signingkey points at copy" \
+    "$copy_dst" \
+    "$(HOME="$copy_sandbox" git config --global --get user.signingkey)"
+assert_eq "no swarm key written under \$HOME" \
+    "no" \
+    "$([ -e "$copy_sandbox/.ssh/swarm-signing-key" ] && echo yes || echo no)"
+rm -rf "$copy_sandbox"
+
+# When install fails (dst dir missing), the function must return
+# non-zero AND must NOT poison user.signingkey with a path that
+# doesn't exist -- otherwise every later commit silently fails
+# to sign.
+fail_sandbox="$TMPDIR/sign-fail-$$-${RANDOM}"
+mkdir -p "$fail_sandbox"
+fail_src="$fail_sandbox/src_key"
+fail_dst="$fail_sandbox/no/such/dir/dst_key"
+touch "$fail_src"
+fail_rc=0
+HOME="$fail_sandbox" configure_git_signing "$fail_src" "$fail_dst" \
+    >/dev/null 2>&1 || fail_rc=$?
+assert_eq "install failure -> non-zero return" \
+    "1" \
+    "$fail_rc"
+assert_eq "install failure -> user.signingkey not set" \
+    "" \
+    "$(HOME="$fail_sandbox" git config --global --get user.signingkey \
+        2>/dev/null)"
+rm -rf "$fail_sandbox"
 
 # Defaults to /etc/swarm/signing_key when called with no arg;
 # verify by pointing HOME at a sandbox where that path doesn't

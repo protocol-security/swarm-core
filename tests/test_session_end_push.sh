@@ -11,6 +11,11 @@ set -euo pipefail
 #   the hook-suppression mechanism end-to-end, and pin the
 #   park-push retry loop both structurally and behaviorally.
 
+# Isolate from host gitconfig (signing keys, hooks, templates).
+# This test exercises rebase/push mechanics, not signing.
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
 PASS=0
 FAIL=0
 TMPDIR=$(mktemp -d)

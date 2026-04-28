@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.20.12 — 2026-04-28
+
+- **Fix: codex agents commit unsigned even when `signing_key`
+  is configured.**  The bind-mounted `/etc/swarm/signing_key`
+  inherits host perms (often `0644` for shared swarm-bot
+  keys), and `ssh-keygen -Y sign` refuses world-readable keys
+  with `UNPROTECTED PRIVATE KEY FILE`.  Claude Code surfaces
+  the failure; Codex CLI silently retries the same commit
+  with `--no-gpg-sign` (openai/codex#6199), so commits land
+  without a signature and signing-required branches reject
+  the push hours later.  See
+  https://github.com/openai/codex/issues/6199.
+
+  Fix: `lib/signing.sh` now `install -m 0600`'s the source key
+  to `/dev/shm/swarm-signing-key` (tmpfs, RAM-backed,
+  per-container in Docker -- private key bytes never hit disk)
+  and points `user.signingkey` at the copy.  `install` failure
+  short-circuits with `return 1` before any `git config` runs,
+  so a missing `/dev/shm` or full tmpfs surfaces immediately
+  instead of leaving `user.signingkey` pointing at a path that
+  doesn't exist (which would silently fail every later commit).
+  An optional second argument lets tests override the
+  destination.
+
+  Tests: `tests/test_harness.sh` §12 adds six assertions: copy
+  exists, perms are `0600`, `user.signingkey` points at the
+  copy, nothing leaks under `$HOME/.ssh/`, install failure
+  returns non-zero, and install failure does not poison
+  `user.signingkey`.  The pre-existing `run_signing_config`
+  helper now threads an explicit sandbox `dst_key` so unit
+  tests stop leaking files into the host's `/dev/shm`.
+
+- **Codex CLI version pinning.** New `codex_cli_version` field
+  in the swarmfile mirrors `claude_code_version`: forwarded to
+  `npm install -g @openai/codex@<ver>` via a Docker build-arg.
+  Empty (or unset) keeps the default "latest published
+  release" behavior.  `Dockerfile` adds
+  `ARG CODEX_CLI_VERSION=`, `launch.sh` reads the field with
+  `jq` and forwards it as `--build-arg` only when set, and
+  `lib/drivers/codex-cli.sh`'s `agent_install_cmd` heredoc
+  matches.  Tests: `tests/test_launch.sh` §29 pins the jq
+  filter (present + absent), and `tests/test_drivers.sh` §30
+  pins the install snippet structurally and behaviorally
+  (empty `CODEX_CLI_VERSION` -> `@openai/codex`, pinned ->
+  `@openai/codex@<ver>`).
+
+- **Test infra: isolate scratch-repo unit tests from host
+  gitconfig.**  `tests/test_launch.sh` and
+  `tests/test_session_end_push.sh` build scratch repos and run
+  `git commit` / `commit-tree` against them.  When the host
+  has SSH-SK signing or a `commit.gpgsign=true` global, every
+  internal commit prompts for a hardware-key touch.  Both
+  files now `export GIT_CONFIG_GLOBAL=/dev/null` and
+  `GIT_CONFIG_SYSTEM=/dev/null` at the top, so the unit-test
+  surface is independent of the developer's signing setup.
+
 ## 0.20.11 — 2026-04-24
 
 - **Fix: `launch.sh` bare-repo preflight sends the operator

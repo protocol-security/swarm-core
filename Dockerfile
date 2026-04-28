@@ -45,8 +45,9 @@ RUN if echo ",$SWARM_AGENTS," | grep -q ",gemini-cli,"; then \
     fi
 
 # --- Codex CLI ---
+ARG CODEX_CLI_VERSION=
 RUN if echo ",$SWARM_AGENTS," | grep -q ",codex-cli,"; then \
-        npm install -g @openai/codex \
+        npm install -g "@openai/codex${CODEX_CLI_VERSION:+@$CODEX_CLI_VERSION}" \
         && mkdir -p /home/agent/.codex \
         && chown agent:agent /home/agent/.codex; \
     fi
