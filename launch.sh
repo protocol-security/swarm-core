@@ -74,6 +74,49 @@ rm_docker_dir() {
         || rm -rf "$dir" 2>/dev/null || true
 }
 
+# Compute the comma-separated SWARM_AGENTS build-arg from a config:
+# the union of every agent group's driver and the post-process driver.
+# Used as a Dockerfile build-arg to gate per-CLI install layers; missing
+# a driver here is what produces "command not found" inside the agent.
+compute_swarm_agents() {
+    local cfg="$1"
+    local default_drv seen=" " out="" drv
+    default_drv=$(jq -r '.driver // "claude-code"' "$cfg")
+    while IFS= read -r drv; do
+        [ -z "$drv" ] && drv="$default_drv"
+        [[ "$seen" == *" $drv "* ]] && continue
+        seen+="$drv "
+        out="${out:+${out},}${drv}"
+    done < <(jq -r '.agents[]? | (.driver // "")' "$cfg")
+    local pp_drv
+    pp_drv=$(jq -r '.post_process.driver // .driver // "claude-code"' "$cfg")
+    if [ -n "$pp_drv" ] && [[ "$seen" != *" $pp_drv "* ]]; then
+        out="${out:+${out},}${pp_drv}"
+    fi
+    printf '%s' "$out"
+}
+
+# Build (or rebuild) the agent image with build-args derived from the current
+# config.  Docker's layer cache makes this a no-op when the args and Dockerfile
+# haven't changed; when the driver set or pinned CLI versions change the cache
+# invalidates correctly and the right install layer re-runs.  Called by
+# cmd_start *and* cmd_post_process so a standalone post-process invocation
+# never reuses an image built for a different driver set (which silently
+# produces exit-127 on first session -- see harness's `agent exited with code
+# 127` retry path).
+build_image() {
+    local swarm_agents cc_version codex_version
+    swarm_agents=$(compute_swarm_agents "$CONFIG_FILE")
+    cc_version=$(jq -r '.claude_code_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    codex_version=$(jq -r '.codex_cli_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    echo "--- Building agent image (agents: ${swarm_agents}) ---"
+    docker build -t "$IMAGE_NAME" \
+        --build-arg "SWARM_AGENTS=${swarm_agents}" \
+        ${cc_version:+--build-arg "CLAUDE_CODE_VERSION=${cc_version}"} \
+        ${codex_version:+--build-arg "CODEX_CLI_VERSION=${codex_version}"} \
+        -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
+}
+
 CONFIG_FILE="${SWARM_CONFIG:-}"
 if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
     CONFIG_FILE="$REPO_ROOT/swarm.json"
@@ -242,32 +285,7 @@ cmd_start() {
         exit 1
     fi
 
-    # Derive the set of agent CLIs to install from referenced drivers.
-    local _swarm_agents=""
-    local _seen_agents=" "
-    while IFS='|' read -r _ _ _ _ _ _ _ _ _ _drv; do
-        _drv="${_drv:-${SWARM_DRIVER_DEFAULT}}"
-        [[ "$_seen_agents" == *" $_drv "* ]] && continue
-        _seen_agents+="$_drv "
-        _swarm_agents="${_swarm_agents:+${_swarm_agents},}${_drv}"
-    done < "$AGENTS_CFG"
-    local _pp_drv
-    _pp_drv=$(jq -r '.post_process.driver // .driver // "claude-code"' "$CONFIG_FILE" 2>/dev/null || true)
-    if [[ "$_seen_agents" != *" $_pp_drv "* ]]; then
-        _swarm_agents="${_swarm_agents:+${_swarm_agents},}${_pp_drv}"
-    fi
-
-    local _cc_version
-    _cc_version=$(jq -r '.claude_code_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
-    local _codex_cli_version
-    _codex_cli_version=$(jq -r '.codex_cli_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
-
-    echo "--- Building agent image (agents: ${_swarm_agents}) ---"
-    docker build -t "$IMAGE_NAME" \
-        --build-arg "SWARM_AGENTS=${_swarm_agents}" \
-        ${_cc_version:+--build-arg "CLAUDE_CODE_VERSION=${_cc_version}"} \
-        ${_codex_cli_version:+--build-arg "CODEX_CLI_VERSION=${_codex_cli_version}"} \
-        -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
+    build_image
 
     # Build mirror volume args from discovered submodules.
     git submodule foreach --quiet 'echo "$name"' | while read -r name; do
@@ -490,6 +508,8 @@ cmd_post_process() {
         git -C "$BARE_REPO" config core.sharedRepository world
         chmod -R a+rwX "$BARE_REPO"
     fi
+
+    build_image
 
     local NAME="${IMAGE_NAME}-post"
     docker rm -f "$NAME" 2>/dev/null || true
