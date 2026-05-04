@@ -212,7 +212,7 @@ cmd_start() {
     while IFS='|' read -r name gitdir; do
         safe_name="${name//\//_}"
         mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
-        rm -rf "$mirror"
+        rm_docker_dir "$mirror"
         echo "--- Mirroring submodule: ${name} ---"
         git clone --bare "$gitdir" "$mirror"
         chmod -R a+rwX "$mirror"
