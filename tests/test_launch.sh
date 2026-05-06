@@ -1441,6 +1441,156 @@ rm -rf "$_bp_local" "$_bp_bare"
 
 # ============================================================
 echo ""
+echo "=== 38. compute_swarm_agents helper (live function from launch.sh) ==="
+
+# Source the function from launch.sh so the regression net follows the
+# real helper, not a mirror.  compute_swarm_agents has no globals
+# beyond jq, so extracting and sourcing it is safe.  Catches any
+# refactor that breaks the SWARM_AGENTS build-arg union.
+_LAUNCH_SH="$TESTS_DIR/../launch.sh"
+_EXTRACTED="$TMPDIR/compute_swarm_agents.sh"
+awk '/^compute_swarm_agents\(\)[[:space:]]*\{/ { p = 1 }
+     p { print }
+     p && /^\}[[:space:]]*$/ { exit }' \
+    "$_LAUNCH_SH" > "$_EXTRACTED"
+# shellcheck source=/dev/null
+source "$_EXTRACTED"
+
+assert_eq "function defined" "function" \
+    "$(type -t compute_swarm_agents)"
+
+cat > "$TMPDIR/csa_default.json" <<'EOF'
+{ "prompt": "p.md",
+  "agents": [{ "count": 2, "model": "claude-opus-4-6" }] }
+EOF
+assert_eq "default driver -> claude-code" "claude-code" \
+    "$(compute_swarm_agents "$TMPDIR/csa_default.json")"
+
+cat > "$TMPDIR/csa_codex.json" <<'EOF'
+{ "prompt": "p.md",
+  "driver": "codex-cli",
+  "agents": [{ "count": 1, "model": "gpt-5" }] }
+EOF
+assert_eq "codex-only top-level driver" "codex-cli" \
+    "$(compute_swarm_agents "$TMPDIR/csa_codex.json")"
+
+cat > "$TMPDIR/csa_mixed.json" <<'EOF'
+{ "prompt": "p.md",
+  "agents": [
+    { "count": 1, "model": "gpt-5",            "driver": "codex-cli"   },
+    { "count": 2, "model": "claude-opus-4-6",  "driver": "claude-code" }
+  ] }
+EOF
+assert_eq "mixed drivers (group order preserved)" \
+    "codex-cli,claude-code" \
+    "$(compute_swarm_agents "$TMPDIR/csa_mixed.json")"
+
+cat > "$TMPDIR/csa_dedup.json" <<'EOF'
+{ "prompt": "p.md",
+  "driver": "gemini-cli",
+  "agents": [
+    { "count": 1, "model": "gemini-2.5-pro" },
+    { "count": 1, "model": "gemini-3-flash" }
+  ] }
+EOF
+assert_eq "dedup same driver across groups" "gemini-cli" \
+    "$(compute_swarm_agents "$TMPDIR/csa_dedup.json")"
+
+# Exact scenario from the PR description: codex agents with a
+# claude-code post-processor.  Without rebuilding in
+# cmd_post_process the post container would inherit a claude-less
+# image and exit 127 on first session.  This assertion locks in
+# the union the build-arg has to express to install both CLIs.
+cat > "$TMPDIR/csa_pp_split.json" <<'EOF'
+{ "prompt": "p.md",
+  "driver": "codex-cli",
+  "agents": [{ "count": 1, "model": "gpt-5" }],
+  "post_process": { "prompt": "r.md", "driver": "claude-code" } }
+EOF
+assert_eq "codex agents + claude-code pp -> union" \
+    "codex-cli,claude-code" \
+    "$(compute_swarm_agents "$TMPDIR/csa_pp_split.json")"
+
+cat > "$TMPDIR/csa_pp_same.json" <<'EOF'
+{ "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "claude-opus-4-6" }],
+  "post_process": { "prompt": "r.md" } }
+EOF
+assert_eq "pp default driver matches agents -> no dup" "claude-code" \
+    "$(compute_swarm_agents "$TMPDIR/csa_pp_same.json")"
+
+cat > "$TMPDIR/csa_pp_inherit.json" <<'EOF'
+{ "prompt": "p.md",
+  "driver": "gemini-cli",
+  "agents": [{ "count": 1, "model": "gemini-2.5-pro" }],
+  "post_process": { "prompt": "r.md" } }
+EOF
+assert_eq "pp inherits top-level driver -> single" "gemini-cli" \
+    "$(compute_swarm_agents "$TMPDIR/csa_pp_inherit.json")"
+
+cat > "$TMPDIR/csa_empty_group_drv.json" <<'EOF'
+{ "prompt": "p.md",
+  "driver": "codex-cli",
+  "agents": [{ "count": 1, "model": "gpt-5", "driver": "" }] }
+EOF
+assert_eq "empty per-group driver falls back to top-level" "codex-cli" \
+    "$(compute_swarm_agents "$TMPDIR/csa_empty_group_drv.json")"
+
+# ============================================================
+echo ""
+echo "=== 39. build_image is wired into both cmd_start and cmd_post_process ==="
+
+# The PR #96 contract: a standalone post-process invocation must
+# rebuild the image with build-args derived from its own config so
+# the layer cache invalidates correctly when the driver set differs
+# from a prior cmd_start.  Catches accidental removal of either
+# call site.
+_call_sites=$(grep -cE '^[[:space:]]+build_image[[:space:]]*$' \
+    "$_LAUNCH_SH" || true)
+assert_eq "build_image has 2 call sites" "2" "$_call_sites"
+
+_pp_calls=$(awk '
+    /^cmd_post_process\(\)[[:space:]]*\{/ { p = 1; next }
+    p && /^\}[[:space:]]*$/ { p = 0 }
+    p && /^[[:space:]]+build_image[[:space:]]*$/ { c++ }
+    END { print c + 0 }
+' "$_LAUNCH_SH")
+assert_eq "cmd_post_process calls build_image" "1" "$_pp_calls"
+
+_start_calls=$(awk '
+    /^cmd_start\(\)[[:space:]]*\{/ { p = 1; next }
+    p && /^\}[[:space:]]*$/ { p = 0 }
+    p && /^[[:space:]]+build_image[[:space:]]*$/ { c++ }
+    END { print c + 0 }
+' "$_LAUNCH_SH")
+assert_eq "cmd_start calls build_image" "1" "$_start_calls"
+
+# build_image must thread both the SWARM_AGENTS union and the
+# version pins; missing any of these would silently produce a
+# stale image.  Pinning the function body structurally is cheaper
+# than spinning up Docker.
+_bi_body=$(awk '
+    /^build_image\(\)[[:space:]]*\{/ { p = 1 }
+    p { print }
+    p && /^\}[[:space:]]*$/ { exit }
+' "$_LAUNCH_SH")
+assert_eq "build_image derives SWARM_AGENTS via compute_swarm_agents" \
+    "1" \
+    "$(printf '%s\n' "$_bi_body" \
+        | grep -cE 'compute_swarm_agents[[:space:]]+"\$CONFIG_FILE"' \
+        || true)"
+assert_eq "build_image forwards SWARM_AGENTS build-arg" "1" \
+    "$(printf '%s\n' "$_bi_body" \
+        | grep -cE -- '--build-arg "SWARM_AGENTS=' || true)"
+assert_eq "build_image forwards CLAUDE_CODE_VERSION build-arg" "1" \
+    "$(printf '%s\n' "$_bi_body" \
+        | grep -cE -- '--build-arg "CLAUDE_CODE_VERSION=' || true)"
+assert_eq "build_image forwards CODEX_CLI_VERSION build-arg" "1" \
+    "$(printf '%s\n' "$_bi_body" \
+        | grep -cE -- '--build-arg "CODEX_CLI_VERSION=' || true)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
