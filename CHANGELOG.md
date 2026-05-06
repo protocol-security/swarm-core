@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.20.14 — 2026-05-06
+
+- **Fix: `cmd_post_process` reused a stale image after the
+  driver set changed.**  A swarm built from
+  `swarm-codex.json` followed by `./launch.sh post-process`
+  against `swarm-claude-code.json` ran the post container
+  on the codex-only image with no `claude` binary, exited
+  127 on first session, and the harness's `command not
+  found` retry path looped without recovery -- the operator
+  had to `docker build` the image by hand.  The post-process
+  path never called `docker build` at all, so the layer
+  cache was bypassed and the wrong install layer was the
+  one in effect.
+
+  Fix: factor `compute_swarm_agents` (driver-set union from
+  a config) and `build_image` (`docker build` with derived
+  build-args) out of `cmd_start`, and call `build_image`
+  from `cmd_post_process`.  Build-args are derived from the
+  same config the container will run, so the layer cache
+  invalidates correctly when the driver set or pinned CLI
+  versions change and is a no-op otherwise.  Drive-by:
+  switch the submodule mirror cleanup in `cmd_start` to
+  `rm_docker_dir` so it works when a prior container left
+  UID-mismatched files behind.
+
+  Tests: `tests/test_launch.sh` §38 sources
+  `compute_swarm_agents` from `launch.sh` and pins the
+  build-arg union on eight configs (default driver,
+  codex-only top-level, mixed groups, dedup across groups,
+  codex agents with a claude-code post-processor,
+  post-process matching agents, post-process inheriting the
+  top-level driver, and an empty per-group driver falling
+  back to the default).  §39 asserts `build_image` has
+  exactly two call sites -- one in `cmd_start`, one in
+  `cmd_post_process` -- and that its body still threads
+  `compute_swarm_agents`, `SWARM_AGENTS`,
+  `CLAUDE_CODE_VERSION`, and `CODEX_CLI_VERSION` as
+  build-args.  Closes #96.
+
+- **Fix: `harvest.sh` re-introduces commits dropped by an
+  upstream force-push.**  When the bare repo's `agent-work`
+  no longer descends from the working tree's HEAD -- the
+  classic shape after a rebase or force-push that orphans
+  commits the bare still holds -- `harvest.sh` happily
+  3-way-merged anyway and silently re-introduced the
+  dropped ancestry into the operator's branch.  The merge
+  exited 0, so nothing in the workflow surfaced the
+  regression until it landed in review or CI hours later.
+
+  Fix: before merging, run `git merge-base --is-ancestor
+  HEAD "$REMOTE_NAME/agent-work"`.  On failure, print both
+  short SHAs, name the bare path, and direct the operator
+  to either `rm -rf` the bare and re-launch or merge
+  manually if the divergence is intentional.  The temporary
+  `_agent-harvest` remote is removed before exit so the
+  script is re-runnable.  The check is generic -- no
+  hard-coded branch names -- so it covers `master`,
+  `workflow/master`, and any custom branch.
+
+  Tests: `tests/test_harvest.sh` §9 builds a bare whose
+  `agent-work` descends from a sibling of HEAD, runs the
+  real `harvest.sh`, and asserts the guard exits non-zero,
+  the diagnostic mentions the bare path and short HEAD, the
+  working tree's HEAD is unchanged, and the temporary
+  remote is cleaned up on the failure path.  A happy-path
+  assertion confirms that once the divergence is cleared
+  the same invocation still succeeds.  Closes #97.
+
 ## 0.20.13 — 2026-04-28
 
 - **Fix: codex-cli driver misclassifies "Selected model is at
