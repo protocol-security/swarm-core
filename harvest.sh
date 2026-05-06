@@ -48,6 +48,28 @@ echo "--- Fetching agent-work ---"
 git remote add "$REMOTE_NAME" "$BARE_REPO"
 git fetch --no-recurse-submodules "$REMOTE_NAME" agent-work
 
+# Guard against stale-bare poisoning: agent-work must descend from HEAD,
+# otherwise merging it would re-introduce ancestors not in HEAD's history
+# (e.g. commits removed by an upstream force-push that the bare repo did
+# not see).
+if ! git merge-base --is-ancestor HEAD "$REMOTE_NAME/agent-work"; then
+    echo "" >&2
+    echo "ERROR: $REMOTE_NAME/agent-work does not descend from HEAD." >&2
+    echo "  HEAD:       $(git rev-parse --short HEAD)" >&2
+    echo "  agent-work: $(git rev-parse --short "$REMOTE_NAME/agent-work")" >&2
+    echo "" >&2
+    echo "The bare repo at ${BARE_REPO} holds a branch that diverged from" >&2
+    echo "the current branch. This usually means upstream history was" >&2
+    echo "rewritten (e.g. force-push) but the bare repo still has the old" >&2
+    echo "ancestry. Merging would re-introduce removed commits." >&2
+    echo "" >&2
+    echo "Resolve by wiping and recreating the bare repo:" >&2
+    echo "  rm -rf ${BARE_REPO}" >&2
+    echo "  ./launch.sh ...   # recreates the bare from current HEAD" >&2
+    git remote remove "$REMOTE_NAME"
+    exit 1
+fi
+
 COMMIT_LOG=$(git log --oneline "$REMOTE_NAME/agent-work" ^HEAD)
 NEW_COMMITS=$(echo "$COMMIT_LOG" | grep -c . || true)
 echo ""
