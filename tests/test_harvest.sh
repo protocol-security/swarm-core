@@ -10,9 +10,11 @@ TMPDIR=$(mktemp -d)
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HARVEST_SH="$REPO_ROOT/harvest.sh"
 HARVEST_BARE=""
+GUARD_BARE=""
 cleanup() {
     rm -rf "$TMPDIR"
     [ -n "${HARVEST_BARE:-}" ] && rm -rf "$HARVEST_BARE"
+    [ -n "${GUARD_BARE:-}" ]   && rm -rf "$GUARD_BARE"
 }
 trap cleanup EXIT
 
@@ -271,6 +273,97 @@ set -e
 assert_eq "guarded pipe exits 0" "0" "$guarded_rc"
 assert_eq "guarded pipe continues past the preview" "true" \
     "$(grep -q '^REACHED_AFTER_PIPE$' "$TMPDIR/guarded.out" \
+        && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 9. Behavioural: harvest.sh refuses divergent bare ==="
+
+# Reproduces issue #97: an upstream history rewrite (force-push,
+# rebase) leaves the bare's agent-work pointing at a tip whose
+# ancestry no longer matches the working tree's HEAD.  Without
+# the guard, harvest.sh silently 3-way-merges and re-introduces
+# commits the operator already removed; with the guard it aborts
+# with a clear remediation.
+
+GUARD_PROJECT="swarmtest-harvest-guard-$$"
+GUARD_WORK="$TMPDIR/$GUARD_PROJECT"
+GUARD_BARE="/tmp/${GUARD_PROJECT}-upstream.git"
+GUARD_AGENT="$TMPDIR/harvest-guard-agent"
+
+rm -rf "$GUARD_WORK" "$GUARD_BARE" "$GUARD_AGENT"
+mkdir -p "$GUARD_WORK"
+git init -q "$GUARD_WORK"
+cd "$GUARD_WORK"
+git -c user.name=test -c user.email=t@t -c commit.gpgsign=false \
+    commit -q --allow-empty -m A
+git -c user.name=test -c user.email=t@t -c commit.gpgsign=false \
+    commit -q --allow-empty -m B
+git -c user.name=test -c user.email=t@t -c commit.gpgsign=false \
+    commit -q --allow-empty -m C
+
+git clone -q --bare "$GUARD_WORK" "$GUARD_BARE"
+# Move bare's agent-work back to B (HEAD~1) and have an "agent"
+# commit on top of B.  agent-work then descends from B but not
+# from HEAD (=C), so the guard's --is-ancestor check fails.
+git -C "$GUARD_BARE" branch -f agent-work HEAD~1
+
+git clone -q "$GUARD_BARE" "$GUARD_AGENT"
+cd "$GUARD_AGENT"
+git checkout -q agent-work
+git -c user.name=agent -c user.email=a@a -c commit.gpgsign=false \
+    commit -q --allow-empty -m "agent commit on sibling"
+git push -q origin agent-work
+rm -rf "$GUARD_AGENT"
+
+cd "$GUARD_WORK"
+HEAD_BEFORE=$(git rev-parse HEAD)
+set +e
+guard_output=$(bash "$HARVEST_SH" 2>&1)
+guard_rc=$?
+set -e
+HEAD_AFTER=$(git rev-parse HEAD)
+
+assert_eq "guard exits non-zero on divergent bare" "true" \
+    "$([ "$guard_rc" -ne 0 ] && echo true || echo false)"
+assert_eq "guard prints the diagnostic line" "true" \
+    "$(printf '%s\n' "$guard_output" \
+        | grep -q 'does not descend from HEAD' \
+        && echo true || echo false)"
+assert_eq "guard names short HEAD in diagnostic" "true" \
+    "$(printf '%s\n' "$guard_output" \
+        | grep -qE "HEAD:[[:space:]]+${HEAD_BEFORE:0:7}" \
+        && echo true || echo false)"
+assert_eq "guard names the bare path in remediation" "true" \
+    "$(printf '%s\n' "$guard_output" \
+        | grep -qF "rm -rf ${GUARD_BARE}" \
+        && echo true || echo false)"
+assert_eq "no merge commit produced" "$HEAD_BEFORE" "$HEAD_AFTER"
+assert_eq "_agent-harvest remote cleaned up after failure" "" \
+    "$(git remote | grep -E '^_agent-harvest$' || true)"
+
+# Sanity check the happy path: when agent-work descends from
+# HEAD again, the same harvest.sh invocation succeeds.  Catches
+# a regression where the guard accidentally rejects valid runs.
+git -C "$GUARD_BARE" branch -f agent-work "$HEAD_BEFORE"
+git clone -q "$GUARD_BARE" "$GUARD_AGENT"
+cd "$GUARD_AGENT"
+git checkout -q agent-work
+git -c user.name=agent -c user.email=a@a -c commit.gpgsign=false \
+    commit -q --allow-empty -m "agent fast-forward"
+git push -q origin agent-work
+rm -rf "$GUARD_AGENT"
+
+cd "$GUARD_WORK"
+set +e
+ff_output=$(bash "$HARVEST_SH" 2>&1)
+ff_rc=$?
+set -e
+
+assert_eq "fast-forward harvest still exits 0" "0" "$ff_rc"
+assert_eq "fast-forward shows new commit header" "true" \
+    "$(printf '%s\n' "$ff_output" \
+        | grep -q '^1 new commits on agent-work:' \
         && echo true || echo false)"
 
 # ============================================================
