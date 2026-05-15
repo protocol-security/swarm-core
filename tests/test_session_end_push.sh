@@ -398,6 +398,78 @@ assert_contains "3-fail scenario: park_ok=false" \
 
 # ============================================================
 echo ""
+echo "=== 6. Fatal-exit paths ship local commits ==="
+
+# The session-end push pipeline has been hoisted out of the loop
+# body into a function named `_session_end_push` so it can be
+# called from both the happy path AND the FATAL_MSG handling
+# block, which used to `exit 1` while local commits sat unshipped
+# in /workspace/.git.  Pin the function's existence, its sole
+# inline use, and a call before every fatal exit.
+assert_eq "_session_end_push function defined exactly once" \
+    "1" \
+    "$(grep -cE '^_session_end_push\(\) \{$' "$HARNESS_FILE")"
+
+# The function must update the global AFTER on push success so
+# the per-iteration idle counter sees the new origin/agent-work
+# tip without an extra fetch from the caller.  Without this the
+# happy path mistakenly counts a successful push as "idle".
+SEP_BODY=$(awk '/^_session_end_push\(\) \{/,/^\}$/' \
+    "$HARNESS_FILE")
+assert_contains "_session_end_push updates AFTER on success" \
+    'AFTER=$(git rev-parse origin/agent-work)' "$SEP_BODY"
+
+# Pin three fatal `exit 1` sites inside the FATAL_MSG block,
+# each preceded by a `_session_end_push || true` so commits the
+# agent landed locally before the fatal error get pushed instead
+# of dying with the container.
+FATAL_BLOCK=$(awk '
+    /^    if \[ -n "\$FATAL_MSG" \]; then$/ { inside = 1 }
+    inside                                   { print }
+    inside && /^    fi$/                     { exit }
+' "$HARNESS_FILE")
+assert_eq "FATAL_MSG block has 3 exit-1 sites" \
+    "3" \
+    "$(printf '%s' "$FATAL_BLOCK" | grep -cE '^[[:space:]]+exit 1$')"
+assert_eq "FATAL_MSG block has 3 _session_end_push calls" \
+    "3" \
+    "$(printf '%s' "$FATAL_BLOCK" \
+        | grep -cE '_session_end_push \|\| true')"
+
+# Each exit 1 inside the FATAL_MSG block must be immediately
+# preceded by a `_session_end_push || true` line (allowing only
+# blank/comment lines in between).  Awk walks the block, tags
+# any line that contains _session_end_push, then asserts that
+# every exit-1 has such a tag set in the previous non-blank,
+# non-comment line.
+PREORDER_OK=$(printf '%s' "$FATAL_BLOCK" | awk '
+    /_session_end_push \|\| true/ { staged = 1; next }
+    /^[[:space:]]*#/              { next }
+    /^[[:space:]]*$/              { next }
+    /^[[:space:]]+exit 1$/        {
+        if (!staged) {
+            bad++
+        }
+        staged = 0
+        next
+    }
+    {
+        staged = 0
+    }
+    END { print (bad ? "no" : "yes") }
+')
+assert_eq "every fatal exit 1 is preceded by _session_end_push" \
+    "yes" "$PREORDER_OK"
+
+# The inline session-end use (happy path between sessions) is
+# the only other call to the function -- 1 inline use + 3 fatal
+# uses == 4 callers total, plus the definition == 5 occurrences.
+assert_eq "_session_end_push referenced exactly 5 times" \
+    "5" \
+    "$(grep -cE '_session_end_push' "$HARNESS_FILE")"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
