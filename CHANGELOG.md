@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **Test: runtime emergency-push verification under `--all`.**
+  `tests/runtime_signal_trap.sh` drives the harness's
+  SIGTERM / SIGINT / fatal-exit emergency-push paths inside a
+  real container, using a synthetic `test-committer` driver
+  mounted via `-v` so no API key is required.  Asserts the
+  exit code (143 / 130 / 1), the harness's log markers
+  (`received SIG…`, `attempting emergency push`,
+  `emergency shutdown complete`), and that the in-flight
+  commit lands on `origin/agent-work`.  Also asserts the
+  `cmd_stop` banner echoes the active `SWARM_STOP_TIMEOUT`.
+  The pure structural assertions in
+  `tests/test_session_end_push.sh` §6 / §7 pin the code
+  shape but cannot prove the signal trap actually fires;
+  this test does, end-to-end.
+
+  Wired into `tests/test.sh` as Phase 1.5 of `--all` between
+  unit and API-key integration, and exposed as
+  `tests/test.sh --runtime` for standalone runs.  Skips
+  cleanly when Docker is unavailable so `--all` stays useful
+  on hosts without it.  Wall-clock ~25 s with the image
+  cached; first run additionally pays the cached `docker
+  build` for `claude-swarm-runtime-test:latest`
+  (`--build-arg SWARM_AGENTS=fake`, so no CLI-install
+  layers).
+
 - **Fix: agent commits abandoned on fatal-error exit and on
   `docker stop`.**  The session-end push pipeline (in-place
   rebase -> scratch worktree -> agent-parked salvage) ran ONLY
