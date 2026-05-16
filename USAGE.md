@@ -38,6 +38,7 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_ACTIVITY_TIMEOUT` | `0` | Seconds of logfile silence before the in-container watchdog SIGTERMs the agent CLI's process group.  `0` disables.  See [Activity watchdog](#activity-watchdog). |
 | `SWARM_ACTIVITY_POLL` | `10` | Watchdog mtime-poll interval, in seconds.  Rarely needs tuning. |
 | `SWARM_WATCHDOG_GRACE` | `10` | Grace window between watchdog SIGTERM and SIGKILL.  Rarely needs tuning. |
+| `SWARM_STOP_TIMEOUT` | `60` | Seconds `./launch.sh stop` passes to `docker stop -t`, so the harness's SIGTERM trap has time to ship any in-flight local commits via `_session_end_push` before SIGKILL hits.  See [Stopping the swarm](#stopping-the-swarm). |
 
 Per-group credentials (`api_key`, `auth_token`, `base_url`)
 are set in the swarmfile.  Use `$VAR` references to pull
@@ -115,6 +116,32 @@ crashed-on-its-own exit.  `SWARM_ACTIVITY_POLL` (default 10 s)
 tunes how often the watchdog checks mtime;
 `SWARM_WATCHDOG_GRACE` (default 10 s) tunes the SIGTERM→SIGKILL
 gap.  Both rarely need adjustment outside the test suite.
+
+### Stopping the swarm
+
+`./launch.sh stop` sends each container `docker stop -t 60`.
+The 60 s grace gives the harness's SIGTERM trap time to ship
+any in-flight local commits (in-place rebase → scratch
+worktree → `agent-parked/*` salvage) before docker forces
+SIGKILL.  Without this window, commits the agent made during
+the session it was interrupted in stayed in
+`/workspace/.git` and died with the container; the
+session-end push pipeline only runs at the bottom of each
+loop iteration and never gets to run on a mid-session
+SIGTERM.
+
+For larger swarms where 45+ agents race the same push lock,
+raise the grace:
+
+```bash
+SWARM_STOP_TIMEOUT=120 ./launch.sh stop
+```
+
+The harness handles SIGTERM and SIGINT identically; an
+`Exited (143)` (`128+SIGTERM`) or `Exited (130)`
+(`128+SIGINT`) status with a clean log line of
+`emergency shutdown complete` indicates the trap fired and
+the emergency push attempt completed.
 
 ### Extra Docker arguments
 

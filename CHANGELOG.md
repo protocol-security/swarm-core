@@ -1,5 +1,80 @@
 # Changelog
 
+## Unreleased
+
+- **Test: runtime emergency-push verification under `--all`.**
+  `tests/runtime_signal_trap.sh` drives the harness's
+  SIGTERM / SIGINT / fatal-exit emergency-push paths inside a
+  real container, using a synthetic `test-committer` driver
+  mounted via `-v` so no API key is required.  Asserts the
+  exit code (143 / 130 / 1), the harness's log markers
+  (`received SIG…`, `attempting emergency push`,
+  `emergency shutdown complete`), and that the in-flight
+  commit lands on `origin/agent-work`.  Also asserts the
+  `cmd_stop` banner echoes the active `SWARM_STOP_TIMEOUT`.
+  The pure structural assertions in
+  `tests/test_session_end_push.sh` §6 / §7 pin the code
+  shape but cannot prove the signal trap actually fires;
+  this test does, end-to-end.
+
+  Wired into `tests/test.sh` as Phase 1.5 of `--all` between
+  unit and API-key integration, and exposed as
+  `tests/test.sh --runtime` for standalone runs.  Skips
+  cleanly when Docker is unavailable so `--all` stays useful
+  on hosts without it.  Wall-clock ~25 s with the image
+  cached; first run additionally pays the cached `docker
+  build` for `claude-swarm-runtime-test:latest`
+  (`--build-arg SWARM_AGENTS=fake`, so no CLI-install
+  layers).
+
+- **Fix: agent commits abandoned on fatal-error exit and on
+  `docker stop`.**  The session-end push pipeline (in-place
+  rebase -> scratch worktree -> agent-parked salvage) ran ONLY
+  at the bottom of the per-iteration loop, AFTER the
+  `FATAL_MSG` handling block that exits with code 1 on
+  non-retriable model errors, retry-budget exhaustion, and
+  zero-token failures.  In a real 45-agent swarm, 15 agents
+  exited that exact path holding 3-154 commits each that died
+  with the container.  Separately, `docker stop` (default
+  SIGTERM + 10 s grace + SIGKILL) hit the harness while it was
+  parked in a foreground pipeline, so its push block never ran
+  either -- 26 of the same 45 agents lost commits through that
+  door.
+
+  Fix in three layers:
+
+  - Hoist the inline push pipeline into `_session_end_push` and
+    call it before every fatal `exit 1` in the `FATAL_MSG`
+    block (with `|| true` so a final push failure does not
+    mask the original fatal cause).  Tests:
+    `tests/test_session_end_push.sh` §6 -- one definition, one
+    inline call, three fatal-exit calls, an awk walk pins the
+    ordering constraint that the push immediately precedes the
+    exit, and the call-site count is locked at six.
+
+  - Wrap the agent pipeline in a backgrounded subshell
+    (`( agent_run ... | /activity-filter.sh ) &; wait`) so the
+    harness's `wait` becomes signal-interruptible.  Install
+    `trap '_on_signal TERM' TERM` (and `INT`) right before the
+    main loop.  `_on_signal` kills the running pipeline, calls
+    `_session_end_push`, then exits 143 / 130.  Tests:
+    `tests/test_session_end_push.sh` §7 pins both per-loop
+    invocations using `_run_agent_session`, the absence of any
+    bare foreground `agent_run | /activity-filter.sh`
+    pipeline, the trap installation, and the handler's
+    kill / push / exit behaviour.
+
+  - `cmd_stop` in `launch.sh` now passes
+    `-t "${SWARM_STOP_TIMEOUT:-60}"` to `docker stop`.
+    Docker's 10 s default cuts the emergency push mid-rebase
+    on a busy bare repo; 60 s comfortably absorbs the
+    three-try rebase plus the scratch-worktree cherry-pick
+    plus the agent-parked salvage push.  Override with
+    `SWARM_STOP_TIMEOUT=120 ./launch.sh stop` for larger
+    swarms.  Tests: `tests/test_launch.sh` §40 pins the flag,
+    the default, and the env-var override via a fake-docker
+    shim that captures the invocations.
+
 ## 0.20.14 — 2026-05-06
 
 - **Fix: `cmd_post_process` reused a stale image after the

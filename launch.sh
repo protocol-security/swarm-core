@@ -419,10 +419,18 @@ ENVEOF
 }
 
 cmd_stop() {
-    echo "--- Stopping agents ---"
+    # Default to a 60s grace so the harness's SIGTERM trap has
+    # time to ship any in-flight local commits via
+    # `_session_end_push` before docker forces SIGKILL.  The 10s
+    # default that docker ships with cuts the emergency push
+    # mid-rebase on a busy bare repo.  Override via env:
+    #   SWARM_STOP_TIMEOUT=120 ./launch.sh stop
+    local stop_timeout="${SWARM_STOP_TIMEOUT:-60}"
+    echo "--- Stopping agents (grace ${stop_timeout}s) ---"
     for i in $(seq 1 "$NUM_AGENTS"); do
         NAME="${IMAGE_NAME}-${i}"
-        docker stop "$NAME" 2>/dev/null && echo "  stopped ${NAME}" \
+        docker stop -t "$stop_timeout" "$NAME" 2>/dev/null \
+            && echo "  stopped ${NAME}" \
             || echo "  ${NAME} not running"
     done
     rm -f "/tmp/${PROJECT}-swarm.env"

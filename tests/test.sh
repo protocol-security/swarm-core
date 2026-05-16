@@ -8,7 +8,8 @@ set -euo pipefail
 #
 # Options:
 #   --unit          Run unit tests only (no Docker or API key needed).
-#   --all           Run unit tests then full integration matrix.
+#   --runtime       Runtime emergency-push test (Docker only, no API key).
+#   --all           Unit + runtime, then full integration matrix.
 #   --oauth         Integration test using OAuth token (needs Docker +
 #                   CLAUDE_CODE_OAUTH_TOKEN).
 #   --config FILE   Use a swarmfile for mixed-model testing.
@@ -40,7 +41,9 @@ rm_docker_dir() {
 # ---- --all: full test suite runner ----
 
 run_all_tests() {
-    local total_start unit_fail=0 int_pass=0 int_fail=0
+    local total_start unit_fail=0 runtime_fail=0
+    local int_pass=0 int_fail=0
+    local runtime_skip=0
     total_start=$(date +%s)
 
     echo "============================================================"
@@ -50,6 +53,34 @@ run_all_tests() {
 
     # Phase 1: unit tests.
     cmd_unit || unit_fail=1
+    echo ""
+
+    # Phase 1.5: Docker-only runtime tests (no API key required).
+    # Drives the harness's SIGTERM / SIGINT / fatal-exit emergency
+    # push under a real container.  Pure structural assertions in
+    # test_session_end_push.sh §6 / §7 cannot prove the signal trap
+    # actually fires; this phase does.  Skips cleanly when Docker
+    # is unavailable so --all stays useful on hosts without it.
+    echo "=== Phase 1.5: Runtime emergency-push test ==="
+    echo ""
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "  SKIP  (docker not found)"
+        runtime_skip=1
+    elif ! docker info >/dev/null 2>&1; then
+        echo "  SKIP  (docker daemon not running)"
+        runtime_skip=1
+    else
+        local rt_start rt_elapsed rt_rc=0
+        rt_start=$(date +%s)
+        "$TESTS_DIR/runtime_signal_trap.sh" || rt_rc=$?
+        rt_elapsed=$(( $(date +%s) - rt_start ))
+        if [ "$rt_rc" -eq 0 ]; then
+            printf "  PASS  runtime_signal_trap.sh (%ds)\n" "$rt_elapsed"
+        else
+            printf "  FAIL  runtime_signal_trap.sh (%ds)\n" "$rt_elapsed"
+            runtime_fail=1
+        fi
+    fi
     echo ""
 
     # Phase 2: integration tests (require ANTHROPIC_API_KEY).
@@ -153,6 +184,13 @@ run_all_tests() {
     else
         echo "  Unit:        FAIL"
     fi
+    if [ "$runtime_skip" -eq 1 ]; then
+        echo "  Runtime:     SKIP (docker unavailable)"
+    elif [ "$runtime_fail" -eq 0 ]; then
+        echo "  Runtime:     PASS"
+    else
+        echo "  Runtime:     FAIL"
+    fi
     if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
         printf "  Integration: %d/%d passed\n" \
             "$int_pass" $((int_pass + int_fail))
@@ -168,7 +206,8 @@ run_all_tests() {
     printf "  Total time:  %dm %02ds\n" "$total_m" "$total_s"
     echo "============================================================"
 
-    [ "$unit_fail" -eq 0 ] && [ "$int_fail" -eq 0 ] && [ "$oauth_fail" -eq 0 ]
+    [ "$unit_fail" -eq 0 ] && [ "$runtime_fail" -eq 0 ] \
+        && [ "$int_fail" -eq 0 ] && [ "$oauth_fail" -eq 0 ]
 }
 
 run_integration_case() {
@@ -341,7 +380,10 @@ Run claude-swarm tests.
 Options:
   (no args)         Single integration smoke test (needs Docker + API key).
   --unit            Unit tests only (no Docker or API key needed).
-  --all             Unit tests, then full integration matrix.
+  --runtime         Runtime emergency-push test (needs Docker, no API key).
+                    Drives SIGTERM / SIGINT / fatal-exit paths under a
+                    real container with a synthetic test-committer driver.
+  --all             Unit + runtime, then full integration matrix.
   --oauth           Integration test using CLAUDE_CODE_OAUTH_TOKEN
                     (needs Docker + OAuth token).
   --config FILE     Use a swarmfile for mixed-model testing.
@@ -361,6 +403,7 @@ NO_INJECT=false
 RUN_ALL=false
 RUN_UNIT=false
 RUN_OAUTH=false
+RUN_RUNTIME=false
 _AUTO_CONFIG=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -375,6 +418,7 @@ while [ $# -gt 0 ]; do
         --all) RUN_ALL=true; shift ;;
         --unit) RUN_UNIT=true; shift ;;
         --oauth) RUN_OAUTH=true; shift ;;
+        --runtime) RUN_RUNTIME=true; shift ;;
         -h|--help) cmd_help; exit 0 ;;
         *) echo "Unknown option: $1 (try --help)" >&2; exit 1 ;;
     esac
@@ -387,6 +431,11 @@ fi
 
 if $RUN_OAUTH; then
     cmd_oauth
+    exit $?
+fi
+
+if $RUN_RUNTIME; then
+    "$TESTS_DIR/runtime_signal_trap.sh"
     exit $?
 fi
 

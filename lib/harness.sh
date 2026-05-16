@@ -271,6 +271,224 @@ _scratch_worktree_push() {
     return "$_rc"
 }
 
+# Ship any local commits to origin/agent-work.  Called both
+# inline at session end and before fatal-error exits / signal
+# trap handlers so commits an agent made during a session that
+# then hit a fatal error or a SIGTERM are not abandoned with
+# the container.
+#
+# Side effect: updates the global AFTER to the post-push tip of
+# origin/agent-work so the caller can use it for idle tracking.
+# Returns 0 on success or no-op (nothing to push, or pushed
+# cleanly), 1 if there were unpushed commits and every push
+# path failed.
+_session_end_push() {
+    git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
+    AFTER=$(git rev-parse origin/agent-work)
+
+    local _local_head _dirty _stash_before _stash_after
+    local _push_ok _try
+
+    # Safety net: if the agent committed locally but failed to
+    # push (concurrent lock, transient error), push on its behalf
+    # with jittered retries to avoid collisions across containers.
+    _local_head=$(git rev-parse HEAD)
+    if [ "$_local_head" = "$AFTER" ] \
+            || [ "$(git rev-list origin/agent-work..HEAD 2>/dev/null | wc -l)" -eq 0 ]; then
+        return 0
+    fi
+
+    hlog "found unpushed local commits, pushing"
+
+    # The session-end push rebases local commits onto origin/agent-work.
+    # Any dirty state in the working tree -- tracked mods, deletions,
+    # untracked scratch files, submodule pointer drift -- has to be
+    # cleaned out first or `git pull --rebase` will refuse with
+    # "cannot rebase: You have unstaged changes" and the retry loop
+    # burns through all three attempts without pushing.
+    #
+    # v0.20.2 tried to solve this with `rebase.autoStash=true`, but
+    # autoStash has three documented gaps that caused real push
+    # failures in production (see CHANGELOG 0.20.4 for the
+    # failure-mode breakdown):
+    #
+    #   (1) `git stash` defaults to NOT stashing untracked files, so
+    #       autoStash silently leaves `?? <path>` in the worktree and
+    #       the rebase refuses anyway.
+    #
+    #   (2) `git stash` does NOT capture submodule pointer drift
+    #       (`M <submodule>`) regardless of flags -- the superproject
+    #       gitlink diff is simply not visible to stash's default
+    #       traversal.  Agents that run `cargo build`, `git worktree
+    #       add`, or anything else that bumps a submodule HEAD trip
+    #       this every time.
+    #
+    #   (3) When autoStash does create a stash, the auto-pop after a
+    #       successful rebase is best-effort per git's own docs and
+    #       was observed failing mid-rebase on
+    #       "skipped previously applied commit" in multi-agent swarms.
+    #
+    # The fix below sidesteps all three by doing the stash explicitly
+    # (with --include-untracked), re-syncing submodule HEADs to what
+    # the superproject expects, and running the rebase against a
+    # guaranteed-clean tree.  We intentionally do NOT pop the stash:
+    # the next loop iteration runs `git reset --hard origin/agent-work`
+    # at the top, which would wipe a popped stash anyway, so popping
+    # here buys nothing while reintroducing the autoStash-pop conflict
+    # class.  The stash stays in reflog (`git stash list`) for
+    # forensic recovery if an operator needs to inspect what was
+    # in-flight.
+    _dirty=$(git status --porcelain=v1 2>/dev/null)
+    if [ -n "$_dirty" ]; then
+        hlog "dirty worktree before push:"
+        printf '%s\n' "$_dirty" | hlog_pipe
+
+        # (a) Stash everything `git stash` can reach -- tracked mods,
+        # tracked deletions, staged changes, untracked files.
+        # Count-before / count-after is the bulletproof way to
+        # detect "nothing was actually stashed" (all of the dirty
+        # state was submodule drift, which stash silently ignores).
+        _stash_before=$(git stash list 2>/dev/null | wc -l)
+        git stash push --include-untracked --quiet \
+            -m "claude-swarm pre-push $(date -u +%s)" 2>&1 | hlog_pipe || true
+        _stash_after=$(git stash list 2>/dev/null | wc -l)
+        if [ "$_stash_after" -gt "$_stash_before" ]; then
+            hlog "pre-push stash: $(git rev-parse 'stash@{0}' 2>/dev/null)"
+        fi
+
+        # (b) Re-sync submodule HEADs to the superproject's expected
+        # gitlink.  This is what clears `M <submodule>` from status
+        # -- stash cannot reach it.  --force is safe here because
+        # dirty submodule state is ephemeral build output; anything
+        # worth preserving should already be in a commit or in the
+        # stash above.  `|| true` so a submodule-less repo or a
+        # transient network hiccup doesn't abort the push path.
+        git submodule update --init --recursive --force 2>&1 | hlog_pipe || true
+    fi
+
+    _push_ok=false
+    for _try in 1 2 3; do
+        sleep $((RANDOM % 5 + 1))
+        # Clean up stale rebase state that blocks git pull --rebase.
+        if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+            git rebase --abort 2>/dev/null || rm -rf .git/rebase-merge .git/rebase-apply
+        fi
+        # Bare `git pull --rebase` -- the pre-stash + submodule-sync
+        # above guarantees a clean tree, so there is nothing for the
+        # rebase to trip on and autoStash is intentionally absent
+        # (see the comment block above for why).
+        #
+        # core.hooksPath=/dev/null is also essential here.  Rebase
+        # drives internal checkouts through .git/rebase-merge/,
+        # firing post-checkout / post-rewrite on every pick.
+        # Consumer-installed hooks that touch the worktree
+        # (regenerate docs, stamp build artifacts, etc.) therefore
+        # re-dirty the tree mid-rebase and fail every retry.  Our
+        # own prepare-commit-msg / post-rewrite hooks (installed
+        # above) are no-ops for commits that already carry a
+        # `Model:` trailer, and every agent-made commit does,
+        # because prepare-commit-msg ran at commit time -- so
+        # suppressing both during the session-end rebase is safe.
+        # The `-c core.hooksPath=/dev/null` override only disables
+        # client-side hooks; server-side hooks on /upstream
+        # (pre-receive, etc.) still run.
+        if git -c core.hooksPath=/dev/null pull --rebase origin agent-work 2>&1 | hlog_pipe \
+                && git -c core.hooksPath=/dev/null push origin agent-work 2>&1 | hlog_pipe; then
+            _push_ok=true
+            break
+        fi
+        hlog "push retry ${_try}/3"
+    done
+
+    # Fallback: if all three in-place rebase attempts failed, ship
+    # the unpushed commits via a scratch worktree.  This path
+    # ignores the main worktree's state entirely -- it cherry-
+    # picks onto a fresh checkout of origin/agent-work, so
+    # whatever is re-dirtying the rebase (submodule drift,
+    # context-stripping hooks firing during .git/rebase-merge
+    # checkouts, a commit already upstream tripping "skipped
+    # previously applied commit") cannot affect it.  Empirically
+    # turns the 0.20.4 "100% data loss on push failure" state
+    # into "push succeeds via transplant" for every failure
+    # pattern we've observed in production.
+    if [ "$_push_ok" != true ]; then
+        hlog "rebase path exhausted, trying scratch worktree fallback"
+        if _scratch_worktree_push; then
+            _push_ok=true
+        fi
+    fi
+
+    if [ "$_push_ok" = true ]; then
+        git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
+        AFTER=$(git rev-parse origin/agent-work)
+        return 0
+    fi
+
+    hlog_err "push failed after 3 retries and scratch fallback"
+    return 1
+}
+
+# Run one agent session in the background so the parent's `wait`
+# on it can be interrupted by SIGTERM, which is what lets the
+# _on_signal trap below kill the agent and ship in-flight local
+# commits before docker's SIGKILL hits.  Foreground pipelines
+# defer trap handlers until the child returns (see bash(1)
+# under "SIGNALS"), so the original
+#   agent_run ... | /activity-filter.sh
+# left the harness deaf to SIGTERM for the entire session.
+# A backgrounded subshell with `wait` is signal-interruptible
+# and `pipefail` (inherited from the parent shell) keeps the
+# return code identical to the original pipeline's.
+#
+# Side effect: sets the global _SESSION_PID for the duration of
+# the wait so _on_signal can target the running pipeline; resets
+# it to "" before returning so a signal arriving between
+# sessions does not chase a stale PID.
+_run_agent_session() {
+    local model="$1" prompt="$2" logfile="$3" append="$4"
+    local rc=0
+    ( agent_run "$model" "$prompt" "$logfile" "$append" \
+            | /activity-filter.sh ) &
+    _SESSION_PID=$!
+    wait "$_SESSION_PID" || rc=$?
+    _SESSION_PID=""
+    return "$rc"
+}
+
+# Handle SIGTERM / SIGINT: kill the in-flight agent session so
+# `wait` in _run_agent_session returns, push any local commits
+# the agent already made this session, then exit with the
+# conventional signal exit code.
+#
+# Without this trap, `docker stop` (default: SIGTERM + 10s grace
+# + SIGKILL) abandoned any unpushed commits sitting in
+# /workspace/.git -- the harness was busy waiting on the agent
+# pipeline and the bottom-of-loop push block never ran.  Pair
+# this with `docker stop -t 60` (see launch.sh cmd_stop) so the
+# emergency push has time to land before SIGKILL.
+_on_signal() {
+    local sig="$1"
+    local exit_code
+    case "$sig" in
+        TERM) exit_code=143 ;;
+        INT)  exit_code=130 ;;
+        *)    exit_code=1   ;;
+    esac
+    hlog_err "received SIG${sig}, attempting emergency push"
+    if [ -n "${_SESSION_PID:-}" ] \
+            && kill -0 "$_SESSION_PID" 2>/dev/null; then
+        kill -TERM "$_SESSION_PID" 2>/dev/null || true
+        # Brief grace for the agent to flush; then force.
+        sleep 1
+        kill -KILL "$_SESSION_PID" 2>/dev/null || true
+    fi
+    if cd /workspace 2>/dev/null; then
+        _session_end_push || true
+    fi
+    hlog "emergency shutdown complete"
+    exit "$exit_code"
+}
+
 GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-agent@swarm.local}"
 git config --global user.name "$GIT_USER_NAME"
@@ -451,6 +669,13 @@ IDLE_FILE="/workspace/agent_logs/idle_agent_${AGENT_ID}"
 RETRY_FILE="/workspace/agent_logs/retry_agent_${AGENT_ID}"
 rm -f "$RETRY_FILE"
 
+# Install signal handlers after workspace setup so the emergency
+# push has a /workspace/.git to push from.  Setting these here,
+# not at the top of the script, keeps an interrupt during the
+# initial clone from chasing a missing repo.
+trap '_on_signal TERM' TERM
+trap '_on_signal INT' INT
+
 while true; do
     # Reset to latest. Do not re-init submodules; setup changes would be lost.
     git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
@@ -476,8 +701,8 @@ while true; do
 
     AGENT_RUN_EXIT=0
     _run_start=$SECONDS
-    agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
-        | /activity-filter.sh || AGENT_RUN_EXIT=$?
+    _run_agent_session "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" \
+        "$LOGFILE" "$APPEND_FILE" || AGENT_RUN_EXIT=$?
     _run_elapsed_ms=$(( (SECONDS - _run_start) * 1000 ))
 
     # Extract usage stats via the driver.
@@ -549,8 +774,8 @@ while true; do
                 rm -f "$RETRY_FILE"
                 AGENT_RUN_EXIT=0
                 _run_start=$SECONDS
-                agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
-                    | /activity-filter.sh || AGENT_RUN_EXIT=$?
+                _run_agent_session "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" \
+                    "$LOGFILE" "$APPEND_FILE" || AGENT_RUN_EXIT=$?
                 _run_elapsed_ms=$(( (SECONDS - _run_start) * 1000 ))
                 STATS_LINE=$(agent_extract_stats "$LOGFILE")
                 IFS=$'\t' read -r cost tok_in tok_out cache_rd cache_cr dur api_ms turns <<< "$STATS_LINE"
@@ -580,157 +805,27 @@ while true; do
                 if [ -z "$_retriable" ]; then
                     hlog_err "fatal (non-retriable): ${FATAL_MSG}"
                     hlog_err "exiting due to unrecoverable error"
+                    # Ship any local commits the agent made before
+                    # the fatal error so they are not abandoned.
+                    _session_end_push || true
                     exit 1
                 fi
             done
             if [ -n "$FATAL_MSG" ]; then
                 hlog_err "fatal: ${FATAL_MSG}"
                 hlog_err "retry wait limit reached (${MAX_RETRY_WAIT}s), exiting"
+                _session_end_push || true
                 exit 1
             fi
         else
             hlog_err "fatal: ${FATAL_MSG}"
             hlog_err "exiting due to unrecoverable error"
+            _session_end_push || true
             exit 1
         fi
     fi
 
-    git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
-    AFTER=$(git rev-parse origin/agent-work)
-
-    # Safety net: if the agent committed locally but failed to
-    # push (concurrent lock, transient error), push on its behalf
-    # with jittered retries to avoid collisions across containers.
-    _local_head=$(git rev-parse HEAD)
-    if [ "$_local_head" != "$AFTER" ] \
-            && [ "$(git rev-list origin/agent-work..HEAD 2>/dev/null | wc -l)" -gt 0 ]; then
-        hlog "found unpushed local commits, pushing"
-
-        # The session-end push rebases local commits onto origin/agent-work.
-        # Any dirty state in the working tree -- tracked mods, deletions,
-        # untracked scratch files, submodule pointer drift -- has to be
-        # cleaned out first or `git pull --rebase` will refuse with
-        # "cannot rebase: You have unstaged changes" and the retry loop
-        # burns through all three attempts without pushing.
-        #
-        # v0.20.2 tried to solve this with `rebase.autoStash=true`, but
-        # autoStash has three documented gaps that caused real push
-        # failures in production (see CHANGELOG 0.20.4 for the
-        # failure-mode breakdown):
-        #
-        #   (1) `git stash` defaults to NOT stashing untracked files, so
-        #       autoStash silently leaves `?? <path>` in the worktree and
-        #       the rebase refuses anyway.
-        #
-        #   (2) `git stash` does NOT capture submodule pointer drift
-        #       (`M <submodule>`) regardless of flags -- the superproject
-        #       gitlink diff is simply not visible to stash's default
-        #       traversal.  Agents that run `cargo build`, `git worktree
-        #       add`, or anything else that bumps a submodule HEAD trip
-        #       this every time.
-        #
-        #   (3) When autoStash does create a stash, the auto-pop after a
-        #       successful rebase is best-effort per git's own docs and
-        #       was observed failing mid-rebase on
-        #       "skipped previously applied commit" in multi-agent swarms.
-        #
-        # The fix below sidesteps all three by doing the stash explicitly
-        # (with --include-untracked), re-syncing submodule HEADs to what
-        # the superproject expects, and running the rebase against a
-        # guaranteed-clean tree.  We intentionally do NOT pop the stash:
-        # the next loop iteration runs `git reset --hard origin/agent-work`
-        # at the top, which would wipe a popped stash anyway, so popping
-        # here buys nothing while reintroducing the autoStash-pop conflict
-        # class.  The stash stays in reflog (`git stash list`) for
-        # forensic recovery if an operator needs to inspect what was
-        # in-flight.
-        _dirty=$(git status --porcelain=v1 2>/dev/null)
-        if [ -n "$_dirty" ]; then
-            hlog "dirty worktree before push:"
-            printf '%s\n' "$_dirty" | hlog_pipe
-
-            # (a) Stash everything `git stash` can reach -- tracked mods,
-            # tracked deletions, staged changes, untracked files.
-            # Count-before / count-after is the bulletproof way to
-            # detect "nothing was actually stashed" (all of the dirty
-            # state was submodule drift, which stash silently ignores).
-            _stash_before=$(git stash list 2>/dev/null | wc -l)
-            git stash push --include-untracked --quiet \
-                -m "claude-swarm pre-push $(date -u +%s)" 2>&1 | hlog_pipe || true
-            _stash_after=$(git stash list 2>/dev/null | wc -l)
-            if [ "$_stash_after" -gt "$_stash_before" ]; then
-                hlog "pre-push stash: $(git rev-parse 'stash@{0}' 2>/dev/null)"
-            fi
-
-            # (b) Re-sync submodule HEADs to the superproject's expected
-            # gitlink.  This is what clears `M <submodule>` from status
-            # -- stash cannot reach it.  --force is safe here because
-            # dirty submodule state is ephemeral build output; anything
-            # worth preserving should already be in a commit or in the
-            # stash above.  `|| true` so a submodule-less repo or a
-            # transient network hiccup doesn't abort the push path.
-            git submodule update --init --recursive --force 2>&1 | hlog_pipe || true
-        fi
-
-        _push_ok=false
-        for _try in 1 2 3; do
-            sleep $((RANDOM % 5 + 1))
-            # Clean up stale rebase state that blocks git pull --rebase.
-            if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
-                git rebase --abort 2>/dev/null || rm -rf .git/rebase-merge .git/rebase-apply
-            fi
-            # Bare `git pull --rebase` -- the pre-stash + submodule-sync
-            # above guarantees a clean tree, so there is nothing for the
-            # rebase to trip on and autoStash is intentionally absent
-            # (see the comment block above for why).
-            #
-            # core.hooksPath=/dev/null is also essential here.  Rebase
-            # drives internal checkouts through .git/rebase-merge/,
-            # firing post-checkout / post-rewrite on every pick.
-            # Consumer-installed hooks that touch the worktree
-            # (regenerate docs, stamp build artifacts, etc.) therefore
-            # re-dirty the tree mid-rebase and fail every retry.  Our
-            # own prepare-commit-msg / post-rewrite hooks (installed
-            # above) are no-ops for commits that already carry a
-            # `Model:` trailer, and every agent-made commit does,
-            # because prepare-commit-msg ran at commit time -- so
-            # suppressing both during the session-end rebase is safe.
-            # The `-c core.hooksPath=/dev/null` override only disables
-            # client-side hooks; server-side hooks on /upstream
-            # (pre-receive, etc.) still run.
-            if git -c core.hooksPath=/dev/null pull --rebase origin agent-work 2>&1 | hlog_pipe \
-                    && git -c core.hooksPath=/dev/null push origin agent-work 2>&1 | hlog_pipe; then
-                _push_ok=true
-                break
-            fi
-            hlog "push retry ${_try}/3"
-        done
-
-        # Fallback: if all three in-place rebase attempts failed, ship
-        # the unpushed commits via a scratch worktree.  This path
-        # ignores the main worktree's state entirely -- it cherry-
-        # picks onto a fresh checkout of origin/agent-work, so
-        # whatever is re-dirtying the rebase (submodule drift,
-        # context-stripping hooks firing during .git/rebase-merge
-        # checkouts, a commit already upstream tripping "skipped
-        # previously applied commit") cannot affect it.  Empirically
-        # turns the 0.20.4 "100% data loss on push failure" state
-        # into "push succeeds via transplant" for every failure
-        # pattern we've observed in production.
-        if [ "$_push_ok" != true ]; then
-            hlog "rebase path exhausted, trying scratch worktree fallback"
-            if _scratch_worktree_push; then
-                _push_ok=true
-            fi
-        fi
-
-        if [ "$_push_ok" = true ]; then
-            git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
-            AFTER=$(git rev-parse origin/agent-work)
-        else
-            hlog_err "push failed after 3 retries and scratch fallback"
-        fi
-    fi
+    _session_end_push || true
 
     if [ "$BEFORE" = "$AFTER" ]; then
         IDLE_COUNT=$((IDLE_COUNT + 1))
