@@ -1591,6 +1591,71 @@ assert_eq "build_image forwards CODEX_CLI_VERSION build-arg" "1" \
 
 # ============================================================
 echo ""
+echo "=== 40. cmd_stop gives the harness time to push ==="
+
+# `docker stop` defaults to SIGTERM + 10s grace + SIGKILL.  The
+# harness's SIGTERM trap pushes any in-flight local commits via
+# `_session_end_push`, which on a contended bare repo (45+
+# agents racing the same push lock) can easily take more than
+# 10s to land.  Without `-t`, that emergency push gets cut
+# mid-rebase and the commits die with the container.  Pin the
+# flag's presence, the default, and the env-var override.
+LAUNCH_FILE="$TESTS_DIR/../launch.sh"
+CMD_STOP_BODY=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
+assert_eq "cmd_stop passes -t to docker stop" "1" \
+    "$(printf '%s\n' "$CMD_STOP_BODY" \
+        | grep -cF 'docker stop -t "$stop_timeout"')"
+assert_eq "cmd_stop defaults grace to 60s" "1" \
+    "$(printf '%s\n' "$CMD_STOP_BODY" \
+        | grep -cF 'stop_timeout="${SWARM_STOP_TIMEOUT:-60}"')"
+
+# Fake docker so we can observe the exact flags cmd_stop uses.
+FAKE_DOCKER_DIR=$(mktemp -d)
+trap_dir="$TMPDIR/cmd_stop_invocations"
+mkdir -p "$trap_dir"
+cat > "$FAKE_DOCKER_DIR/docker" <<FAKE
+#!/bin/bash
+echo "\$@" >> "$trap_dir/calls"
+exit 0
+FAKE
+chmod +x "$FAKE_DOCKER_DIR/docker"
+
+# Pull cmd_stop out of launch.sh into a sourceable file so we
+# do not have to run the launch.sh argv dispatcher.
+cmd_stop_src=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
+
+# Default grace: 60.
+: > "$trap_dir/calls"
+(
+    eval "$cmd_stop_src"
+    NUM_AGENTS=3
+    IMAGE_NAME="claude-swarm-fake"
+    PROJECT="fake"
+    PATH="$FAKE_DOCKER_DIR:$PATH" cmd_stop >/dev/null 2>&1 || true
+)
+default_calls=$(wc -l < "$trap_dir/calls" | tr -d ' ')
+assert_eq "default grace: 3 docker stop invocations" \
+    "3" "$default_calls"
+default_flag=$(head -1 "$trap_dir/calls")
+assert_eq "default grace: -t 60 in flags" "1" \
+    "$(printf '%s\n' "$default_flag" | grep -cF 'stop -t 60')"
+
+# Env override: SWARM_STOP_TIMEOUT=120.
+: > "$trap_dir/calls"
+(
+    eval "$cmd_stop_src"
+    NUM_AGENTS=2
+    IMAGE_NAME="claude-swarm-fake"
+    PROJECT="fake"
+    SWARM_STOP_TIMEOUT=120 PATH="$FAKE_DOCKER_DIR:$PATH" \
+        cmd_stop >/dev/null 2>&1 || true
+)
+override_flag=$(head -1 "$trap_dir/calls")
+assert_eq "SWARM_STOP_TIMEOUT=120 propagates to docker stop -t 120" "1" \
+    "$(printf '%s\n' "$override_flag" | grep -cF 'stop -t 120')"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
