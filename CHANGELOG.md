@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.15 — 2026-05-16
 
 - **Test: runtime emergency-push verification under `--all`.**
   `tests/runtime_signal_trap.sh` drives the harness's
