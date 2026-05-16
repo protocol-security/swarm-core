@@ -428,6 +428,67 @@ _session_end_push() {
     return 1
 }
 
+# Run one agent session in the background so the parent's `wait`
+# on it can be interrupted by SIGTERM, which is what lets the
+# _on_signal trap below kill the agent and ship in-flight local
+# commits before docker's SIGKILL hits.  Foreground pipelines
+# defer trap handlers until the child returns (see bash(1)
+# under "SIGNALS"), so the original
+#   agent_run ... | /activity-filter.sh
+# left the harness deaf to SIGTERM for the entire session.
+# A backgrounded subshell with `wait` is signal-interruptible
+# and `pipefail` (inherited from the parent shell) keeps the
+# return code identical to the original pipeline's.
+#
+# Side effect: sets the global _SESSION_PID for the duration of
+# the wait so _on_signal can target the running pipeline; resets
+# it to "" before returning so a signal arriving between
+# sessions does not chase a stale PID.
+_run_agent_session() {
+    local model="$1" prompt="$2" logfile="$3" append="$4"
+    local rc=0
+    ( agent_run "$model" "$prompt" "$logfile" "$append" \
+            | /activity-filter.sh ) &
+    _SESSION_PID=$!
+    wait "$_SESSION_PID" || rc=$?
+    _SESSION_PID=""
+    return "$rc"
+}
+
+# Handle SIGTERM / SIGINT: kill the in-flight agent session so
+# `wait` in _run_agent_session returns, push any local commits
+# the agent already made this session, then exit with the
+# conventional signal exit code.
+#
+# Without this trap, `docker stop` (default: SIGTERM + 10s grace
+# + SIGKILL) abandoned any unpushed commits sitting in
+# /workspace/.git -- the harness was busy waiting on the agent
+# pipeline and the bottom-of-loop push block never ran.  Pair
+# this with `docker stop -t 60` (see launch.sh cmd_stop) so the
+# emergency push has time to land before SIGKILL.
+_on_signal() {
+    local sig="$1"
+    local exit_code
+    case "$sig" in
+        TERM) exit_code=143 ;;
+        INT)  exit_code=130 ;;
+        *)    exit_code=1   ;;
+    esac
+    hlog_err "received SIG${sig}, attempting emergency push"
+    if [ -n "${_SESSION_PID:-}" ] \
+            && kill -0 "$_SESSION_PID" 2>/dev/null; then
+        kill -TERM "$_SESSION_PID" 2>/dev/null || true
+        # Brief grace for the agent to flush; then force.
+        sleep 1
+        kill -KILL "$_SESSION_PID" 2>/dev/null || true
+    fi
+    if cd /workspace 2>/dev/null; then
+        _session_end_push || true
+    fi
+    hlog "emergency shutdown complete"
+    exit "$exit_code"
+}
+
 GIT_USER_NAME="${GIT_USER_NAME:-swarm-agent}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-agent@swarm.local}"
 git config --global user.name "$GIT_USER_NAME"
@@ -608,6 +669,13 @@ IDLE_FILE="/workspace/agent_logs/idle_agent_${AGENT_ID}"
 RETRY_FILE="/workspace/agent_logs/retry_agent_${AGENT_ID}"
 rm -f "$RETRY_FILE"
 
+# Install signal handlers after workspace setup so the emergency
+# push has a /workspace/.git to push from.  Setting these here,
+# not at the top of the script, keeps an interrupt during the
+# initial clone from chasing a missing repo.
+trap '_on_signal TERM' TERM
+trap '_on_signal INT' INT
+
 while true; do
     # Reset to latest. Do not re-init submodules; setup changes would be lost.
     git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
@@ -633,8 +701,8 @@ while true; do
 
     AGENT_RUN_EXIT=0
     _run_start=$SECONDS
-    agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
-        | /activity-filter.sh || AGENT_RUN_EXIT=$?
+    _run_agent_session "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" \
+        "$LOGFILE" "$APPEND_FILE" || AGENT_RUN_EXIT=$?
     _run_elapsed_ms=$(( (SECONDS - _run_start) * 1000 ))
 
     # Extract usage stats via the driver.
@@ -706,8 +774,8 @@ while true; do
                 rm -f "$RETRY_FILE"
                 AGENT_RUN_EXIT=0
                 _run_start=$SECONDS
-                agent_run "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" "$LOGFILE" "$APPEND_FILE" \
-                    | /activity-filter.sh || AGENT_RUN_EXIT=$?
+                _run_agent_session "$SWARM_MODEL" "$(cat "$SWARM_PROMPT")" \
+                    "$LOGFILE" "$APPEND_FILE" || AGENT_RUN_EXIT=$?
                 _run_elapsed_ms=$(( (SECONDS - _run_start) * 1000 ))
                 STATS_LINE=$(agent_extract_stats "$LOGFILE")
                 IFS=$'\t' read -r cost tok_in tok_out cache_rd cache_cr dur api_ms turns <<< "$STATS_LINE"

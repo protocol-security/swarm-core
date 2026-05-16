@@ -461,12 +461,73 @@ PREORDER_OK=$(printf '%s' "$FATAL_BLOCK" | awk '
 assert_eq "every fatal exit 1 is preceded by _session_end_push" \
     "yes" "$PREORDER_OK"
 
-# The inline session-end use (happy path between sessions) is
-# the only other call to the function -- 1 inline use + 3 fatal
-# uses == 4 callers total, plus the definition == 5 occurrences.
-assert_eq "_session_end_push referenced exactly 5 times" \
-    "5" \
+# Call-site accounting:
+#   1 definition + 1 inline (happy path) + 3 fatal-exit blocks
+#   + 1 emergency-shutdown trap == 6 occurrences total.
+# Pinning the total is a tripwire against an accidental extra
+# reference; each individual site is also asserted above and
+# (for the trap) in §7 below.
+assert_eq "_session_end_push referenced exactly 6 times" \
+    "6" \
     "$(grep -cE '_session_end_push' "$HARNESS_FILE")"
+
+# ============================================================
+echo ""
+echo "=== 7. Signal trap ships local commits before exit ==="
+
+# Without a trap, `docker stop` (SIGTERM with a 10s default
+# grace then SIGKILL) abandons unpushed commits sitting in
+# /workspace/.git -- the harness is parked in a foreground
+# wait and bash defers traps until the foreground child
+# returns.  Two pieces must be in place: (1) the agent
+# pipeline runs in a backgrounded subshell so a `wait`
+# builtin is what's interruptible, and (2) the trap handler
+# kills the agent and runs the session-end push before exit.
+
+# (1) agent_run pipeline runs in background and is awaited.
+assert_eq "agent_run pipeline runs in a backgrounded subshell" \
+    "1" \
+    "$(grep -cE '\( agent_run "\$model" "\$prompt" "\$logfile" "\$append" \\$' \
+        "$HARNESS_FILE")"
+assert_eq "_run_agent_session captures \$! and waits on it" \
+    "1" \
+    "$(grep -cE 'wait "\$_SESSION_PID"' "$HARNESS_FILE")"
+assert_eq "_SESSION_PID is reset to empty after wait" \
+    "1" \
+    "$(grep -cE '^[[:space:]]+_SESSION_PID=""$' "$HARNESS_FILE")"
+
+# Both per-loop agent invocations (initial + retry) use the
+# wrapper instead of the bare pipeline.  A regression here
+# would silently re-deafen the harness to SIGTERM for one of
+# the two session entry points.  We match the bug-specific
+# foreground tail (`/activity-filter.sh || AGENT_RUN_EXIT=$?`)
+# rather than just the pipe -- the wrapper's own backgrounded
+# pipeline lives inside a `( ... ) &` subshell and is not
+# foreground.
+assert_eq "no foreground agent_run | activity-filter pipelines" \
+    "0" \
+    "$(grep -cE '/activity-filter\.sh \|\| AGENT_RUN_EXIT=\$\?' \
+        "$HARNESS_FILE")"
+assert_eq "two _run_agent_session call sites" \
+    "2" \
+    "$(grep -cE '^[[:space:]]+_run_agent_session "\$SWARM_MODEL"' \
+        "$HARNESS_FILE")"
+
+# (2) Trap is installed for TERM and INT and runs _on_signal,
+# which kills the running pipeline, pushes, and exits 143/130.
+assert_eq "trap _on_signal TERM installed" "1" \
+    "$(grep -cE "^trap '_on_signal TERM' TERM\$" "$HARNESS_FILE")"
+assert_eq "trap _on_signal INT installed" "1" \
+    "$(grep -cE "^trap '_on_signal INT' INT\$" "$HARNESS_FILE")"
+ON_SIGNAL_BODY=$(awk '/^_on_signal\(\) \{$/,/^\}$/' "$HARNESS_FILE")
+assert_contains "_on_signal kills the running agent session" \
+    'kill -TERM "$_SESSION_PID"' "$ON_SIGNAL_BODY"
+assert_contains "_on_signal calls _session_end_push" \
+    '_session_end_push' "$ON_SIGNAL_BODY"
+assert_contains "_on_signal exits with TERM code 143" \
+    'exit_code=143' "$ON_SIGNAL_BODY"
+assert_contains "_on_signal exits with INT code 130" \
+    'exit_code=130' "$ON_SIGNAL_BODY"
 
 # ============================================================
 echo ""
