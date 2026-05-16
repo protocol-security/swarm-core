@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: agent commits abandoned on fatal-error exit and on
+  `docker stop`.**  The session-end push pipeline (in-place
+  rebase -> scratch worktree -> agent-parked salvage) ran ONLY
+  at the bottom of the per-iteration loop, AFTER the
+  `FATAL_MSG` handling block that exits with code 1 on
+  non-retriable model errors, retry-budget exhaustion, and
+  zero-token failures.  In a real 45-agent swarm, 15 agents
+  exited that exact path holding 3-154 commits each that died
+  with the container.  Separately, `docker stop` (default
+  SIGTERM + 10 s grace + SIGKILL) hit the harness while it was
+  parked in a foreground pipeline, so its push block never ran
+  either -- 26 of the same 45 agents lost commits through that
+  door.
+
+  Fix in three layers:
+
+  - Hoist the inline push pipeline into `_session_end_push` and
+    call it before every fatal `exit 1` in the `FATAL_MSG`
+    block (with `|| true` so a final push failure does not
+    mask the original fatal cause).  Tests:
+    `tests/test_session_end_push.sh` §6 -- one definition, one
+    inline call, three fatal-exit calls, an awk walk pins the
+    ordering constraint that the push immediately precedes the
+    exit, and the call-site count is locked at six.
+
+  - Wrap the agent pipeline in a backgrounded subshell
+    (`( agent_run ... | /activity-filter.sh ) &; wait`) so the
+    harness's `wait` becomes signal-interruptible.  Install
+    `trap '_on_signal TERM' TERM` (and `INT`) right before the
+    main loop.  `_on_signal` kills the running pipeline, calls
+    `_session_end_push`, then exits 143 / 130.  Tests:
+    `tests/test_session_end_push.sh` §7 pins both per-loop
+    invocations using `_run_agent_session`, the absence of any
+    bare foreground `agent_run | /activity-filter.sh`
+    pipeline, the trap installation, and the handler's
+    kill / push / exit behaviour.
+
+  - `cmd_stop` in `launch.sh` now passes
+    `-t "${SWARM_STOP_TIMEOUT:-60}"` to `docker stop`.
+    Docker's 10 s default cuts the emergency push mid-rebase
+    on a busy bare repo; 60 s comfortably absorbs the
+    three-try rebase plus the scratch-worktree cherry-pick
+    plus the agent-parked salvage push.  Override with
+    `SWARM_STOP_TIMEOUT=120 ./launch.sh stop` for larger
+    swarms.  Tests: `tests/test_launch.sh` §40 pins the flag,
+    the default, and the env-var override via a fake-docker
+    shim that captures the invocations.
+
 ## 0.20.14 — 2026-05-06
 
 - **Fix: `cmd_post_process` reused a stale image after the
