@@ -85,7 +85,12 @@ Drafting the PR:
        - [ ] Concrete verification steps.
 
 4. 3-6 summary bullets. Group related commits.
-5. Test plan: runnable commands or observable behaviors.
+5. Each bullet is one line; surrounding prose 1-2
+   lines max.  Don't pre-wrap PR bodies at 79 chars
+   -- the "Wrap to 79 chars" rule under "Quality
+   bars" applies to source, docs, and commits, not
+   to PR text on GitHub.
+6. Test plan: runnable commands or observable behaviors.
 
 ## Linting
 
