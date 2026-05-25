@@ -928,9 +928,22 @@ cmd_post_process() {
         break
     done
 
+    # Capture container exit code BEFORE harvest. Harvest runs unconditionally
+    # so a crashed agent's in-flight commits still land locally (best-effort
+    # recovery), but we propagate the failure upward so callers (CI workflows,
+    # daemons) can refuse to publish partial state.
+    local exit_code
+    exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$NAME" 2>/dev/null || echo "1")
+
     echo ""
     echo "--- Harvesting results ---"
     "$SWARM_DIR/harvest.sh"
+
+    if [ "$exit_code" -ne 0 ]; then
+        echo "WARNING: post-process container exited with code ${exit_code};" \
+             "any commits harvested may represent partial state." >&2
+        return "$exit_code"
+    fi
 }
 
 case "${1:-start}" in

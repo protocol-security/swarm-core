@@ -1887,6 +1887,31 @@ assert_eq "Dockerfile copies interactive entrypoint" "1" \
 
 # ============================================================
 echo ""
+echo "=== 42. cmd_post_process propagates container exit code ==="
+
+# Partial-output recovery contract: when the post-process container
+# crashes after committing some findings into the bare repo, harvest
+# still runs (so the work isn't lost on the local branch) but the
+# function returns the container's exit code.  CI workflows / daemons
+# gate publish on this signal so partial state doesn't ship.
+_pp_body=$(awk '
+    /^cmd_post_process\(\)[[:space:]]*\{/ { p = 1 }
+    p { print }
+    p && /^\}[[:space:]]*$/ { exit }
+' "$_LAUNCH_SH")
+
+assert_eq "cmd_post_process captures State.ExitCode" "1" \
+    "$(printf '%s\n' "$_pp_body" \
+        | grep -cE 'docker inspect[[:space:]]+-f[[:space:]]+.*State\.ExitCode' \
+        || true)"
+
+assert_eq "cmd_post_process returns container exit code on failure" "1" \
+    "$(printf '%s\n' "$_pp_body" \
+        | grep -cE 'return[[:space:]]+"\$exit_code"' \
+        || true)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
