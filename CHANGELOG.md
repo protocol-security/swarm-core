@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: Docker project names are sanitized for uppercase repo
+  basenames.**  `launch.sh` now derives a lowercase Docker-safe
+  project id for image names, container names, and `/tmp` paths,
+  while preserving the raw repository basename in user-facing run
+  context.  Dashboard, harvest, progress, cost, and test helpers
+  use the same sanitizer so they agree on the internal names.
+
 ## 0.20.15 — 2026-05-16
 
 - **Test: runtime emergency-push verification under `--all`.**

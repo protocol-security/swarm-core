@@ -40,9 +40,12 @@ fi
 
 source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq docker tput bc
+# shellcheck source=lib/project.sh
+source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-PROJECT="$(basename "$REPO_ROOT")"
+PROJECT_RAW="$(basename "$REPO_ROOT")"
+PROJECT="$(swarm_project_id "$PROJECT_RAW")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
 START_TIME=$(date +%s)
@@ -50,8 +53,8 @@ START_TIME=$(date +%s)
 GIT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 GIT_SHORT_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")
 
-DEFAULT_TITLE="${PROJECT}"
-[ -n "$GIT_SHORT_HEAD" ] && DEFAULT_TITLE="${PROJECT} (@${GIT_SHORT_HEAD})"
+DEFAULT_TITLE="${PROJECT_RAW}"
+[ -n "$GIT_SHORT_HEAD" ] && DEFAULT_TITLE="${PROJECT_RAW} (@${GIT_SHORT_HEAD})"
 
 # Save user's explicit env var so it takes priority over state file.
 USER_TITLE="${SWARM_TITLE:-}"

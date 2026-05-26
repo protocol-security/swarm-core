@@ -17,9 +17,11 @@ fi
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git docker
+# shellcheck source=lib/project.sh
+source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-PROJECT="$(basename "$REPO_ROOT")"
+PROJECT="$(swarm_project_id "$(basename "$REPO_ROOT")")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 CHECK_DIR="/tmp/${PROJECT}-progress-check"
 

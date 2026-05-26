@@ -37,12 +37,15 @@ fi
 
 source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq docker
+# shellcheck source=lib/project.sh
+source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-PROJECT="$(basename "$REPO_ROOT")"
+PROJECT_RAW="$(basename "$REPO_ROOT")"
+PROJECT="$(swarm_project_id "$PROJECT_RAW")"
 SWARM_RUN_HASH="$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo "unknown")"
 SWARM_RUN_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
-SWARM_RUN_CONTEXT="${PROJECT}@${SWARM_RUN_HASH} (${SWARM_RUN_BRANCH})"
+SWARM_RUN_CONTEXT="${PROJECT_RAW}@${SWARM_RUN_HASH} (${SWARM_RUN_BRANCH})"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
 
