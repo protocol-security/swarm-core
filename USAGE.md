@@ -177,8 +177,9 @@ gap.  Both rarely need adjustment outside the test suite.
 
 ### Stopping the swarm
 
-`./launch.sh stop` sends each container `docker stop -t 60`.
-The 60 s grace gives the harness's SIGTERM trap time to ship
+`./launch.sh stop` sends each numbered agent and post-process
+container `docker stop -t 60`.  The 60 s grace gives the
+harness's SIGTERM trap time to ship
 any in-flight local commits (in-place rebase → scratch
 worktree → `agent-parked/*` salvage) before docker forces
 SIGKILL.  Without this window, commits the agent made during
@@ -319,9 +320,9 @@ do not count toward numbered-agent completion.
 | `q` | Quit. |
 | `1`-`9` | Logs for agent N. |
 | `h` | Harvest results. |
-| `s` | Stop numbered agents (not post-process). |
+| `s` | Stop numbered agents and post-process. |
 | `p` | Post-process logs, if the container exists. |
-| `P` | Run post-process after confirmation. |
+| `P` | Start post-process after confirmation. |
 
 ## Activity streaming
 

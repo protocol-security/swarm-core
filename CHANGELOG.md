@@ -26,6 +26,13 @@
   so configured numbered agents still render from `swarm.json` instead
   of falling back to `unknown` / `not found`.
 
+- **Fix: stop controls include post-process.**
+  The dashboard `s` key and `launch.sh stop` now stop both numbered
+  agents and the post-process container.  When a post-process
+  container already exists, the footer shows only the `p` logs
+  shortcut and hidden `P` presses do not replace the running
+  post-process container.
+
 ## 0.20.16 — 2026-05-26
 
 - **Fix: Docker project names are sanitized for uppercase repo

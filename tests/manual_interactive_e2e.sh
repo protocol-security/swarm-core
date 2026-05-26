@@ -314,7 +314,8 @@ Expected result:
 - The dashboard header reports 5 agents.
 - Press \`1\` through \`5\` to inspect numbered-agent logs.
 - \`p\` should only tail post-process logs after a post-process
-  container exists.
+  container exists.  When it appears, \`P\` should be hidden because
+  post-process is already running.
 - \`P\` should ask for confirmation before starting post-process.
 
 This fixture uses \`max_idle: 3\` and normal prompts, so agents can
@@ -421,7 +422,9 @@ Expected result:
 \`\`\`
 
 Press \`P\`, confirm with \`y\`, and watch the \`P\` row.  After the
-post-process container exists, lowercase \`p\` should tail its logs.
+post-process container exists, lowercase \`p\` should tail its logs and
+\`P\` should disappear.  Use \`s\` or \`./launch.sh stop\` before
+starting a new post-process run.
 
 Equivalent non-dashboard command:
 

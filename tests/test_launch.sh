@@ -1731,7 +1731,7 @@ echo "=== 40. cmd_stop gives the harness time to push ==="
 # flag's presence, the default, and the env-var override.
 LAUNCH_FILE="$TESTS_DIR/../launch.sh"
 CMD_STOP_BODY=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
-assert_eq "cmd_stop passes -t to docker stop" "1" \
+assert_eq "cmd_stop passes -t to docker stop" "2" \
     "$(printf '%s\n' "$CMD_STOP_BODY" \
         | grep -cF 'docker stop -t "$stop_timeout"')"
 assert_eq "cmd_stop defaults grace to 60s" "1" \
@@ -1763,11 +1763,14 @@ cmd_stop_src=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
     PATH="$FAKE_DOCKER_DIR:$PATH" cmd_stop >/dev/null 2>&1 || true
 )
 default_calls=$(wc -l < "$trap_dir/calls" | tr -d ' ')
-assert_eq "default grace: 3 docker stop invocations" \
-    "3" "$default_calls"
+assert_eq "default grace: 3 agents plus post stop invocations" \
+    "4" "$default_calls"
 default_flag=$(head -1 "$trap_dir/calls")
 assert_eq "default grace: -t 60 in flags" "1" \
     "$(printf '%s\n' "$default_flag" | grep -cF 'stop -t 60')"
+assert_eq "default grace: post-process is stopped" "1" \
+    "$(grep -cF 'stop -t 60 claude-swarm-fake-post' \
+        "$trap_dir/calls" || true)"
 
 # Env override: SWARM_STOP_TIMEOUT=120.
 : > "$trap_dir/calls"
@@ -1782,6 +1785,9 @@ assert_eq "default grace: -t 60 in flags" "1" \
 override_flag=$(head -1 "$trap_dir/calls")
 assert_eq "SWARM_STOP_TIMEOUT=120 propagates to docker stop -t 120" "1" \
     "$(printf '%s\n' "$override_flag" | grep -cF 'stop -t 120')"
+assert_eq "SWARM_STOP_TIMEOUT=120 propagates to post-process" "1" \
+    "$(grep -cF 'stop -t 120 claude-swarm-fake-post' \
+        "$trap_dir/calls" || true)"
 
 # ============================================================
 echo ""

@@ -731,6 +731,10 @@ cmd_stop() {
             && echo "  stopped ${NAME}" \
             || echo "  ${NAME} not running"
     done
+    NAME="${IMAGE_NAME}-post"
+    docker stop -t "$stop_timeout" "$NAME" 2>/dev/null \
+        && echo "  stopped ${NAME}" \
+        || echo "  ${NAME} not running"
     rm -f "/tmp/${PROJECT}-swarm.env"
 }
 

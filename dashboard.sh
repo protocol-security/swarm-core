@@ -29,9 +29,9 @@ Keybindings:
   q           Quit the dashboard.
   1-9         Tail logs for agent N.
   h           Harvest agent results into current branch.
-  s           Stop numbered agents (not post-process).
+  s           Stop numbered agents and post-process.
   p           Tail post-process logs when the container exists.
-  P           Run post-process after confirmation.
+  P           Start post-process after confirmation.
 
 Environment:
   SWARM_TITLE    Dashboard title override.
@@ -767,8 +767,7 @@ draw() {
     if post_process_container_exists; then
         # shellcheck disable=SC2059
         printf "  ${DIM}[p]${RESET} post-process logs"
-    fi
-    if post_process_configured; then
+    elif post_process_configured; then
         # shellcheck disable=SC2059
         printf "  ${DIM}[P]${RESET} post-process"
     fi
@@ -810,6 +809,9 @@ while true; do
                         echo "  stopped ${IMAGE_NAME}-${i}"
                     fi
                 done
+                if docker stop "${IMAGE_NAME}-post" 2>/dev/null; then
+                    echo "  stopped ${IMAGE_NAME}-post"
+                fi
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
                 enter_alt_screen
@@ -844,11 +846,14 @@ while true; do
                 fi
                 _pp_name="${IMAGE_NAME}-post"
                 if post_process_container_exists; then
-                    _pp_prompt="Replace existing ${_pp_name} with a new run?"
-                    _pp_prompt="${_pp_prompt} [y/N] "
-                else
-                    _pp_prompt="Start post-processing now? [y/N] "
+                    echo "(post-processing is already running -- press p for logs)"
+                    echo "Stop it first with s before starting a new run."
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
+                    enter_alt_screen
+                    continue
                 fi
+                _pp_prompt="Start post-processing now? [y/N] "
                 read -r -p "$_pp_prompt" _pp_confirm || _pp_confirm=""
                 case "$_pp_confirm" in
                     y|Y|yes|YES) ;;

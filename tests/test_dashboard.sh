@@ -668,7 +668,10 @@ DASHBOARD_FILE="$TESTS_DIR/../dashboard.sh"
 assert_eq "help documents lowercase post-process logs" "1" \
     "$(grep -cF 'p           Tail post-process logs' "$DASHBOARD_FILE")"
 assert_eq "help documents uppercase post-process run" "1" \
-    "$(grep -cF 'P           Run post-process after confirmation.' \
+    "$(grep -cF 'P           Start post-process after confirmation.' \
+        "$DASHBOARD_FILE")"
+assert_eq "help documents stop includes post-process" "1" \
+    "$(grep -cF 's           Stop numbered agents and post-process.' \
         "$DASHBOARD_FILE")"
 assert_eq "p and P are not the same case arm" "0" \
     "$(grep -cF 'p|P)' "$DASHBOARD_FILE" || true)"
@@ -695,6 +698,16 @@ pp_upper_case=$(awk '
     p { print }
     p && /^                ;;/ { exit }
 ' "$DASHBOARD_FILE")
+s_case=$(awk '
+    /^[[:space:]]*s\|S\)/ { p = 1 }
+    p { print }
+    p && /^                ;;/ { exit }
+' "$DASHBOARD_FILE")
+help_bar=$(awk '
+    /# Help bar\./ { p = 1 }
+    p { print }
+    p && /^[[:space:]]*printf "\\n"/ { exit }
+' "$DASHBOARD_FILE")
 
 assert_eq "lowercase p follows post-process logs" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
@@ -714,6 +727,18 @@ assert_eq "uppercase P can launch post-process" "1" \
 assert_eq "uppercase P has cancellation path" "1" \
     "$(printf '%s\n' "$pp_upper_case" \
         | grep -cF 'post-processing not started' || true)"
+assert_eq "footer hides P when post-process exists" "1" \
+    "$(printf '%s\n' "$help_bar" \
+        | grep -cF 'elif post_process_configured; then' || true)"
+assert_eq "uppercase P refuses to replace running post-process" "1" \
+    "$(printf '%s\n' "$pp_upper_case" \
+        | grep -cF 'post-processing is already running' || true)"
+assert_eq "uppercase P has no replacement prompt" "0" \
+    "$(printf '%s\n' "$pp_upper_case" \
+        | grep -cF 'Replace existing' || true)"
+assert_eq "s stops post-process container" "1" \
+    "$(printf '%s\n' "$s_case" \
+        | grep -cF 'docker stop "${IMAGE_NAME}-post"' || true)"
 
 # ============================================================
 echo ""
