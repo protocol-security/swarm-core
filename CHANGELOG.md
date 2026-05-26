@@ -9,6 +9,12 @@
   context.  Dashboard, harvest, progress, cost, and test helpers
   use the same sanitizer so they agree on the internal names.
 
+- **Fix: configured post-processing is visible before it starts.**
+  The dashboard now renders a synthetic `PP` row from
+  `post_process` config when no post-process container exists yet,
+  marked `configured`.  Once the container exists, the row still
+  uses the live Docker state, stats, and environment as before.
+
 ## 0.20.15 — 2026-05-16
 
 - **Test: runtime emergency-push verification under `--all`.**

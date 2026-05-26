@@ -92,6 +92,7 @@ short_driver() {
     case "${1:-}" in
         claude-code) printf 'claude' ;;
         gemini-cli)  printf 'gemini' ;;
+        codex-cli)   printf 'codex'  ;;
         *)           printf '%s' "${1:-}" ;;
     esac
 }
@@ -230,6 +231,7 @@ echo "=== 4. short_driver ==="
 
 assert_eq "claude-code → claude" "claude" "$(short_driver claude-code)"
 assert_eq "gemini-cli → gemini"  "gemini" "$(short_driver gemini-cli)"
+assert_eq "codex-cli → codex"    "codex"  "$(short_driver codex-cli)"
 assert_eq "fake passthrough"     "fake"   "$(short_driver fake)"
 assert_eq "unknown passthrough"  "foo"    "$(short_driver foo)"
 assert_eq "empty → empty"       ""        "$(short_driver "")"
@@ -357,6 +359,77 @@ assert_eq "pp model widens column" "23" "$(compute_model_col_w "$TMPDIR/pp_wider
 
 # ============================================================
 echo ""
+echo "=== 7b. Pending post-process row from config ==="
+
+pending_pp_fields() {
+    jq -r '[
+        .post_process.prompt // "",
+        .post_process.model // "claude-opus-4-6",
+        .post_process.effort // "",
+        .post_process.driver // .driver // "claude-code",
+        .post_process.auth // "",
+        .post_process.tag // .tag // ""
+    ] | join("|")' "$1"
+}
+
+cat > "$TMPDIR/pp_pending.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "driver": "codex-cli",
+  "tag": "scan",
+  "agents": [{ "count": 1, "model": "gpt-4o" }],
+  "post_process": {
+    "prompt": "review.md",
+    "model": "gemini-2.5-pro",
+    "effort": "high",
+    "driver": "gemini-cli",
+    "auth": "oauth",
+    "tag": "triage"
+  }
+}
+EOF
+
+IFS='|' read -r pp_prompt pp_model pp_effort pp_driver pp_auth pp_tag \
+    <<< "$(pending_pp_fields "$TMPDIR/pp_pending.json")"
+assert_eq "pp pending configured by prompt" "review.md" "$pp_prompt"
+assert_eq "pp pending model" "gemini-2.5-pro" "$pp_model"
+assert_eq "pp pending effort" "high" "$pp_effort"
+assert_eq "pp pending driver" "gemini-cli" "$pp_driver"
+assert_eq "pp pending auth" "oauth" "$pp_auth"
+assert_eq "pp pending tag" "triage" "$pp_tag"
+
+cat > "$TMPDIR/pp_pending_defaults.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "driver": "codex-cli",
+  "tag": "scan",
+  "agents": [{ "count": 1, "model": "gpt-4o" }],
+  "post_process": { "prompt": "review.md" }
+}
+EOF
+
+IFS='|' read -r _ pp_model pp_effort pp_driver pp_auth pp_tag \
+    <<< "$(pending_pp_fields "$TMPDIR/pp_pending_defaults.json")"
+assert_eq "pp pending default model" "claude-opus-4-6" "$pp_model"
+assert_eq "pp pending empty effort" "" "$pp_effort"
+assert_eq "pp pending inherits driver" "codex-cli" "$pp_driver"
+assert_eq "pp pending empty auth" "" "$pp_auth"
+assert_eq "pp pending inherits tag" "scan" "$pp_tag"
+
+SHOW_INOUT=false; SHOW_AUTH=true; SHOW_TURNS=false; SHOW_TPS=false
+SHOW_CACHE=false; SHOW_TAG=true; SHOW_DRIVER=true
+pending_line=$(emit_row "PP" "$(format_model "$pp_model" "$pp_effort")" \
+    "$(short_driver "$pp_driver")" "$pp_auth" "" "configured" \
+    "" "" "" "" "" "" "$pp_tag")
+assert_eq "pending row has PP id" "true" \
+    "$(echo "$pending_line" | grep -q '^  PP' && echo true || echo false)"
+assert_eq "pending row says configured" "true" \
+    "$(echo "$pending_line" | grep -q 'configured' && echo true || echo false)"
+assert_eq "pending row uses inherited tag" "true" \
+    "$(echo "$pending_line" | grep -q 'scan' && echo true || echo false)"
+
+# ============================================================
+echo ""
 echo "=== 8. Model label fits within column ==="
 
 # Verify that common model labels don't overflow MODEL_COL_W=25.
@@ -395,8 +468,10 @@ echo ""
 echo "=== 10. HAS_MULTI_DRIVERS jq detection ==="
 
 detect_multi_drivers() {
-    jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | unique | length' \
-        "$1" 2>/dev/null || echo 1
+    jq -r '.driver as $dd |
+        ([.agents[] | (.driver // $dd // "claude-code")] +
+         [(.post_process // empty | .driver // $dd // "claude-code")]) |
+        unique | length' "$1" 2>/dev/null || echo 1
 }
 
 cat > "$TMPDIR/single_claude.json" <<'EOF'
@@ -455,6 +530,22 @@ cat > "$TMPDIR/all_gemini_explicit.json" <<'EOF'
 }
 EOF
 assert_eq "all gemini explicit → 1 driver" "1" "$(detect_multi_drivers "$TMPDIR/all_gemini_explicit.json")"
+
+cat > "$TMPDIR/pp_driver_split.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "driver": "codex-cli",
+  "agents": [
+    { "count": 1, "model": "gpt-5" }
+  ],
+  "post_process": {
+    "prompt": "review.md",
+    "driver": "claude-code"
+  }
+}
+EOF
+assert_eq "post-process driver split → 2 drivers" "2" \
+    "$(detect_multi_drivers "$TMPDIR/pp_driver_split.json")"
 
 # ============================================================
 echo ""

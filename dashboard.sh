@@ -121,8 +121,10 @@ fi
 HAS_MULTI_DRIVERS=false
 DRV_COL_W=6
 if [ -n "$CONFIG_FILE" ]; then
-    _nd=$(jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | unique | length' \
-        "$CONFIG_FILE" 2>/dev/null || echo 1)
+    _nd=$(jq -r '.driver as $dd |
+        ([.agents[] | (.driver // $dd // "claude-code")] +
+         [(.post_process // empty | .driver // $dd // "claude-code")]) |
+        unique | length' "$CONFIG_FILE" 2>/dev/null || echo 1)
     [ "$_nd" -gt 1 ] && HAS_MULTI_DRIVERS=true
 fi
 
@@ -348,8 +350,11 @@ draw() {
         if [ -n "$_new_cfg" ] && [ "$_new_cfg" != "$CONFIG_FILE" ] && [ -f "$_new_cfg" ]; then
             CONFIG_FILE="$_new_cfg"
             local _nd
-            _nd=$(jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | unique | length' \
-                "$CONFIG_FILE" 2>/dev/null || echo 1)
+            _nd=$(jq -r '.driver as $dd |
+                ([.agents[] | (.driver // $dd // "claude-code")] +
+                 [(.post_process // empty |
+                   .driver // $dd // "claude-code")]) |
+                unique | length' "$CONFIG_FILE" 2>/dev/null || echo 1)
             HAS_MULTI_DRIVERS=false
             [ "$_nd" -gt 1 ] && HAS_MULTI_DRIVERS=true
 
@@ -487,7 +492,10 @@ draw() {
             "$(format_duration_ms "$a_dur")" "$agent_tag"
     done
 
-    # Post-process row (if container exists).
+    # Post-process row. If the container exists, use live Docker
+    # state; otherwise show configured post-processing before it
+    # starts so operators can distinguish "not started" from
+    # "not configured".
     local pp_name="${IMAGE_NAME}-post"
     local pp_state
     pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || true)
@@ -538,6 +546,31 @@ draw() {
             "$(format_tokens "$pp_cache")" \
             "$pp_turns" "$(format_tps "$pp_out" "$pp_api_ms")" \
             "$(format_duration_ms "$pp_dur")" "$pp_tag"
+    elif [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
+        local pp_prompt
+        pp_prompt=$(jq -r '.post_process.prompt // empty' \
+            "$CONFIG_FILE" 2>/dev/null || true)
+        if [ -n "$pp_prompt" ]; then
+            local pp_model pp_effort pp_auth_mode pp_tag pp_driver
+            pp_model=$(jq -r '.post_process.model // "claude-opus-4-6"' \
+                "$CONFIG_FILE" 2>/dev/null || echo "claude-opus-4-6")
+            pp_effort=$(jq -r '.post_process.effort // empty' \
+                "$CONFIG_FILE" 2>/dev/null || true)
+            pp_auth_mode=$(jq -r '.post_process.auth // empty' \
+                "$CONFIG_FILE" 2>/dev/null || true)
+            pp_tag=$(jq -r '.post_process.tag // .tag // empty' \
+                "$CONFIG_FILE" 2>/dev/null || true)
+            pp_driver=$(jq -r '.post_process.driver // .driver // "claude-code"' \
+                "$CONFIG_FILE" 2>/dev/null || echo "claude-code")
+
+            local pp_rule
+            pp_rule=$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))
+            printf "  ${DIM}%s${RESET}\n" "$pp_rule"
+            emit_row "PP" "$(format_model "$pp_model" "$pp_effort")" \
+                "$(short_driver "$pp_driver")" "$pp_auth_mode" \
+                "$DIM" "configured" \
+                "" "" "" "" "" "" "$pp_tag"
+        fi
     fi
 
     # Totals row.
