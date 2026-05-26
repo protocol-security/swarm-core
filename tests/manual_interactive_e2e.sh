@@ -166,16 +166,20 @@ EOF
 cat > "$REPO_DIR/prompts/post-process.md" <<'EOF'
 You are the post-process agent for a manual claude-swarm smoke test.
 
-Summarize the current repository state into
-`test-results/post-process-summary.md`:
+First run this guard.  If it succeeds, make no changes and exit:
 
-1. List files in `test-results/`.
-2. Summarize recent commits from `git log --oneline --max-count=12`.
-3. Note whether `agent_logs/interactive_state` exists.
-4. End with `POST_PROCESS_DONE`.
-5. Commit the summary.
+```bash
+test -f test-results/post-process-summary.md \
+  && grep -q '^POST_PROCESS_DONE$' test-results/post-process-summary.md
+```
 
-If the summary is already current, make no changes and exit normally.
+If the guard fails, write `test-results/post-process-summary.md` once:
+
+1. List files in `test-results/`, excluding `post-process-summary.md`.
+2. Note whether `agent_logs/interactive_state` exists.
+3. End with `POST_PROCESS_DONE` on its own line.
+4. Commit the summary.
+
 Do not sleep, wait for a timer, or run an infinite loop.
 EOF
 
