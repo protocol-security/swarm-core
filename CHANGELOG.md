@@ -33,6 +33,12 @@
   shortcut and hidden `P` presses do not replace the running
   post-process container.
 
+- **Fix: dashboard state summaries skip interactive-only profiles.**
+  The state file written by `launch.sh start` now filters out omitted
+  and zero-count profiles when generating the dashboard model summary,
+  matching the dashboard's direct config path and avoiding `nullx` or
+  `0x` entries for manual profiles.
+
 ## 0.20.16 — 2026-05-26
 
 - **Fix: Docker project names are sanitized for uppercase repo

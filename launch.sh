@@ -682,8 +682,8 @@ cmd_start() {
     local state_model_summary state_config_label
     state_model_summary=$(jq -r \
         '(.prompt // "") as $dp | ($dp | split("/") | .[-1] // "" | rtrimstr(".md")) as $dp_stem |
-        [.agents[] |
-          "\(.count)x \(.model | split("/") | .[-1])" +
+        [.agents[] | (.count // 0) as $count | select($count > 0) |
+          "\($count)x \(.model | split("/") | .[-1])" +
           (if .context == "none" then " ctx:bare"
            elif .context == "slim" then " ctx:slim"
            else "" end) +

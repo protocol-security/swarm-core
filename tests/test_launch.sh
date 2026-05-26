@@ -49,6 +49,23 @@ parse_pp_base_url() { jq -r '.post_process.base_url // empty' "$1"; }
 parse_pp_api_key()  { jq -r '.post_process.api_key // empty' "$1"; }
 parse_pp_effort()   { jq -r '.post_process.effort // empty' "$1"; }
 parse_pp_max_idle() { jq -r '.post_process.max_idle // .max_idle // 3' "$1"; }
+state_model_summary_for_test() {
+    jq -r \
+        '(.prompt // "") as $dp |
+        ($dp | split("/") | .[-1] // "" | rtrimstr(".md")) as $dp_stem |
+        [.agents[] | (.count // 0) as $count | select($count > 0) |
+          "\($count)x \(.model | split("/") | .[-1])" +
+          (if .context == "none" then " ctx:bare"
+           elif .context == "slim" then " ctx:slim"
+           else "" end) +
+          (if .prompt and .prompt != $dp then
+            ":" + (.prompt | split("/") | .[-1] | rtrimstr(".md") |
+              if startswith($dp_stem + "-")
+              then .[$dp_stem | length + 1:]
+              else .
+              end)
+           else "" end)] | join(", ")' "$1"
+}
 parse_num_agents() {
     jq '[.agents[]? | (.count // 0)] | add // 0' "$1"
 }
@@ -286,6 +303,36 @@ assert_eq "omitted count defaults to zero" "1" \
     "$(parse_num_agents "$TMPDIR/omitted_count.json")"
 assert_eq "omitted count not expanded into agents cfg" "1" \
     "$(parse_agents_cfg "$TMPDIR/omitted_count.json" | wc -l | tr -d ' ')"
+
+cat > "$TMPDIR/state_summary_interactive.json" <<'EOF'
+{
+  "prompt": "prompts/headless.md",
+  "agents": [
+    {
+      "name": "headless",
+      "count": 2,
+      "model": "claude-opus-4-6",
+      "context": "slim"
+    },
+    {
+      "name": "manual-omitted",
+      "model": "claude-opus-4-6",
+      "context": "slim",
+      "prompt": "prompts/headless-manual.md"
+    },
+    {
+      "name": "manual-zero",
+      "count": 0,
+      "model": "gpt-5.4",
+      "context": "slim",
+      "prompt": "prompts/headless-manual.md"
+    }
+  ]
+}
+EOF
+assert_eq "state summary skips interactive-only profiles" \
+    "2x claude-opus-4-6 ctx:slim" \
+    "$(state_model_summary_for_test "$TMPDIR/state_summary_interactive.json")"
 
 # ============================================================
 echo ""
