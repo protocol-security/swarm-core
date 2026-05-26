@@ -39,6 +39,12 @@
   matching the dashboard's direct config path and avoiding `nullx` or
   `0x` entries for manual profiles.
 
+- **Fix: manual interactive E2E harvest avoids setup-log conflicts.**
+  The generated manual fixture now writes setup output to a unique
+  branch- or agent-specific log file, so following the runbook's broad
+  `git add test-results` step does not make two interactive branches
+  collide on `test-results/setup.log` during harvest.
+
 ## 0.20.16 — 2026-05-26
 
 - **Fix: Docker project names are sanitized for uppercase repo

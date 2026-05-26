@@ -120,13 +120,22 @@ cat > "$REPO_DIR/scripts/setup.sh" <<'EOF'
 set -euo pipefail
 
 mkdir -p test-results
+setup_id="${SWARM_INTERACTIVE_BRANCH:-agent-${AGENT_ID:-unknown}}"
+setup_id="${setup_id//\//-}"
+setup_id="$(printf '%s' "$setup_id" | tr -c '[:alnum:]_.-' '-')"
+setup_log="test-results/setup-${setup_id}.log"
+
+# Keep setup output unique so harvested interactive branches do not
+# collide when users follow the runbook's broad `git add test-results`.
 {
     printf 'setup ran at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'agent=%s driver=%s model=%s\n' \
         "${AGENT_ID:-unknown}" \
         "${SWARM_DRIVER:-unknown}" \
         "${SWARM_MODEL:-unknown}"
-} >> test-results/setup.log
+    printf 'branch=%s\n' "${SWARM_INTERACTIVE_BRANCH:-}"
+    printf 'profile=%s\n' "${SWARM_INTERACTIVE_PROFILE:-}"
+} >> "$setup_log"
 EOF
 chmod +x "$REPO_DIR/scripts/setup.sh"
 
@@ -457,6 +466,8 @@ Expected result:
   are all merge candidates.
 - Harvest merges \`agent-work\` plus \`swarm/*/interactive-*\`
   branches into the current branch.
+- Interactive setup logs are branch-specific, so harvest should not
+  conflict on a shared \`test-results/setup.log\`.
 
 ## Cleanup
 
