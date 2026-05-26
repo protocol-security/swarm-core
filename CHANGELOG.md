@@ -26,12 +26,12 @@
   so configured numbered agents still render from `swarm.json` instead
   of falling back to `unknown` / `not found`.
 
-- **Fix: stop controls include post-process.**
-  The dashboard `s` key and `launch.sh stop` now stop both numbered
-  agents and the post-process container.  When a post-process
-  container already exists, the footer shows only the `p` logs
-  shortcut and hidden `P` presses do not replace the running
-  post-process container.
+- **Fix: stop controls include every swarm container.**
+  The dashboard `s` key and `launch.sh stop` now stop numbered
+  agents, interactive containers, and the post-process container.
+  When a post-process container already exists, the footer shows
+  only the `p` logs shortcut and hidden `P` presses do not replace
+  the running post-process container.
 
 - **Fix: dashboard state summaries skip interactive-only profiles.**
   The state file written by `launch.sh start` now filters out omitted

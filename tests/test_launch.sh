@@ -1778,7 +1778,7 @@ echo "=== 40. cmd_stop gives the harness time to push ==="
 # flag's presence, the default, and the env-var override.
 LAUNCH_FILE="$TESTS_DIR/../launch.sh"
 CMD_STOP_BODY=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
-assert_eq "cmd_stop passes -t to docker stop" "2" \
+assert_eq "cmd_stop passes -t to docker stop" "3" \
     "$(printf '%s\n' "$CMD_STOP_BODY" \
         | grep -cF 'docker stop -t "$stop_timeout"')"
 assert_eq "cmd_stop defaults grace to 60s" "1" \
@@ -1807,16 +1807,28 @@ cmd_stop_src=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
     NUM_AGENTS=3
     IMAGE_NAME="claude-swarm-fake"
     PROJECT="fake"
+    docker() {
+        if [ "${1:-}" = "ps" ]; then
+            printf '%s\n' \
+                "claude-swarm-fake-interactive-codex-1" \
+                "claude-swarm-fake-interactive-claude-2"
+            return 0
+        fi
+        command docker "$@"
+    }
     PATH="$FAKE_DOCKER_DIR:$PATH" cmd_stop >/dev/null 2>&1 || true
 )
 default_calls=$(wc -l < "$trap_dir/calls" | tr -d ' ')
-assert_eq "default grace: 3 agents plus post stop invocations" \
-    "4" "$default_calls"
+assert_eq "default grace: 3 agents plus 2 interactive plus post" \
+    "6" "$default_calls"
 default_flag=$(head -1 "$trap_dir/calls")
 assert_eq "default grace: -t 60 in flags" "1" \
     "$(printf '%s\n' "$default_flag" | grep -cF 'stop -t 60')"
 assert_eq "default grace: post-process is stopped" "1" \
     "$(grep -cF 'stop -t 60 claude-swarm-fake-post' \
+        "$trap_dir/calls" || true)"
+assert_eq "default grace: interactive containers are stopped" "2" \
+    "$(grep -cF 'stop -t 60 claude-swarm-fake-interactive-' \
         "$trap_dir/calls" || true)"
 
 # Env override: SWARM_STOP_TIMEOUT=120.
@@ -1826,6 +1838,13 @@ assert_eq "default grace: post-process is stopped" "1" \
     NUM_AGENTS=2
     IMAGE_NAME="claude-swarm-fake"
     PROJECT="fake"
+    docker() {
+        if [ "${1:-}" = "ps" ]; then
+            printf '%s\n' "claude-swarm-fake-interactive-codex-1"
+            return 0
+        fi
+        command docker "$@"
+    }
     SWARM_STOP_TIMEOUT=120 PATH="$FAKE_DOCKER_DIR:$PATH" \
         cmd_stop >/dev/null 2>&1 || true
 )
@@ -1834,6 +1853,9 @@ assert_eq "SWARM_STOP_TIMEOUT=120 propagates to docker stop -t 120" "1" \
     "$(printf '%s\n' "$override_flag" | grep -cF 'stop -t 120')"
 assert_eq "SWARM_STOP_TIMEOUT=120 propagates to post-process" "1" \
     "$(grep -cF 'stop -t 120 claude-swarm-fake-post' \
+        "$trap_dir/calls" || true)"
+assert_eq "SWARM_STOP_TIMEOUT=120 propagates to interactive" "1" \
+    "$(grep -cF 'stop -t 120 claude-swarm-fake-interactive-codex-1' \
         "$trap_dir/calls" || true)"
 
 # ============================================================

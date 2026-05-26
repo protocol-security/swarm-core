@@ -670,8 +670,9 @@ assert_eq "help documents lowercase post-process logs" "1" \
 assert_eq "help documents uppercase post-process run" "1" \
     "$(grep -cF 'P           Start post-process after confirmation.' \
         "$DASHBOARD_FILE")"
-assert_eq "help documents stop includes post-process" "1" \
-    "$(grep -cF 's           Stop numbered agents and post-process.' \
+assert_eq "help documents stop includes every container type" "1" \
+    "$(grep -cF \
+        's           Stop numbered, interactive, and post-process agents.' \
         "$DASHBOARD_FILE")"
 assert_eq "p and P are not the same case arm" "0" \
     "$(grep -cF 'p|P)' "$DASHBOARD_FILE" || true)"
@@ -739,6 +740,9 @@ assert_eq "uppercase P has no replacement prompt" "0" \
 assert_eq "s stops post-process container" "1" \
     "$(printf '%s\n' "$s_case" \
         | grep -cF 'docker stop "${IMAGE_NAME}-post"' || true)"
+assert_eq "s stops interactive containers" "1" \
+    "$(printf '%s\n' "$s_case" \
+        | grep -cF 'interactive_container_names' || true)"
 
 # ============================================================
 echo ""

@@ -731,6 +731,14 @@ cmd_stop() {
             && echo "  stopped ${NAME}" \
             || echo "  ${NAME} not running"
     done
+    while IFS= read -r NAME; do
+        [ -n "$NAME" ] || continue
+        docker stop -t "$stop_timeout" "$NAME" 2>/dev/null \
+            && echo "  stopped ${NAME}" \
+            || echo "  ${NAME} not running"
+    done < <(docker ps -a --format '{{.Names}}' 2>/dev/null \
+        | grep -E "^${IMAGE_NAME}-interactive-" \
+        | sort || true)
     NAME="${IMAGE_NAME}-post"
     docker stop -t "$stop_timeout" "$NAME" 2>/dev/null \
         && echo "  stopped ${NAME}" \

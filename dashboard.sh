@@ -29,7 +29,7 @@ Keybindings:
   q           Quit the dashboard.
   1-9         Tail logs for agent N.
   h           Harvest agent results into current branch.
-  s           Stop numbered agents and post-process.
+  s           Stop numbered, interactive, and post-process agents.
   p           Tail post-process logs when the container exists.
   P           Start post-process after confirmation.
 
@@ -809,6 +809,12 @@ while true; do
                         echo "  stopped ${IMAGE_NAME}-${i}"
                     fi
                 done
+                while IFS= read -r int_name; do
+                    [ -n "$int_name" ] || continue
+                    if docker stop "$int_name" 2>/dev/null; then
+                        echo "  stopped ${int_name}"
+                    fi
+                done < <(interactive_container_names)
                 if docker stop "${IMAGE_NAME}-post" 2>/dev/null; then
                     echo "  stopped ${IMAGE_NAME}-post"
                 fi
