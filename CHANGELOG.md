@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.21.0 — 2026-05-26
+
 - **Feature: interactive agent containers for human-guided work.**
   `launch.sh interactive`, `chat`, and `shell` can start one
   container from a named `agents[]` profile, including profiles
