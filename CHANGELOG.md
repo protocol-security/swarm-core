@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: Docker project names are sanitized for uppercase repo
+  basenames.**  `launch.sh` now derives a lowercase Docker-safe
+  project id for image names, container names, and `/tmp` paths,
+  while preserving the raw repository basename in user-facing run
+  context.  Dashboard, harvest, progress, cost, and test helpers
+  use the same sanitizer so they agree on the internal names.
+
+- **Fix: configured post-processing is visible before it starts.**
+  The dashboard now renders a synthetic `PP` row from
+  `post_process` config when no post-process container exists yet,
+  marked `configured`.  Once the container exists, the row still
+  uses the live Docker state, stats, and environment as before.
+
+- **Fix: dashboard post-process logs get a dedicated shortcut.**
+  Lowercase `p` now follows the existing `PP` container logs and
+  never starts post-processing.  Uppercase `P` starts or replaces
+  the post-process run only after an explicit confirmation prompt,
+  so an accidental keypress does not stop agents and launch triage.
+
+- **Docs: clarify that `launch.sh wait` does not start agents.**
+  Command help, quick-start docs, and post-processing docs now show
+  the intended sequence: run `start` first, then `wait`.
+  `harvest.sh` is documented as a merge-only helper that does not
+  trigger `post_process`; `post-process` is the direct command for
+  manual post-processing followed by harvest.
+
 ## 0.20.15 — 2026-05-16
 
 - **Test: runtime emergency-push verification under `--all`.**

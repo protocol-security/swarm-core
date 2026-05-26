@@ -29,7 +29,8 @@ Keybindings:
   1-9         Tail logs for agent N.
   h           Harvest agent results into current branch.
   s           Stop numbered agents (not post-process).
-  p           Run post-processing agent.
+  p           Tail post-process logs when the PP container exists.
+  P           Start the post-processing agent after confirmation.
 
 Environment:
   SWARM_TITLE    Dashboard title override.
@@ -40,9 +41,12 @@ fi
 
 source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq docker tput bc
+# shellcheck source=lib/project.sh
+source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-PROJECT="$(basename "$REPO_ROOT")"
+PROJECT_RAW="$(basename "$REPO_ROOT")"
+PROJECT="$(swarm_project_id "$PROJECT_RAW")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 IMAGE_NAME="${PROJECT}-agent"
 START_TIME=$(date +%s)
@@ -50,8 +54,8 @@ START_TIME=$(date +%s)
 GIT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 GIT_SHORT_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")
 
-DEFAULT_TITLE="${PROJECT}"
-[ -n "$GIT_SHORT_HEAD" ] && DEFAULT_TITLE="${PROJECT} (@${GIT_SHORT_HEAD})"
+DEFAULT_TITLE="${PROJECT_RAW}"
+[ -n "$GIT_SHORT_HEAD" ] && DEFAULT_TITLE="${PROJECT_RAW} (@${GIT_SHORT_HEAD})"
 
 # Save user's explicit env var so it takes priority over state file.
 USER_TITLE="${SWARM_TITLE:-}"
@@ -118,8 +122,10 @@ fi
 HAS_MULTI_DRIVERS=false
 DRV_COL_W=6
 if [ -n "$CONFIG_FILE" ]; then
-    _nd=$(jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | unique | length' \
-        "$CONFIG_FILE" 2>/dev/null || echo 1)
+    _nd=$(jq -r '.driver as $dd |
+        ([.agents[] | (.driver // $dd // "claude-code")] +
+         [(.post_process // empty | .driver // $dd // "claude-code")]) |
+        unique | length' "$CONFIG_FILE" 2>/dev/null || echo 1)
     [ "$_nd" -gt 1 ] && HAS_MULTI_DRIVERS=true
 fi
 
@@ -294,6 +300,21 @@ read_retry_state() {
     fi
 }
 
+post_process_configured() {
+    local _pp_prompt
+    [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ] || return 1
+    _pp_prompt=$(jq -r '.post_process.prompt // empty' \
+        "$CONFIG_FILE" 2>/dev/null || true)
+    [ -n "$_pp_prompt" ]
+}
+
+post_process_container_exists() {
+    local _pp_state
+    _pp_state=$(docker inspect -f '{{.State.Status}}' \
+        "${IMAGE_NAME}-post" 2>/dev/null || true)
+    [ -n "$_pp_state" ] && [ "$_pp_state" != "none" ]
+}
+
 emit_row() {
     local id_str="$1" model_str="$2" driver_str="$3" auth_str="$4"
     local status_color="$5" status_str="$6"
@@ -345,8 +366,11 @@ draw() {
         if [ -n "$_new_cfg" ] && [ "$_new_cfg" != "$CONFIG_FILE" ] && [ -f "$_new_cfg" ]; then
             CONFIG_FILE="$_new_cfg"
             local _nd
-            _nd=$(jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | unique | length' \
-                "$CONFIG_FILE" 2>/dev/null || echo 1)
+            _nd=$(jq -r '.driver as $dd |
+                ([.agents[] | (.driver // $dd // "claude-code")] +
+                 [(.post_process // empty |
+                   .driver // $dd // "claude-code")]) |
+                unique | length' "$CONFIG_FILE" 2>/dev/null || echo 1)
             HAS_MULTI_DRIVERS=false
             [ "$_nd" -gt 1 ] && HAS_MULTI_DRIVERS=true
 
@@ -484,7 +508,10 @@ draw() {
             "$(format_duration_ms "$a_dur")" "$agent_tag"
     done
 
-    # Post-process row (if container exists).
+    # Post-process row. If the container exists, use live Docker
+    # state; otherwise show configured post-processing before it
+    # starts so operators can distinguish "not started" from
+    # "not configured".
     local pp_name="${IMAGE_NAME}-post"
     local pp_state
     pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || true)
@@ -535,6 +562,26 @@ draw() {
             "$(format_tokens "$pp_cache")" \
             "$pp_turns" "$(format_tps "$pp_out" "$pp_api_ms")" \
             "$(format_duration_ms "$pp_dur")" "$pp_tag"
+    elif post_process_configured; then
+        local pp_model pp_effort pp_auth_mode pp_tag pp_driver
+        pp_model=$(jq -r '.post_process.model // "claude-opus-4-6"' \
+            "$CONFIG_FILE" 2>/dev/null || echo "claude-opus-4-6")
+        pp_effort=$(jq -r '.post_process.effort // empty' \
+            "$CONFIG_FILE" 2>/dev/null || true)
+        pp_auth_mode=$(jq -r '.post_process.auth // empty' \
+            "$CONFIG_FILE" 2>/dev/null || true)
+        pp_tag=$(jq -r '.post_process.tag // .tag // empty' \
+            "$CONFIG_FILE" 2>/dev/null || true)
+        pp_driver=$(jq -r '.post_process.driver // .driver // "claude-code"' \
+            "$CONFIG_FILE" 2>/dev/null || echo "claude-code")
+
+        local pp_rule
+        pp_rule=$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))
+        printf "  ${DIM}%s${RESET}\n" "$pp_rule"
+        emit_row "PP" "$(format_model "$pp_model" "$pp_effort")" \
+            "$(short_driver "$pp_driver")" "$pp_auth_mode" \
+            "$DIM" "configured" \
+            "" "" "" "" "" "" "$pp_tag"
     fi
 
     # Totals row.
@@ -581,8 +628,14 @@ draw() {
     printf "  ${DIM}[h]${RESET} harvest"
     # shellcheck disable=SC2059
     printf "  ${DIM}[s]${RESET} stop all"
-    # shellcheck disable=SC2059
-    printf "  ${DIM}[p]${RESET} post-process"
+    if post_process_container_exists; then
+        # shellcheck disable=SC2059
+        printf "  ${DIM}[p]${RESET} pp logs"
+    fi
+    if post_process_configured; then
+        # shellcheck disable=SC2059
+        printf "  ${DIM}[P]${RESET} start pp"
+    fi
     printf "\n"
 }
 
@@ -625,20 +678,52 @@ while true; do
                 read -rp "Press Enter to return to dashboard..." _
                 enter_alt_screen
                 ;;
-            p|P)
+            p)
                 leave_alt_screen
-                _pp_configured=false
-                if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
-                    _pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE" 2>/dev/null)
-                    [ -n "$_pp_prompt" ] && _pp_configured=true
+                _pp_name="${IMAGE_NAME}-post"
+                if post_process_container_exists; then
+                    echo "--- Logs for ${_pp_name} (Ctrl-C to return) ---"
+                    docker logs -f "$_pp_name" 2>&1 || true
+                    if ! docker inspect -f '{{.State.Running}}' \
+                            "$_pp_name" 2>/dev/null | grep -q true; then
+                        echo ""
+                        read -rp "Press Enter to return to dashboard..." _
+                    fi
+                else
+                    echo "(post-processing is not running -- press P to start)"
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
                 fi
-                if ! $_pp_configured; then
-                    echo "(post-processing not configured -- add post_process to swarm.json)"
+                enter_alt_screen
+                ;;
+            P)
+                leave_alt_screen
+                if ! post_process_configured; then
+                    echo "(post-processing not configured)"
+                    echo "Add post_process to swarm.json."
                     echo ""
                     read -rp "Press Enter to return to dashboard..." _
                     enter_alt_screen
                     continue
                 fi
+                _pp_name="${IMAGE_NAME}-post"
+                if post_process_container_exists; then
+                    _pp_prompt="Replace existing ${_pp_name} with a new run?"
+                    _pp_prompt="${_pp_prompt} [y/N] "
+                else
+                    _pp_prompt="Start post-processing now? [y/N] "
+                fi
+                read -r -p "$_pp_prompt" _pp_confirm || _pp_confirm=""
+                case "$_pp_confirm" in
+                    y|Y|yes|YES) ;;
+                    *)
+                        echo "(post-processing not started)"
+                        echo ""
+                        read -rp "Press Enter to return to dashboard..." _
+                        enter_alt_screen
+                        continue
+                        ;;
+                esac
                 echo "--- Stopping agents ---"
                 for i in $(seq 1 "$NUM_AGENTS"); do
                     docker stop "${IMAGE_NAME}-${i}" 2>/dev/null || true

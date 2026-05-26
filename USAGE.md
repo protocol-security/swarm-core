@@ -3,8 +3,11 @@
 ## Quick start
 
 ```bash
-# Create a swarmfile and launch.
+# Create a swarmfile and launch numbered agents.
 SWARM_CONFIG=swarm.json ./launch.sh start --dashboard
+
+# Later, after agents are running or have exited:
+SWARM_CONFIG=swarm.json ./launch.sh wait
 ```
 
 All configuration lives in the swarmfile (JSON).  Place a
@@ -13,12 +16,16 @@ All configuration lives in the swarmfile (JSON).  Place a
 ## Commands
 
 ```bash
-./launch.sh start [--dashboard]   # Launch agents.
+./launch.sh start [--dashboard]   # Launch numbered agents.
 ./launch.sh stop                  # Stop all agents.
 ./launch.sh status                # Show containers.
 ./launch.sh logs N                # Tail agent N logs.
-./launch.sh wait                  # Block, harvest, post-process.
-./launch.sh post-process          # Run post-process agent.
+./launch.sh wait                  # Wait for already-started
+                                  # numbered agents, then
+                                  # post-process and harvest.
+                                  # Does not start agents.
+./launch.sh post-process          # Run only post-process, then
+                                  # harvest.
 ```
 
 ## Environment variables
@@ -259,7 +266,8 @@ header shows a compact model summary on a single line.
 | `1`-`9` | Logs for agent N. |
 | `h` | Harvest results. |
 | `s` | Stop numbered agents (not post-process). |
-| `p` | Post-process. |
+| `p` | Logs for the post-process container, if it exists. |
+| `P` | Start post-process after confirmation. |
 
 ## Activity streaming
 
@@ -370,11 +378,19 @@ Add to `swarm.json`:
 }
 ```
 
-Trigger via `[p]` in the dashboard, `./launch.sh post-process`,
-or automatically via `./launch.sh wait`.
+Trigger via `[P]` in the dashboard, `./launch.sh post-process`,
+or automatically via `./launch.sh wait` after numbered agents have
+already been started. `./launch.sh wait` does not launch numbered
+agents.
 
 The post-process agent clones the same bare repo, sees all
 commits on `agent-work`, runs its prompt, and pushes.
+
+`harvest.sh` only merges agent work into the current local branch.
+It does not run `post_process`. If you harvested manually and still
+need post-processing, run `./launch.sh post-process`; use that
+command directly when you intentionally want to run only the
+post-process agent and then harvest.
 
 `post_process` also accepts `base_url`, `api_key`,
 `auth_token`, `auth`, `tag`, `driver`, and `max_idle` -- same

@@ -16,6 +16,8 @@ FAIL=0
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../lib/project.sh
+source "$TESTS_DIR/../lib/project.sh"
 
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
@@ -116,6 +118,20 @@ build_oauth_extra_env() {
         && EXTRA_ENV+=(-e "CLAUDE_CODE_OAUTH_TOKEN=${token}")
     echo "${EXTRA_ENV[*]+"${EXTRA_ENV[*]}"}"
 }
+
+# ============================================================
+echo "=== 0. Project ID sanitization ==="
+
+assert_eq "lowercase project unchanged" \
+    "claude-swarm" "$(swarm_project_id "claude-swarm")"
+assert_eq "uppercase project lowercased" \
+    "leanmultisig-swarm" "$(swarm_project_id "leanMultisig-swarm")"
+assert_eq "spaces collapse to separator" \
+    "my-repo" "$(swarm_project_id "My Repo!")"
+assert_eq "leading/trailing separators trimmed" \
+    "repo" "$(swarm_project_id "_Repo.")"
+assert_eq "empty/all separators fallback" \
+    "swarm" "$(swarm_project_id "---")"
 
 # ============================================================
 echo "=== 1. Model name shortening ==="
@@ -642,6 +658,12 @@ done
 out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../launch.sh" --help 2>&1) \
     && rc=0 || rc=$?
 assert_eq "launch --help exits 0 without jq" "0" "$rc"
+assert_eq "launch help says wait does not start agents" "true" \
+    "$([[ "$out" == *"Does not"* && "$out" == *"start agents"* ]] \
+        && echo true || echo false)"
+assert_eq "launch help says post-process harvests" "true" \
+    "$([[ "$out" == *"Run only the post-processing agent"* \
+        && "$out" == *"harvest"* ]] && echo true || echo false)"
 
 # dashboard.sh --help should exit 0 even without jq/docker/tput/bc.
 out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../dashboard.sh" --help 2>&1) \

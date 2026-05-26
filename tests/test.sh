@@ -19,8 +19,10 @@ set -euo pipefail
 
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 SWARM_DIR="$(cd "$TESTS_DIR/.." && pwd)"
+# shellcheck source=../lib/project.sh
+source "$SWARM_DIR/lib/project.sh"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-PROJECT="$(basename "$REPO_ROOT")"
+PROJECT="$(swarm_project_id "$(basename "$REPO_ROOT")")"
 BARE_REPO="/tmp/${PROJECT}-upstream.git"
 REVIEW_DIR="/tmp/${PROJECT}-test-review"
 INJECT_DIR="/tmp/${PROJECT}-test-inject"
