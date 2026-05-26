@@ -49,6 +49,34 @@ agent_run() {
         "$prompt_text"
 }
 
+# Start Codex CLI's native interactive UI.
+# Args: <model> <prompt_file> [append_system_prompt_file]
+agent_interactive_run() {
+    local model="$1" prompt_file="${2:-}" append_file="${3:-}"
+
+    if [ -n "$append_file" ] && [ -f "$append_file" ] \
+            && [ ! -f /workspace/AGENTS.md ]; then
+        cp "$append_file" /workspace/AGENTS.md 2>/dev/null || true
+        mkdir -p /workspace/.git/info
+        echo "AGENTS.md" >> /workspace/.git/info/exclude
+    fi
+
+    local effort_args=()
+    if [ -n "${CODEX_EFFORT:-}" ]; then
+        effort_args=(-c "model_reasoning_effort=\"${CODEX_EFFORT}\"")
+    fi
+
+    if [ -n "$prompt_file" ] && [ -f "$prompt_file" ]; then
+        printf 'Profile prompt is available at %s\n' "$prompt_file"
+    fi
+
+    codex \
+        --dangerously-bypass-approvals-and-sandbox \
+        -m "$model" \
+        --skip-git-repo-check \
+        "${effort_args[@]+"${effort_args[@]}"}"
+}
+
 # Write agent-specific settings and authenticate.
 # Config goes to ~/.codex/ (where Codex CLI looks by default),
 # NOT /workspace/.codex/ (which is only for instructions.md).

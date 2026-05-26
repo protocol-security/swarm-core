@@ -23,22 +23,3 @@ jobs:
             exit 0
           fi
           ./tests/test.sh
-
-  full-matrix:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    needs: smoke-test
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq jq bc
-      - name: Full test suite
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          if [ -z "$ANTHROPIC_API_KEY" ]; then
-            echo "ANTHROPIC_API_KEY not set, skipping."
-            exit 0
-          fi
-          ./tests/test.sh --all

@@ -39,6 +39,26 @@ agent_run() {
     _run_reaped "$logfile" claude "${args[@]}"
 }
 
+# Start Claude Code's native interactive UI.
+# Args: <model> <prompt_file> [append_system_prompt_file]
+agent_interactive_run() {
+    local model="$1" prompt_file="${2:-}" append_file="${3:-}"
+
+    local -a args=(
+        --dangerously-skip-permissions
+        --model "$model"
+    )
+    if [ -n "$append_file" ]; then
+        args+=(--append-system-prompt-file "$append_file")
+    fi
+
+    if [ -n "$prompt_file" ] && [ -f "$prompt_file" ]; then
+        printf 'Profile prompt is available at %s\n' "$prompt_file"
+    fi
+
+    claude "${args[@]}"
+}
+
 # Write agent-specific settings files into the workspace.
 # Disables Co-Authored-By, attribution header, and telemetry.
 # Enables thinking summaries: on Opus 4.7 and later, the API default
@@ -180,12 +200,23 @@ agent_docker_auth() {
     else
         case "${auth_mode}" in
             oauth)
-                printf -- '-e\nCLAUDE_CODE_OAUTH_TOKEN=%s\n' "${CLAUDE_CODE_OAUTH_TOKEN:-}"
-                label="oauth"
+                if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+                    printf -- '-e\nCLAUDE_CODE_OAUTH_TOKEN=%s\n' \
+                        "$CLAUDE_CODE_OAUTH_TOKEN"
+                    label="oauth"
+                else
+                    echo "WARNING: auth=oauth but" \
+                         "CLAUDE_CODE_OAUTH_TOKEN is not set." >&2
+                fi
                 ;;
             apikey)
                 resolved_key="${api_key:-${ANTHROPIC_API_KEY:-}}"
-                label="key"
+                if [ -n "$resolved_key" ]; then
+                    label="key"
+                else
+                    echo "WARNING: auth=apikey but no Anthropic" \
+                         "API key is set." >&2
+                fi
                 ;;
             *)
                 resolved_key="${api_key:-${ANTHROPIC_API_KEY:-}}"

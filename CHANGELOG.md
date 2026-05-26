@@ -1,5 +1,57 @@
 # Changelog
 
+## Unreleased
+
+## 0.21.0 — 2026-05-26
+
+- **Feature: interactive agent containers for human-guided work.**
+  `launch.sh interactive`, `chat`, and `shell` can start one
+  container from a named `agents[]` profile, including profiles
+  with omitted `count` or `count: 0`.  The session reuses the
+  same image, setup, driver, model, effort, auth, context,
+  signing, Docker args, and submodule mirrors as numbered agents,
+  but checks out a distinct `swarm/<run>/interactive-*` branch and
+  pushes that branch on exit.  `harvest.sh` now merges interactive
+  branches alongside `agent-work`, warns when interactive
+  containers still have dirty worktrees, and the dashboard/status
+  output shows interactive branches as `I*` rows with dirty,
+  unharvested, or harvested state.  Claude Code OAuth profiles now
+  warn when the host token is missing instead of labeling the
+  container as authenticated.  The dashboard also shows configured
+  numbered agents before their containers exist and labels the
+  post-process row as `P`, matching the key that runs it.
+
+- **Fix: dashboard missing-container detection handles Docker errors.**
+  Failed `docker inspect -f` calls can emit a blank stdout line before
+  the fallback state, especially when Docker is unavailable or denied.
+  The dashboard now normalizes container states before comparing them,
+  so configured numbered agents still render from `swarm.json` instead
+  of falling back to `unknown` / `not found`.
+
+- **Fix: stop controls include every swarm container.**
+  The dashboard `s` key and `launch.sh stop` now stop numbered
+  agents, interactive containers, and the post-process container.
+  When a post-process container already exists, the footer shows
+  only the `p` logs shortcut and hidden `P` presses do not replace
+  the running post-process container.
+
+- **Fix: dashboard state summaries skip interactive-only profiles.**
+  The state file written by `launch.sh start` now filters out omitted
+  and zero-count profiles when generating the dashboard model summary,
+  matching the dashboard's direct config path and avoiding `nullx` or
+  `0x` entries for manual profiles.
+
+- **Fix: manual interactive E2E harvest avoids setup-log conflicts.**
+  The generated manual fixture now writes setup output to a unique
+  branch- or agent-specific log file, so following the runbook's broad
+  `git add test-results` step does not make two interactive branches
+  collide on `test-results/setup.log` during harvest.
+
+- **CI: remove the scheduled full matrix.**
+  The integration workflow now keeps the lightweight smoke job only;
+  maintainers can still run `./tests/test.sh --all` manually when the
+  full API-key-backed matrix is needed.
+
 ## 0.20.16 — 2026-05-26
 
 - **Fix: Docker project names are sanitized for uppercase repo

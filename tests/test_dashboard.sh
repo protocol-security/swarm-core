@@ -98,6 +98,33 @@ short_driver() {
     esac
 }
 
+normalize_docker_state() {
+    local raw="$1" state
+    state=$(printf '%s\n' "$raw" | awk 'NF { print; exit }')
+    printf '%s' "${state:-not found}"
+}
+
+configured_agent_fields() {
+    local index="$1"
+    [ -n "${CONFIG_FILE:-}" ] || return 0
+    jq -r --argjson wanted "$index" '
+        .tag as $dt | .driver as $dd |
+        [
+          .agents[] as $agent |
+          ($agent.count // 0) as $count |
+          select($count > 0) |
+          range(0; $count) |
+          [
+            ($agent.model // ""),
+            ($agent.effort // ""),
+            ($agent.auth // ""),
+            ($agent.tag // $dt // ""),
+            ($agent.driver // $dd // "claude-code")
+          ] | join("\u001f")
+        ][($wanted - 1)] // empty
+    ' "$CONFIG_FILE" 2>/dev/null || true
+}
+
 emit_row() {
     local id_str="$1" model_str="$2" driver_str="$3" auth_str="$4"
     local status_color="$5" status_str="$6"
@@ -291,7 +318,7 @@ echo ""
 echo "=== 6. tag field in agents.cfg ==="
 
 parse_agents_cfg() {
-    jq -r '.agents[] | range(.count) as $i |
+    jq -r '.agents[] | range(.count // 0) as $i |
         [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // "")] | join("|")' "$1"
 }
 
@@ -419,15 +446,67 @@ assert_eq "pp pending inherits tag" "scan" "$pp_tag"
 
 SHOW_INOUT=false; SHOW_AUTH=true; SHOW_TURNS=false; SHOW_TPS=false
 SHOW_CACHE=false; SHOW_TAG=true; SHOW_DRIVER=true
-pending_line=$(emit_row "PP" "$(format_model "$pp_model" "$pp_effort")" \
+pending_line=$(emit_row "P" "$(format_model "$pp_model" "$pp_effort")" \
     "$(short_driver "$pp_driver")" "$pp_auth" "" "configured" \
     "" "" "" "" "" "" "$pp_tag")
-assert_eq "pending row has PP id" "true" \
-    "$(echo "$pending_line" | grep -q '^  PP' && echo true || echo false)"
+assert_eq "pending row has P id" "true" \
+    "$(echo "$pending_line" | grep -q '^  P' && echo true || echo false)"
 assert_eq "pending row says configured" "true" \
     "$(echo "$pending_line" | grep -q 'configured' && echo true || echo false)"
 assert_eq "pending row uses inherited tag" "true" \
     "$(echo "$pending_line" | grep -q 'scan' && echo true || echo false)"
+
+cat > "$TMPDIR/configured_agents.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "driver": "claude-code",
+  "tag": "top",
+  "agents": [
+    {
+      "name": "headless",
+      "count": 2,
+      "model": "claude-opus-4-6",
+      "auth": "oauth",
+      "context": "slim"
+    },
+    {
+      "name": "manual",
+      "model": "gpt-5.4",
+      "driver": "codex-cli",
+      "auth": "chatgpt"
+    },
+    {
+      "name": "codex-headless",
+      "count": 1,
+      "model": "gpt-5.4",
+      "driver": "codex-cli",
+      "auth": "chatgpt",
+      "effort": "medium",
+      "tag": "codex"
+    }
+  ]
+}
+EOF
+CONFIG_FILE="$TMPDIR/configured_agents.json"
+IFS=$'\037' read -r cfg_model cfg_effort cfg_auth cfg_tag cfg_driver \
+    <<< "$(configured_agent_fields 1)"
+assert_eq "configured row preserves empty effort model" \
+    "claude-opus-4-6" "$cfg_model"
+assert_eq "configured row preserves empty effort" "" "$cfg_effort"
+assert_eq "configured row preserves auth after empty effort" \
+    "oauth" "$cfg_auth"
+assert_eq "configured row preserves tag after empty effort" \
+    "top" "$cfg_tag"
+assert_eq "configured row preserves driver after empty effort" \
+    "claude-code" "$cfg_driver"
+
+IFS=$'\037' read -r cfg_model cfg_effort cfg_auth cfg_tag cfg_driver \
+    <<< "$(configured_agent_fields 3)"
+assert_eq "configured row skips omitted count model" "gpt-5.4" "$cfg_model"
+assert_eq "configured row skips omitted count effort" "medium" "$cfg_effort"
+assert_eq "configured row skips omitted count auth" "chatgpt" "$cfg_auth"
+assert_eq "configured row uses per-agent tag" "codex" "$cfg_tag"
+assert_eq "configured row driver" "codex-cli" "$cfg_driver"
 
 # ============================================================
 echo ""
@@ -586,13 +665,29 @@ echo "=== 12. Post-process dashboard shortcuts ==="
 
 DASHBOARD_FILE="$TESTS_DIR/../dashboard.sh"
 
-assert_eq "help documents lowercase pp logs" "1" \
+assert_eq "help documents lowercase post-process logs" "1" \
     "$(grep -cF 'p           Tail post-process logs' "$DASHBOARD_FILE")"
-assert_eq "help documents uppercase pp start" "1" \
-    "$(grep -cF 'P           Start the post-processing agent' \
+assert_eq "help documents uppercase post-process run" "1" \
+    "$(grep -cF 'P           Start post-process after confirmation.' \
+        "$DASHBOARD_FILE")"
+assert_eq "help documents stop includes every container type" "1" \
+    "$(grep -cF \
+        's           Stop numbered, interactive, and post-process agents.' \
         "$DASHBOARD_FILE")"
 assert_eq "p and P are not the same case arm" "0" \
     "$(grep -cF 'p|P)' "$DASHBOARD_FILE" || true)"
+assert_eq "dashboard emits P post-process rows" "2" \
+    "$(grep -cF 'emit_row "P"' "$DASHBOARD_FILE")"
+assert_eq "dashboard does not emit PP post-process row" "0" \
+    "$(grep -cF 'emit_row "PP"' "$DASHBOARD_FILE" || true)"
+assert_eq "blank inspect output becomes not found" "not found" \
+    "$(normalize_docker_state "")"
+assert_eq "leading blank inspect fallback becomes not found" "not found" \
+    "$(normalize_docker_state $'\nnot found')"
+assert_eq "leading blank inspect state keeps real state" "running" \
+    "$(normalize_docker_state $'\nrunning')"
+assert_eq "dashboard uses normalized container state" "4" \
+    "$(grep -cF 'container_state "' "$DASHBOARD_FILE")"
 
 pp_lower_case=$(awk '
     /^[[:space:]]*p\)/ { p = 1 }
@@ -604,8 +699,18 @@ pp_upper_case=$(awk '
     p { print }
     p && /^                ;;/ { exit }
 ' "$DASHBOARD_FILE")
+s_case=$(awk '
+    /^[[:space:]]*s\|S\)/ { p = 1 }
+    p { print }
+    p && /^                ;;/ { exit }
+' "$DASHBOARD_FILE")
+help_bar=$(awk '
+    /# Help bar\./ { p = 1 }
+    p { print }
+    p && /^[[:space:]]*printf "\\n"/ { exit }
+' "$DASHBOARD_FILE")
 
-assert_eq "lowercase p follows pp logs" "1" \
+assert_eq "lowercase p follows post-process logs" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'docker logs -f "$_pp_name"' || true)"
 assert_eq "lowercase p points to uppercase start" "1" \
@@ -623,6 +728,37 @@ assert_eq "uppercase P can launch post-process" "1" \
 assert_eq "uppercase P has cancellation path" "1" \
     "$(printf '%s\n' "$pp_upper_case" \
         | grep -cF 'post-processing not started' || true)"
+assert_eq "footer hides P when post-process exists" "1" \
+    "$(printf '%s\n' "$help_bar" \
+        | grep -cF 'elif post_process_configured; then' || true)"
+assert_eq "uppercase P refuses to replace running post-process" "1" \
+    "$(printf '%s\n' "$pp_upper_case" \
+        | grep -cF 'post-processing is already running' || true)"
+assert_eq "uppercase P has no replacement prompt" "0" \
+    "$(printf '%s\n' "$pp_upper_case" \
+        | grep -cF 'Replace existing' || true)"
+assert_eq "s stops post-process container" "1" \
+    "$(printf '%s\n' "$s_case" \
+        | grep -cF 'docker stop "${IMAGE_NAME}-post"' || true)"
+assert_eq "s stops interactive containers" "1" \
+    "$(printf '%s\n' "$s_case" \
+        | grep -cF 'interactive_container_names' || true)"
+
+# ============================================================
+echo ""
+echo "=== 13. Interactive dashboard rows ==="
+
+assert_eq "dashboard finds interactive containers" "1" \
+    "$(grep -cF 'interactive_container_names()' "$DASHBOARD_FILE")"
+assert_eq "dashboard reads interactive state file" "true" \
+    "$([ "$(grep -cF 'interactive_state' "$DASHBOARD_FILE" || true)" \
+        -gt 0 ] && echo true || echo false)"
+assert_eq "dashboard marks unharvested branches" "1" \
+    "$(grep -cF "printf 'unharvested'" "$DASHBOARD_FILE" || true)"
+assert_eq "dashboard renders I rows" "1" \
+    "$(grep -cF 'emit_row "I${int_idx}"' "$DASHBOARD_FILE" || true)"
+assert_eq "dashboard prints interactive branch" "1" \
+    "$(grep -cF 'SWARM_INTERACTIVE_BRANCH=' "$DASHBOARD_FILE" || true)"
 
 # ============================================================
 echo ""

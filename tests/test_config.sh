@@ -29,7 +29,7 @@ assert_eq() {
 
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
-    if echo "$haystack" | grep -qF -- "$needle"; then
+    if [[ "$haystack" == *"$needle"* ]]; then
         echo "  PASS: ${label}"
         PASS=$((PASS + 1))
     else
@@ -49,7 +49,9 @@ parse_max_idle()   { jq -r '.max_idle // 3' "$1"; }
 parse_git_name()        { jq -r '.git_user.name // "swarm-agent"' "$1"; }
 parse_git_email()       { jq -r '.git_user.email // "agent@swarm.local"' "$1"; }
 parse_signing_key()     { jq -r '.git_user.signing_key // empty' "$1"; }
-parse_num_agents()       { jq '[.agents[].count] | add' "$1"; }
+parse_num_agents() {
+    jq '[.agents[]? | (.count // 0)] | add // 0' "$1"
+}
 parse_inject_git_rules() { jq -r 'if has("inject_git_rules") then .inject_git_rules else true end' "$1"; }
 parse_title()            { jq -r '.title // empty' "$1"; }
 parse_pp_prompt()        { jq -r '.post_process.prompt // empty' "$1"; }
@@ -57,7 +59,7 @@ parse_pp_model()         { jq -r '.post_process.model // "claude-opus-4-6"' "$1"
 parse_pp_max_idle()      { jq -r '.post_process.max_idle // .max_idle // 3' "$1"; }
 
 parse_agents_cfg() {
-    jq -r '.driver as $dd | .agents[] | range(.count) as $i |
+    jq -r '.driver as $dd | .agents[] | range(.count // 0) as $i |
         [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // ""), (.driver // $dd // "")] | join("|")' "$1"
 }
 
@@ -884,7 +886,7 @@ echo ""
 echo "=== 23. Gemini-only config ==="
 
 CFG="$TESTS_DIR/configs/gemini-only.json"
-assert_eq "gemini-only count" "2" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "gemini-only count" "2" "$(parse_num_agents "$CFG")"
 assert_eq "gemini-only driver" "gemini-cli" "$(jq -r '.driver // "claude-code"' "$CFG")"
 assert_eq "gemini-only model" "gemini-2.5-pro" "$(jq -r '.agents[0].model' "$CFG")"
 # Agents inherit top-level driver.
@@ -896,7 +898,7 @@ echo ""
 echo "=== 24. Mixed-drivers config ==="
 
 CFG="$TESTS_DIR/configs/mixed-drivers.json"
-assert_eq "mixed-drivers count" "3" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "mixed-drivers count" "3" "$(parse_num_agents "$CFG")"
 DRV1=$(jq -r '.driver as $dd | .agents[0] | (.driver // $dd // "claude-code")' "$CFG")
 DRV2=$(jq -r '.driver as $dd | .agents[1] | (.driver // $dd // "claude-code")' "$CFG")
 assert_eq "mixed agent1 driver" "claude-code" "$DRV1"
@@ -910,7 +912,7 @@ echo "=== 25. Driver-inheritance config ==="
 
 CFG="$TESTS_DIR/configs/driver-inheritance.json"
 assert_eq "inherit top driver" "gemini-cli" "$(jq -r '.driver // "claude-code"' "$CFG")"
-assert_eq "inherit count" "2" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "inherit count" "2" "$(parse_num_agents "$CFG")"
 # Both agents should inherit gemini-cli.
 A1=$(jq -r '.driver as $dd | .agents[0] | (.driver // $dd // "claude-code")' "$CFG")
 A2=$(jq -r '.driver as $dd | .agents[1] | (.driver // $dd // "claude-code")' "$CFG")
@@ -924,7 +926,7 @@ echo ""
 echo "=== 26. Driver-post-process config ==="
 
 CFG="$TESTS_DIR/configs/driver-post-process.json"
-assert_eq "pp-cfg agent count" "2" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "pp-cfg agent count" "2" "$(parse_num_agents "$CFG")"
 PP_DRV=$(jq -r '.post_process.driver // .driver // "claude-code"' "$CFG")
 assert_eq "pp driver gemini-cli" "gemini-cli" "$PP_DRV"
 assert_eq "pp model" "gemini-2.5-flash" "$(jq -r '.post_process.model' "$CFG")"
@@ -934,7 +936,7 @@ echo ""
 echo "=== 27. Heterogeneous kitchen-sink config ==="
 
 CFG="$TESTS_DIR/configs/heterogeneous-kitchen-sink.json"
-assert_eq "hetero count" "7" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "hetero count" "7" "$(parse_num_agents "$CFG")"
 
 # Agent drivers.
 DRVS=$(jq -r '.driver as $dd | [.agents[] | (.driver // $dd // "claude-code")] | .[]' "$CFG")
@@ -1033,7 +1035,7 @@ echo "=== 29. Codex-only config ==="
 
 CFG="$TESTS_DIR/configs/codex-only.json"
 
-assert_eq "codex-only count" "2" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "codex-only count" "2" "$(parse_num_agents "$CFG")"
 assert_eq "codex-only driver" "codex-cli" "$(jq -r '.driver' "$CFG")"
 assert_eq "codex-only model[0]" "gpt-5.4" "$(jq -r '.agents[0].model' "$CFG")"
 assert_eq "codex-only model[1]" "gpt-5.3-codex" "$(jq -r '.agents[1].model' "$CFG")"
@@ -1041,7 +1043,7 @@ assert_eq "codex-only effort[0]" "high" "$(jq -r '.agents[0].effort' "$CFG")"
 assert_eq "codex-only effort[1]" "low"  "$(jq -r '.agents[1].effort' "$CFG")"
 
 # Agents inherit top-level driver.
-CODEX_AGENTS=$(jq -r '.driver as $dd | .agents[] | range(.count) as $i |
+CODEX_AGENTS=$(jq -r '.driver as $dd | .agents[] | range(.count // 0) as $i |
     (.driver // $dd // "claude-code")' "$CFG")
 assert_eq "codex-only agent inherits driver" "codex-cli" \
     "$(echo "$CODEX_AGENTS" | sed -n '1p')"
@@ -1052,10 +1054,10 @@ echo "=== 30. Codex-mixed config ==="
 
 CFG="$TESTS_DIR/configs/codex-mixed.json"
 
-MIXED_COUNT=$(jq '[.agents[].count] | add' "$CFG")
+MIXED_COUNT=$(parse_num_agents "$CFG")
 assert_eq "codex-mixed count" "4" "$MIXED_COUNT"
 
-MIXED_AGENTS=$(jq -r '.driver as $dd | .agents[] | range(.count) as $i |
+MIXED_AGENTS=$(jq -r '.driver as $dd | .agents[] | range(.count // 0) as $i |
     [(.model), (.driver // $dd // "claude-code")] | join("|")' "$CFG")
 MA1=$(echo "$MIXED_AGENTS" | sed -n '1p')
 MA2=$(echo "$MIXED_AGENTS" | sed -n '2p')
@@ -1079,7 +1081,7 @@ echo "=== 31. Codex ChatGPT auth config ==="
 
 CFG="$TESTS_DIR/configs/codex-chatgpt.json"
 
-assert_eq "codex-chatgpt count"  "2"         "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "codex-chatgpt count"  "2"         "$(parse_num_agents "$CFG")"
 assert_eq "codex-chatgpt driver" "codex-cli" "$(jq -r '.driver' "$CFG")"
 assert_eq "codex-chatgpt model[0]"  "gpt-5.4"       "$(jq -r '.agents[0].model' "$CFG")"
 assert_eq "codex-chatgpt model[1]"  "gpt-5.3-codex" "$(jq -r '.agents[1].model' "$CFG")"
@@ -1093,7 +1095,9 @@ assert_eq "codex-chatgpt pricing input" "2.5" \
     "$(jq -r '.pricing["gpt-5.4"].input' "$CFG")"
 
 # All agents inherit chatgpt auth.
-_all_auths=$(jq -r '.agents[] | range(.count) as $i | (.auth // "auto")' "$CFG")
+_all_auths=$(jq -r \
+    '.agents[] | range(.count // 0) as $i | (.auth // "auto")' \
+    "$CFG")
 _chatgpt_count=$(echo "$_all_auths" | grep -c "chatgpt" || true)
 assert_eq "codex-chatgpt all auth=chatgpt" "2" "$_chatgpt_count"
 
@@ -1103,7 +1107,7 @@ echo "=== 32. Codex auth-mixed config ==="
 
 CFG="$TESTS_DIR/configs/codex-auth-mixed.json"
 
-assert_eq "codex-auth-mixed count" "3" "$(jq '[.agents[].count] | add' "$CFG")"
+assert_eq "codex-auth-mixed count" "3" "$(parse_num_agents "$CFG")"
 assert_eq "codex-auth-mixed groups" "3" "$(jq '.agents | length' "$CFG")"
 
 # Group 1: explicit chatgpt auth.
@@ -1119,7 +1123,7 @@ assert_eq "codex-auth-mixed[2] auth"  "null" "$(jq -r '.agents[2].auth // "null"
 assert_eq "codex-auth-mixed[2] model" "gpt-5.4" "$(jq -r '.agents[2].model' "$CFG")"
 
 # All inherit codex-cli driver.
-_all_drivers=$(jq -r '.driver as $dd | .agents[] | range(.count) as $i |
+_all_drivers=$(jq -r '.driver as $dd | .agents[] | range(.count // 0) as $i |
     (.driver // $dd // "claude-code")' "$CFG")
 _codex_count=$(echo "$_all_drivers" | grep -c "codex-cli" || true)
 assert_eq "codex-auth-mixed all codex-cli" "3" "$_codex_count"

@@ -22,15 +22,16 @@ Usage: $0
 
 Always-on TUI dashboard for swarm agents.
 Refreshes every 3 seconds. Shows per-agent model, auth source,
-status, cost, token usage, cache tokens, turns, and duration.
+status, cost, token usage, cache tokens, turns, duration, and
+interactive session branches.
 
 Keybindings:
   q           Quit the dashboard.
   1-9         Tail logs for agent N.
   h           Harvest agent results into current branch.
-  s           Stop numbered agents (not post-process).
-  p           Tail post-process logs when the PP container exists.
-  P           Start the post-processing agent after confirmation.
+  s           Stop numbered, interactive, and post-process agents.
+  p           Tail post-process logs when the container exists.
+  P           Start post-process after confirmation.
 
 Environment:
   SWARM_TITLE    Dashboard title override.
@@ -39,9 +40,10 @@ HELP
     exit 0
 fi
 
+# shellcheck disable=SC1091
 source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq docker tput bc
-# shellcheck source=lib/project.sh
+# shellcheck disable=SC1091
 source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -80,11 +82,12 @@ if [ -n "$CONFIG_FILE" ]; then
     if [ -n "$local_title" ]; then
         DASHBOARD_TITLE="$local_title"
     fi
-    NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
+    NUM_AGENTS=$(jq '[.agents[]? | (.count // 0)] | add // 0' \
+        "$CONFIG_FILE")
     MODEL_SUMMARY=$(jq -r \
         '(.prompt // "") as $dp | ($dp | split("/") | .[-1] // "" | rtrimstr(".md")) as $dp_stem |
-        [.agents[] |
-          "\(.count)x \(.model | split("/") | .[-1])" +
+        [.agents[] | (.count // 0) as $count | select($count > 0) |
+          "\($count)x \(.model | split("/") | .[-1])" +
           (if .context == "none" then " ctx:bare"
            elif .context == "slim" then " ctx:slim"
            else "" end) +
@@ -243,6 +246,39 @@ short_driver() {
     esac
 }
 
+normalize_docker_state() {
+    local raw="$1" state
+    state=$(printf '%s\n' "$raw" | awk 'NF { print; exit }')
+    printf '%s' "${state:-not found}"
+}
+
+container_state() {
+    local name="$1" raw
+    raw=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)
+    normalize_docker_state "$raw"
+}
+
+configured_agent_fields() {
+    local index="$1"
+    [ -n "${CONFIG_FILE:-}" ] || return 0
+    jq -r --argjson wanted "$index" '
+        .tag as $dt | .driver as $dd |
+        [
+          .agents[] as $agent |
+          ($agent.count // 0) as $count |
+          select($count > 0) |
+          range(0; $count) |
+          [
+            ($agent.model // ""),
+            ($agent.effort // ""),
+            ($agent.auth // ""),
+            ($agent.tag // $dt // ""),
+            ($agent.driver // $dd // "claude-code")
+          ] | join("\u001f")
+        ][($wanted - 1)] // empty
+    ' "$CONFIG_FILE" 2>/dev/null || true
+}
+
 truncate_str() {
     local s="$1" max="${2:-16}"
     if [ "${#s}" -le "$max" ]; then
@@ -310,9 +346,58 @@ post_process_configured() {
 
 post_process_container_exists() {
     local _pp_state
-    _pp_state=$(docker inspect -f '{{.State.Status}}' \
-        "${IMAGE_NAME}-post" 2>/dev/null || true)
-    [ -n "$_pp_state" ] && [ "$_pp_state" != "none" ]
+    _pp_state=$(container_state "${IMAGE_NAME}-post")
+    [ "$_pp_state" != "not found" ] && [ "$_pp_state" != "none" ]
+}
+
+interactive_container_names() {
+    docker ps -a --format '{{.Names}}' 2>/dev/null \
+        | grep -E "^${IMAGE_NAME}-interactive-" \
+        | sort || true
+}
+
+read_interactive_state_value() {
+    local name="$1" key="$2"
+    local tmpf="/tmp/.swarm-interactive-${name}.state"
+    docker cp "${name}:/workspace/agent_logs/interactive_state" \
+        "$tmpf" 2>/dev/null || true
+    if [ ! -s "$tmpf" ]; then
+        rm -f "$tmpf"
+        return 0
+    fi
+    grep -E "^${key}=" "$tmpf" 2>/dev/null \
+        | head -1 | cut -d= -f2- || true
+    rm -f "$tmpf"
+}
+
+interactive_branch_status() {
+    local name="$1" branch="$2" state="$3"
+    local dirty=""
+
+    if [ "$state" = "running" ]; then
+        dirty=$(docker exec "$name" bash -lc \
+            'cd /workspace && [ -n "$(git status --porcelain=v1)" ] && echo dirty || echo clean' \
+            2>/dev/null || true)
+    else
+        dirty=$(read_interactive_state_value "$name" dirty)
+        [ "$dirty" = "true" ] && dirty="dirty"
+    fi
+    [ "$dirty" = "dirty" ] && { printf 'dirty'; return; }
+
+    if [ -n "$branch" ] && git -C "$BARE_REPO" rev-parse --verify \
+            --quiet "refs/heads/${branch}" >/dev/null 2>&1; then
+        local tip
+        tip=$(git -C "$BARE_REPO" rev-parse "refs/heads/${branch}")
+        if git -C "$REPO_ROOT" merge-base --is-ancestor \
+                "$tip" HEAD 2>/dev/null; then
+            printf 'harvested'
+        else
+            printf 'unharvested'
+        fi
+        return
+    fi
+
+    printf '%s' "$state"
 }
 
 emit_row() {
@@ -335,7 +420,7 @@ emit_row() {
     if $SHOW_TPS;   then printf " %6s" "$tps_str"; fi
     printf " %8s" "$dur_str"
     if $SHOW_TAG;   then printf "  %-${TAG_COL_W}s" "$tag_str"; fi
-    printf "${close}\n"
+    printf '%b\n' "$close"
 }
 
 emit_header() {
@@ -349,7 +434,7 @@ emit_header() {
     if $SHOW_TPS;   then printf " %6s" "Tok/s"; fi
     printf " %8s" "Time"
     if $SHOW_TAG;   then printf "  %-${TAG_COL_W}s" "Tag"; fi
-    printf "${RESET}\n"
+    printf '%b\n' "$RESET"
 }
 
 draw() {
@@ -429,7 +514,7 @@ draw() {
         local name="${IMAGE_NAME}-${i}"
 
         local state
-        state=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo "not found")
+        state=$(container_state "$name")
 
         local model="unknown" effort="" auth_mode="" agent_tag="" agent_driver=""
         if [ "$state" != "not found" ]; then
@@ -442,6 +527,15 @@ draw() {
             agent_tag=$(printf '%s' "$env_dump" | grep '^SWARM_TAG=' | head -1 | cut -d= -f2- || true)
             agent_driver=$(printf '%s' "$env_dump" | grep '^SWARM_DRIVER=' | head -1 | cut -d= -f2- || true)
             auth_mode=$(printf '%s' "$env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
+        else
+            local configured_fields
+            configured_fields=$(configured_agent_fields "$i")
+            if [ -n "$configured_fields" ]; then
+                IFS=$'\037' read -r model effort auth_mode agent_tag \
+                    agent_driver <<< "$configured_fields"
+                model="${model:-unknown}"
+                state="configured"
+            fi
         fi
 
         local model_label
@@ -508,14 +602,56 @@ draw() {
             "$(format_duration_ms "$a_dur")" "$agent_tag"
     done
 
+    local int_idx=0 int_name
+    while IFS= read -r int_name; do
+        [ -n "$int_name" ] || continue
+        int_idx=$((int_idx + 1))
+
+        local int_state int_env_dump int_model int_effort int_auth
+        local int_tag int_driver int_branch int_profile int_status
+        int_state=$(container_state "$int_name")
+        int_env_dump=$(docker inspect -f \
+            '{{range .Config.Env}}{{println .}}{{end}}' \
+            "$int_name" 2>/dev/null || true)
+        int_model=$(printf '%s' "$int_env_dump" | grep '^SWARM_MODEL=' \
+            | head -1 | cut -d= -f2- || true)
+        int_effort=$(printf '%s' "$int_env_dump" | grep '^SWARM_EFFORT=' \
+            | head -1 | cut -d= -f2- || true)
+        int_tag=$(printf '%s' "$int_env_dump" | grep '^SWARM_TAG=' \
+            | head -1 | cut -d= -f2- || true)
+        int_driver=$(printf '%s' "$int_env_dump" | grep '^SWARM_DRIVER=' \
+            | head -1 | cut -d= -f2- || true)
+        int_auth=$(printf '%s' "$int_env_dump" | grep '^SWARM_AUTH_MODE=' \
+            | head -1 | cut -d= -f2- || true)
+        int_branch=$(printf '%s' "$int_env_dump" \
+            | grep '^SWARM_INTERACTIVE_BRANCH=' \
+            | head -1 | cut -d= -f2- || true)
+        int_profile=$(printf '%s' "$int_env_dump" \
+            | grep '^SWARM_INTERACTIVE_PROFILE=' \
+            | head -1 | cut -d= -f2- || true)
+        int_status=$(interactive_branch_status \
+            "$int_name" "$int_branch" "$int_state")
+
+        printf "  ${DIM}%s${RESET}\n" \
+            "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
+        emit_row "I${int_idx}" "$(format_model "$int_model" "$int_effort")" \
+            "$(short_driver "$int_driver")" "$int_auth" \
+            "$DIM" "$int_status" \
+            "" "" "" "" "" "" "$int_tag"
+        if [ -n "$int_branch" ]; then
+            printf "      ${DIM}%s: %s${RESET}\n" \
+                "${int_profile:-interactive}" "$int_branch"
+        fi
+    done < <(interactive_container_names)
+
     # Post-process row. If the container exists, use live Docker
     # state; otherwise show configured post-processing before it
     # starts so operators can distinguish "not started" from
     # "not configured".
     local pp_name="${IMAGE_NAME}-post"
     local pp_state
-    pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || true)
-    if [ -n "$pp_state" ] && [ "$pp_state" != "none" ]; then
+    pp_state=$(container_state "$pp_name")
+    if [ "$pp_state" != "not found" ] && [ "$pp_state" != "none" ]; then
         local pp_model pp_effort pp_auth_mode pp_tag pp_driver
         local pp_env_dump
         pp_env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
@@ -555,7 +691,7 @@ draw() {
         esac
 
         printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
-        emit_row "PP" "$pp_model_label" "$(short_driver "$pp_driver")" "$pp_auth_mode" \
+        emit_row "P" "$pp_model_label" "$(short_driver "$pp_driver")" "$pp_auth_mode" \
             "$pp_status_color" "$pp_state" \
             "$(format_cost "$pp_cost")" \
             "$(format_tokens "$pp_in")/$(format_tokens "$pp_out")" \
@@ -578,7 +714,7 @@ draw() {
         local pp_rule
         pp_rule=$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))
         printf "  ${DIM}%s${RESET}\n" "$pp_rule"
-        emit_row "PP" "$(format_model "$pp_model" "$pp_effort")" \
+        emit_row "P" "$(format_model "$pp_model" "$pp_effort")" \
             "$(short_driver "$pp_driver")" "$pp_auth_mode" \
             "$DIM" "configured" \
             "" "" "" "" "" "" "$pp_tag"
@@ -630,11 +766,10 @@ draw() {
     printf "  ${DIM}[s]${RESET} stop all"
     if post_process_container_exists; then
         # shellcheck disable=SC2059
-        printf "  ${DIM}[p]${RESET} pp logs"
-    fi
-    if post_process_configured; then
+        printf "  ${DIM}[p]${RESET} post-process logs"
+    elif post_process_configured; then
         # shellcheck disable=SC2059
-        printf "  ${DIM}[P]${RESET} start pp"
+        printf "  ${DIM}[P]${RESET} post-process"
     fi
     printf "\n"
 }
@@ -674,6 +809,15 @@ while true; do
                         echo "  stopped ${IMAGE_NAME}-${i}"
                     fi
                 done
+                while IFS= read -r int_name; do
+                    [ -n "$int_name" ] || continue
+                    if docker stop "$int_name" 2>/dev/null; then
+                        echo "  stopped ${int_name}"
+                    fi
+                done < <(interactive_container_names)
+                if docker stop "${IMAGE_NAME}-post" 2>/dev/null; then
+                    echo "  stopped ${IMAGE_NAME}-post"
+                fi
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
                 enter_alt_screen
@@ -708,11 +852,14 @@ while true; do
                 fi
                 _pp_name="${IMAGE_NAME}-post"
                 if post_process_container_exists; then
-                    _pp_prompt="Replace existing ${_pp_name} with a new run?"
-                    _pp_prompt="${_pp_prompt} [y/N] "
-                else
-                    _pp_prompt="Start post-processing now? [y/N] "
+                    echo "(post-processing is already running -- press p for logs)"
+                    echo "Stop it first with s before starting a new run."
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
+                    enter_alt_screen
+                    continue
                 fi
+                _pp_prompt="Start post-processing now? [y/N] "
                 read -r -p "$_pp_prompt" _pp_confirm || _pp_confirm=""
                 case "$_pp_confirm" in
                     y|Y|yes|YES) ;;

@@ -458,7 +458,7 @@ if [ -z "$CONFIG_FILE" ]; then
         '{prompt: "unused", agents: [{count: '"${SWARM_NUM_AGENTS:-2}"', model: $m}]}' \
         > "$CONFIG_FILE"
 fi
-NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
+NUM_AGENTS=$(jq '[.agents[]? | (.count // 0)] | add // 0' "$CONFIG_FILE")
 
 # Two prompt variants: default relies on injected git rules,
 # --no-inject uses explicit git commands for backward compat.

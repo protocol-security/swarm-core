@@ -58,6 +58,11 @@ All containers mount the same bare repo. Each runs
 run one agent session, push. When one agent pushes, others
 see the changes on the next fetch.
 
+Interactive containers use the same image and setup, but start a
+human-guided driver UI or shell on a separate
+`swarm/<run>/interactive-*` branch. `harvest.sh` merges those
+branches explicitly alongside `agent-work`.
+
 ## Quick start
 
 ```bash
@@ -66,6 +71,9 @@ SWARM_CONFIG=swarm.json ./launch.sh start --dashboard
 
 # Later, after agents are running or have exited:
 SWARM_CONFIG=swarm.json ./launch.sh wait
+
+# Open a human-guided session from a named agent profile:
+SWARM_CONFIG=swarm.json ./launch.sh interactive hunter
 
 # Or place swarm.json in your repo root and launch.
 ./launch.sh start --dashboard
@@ -87,7 +95,8 @@ Place a `swarm.json` in your repo root:
   "agents": [
     { "count": 2, "model": "claude-opus-4-6", "effort": "high" },
     { "count": 1, "model": "claude-opus-4-6", "context": "none" },
-    { "count": 1, "model": "claude-sonnet-4-6", "prompt": "prompts/review.md" },
+    { "name": "reviewer", "count": 1, "model": "claude-sonnet-4-6", "prompt": "prompts/review.md" },
+    { "name": "hunter", "count": 0, "model": "gpt-5.4", "driver": "codex-cli" },
     {
       "count": 3,
       "model": "openrouter/custom",
@@ -104,9 +113,11 @@ Place a `swarm.json` in your repo root:
 ```
 
 Groups without `api_key` use `ANTHROPIC_API_KEY` or
-`CLAUDE_CODE_OAUTH_TOKEN` from the environment.
+`CLAUDE_CODE_OAUTH_TOKEN` from the environment. A named group
+with omitted `count` or `count: 0` is useful as an
+interactive-only profile.
 
-**Per-group fields:** `model`, `count`, `effort`, `context`,
+**Per-group fields:** `name`, `model`, `count`, `effort`, `context`,
 `prompt`, `auth`, `api_key`, `auth_token`, `base_url`, `tag`,
 `driver`. See [USAGE.md](USAGE.md) for
 field reference, environment variables, auth modes, context
@@ -123,6 +134,7 @@ Each driver implements a fixed role interface:
 | `agent_cmd` | CLI command (e.g. "claude") |
 | `agent_version` | CLI version string |
 | `agent_run` | Run one session, output JSONL |
+| `agent_interactive_run` | Start the native interactive UI |
 | `agent_settings` | Write agent-specific settings |
 | `agent_extract_stats` | Parse session stats from log |
 | `agent_detect_fatal` | Detect fatal errors from log + exit code |
