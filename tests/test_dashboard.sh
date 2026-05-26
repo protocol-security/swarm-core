@@ -8,6 +8,7 @@ set -euo pipefail
 
 PASS=0
 FAIL=0
+TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
@@ -578,6 +579,50 @@ USER_TITLE_T=""
 assert_eq "state title wins" "state-set" "${USER_TITLE_T:-${SWARM_TITLE_T:-${DEFAULT_TITLE_TEST}}}"
 SWARM_TITLE_T=""
 assert_eq "default title wins" "$DEFAULT_TITLE_TEST" "${USER_TITLE_T:-${SWARM_TITLE_T:-${DEFAULT_TITLE_TEST}}}"
+
+# ============================================================
+echo ""
+echo "=== 12. Post-process dashboard shortcuts ==="
+
+DASHBOARD_FILE="$TESTS_DIR/../dashboard.sh"
+
+assert_eq "help documents lowercase pp logs" "1" \
+    "$(grep -cF 'p           Tail post-process logs' "$DASHBOARD_FILE")"
+assert_eq "help documents uppercase pp start" "1" \
+    "$(grep -cF 'P           Start the post-processing agent' \
+        "$DASHBOARD_FILE")"
+assert_eq "p and P are not the same case arm" "0" \
+    "$(grep -cF 'p|P)' "$DASHBOARD_FILE" || true)"
+
+pp_lower_case=$(awk '
+    /^[[:space:]]*p\)/ { p = 1 }
+    p { print }
+    p && /^                ;;/ { exit }
+' "$DASHBOARD_FILE")
+pp_upper_case=$(awk '
+    /^[[:space:]]*P\)/ { p = 1 }
+    p { print }
+    p && /^                ;;/ { exit }
+' "$DASHBOARD_FILE")
+
+assert_eq "lowercase p follows pp logs" "1" \
+    "$(printf '%s\n' "$pp_lower_case" \
+        | grep -cF 'docker logs -f "$_pp_name"' || true)"
+assert_eq "lowercase p points to uppercase start" "1" \
+    "$(printf '%s\n' "$pp_lower_case" \
+        | grep -cF 'press P to start' || true)"
+assert_eq "lowercase p does not start post-process" "0" \
+    "$(printf '%s\n' "$pp_lower_case" \
+        | grep -cF '"$SWARM_DIR/launch.sh" post-process' || true)"
+assert_eq "uppercase P asks for confirmation" "true" \
+    "$([ "$(printf '%s\n' "$pp_upper_case" \
+        | grep -cF '[y/N]' || true)" -gt 0 ] && echo true || echo false)"
+assert_eq "uppercase P can launch post-process" "1" \
+    "$(printf '%s\n' "$pp_upper_case" \
+        | grep -cF '"$SWARM_DIR/launch.sh" post-process' || true)"
+assert_eq "uppercase P has cancellation path" "1" \
+    "$(printf '%s\n' "$pp_upper_case" \
+        | grep -cF 'post-processing not started' || true)"
 
 # ============================================================
 echo ""

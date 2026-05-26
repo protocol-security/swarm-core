@@ -15,6 +15,12 @@
   marked `configured`.  Once the container exists, the row still
   uses the live Docker state, stats, and environment as before.
 
+- **Fix: dashboard post-process logs get a dedicated shortcut.**
+  Lowercase `p` now follows the existing `PP` container logs and
+  never starts post-processing.  Uppercase `P` starts or replaces
+  the post-process run only after an explicit confirmation prompt,
+  so an accidental keypress does not stop agents and launch triage.
+
 ## 0.20.15 — 2026-05-16
 
 - **Test: runtime emergency-push verification under `--all`.**
