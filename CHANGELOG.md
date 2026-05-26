@@ -45,6 +45,11 @@
   `git add test-results` step does not make two interactive branches
   collide on `test-results/setup.log` during harvest.
 
+- **CI: remove the scheduled full matrix.**
+  The integration workflow now keeps the lightweight smoke job only;
+  maintainers can still run `./tests/test.sh --all` manually when the
+  full API-key-backed matrix is needed.
+
 ## 0.20.16 — 2026-05-26
 
 - **Fix: Docker project names are sanitized for uppercase repo
