@@ -61,8 +61,11 @@ see the changes on the next fetch.
 ## Quick start
 
 ```bash
-# Create a swarmfile and launch.
+# Create a swarmfile and launch numbered agents.
 SWARM_CONFIG=swarm.json ./launch.sh start --dashboard
+
+# Later, after agents are running or have exited:
+SWARM_CONFIG=swarm.json ./launch.sh wait
 
 # Or place swarm.json in your repo root and launch.
 ./launch.sh start --dashboard

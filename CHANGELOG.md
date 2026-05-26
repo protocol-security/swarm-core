@@ -21,6 +21,13 @@
   the post-process run only after an explicit confirmation prompt,
   so an accidental keypress does not stop agents and launch triage.
 
+- **Docs: clarify that `launch.sh wait` does not start agents.**
+  Command help, quick-start docs, and post-processing docs now show
+  the intended sequence: run `start` first, then `wait`.
+  `harvest.sh` is documented as a merge-only helper that does not
+  trigger `post_process`; `post-process` is the direct command for
+  manual post-processing followed by harvest.
+
 ## 0.20.15 — 2026-05-16
 
 - **Test: runtime emergency-push verification under `--all`.**

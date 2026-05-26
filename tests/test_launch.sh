@@ -658,6 +658,12 @@ done
 out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../launch.sh" --help 2>&1) \
     && rc=0 || rc=$?
 assert_eq "launch --help exits 0 without jq" "0" "$rc"
+assert_eq "launch help says wait does not start agents" "true" \
+    "$([[ "$out" == *"Does not"* && "$out" == *"start agents"* ]] \
+        && echo true || echo false)"
+assert_eq "launch help says post-process harvests" "true" \
+    "$([[ "$out" == *"Run only the post-processing agent"* \
+        && "$out" == *"harvest"* ]] && echo true || echo false)"
 
 # dashboard.sh --help should exit 0 even without jq/docker/tput/bc.
 out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../dashboard.sh" --help 2>&1) \

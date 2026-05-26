@@ -18,9 +18,11 @@ Commands:
   stop                 Stop all running agent containers.
   logs N               Tail logs for agent N (default: 1).
   status               Show running/stopped state for each agent.
-  wait                 Block until all agents exit, then harvest
-                       (runs post-process first if configured).
-  post-process         Run the post-processing agent from the config.
+  wait                 Wait for already-started numbered agents,
+                       then post-process and harvest. Does not
+                       start agents.
+  post-process         Run only the post-processing agent, then
+                       harvest.
 
 Start options:
   --dashboard          Open the TUI dashboard after launch.
