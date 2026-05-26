@@ -98,6 +98,12 @@ short_driver() {
     esac
 }
 
+normalize_docker_state() {
+    local raw="$1" state
+    state=$(printf '%s\n' "$raw" | awk 'NF { print; exit }')
+    printf '%s' "${state:-not found}"
+}
+
 configured_agent_fields() {
     local index="$1"
     [ -n "${CONFIG_FILE:-}" ] || return 0
@@ -114,7 +120,7 @@ configured_agent_fields() {
             ($agent.auth // ""),
             ($agent.tag // $dt // ""),
             ($agent.driver // $dd // "claude-code")
-          ] | @tsv
+          ] | join("\u001f")
         ][($wanted - 1)] // empty
     ' "$CONFIG_FILE" 2>/dev/null || true
 }
@@ -482,7 +488,19 @@ cat > "$TMPDIR/configured_agents.json" <<'EOF'
 }
 EOF
 CONFIG_FILE="$TMPDIR/configured_agents.json"
-IFS=$'\t' read -r cfg_model cfg_effort cfg_auth cfg_tag cfg_driver \
+IFS=$'\037' read -r cfg_model cfg_effort cfg_auth cfg_tag cfg_driver \
+    <<< "$(configured_agent_fields 1)"
+assert_eq "configured row preserves empty effort model" \
+    "claude-opus-4-6" "$cfg_model"
+assert_eq "configured row preserves empty effort" "" "$cfg_effort"
+assert_eq "configured row preserves auth after empty effort" \
+    "oauth" "$cfg_auth"
+assert_eq "configured row preserves tag after empty effort" \
+    "top" "$cfg_tag"
+assert_eq "configured row preserves driver after empty effort" \
+    "claude-code" "$cfg_driver"
+
+IFS=$'\037' read -r cfg_model cfg_effort cfg_auth cfg_tag cfg_driver \
     <<< "$(configured_agent_fields 3)"
 assert_eq "configured row skips omitted count model" "gpt-5.4" "$cfg_model"
 assert_eq "configured row skips omitted count effort" "medium" "$cfg_effort"
@@ -658,6 +676,14 @@ assert_eq "dashboard emits P post-process rows" "2" \
     "$(grep -cF 'emit_row "P"' "$DASHBOARD_FILE")"
 assert_eq "dashboard does not emit PP post-process row" "0" \
     "$(grep -cF 'emit_row "PP"' "$DASHBOARD_FILE" || true)"
+assert_eq "blank inspect output becomes not found" "not found" \
+    "$(normalize_docker_state "")"
+assert_eq "leading blank inspect fallback becomes not found" "not found" \
+    "$(normalize_docker_state $'\nnot found')"
+assert_eq "leading blank inspect state keeps real state" "running" \
+    "$(normalize_docker_state $'\nrunning')"
+assert_eq "dashboard uses normalized container state" "4" \
+    "$(grep -cF 'container_state "' "$DASHBOARD_FILE")"
 
 pp_lower_case=$(awk '
     /^[[:space:]]*p\)/ { p = 1 }

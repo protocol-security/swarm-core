@@ -19,6 +19,13 @@
   numbered agents before their containers exist and labels the
   post-process row as `P`, matching the key that runs it.
 
+- **Fix: dashboard missing-container detection handles Docker errors.**
+  Failed `docker inspect -f` calls can emit a blank stdout line before
+  the fallback state, especially when Docker is unavailable or denied.
+  The dashboard now normalizes container states before comparing them,
+  so configured numbered agents still render from `swarm.json` instead
+  of falling back to `unknown` / `not found`.
+
 ## 0.20.16 — 2026-05-26
 
 - **Fix: Docker project names are sanitized for uppercase repo

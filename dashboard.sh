@@ -246,6 +246,18 @@ short_driver() {
     esac
 }
 
+normalize_docker_state() {
+    local raw="$1" state
+    state=$(printf '%s\n' "$raw" | awk 'NF { print; exit }')
+    printf '%s' "${state:-not found}"
+}
+
+container_state() {
+    local name="$1" raw
+    raw=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)
+    normalize_docker_state "$raw"
+}
+
 configured_agent_fields() {
     local index="$1"
     [ -n "${CONFIG_FILE:-}" ] || return 0
@@ -262,7 +274,7 @@ configured_agent_fields() {
             ($agent.auth // ""),
             ($agent.tag // $dt // ""),
             ($agent.driver // $dd // "claude-code")
-          ] | @tsv
+          ] | join("\u001f")
         ][($wanted - 1)] // empty
     ' "$CONFIG_FILE" 2>/dev/null || true
 }
@@ -334,9 +346,8 @@ post_process_configured() {
 
 post_process_container_exists() {
     local _pp_state
-    _pp_state=$(docker inspect -f '{{.State.Status}}' \
-        "${IMAGE_NAME}-post" 2>/dev/null || true)
-    [ -n "$_pp_state" ] && [ "$_pp_state" != "none" ]
+    _pp_state=$(container_state "${IMAGE_NAME}-post")
+    [ "$_pp_state" != "not found" ] && [ "$_pp_state" != "none" ]
 }
 
 interactive_container_names() {
@@ -503,7 +514,7 @@ draw() {
         local name="${IMAGE_NAME}-${i}"
 
         local state
-        state=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || echo "not found")
+        state=$(container_state "$name")
 
         local model="unknown" effort="" auth_mode="" agent_tag="" agent_driver=""
         if [ "$state" != "not found" ]; then
@@ -520,7 +531,7 @@ draw() {
             local configured_fields
             configured_fields=$(configured_agent_fields "$i")
             if [ -n "$configured_fields" ]; then
-                IFS=$'\t' read -r model effort auth_mode agent_tag \
+                IFS=$'\037' read -r model effort auth_mode agent_tag \
                     agent_driver <<< "$configured_fields"
                 model="${model:-unknown}"
                 state="configured"
@@ -598,8 +609,7 @@ draw() {
 
         local int_state int_env_dump int_model int_effort int_auth
         local int_tag int_driver int_branch int_profile int_status
-        int_state=$(docker inspect -f '{{.State.Status}}' \
-            "$int_name" 2>/dev/null || echo "not found")
+        int_state=$(container_state "$int_name")
         int_env_dump=$(docker inspect -f \
             '{{range .Config.Env}}{{println .}}{{end}}' \
             "$int_name" 2>/dev/null || true)
@@ -640,8 +650,8 @@ draw() {
     # "not configured".
     local pp_name="${IMAGE_NAME}-post"
     local pp_state
-    pp_state=$(docker inspect -f '{{.State.Status}}' "$pp_name" 2>/dev/null || true)
-    if [ -n "$pp_state" ] && [ "$pp_state" != "none" ]; then
+    pp_state=$(container_state "$pp_name")
+    if [ "$pp_state" != "not found" ] && [ "$pp_state" != "none" ]; then
         local pp_model pp_effort pp_auth_mode pp_tag pp_driver
         local pp_env_dump
         pp_env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
