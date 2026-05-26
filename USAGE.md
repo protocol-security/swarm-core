@@ -26,6 +26,9 @@ All configuration lives in the swarmfile (JSON).  Place a
                                   # Does not start agents.
 ./launch.sh post-process          # Run only post-process, then
                                   # harvest.
+./launch.sh interactive hunter    # Start a human-guided driver
+                                  # session from agents[].name.
+./launch.sh shell --agent hunter  # Start a shell in that profile.
 ```
 
 ## Environment variables
@@ -57,8 +60,9 @@ Per-group fields in `swarm.json` `agents` array:
 
 | Field | Values | Notes |
 |-------|--------|-------|
+| `name` | string | Optional profile name for `interactive`, `chat`, and `shell`. |
 | `model` | model name | Required. |
-| `count` | integer | Number of agents in this group. |
+| `count` | integer | Numbered agents in this group (default: `0`). |
 | `effort` | string | Reasoning depth (see below). |
 | `context` | `full`, `slim`, `none` | How much of `.claude/` to keep (default: `full`). |
 | `prompt` | file path | Per-group prompt override (default: top-level). |
@@ -80,6 +84,53 @@ Top-level fields: `prompt`, `setup`, `max_idle` (default: `3`),
 `git_user` (`name`, `email`, `signing_key`),
 `claude_code_version`, `codex_cli_version`, `title`, `tag`,
 `pricing`, `docker_args`, `post_process`.
+
+### Interactive profiles
+
+Use `interactive`, `chat`, or `shell` to open one human-guided
+container from an `agents[]` profile:
+
+```bash
+SWARM_CONFIG=swarm.json ./launch.sh interactive hunter
+SWARM_CONFIG=swarm.json ./launch.sh shell --agent hunter
+SWARM_CONFIG=swarm.json ./launch.sh chat --agent-index 2
+```
+
+The profile supplies the same setup, Docker args, driver, model,
+effort, auth, context, prompt, tag, and signing configuration used
+for numbered agents. The container checks out a distinct branch:
+
+```text
+swarm/<run>/interactive-<profile>-<id>
+```
+
+Promptless profiles are allowed. They still need an explicit
+`agents[]` entry; omitting `prompt` only means no prompt file is
+injected before the native driver UI starts. Omit `count` or use
+`count: 0` for a profile that should never launch as an
+autonomous numbered agent:
+
+```json
+{
+  "driver": "codex-cli",
+  "agents": [
+    {
+      "name": "operator",
+      "count": 0,
+      "model": "gpt-5.4",
+      "effort": "xhigh",
+      "auth": "chatgpt",
+      "context": "slim"
+    }
+  ]
+}
+```
+
+Interactive containers do not affect numbered-agent idle
+accounting and do not start post-processing. On exit, committed
+work is pushed to the interactive branch. Uncommitted work stays
+inside the container and is shown as dirty in the dashboard/status
+view so it is not mistaken for harvested work.
 
 ### Retry on rate limits
 
@@ -259,6 +310,9 @@ The container image ships `openssh-client` for the
 Per-agent model, auth source, status, cost, tokens, cache,
 turns, throughput, and duration.  Updates every 3s.  The
 header shows a compact model summary on a single line.
+Interactive containers appear as `I1`, `I2`, etc. with their
+branch and `dirty`, `unharvested`, or `harvested` state; they
+do not count toward numbered-agent completion.
 
 | Key | Action |
 |-----|--------|
@@ -386,11 +440,12 @@ agents.
 The post-process agent clones the same bare repo, sees all
 commits on `agent-work`, runs its prompt, and pushes.
 
-`harvest.sh` only merges agent work into the current local branch.
-It does not run `post_process`. If you harvested manually and still
-need post-processing, run `./launch.sh post-process`; use that
-command directly when you intentionally want to run only the
-post-process agent and then harvest.
+`harvest.sh` only merges agent work into the current local branch:
+`agent-work` plus any `swarm/*/interactive-*` branches. It does
+not run `post_process`. If you harvested manually and still need
+post-processing, run `./launch.sh post-process`; use that command
+directly when you intentionally want to run only the post-process
+agent and then harvest.
 
 `post_process` also accepts `base_url`, `api_key`,
 `auth_token`, `auth`, `tag`, `driver`, and `max_idle` -- same
@@ -494,6 +549,14 @@ Three credential mechanisms serve different purposes:
 For subscription auth (Pro/Max/Teams/Enterprise), generate
 an OAuth token with `claude setup-token` and export
 `CLAUDE_CODE_OAUTH_TOKEN`.
+
+Claude Code credentials are resolved each time a container is
+created. If you run `ANTHROPIC_API_KEY=... ./launch.sh start`,
+that inline environment does not persist for a later
+`./launch.sh shell --agent ...`; export the variable first or
+prefix the `shell`, `chat`, or `interactive` command too. Inside a
+Claude interactive shell, `claude auth status` should report the
+injected credential.
 
 ### Codex CLI
 
@@ -634,6 +697,7 @@ agent_name()            # Human-readable name for commit trailers
 agent_cmd()             # CLI command name
 agent_version()         # Print version string to stdout
 agent_run()             # Run one session (model, prompt, logfile, append_file)
+agent_interactive_run() # Start native UI (model, prompt_file, append_file)
 agent_settings()        # Write agent config files into workspace
 agent_extract_stats()   # Parse stats from log file (TSV output)
 agent_detect_fatal()    # Detect fatal errors from log + exit code

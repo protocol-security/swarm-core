@@ -39,6 +39,22 @@ agent_run() {
         --output-format stream-json
 }
 
+# Start Gemini CLI's native interactive UI.
+# Args: <model> <prompt_file> [append_system_prompt_file]
+agent_interactive_run() {
+    local model="$1" prompt_file="${2:-}" append_file="${3:-}"
+
+    if [ -n "$append_file" ] && [ -f "$append_file" ]; then
+        cp "$append_file" /workspace/GEMINI.md 2>/dev/null || true
+    fi
+
+    if [ -n "$prompt_file" ] && [ -f "$prompt_file" ]; then
+        printf 'Profile prompt is available at %s\n' "$prompt_file"
+    fi
+
+    gemini -m "$model" -y
+}
+
 # Write agent-specific settings files into the workspace.
 agent_settings() {
     local workspace="$1"

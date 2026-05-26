@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **Feature: interactive agent containers for human-guided work.**
+  `launch.sh interactive`, `chat`, and `shell` can start one
+  container from a named `agents[]` profile, including profiles
+  with omitted `count` or `count: 0`.  The session reuses the
+  same image, setup, driver, model, effort, auth, context,
+  signing, Docker args, and submodule mirrors as numbered agents,
+  but checks out a distinct `swarm/<run>/interactive-*` branch and
+  pushes that branch on exit.  `harvest.sh` now merges interactive
+  branches alongside `agent-work`, warns when interactive
+  containers still have dirty worktrees, and the dashboard/status
+  output shows interactive branches as `I*` rows with dirty,
+  unharvested, or harvested state.  Claude Code OAuth profiles now
+  warn when the host token is missing instead of labeling the
+  container as authenticated.
+
 ## 0.20.16 — 2026-05-26
 
 - **Fix: Docker project names are sanitized for uppercase repo

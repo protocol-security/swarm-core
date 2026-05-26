@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Create bare repos, build image, launch N agent containers.
-# Usage: ./launch.sh {start|stop|logs N|status|wait|post-process}
+# Usage: ./launch.sh {start|stop|logs N|status|wait|post-process|interactive}
 
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -23,9 +23,20 @@ Commands:
                        start agents.
   post-process         Run only the post-processing agent, then
                        harvest.
+  interactive PROFILE  Start an interactive driver session from a
+                       named agent profile.
+  chat PROFILE         Alias for interactive PROFILE.
+  shell PROFILE        Start an interactive shell from a named
+                       agent profile.
 
 Start options:
   --dashboard          Open the TUI dashboard after launch.
+
+Interactive options:
+  --agent NAME         Select agents[].name explicitly.
+  --agent-index N      Select the Nth agents[] entry.
+  --shell              Open a shell instead of the driver UI.
+  --chat               Open the driver UI (default).
 
 Environment:
   ANTHROPIC_API_KEY         API key (required unless OAuth).
@@ -122,6 +133,78 @@ build_image() {
         -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
 }
 
+create_bare_repo() {
+    local label="${1:-bare repo}"
+    echo "--- Creating ${label} ---"
+    rm_docker_dir "$BARE_REPO"
+    git clone --bare "$REPO_ROOT" "$BARE_REPO"
+    git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
+    git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
+    git -C "$BARE_REPO" config core.sharedRepository world
+    chmod -R a+rwX "$BARE_REPO"
+}
+
+ensure_bare_repo_for_interactive() {
+    if [ ! -d "$BARE_REPO" ]; then
+        create_bare_repo "bare repo for interactive session"
+        return
+    fi
+
+    local bare_head local_head
+    bare_head=$(git -C "$BARE_REPO" rev-parse --verify --quiet \
+        refs/heads/agent-work 2>/dev/null || true)
+    local_head=$(git rev-parse HEAD 2>/dev/null || true)
+    if [ -n "$bare_head" ] && [ "$bare_head" != "$local_head" ] \
+            && git merge-base --is-ancestor "$bare_head" HEAD 2>/dev/null; then
+        echo "ERROR: ${BARE_REPO} is stale (agent-work" \
+             "${bare_head:0:7} behind local HEAD" \
+             "${local_head:0:7})." >&2
+        echo "       Remove it to start from current HEAD:" >&2
+        echo "       rm -rf ${BARE_REPO}" >&2
+        exit 1
+    fi
+}
+
+mirror_submodules() {
+    cd "$REPO_ROOT"
+    git submodule foreach --quiet 'echo "$name|$toplevel/.git/modules/$sm_path"' | \
+    while IFS='|' read -r name gitdir; do
+        local safe_name mirror
+        safe_name="${name//\//_}"
+        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
+        rm_docker_dir "$mirror"
+        echo "--- Mirroring submodule: ${name} ---"
+        git clone --bare "$gitdir" "$mirror"
+        chmod -R a+rwX "$mirror"
+    done
+}
+
+write_mirror_volume_file() {
+    local output_file="$1"
+    cd "$REPO_ROOT"
+    git submodule foreach --quiet 'echo "$name"' 2>/dev/null | \
+    while read -r name; do
+        local safe_name mirror
+        safe_name="${name//\//_}"
+        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
+        [ -d "$mirror" ] || continue
+        echo "-v ${mirror}:/mirrors/${name}:ro"
+    done > "$output_file"
+}
+
+read_volume_file() {
+    local input_file="$1"
+    while read -r line; do
+        # shellcheck disable=SC2206
+        [ -n "$line" ] && MIRROR_ARGS+=($line)
+    done < "$input_file"
+}
+
+available_drivers() {
+    find "$SWARM_DIR/lib/drivers" -type f -name '*.sh' \
+        -exec basename {} .sh \; | tr '\n' ' '
+}
+
 CONFIG_FILE="${SWARM_CONFIG:-}"
 if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
     CONFIG_FILE="$REPO_ROOT/swarm.json"
@@ -155,7 +238,7 @@ if [ -n "$GIT_SIGNING_KEY" ]; then
     fi
     SIGNING_KEY_ARGS=(-v "${GIT_SIGNING_KEY}:/etc/swarm/signing_key:ro")
 fi
-NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
+NUM_AGENTS=$(jq '[.agents[]? | (.count // 0)] | add // 0' "$CONFIG_FILE")
 SWARM_DRIVER_DEFAULT=$(jq -r '.driver // "claude-code"' "$CONFIG_FILE")
 MAX_RETRY_WAIT=$(jq -r '.max_retry_wait // 0' "$CONFIG_FILE")
 
@@ -177,6 +260,241 @@ parse_start_args() {
                 exit 1 ;;
         esac
     done
+}
+
+print_interactive_profiles() {
+    jq -r '.driver as $dd | .agents | to_entries[] |
+        "\(.key + 1)|\(.value.name // "")|\(.value.model // "")|" +
+        "\(.value.driver // $dd // "claude-code")"' \
+        "$CONFIG_FILE" | while IFS='|' read -r idx name model driver; do
+        if [ -n "$name" ]; then
+            printf '  - %s (index %s, %s, %s)\n' \
+                "$name" "$idx" "${model:-model unset}" "$driver"
+        else
+            printf '  - --agent-index %s (%s, %s)\n' \
+                "$idx" "${model:-model unset}" "$driver"
+        fi
+    done >&2
+}
+
+select_interactive_profile() {
+    local selector="$1" selector_index="$2" output_file="$3"
+    local selected count
+
+    if [ -n "$selector_index" ]; then
+        if ! [[ "$selector_index" =~ ^[0-9]+$ ]] \
+                || [ "$selector_index" -lt 1 ]; then
+            echo "ERROR: --agent-index must be a positive integer." >&2
+            exit 1
+        fi
+        selected=$(jq -c --argjson idx "$((selector_index - 1))" \
+            '.agents[$idx] // empty' "$CONFIG_FILE")
+        if [ -z "$selected" ] || [ "$selected" = "null" ]; then
+            echo "ERROR: no agent at index ${selector_index}." >&2
+            print_interactive_profiles
+            exit 1
+        fi
+        printf '%s\n' "$selected" > "$output_file"
+        return
+    fi
+
+    if [ -z "$selector" ]; then
+        local named_count agent_count
+        named_count=$(jq '[.agents[] | select(.name? and (.name | length > 0))] | length' \
+            "$CONFIG_FILE")
+        agent_count=$(jq '.agents | length' "$CONFIG_FILE")
+        if [ "$named_count" -eq 1 ]; then
+            selector=$(jq -r '.agents[] | select(.name? and (.name | length > 0)) | .name' \
+                "$CONFIG_FILE")
+        elif [ "$agent_count" -eq 1 ]; then
+            selector_index=1
+            select_interactive_profile "$selector" "$selector_index" "$output_file"
+            return
+        else
+            echo "ERROR: choose an interactive profile." >&2
+            echo "Use '$0 interactive NAME' or '$0 interactive --agent-index N'." >&2
+            echo "Available profiles:" >&2
+            print_interactive_profiles
+            exit 1
+        fi
+    fi
+
+    count=$(jq --arg name "$selector" \
+        '[.agents[] | select((.name // "") == $name)] | length' \
+        "$CONFIG_FILE")
+    if [ "$count" -eq 0 ]; then
+        echo "ERROR: no agent profile named '${selector}'." >&2
+        echo "Available profiles:" >&2
+        print_interactive_profiles
+        exit 1
+    fi
+    if [ "$count" -gt 1 ]; then
+        echo "ERROR: agent profile name '${selector}' is not unique." >&2
+        exit 1
+    fi
+
+    jq -c --arg name "$selector" \
+        '.agents[] | select((.name // "") == $name)' \
+        "$CONFIG_FILE" > "$output_file"
+}
+
+cmd_interactive() {
+    local mode="$1"; shift
+    local selector="" selector_index=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --agent)
+                selector="${2:-}"
+                if [ -z "$selector" ]; then
+                    echo "ERROR: --agent requires a name." >&2
+                    exit 1
+                fi
+                shift 2 ;;
+            --agent-index)
+                selector_index="${2:-}"
+                if [ -z "$selector_index" ]; then
+                    echo "ERROR: --agent-index requires a number." >&2
+                    exit 1
+                fi
+                shift 2 ;;
+            --shell)
+                mode="shell"
+                shift ;;
+            --chat)
+                mode="chat"
+                shift ;;
+            -h|--help)
+                cat <<HELP
+Usage: $0 interactive [--agent NAME | --agent-index N] [--shell]
+       $0 chat        [--agent NAME | --agent-index N]
+       $0 shell       [--agent NAME | --agent-index N]
+
+Start one human-guided container from an agents[] profile.
+HELP
+                exit 0 ;;
+            *)
+                if [ -n "$selector" ]; then
+                    echo "ERROR: multiple interactive profiles supplied." >&2
+                    exit 1
+                fi
+                selector="$1"
+                shift ;;
+        esac
+    done
+
+    local profile_file
+    profile_file="/tmp/${PROJECT}-interactive-profile-$$.json"
+    select_interactive_profile "$selector" "$selector_index" "$profile_file"
+
+    local profile_name profile_label safe_profile short_id branch name
+    local agent_model agent_base_url agent_api_key agent_effort agent_auth
+    local agent_context agent_prompt agent_auth_token agent_tag agent_driver
+
+    profile_name=$(jq -r '.name // empty' "$profile_file")
+    profile_label="$profile_name"
+    if [ -z "$profile_label" ]; then
+        profile_label="agent-${selector_index:-1}"
+    fi
+    safe_profile="$(swarm_project_id "$profile_label")"
+    safe_profile="${safe_profile:0:32}"
+    short_id="$(date -u +%Y%m%d%H%M%S)-${RANDOM}"
+    branch="swarm/${SWARM_RUN_HASH}/interactive-${safe_profile}-${short_id}"
+    name="${IMAGE_NAME}-interactive-${safe_profile}-${short_id}"
+
+    if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+        echo "ERROR: invalid interactive branch name: ${branch}" >&2
+        exit 1
+    fi
+
+    agent_model=$(jq -r '.model // empty' "$profile_file")
+    agent_base_url=$(jq -r '.base_url // empty' "$profile_file")
+    agent_api_key=$(jq -r '.api_key // empty' "$profile_file")
+    agent_api_key="$(expand_env_ref "$agent_api_key")"
+    agent_effort=$(jq -r '.effort // empty' "$profile_file")
+    agent_auth=$(jq -r '.auth // empty' "$profile_file")
+    agent_context=$(jq -r '.context // empty' "$profile_file")
+    agent_context="${agent_context:-full}"
+    agent_prompt=$(jq -r '.prompt // empty' "$profile_file")
+    agent_auth_token=$(jq -r '.auth_token // empty' "$profile_file")
+    agent_auth_token="$(expand_env_ref "$agent_auth_token")"
+    agent_tag=$(jq -r '.tag // empty' "$profile_file")
+    if [ -z "$agent_tag" ]; then
+        agent_tag=$(jq -r '.tag // empty' "$CONFIG_FILE")
+    fi
+    agent_tag="$(expand_env_ref "$agent_tag")"
+    agent_driver=$(jq -r --arg dd "$SWARM_DRIVER_DEFAULT" \
+        '.driver // $dd // "claude-code"' "$profile_file")
+    agent_driver="${agent_driver:-$SWARM_DRIVER_DEFAULT}"
+
+    if [ ! -f "$SWARM_DIR/lib/drivers/${agent_driver}.sh" ]; then
+        echo "ERROR: unknown driver: ${agent_driver}" >&2
+        echo "Available drivers: $(available_drivers)" >&2
+        exit 1
+    fi
+
+    # shellcheck source=lib/drivers/claude-code.sh
+    source "$SWARM_DIR/lib/drivers/${agent_driver}.sh"
+    agent_model="${agent_model:-$(agent_default_model)}"
+
+    local effective_prompt="${agent_prompt:-$SWARM_PROMPT}"
+    if [ -n "$effective_prompt" ] && [ ! -f "$REPO_ROOT/$effective_prompt" ]; then
+        echo "ERROR: prompt '${effective_prompt}' not found." >&2
+        exit 1
+    fi
+
+    ensure_bare_repo_for_interactive
+    mirror_submodules
+    build_image
+
+    local vols_file="/tmp/${PROJECT}-interactive-vols.txt"
+    write_mirror_volume_file "$vols_file"
+    MIRROR_ARGS=()
+    read_volume_file "$vols_file"
+    rm -f "$vols_file" "$profile_file"
+
+    local EXTRA_ENV=()
+    while IFS= read -r _ae; do
+        [ -n "$_ae" ] && EXTRA_ENV+=("$_ae")
+    done < <(agent_docker_auth "$agent_api_key" "$agent_auth_token" \
+        "$agent_auth" "$agent_base_url")
+
+    if [ -n "$agent_effort" ]; then
+        while IFS= read -r _de; do
+            [ -n "$_de" ] && EXTRA_ENV+=("$_de")
+        done < <(agent_docker_env "$agent_effort")
+    fi
+
+    docker rm -f "$name" 2>/dev/null || true
+
+    echo "--- Starting interactive ${profile_label} (${agent_model}) ---"
+    echo "Branch: ${branch}"
+    docker run -it \
+        --name "$name" \
+        -v "${BARE_REPO}:/upstream:rw" \
+        "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
+        "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
+        "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+        "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
+        -e "SWARM_MODEL=${agent_model}" \
+        -e "SWARM_EFFORT=${agent_effort}" \
+        -e "CLAUDE_MODEL=${agent_model}" \
+        -e "SWARM_PROMPT=${effective_prompt}" \
+        -e "SWARM_SETUP=${SWARM_SETUP}" \
+        -e "GIT_USER_NAME=${GIT_USER_NAME}" \
+        -e "GIT_USER_EMAIL=${GIT_USER_EMAIL}" \
+        -e "INJECT_GIT_RULES=${INJECT_GIT_RULES}" \
+        -e "AGENT_ID=interactive-${safe_profile}" \
+        -e "SWARM_TAG=${agent_tag}" \
+        -e "SWARM_CONTEXT=${agent_context}" \
+        -e "SWARM_DRIVER=${agent_driver}" \
+        -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
+        -e "SWARM_CFG_PROMPT=${effective_prompt}" \
+        -e "SWARM_CFG_SETUP=${SWARM_SETUP}" \
+        -e "SWARM_INTERACTIVE_BRANCH=${branch}" \
+        -e "SWARM_INTERACTIVE_PROFILE=${profile_label}" \
+        -e "SWARM_INTERACTIVE_MODE=${mode}" \
+        --entrypoint /interactive.sh \
+        "$IMAGE_NAME"
 }
 
 cmd_start() {
@@ -242,34 +560,16 @@ cmd_start() {
         fi
     fi
 
-    echo "--- Creating bare repo ---"
-    rm_docker_dir "$BARE_REPO"
-    git clone --bare "$REPO_ROOT" "$BARE_REPO"
-
-    git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
-    git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
-
-    # Allow any UID to push.  The container's "agent" user (UID 1000)
-    # may differ from the host UID that created this bare repo.
-    git -C "$BARE_REPO" config core.sharedRepository world
-    chmod -R a+rwX "$BARE_REPO"
+    create_bare_repo "bare repo"
 
     # Mirror each submodule so containers can init without network.
-    cd "$REPO_ROOT"
-    git submodule foreach --quiet 'echo "$name|$toplevel/.git/modules/$sm_path"' | \
-    while IFS='|' read -r name gitdir; do
-        safe_name="${name//\//_}"
-        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
-        rm_docker_dir "$mirror"
-        echo "--- Mirroring submodule: ${name} ---"
-        git clone --bare "$gitdir" "$mirror"
-        chmod -R a+rwX "$mirror"
-    done
+    mirror_submodules
 
     # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
     AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
-    jq -r '.tag as $dt | .driver as $dd | .agents[] | range(.count) as $i |
+    jq -r '.tag as $dt | .driver as $dd |
+        .agents[] | range(.count // 0) as $i |
         [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' \
         "$CONFIG_FILE" > "$AGENTS_CFG"
 
@@ -286,25 +586,18 @@ cmd_start() {
     done < "$AGENTS_CFG"
     if [ -n "$_bad_drivers" ]; then
         printf "ERROR: unknown driver(s):\n%b" "$_bad_drivers" >&2
-        echo "Available drivers: $(ls "$SWARM_DIR/lib/drivers/" | sed 's/\.sh$//' | tr '\n' ' ')" >&2
+        echo "Available drivers: $(available_drivers)" >&2
         exit 1
     fi
 
     build_image
 
     # Build mirror volume args from discovered submodules.
-    git submodule foreach --quiet 'echo "$name"' | while read -r name; do
-        safe_name="${name//\//_}"
-        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
-        echo "-v ${mirror}:/mirrors/${name}:ro"
-    done > "/tmp/${PROJECT}-mirror-vols.txt"
+    write_mirror_volume_file "/tmp/${PROJECT}-mirror-vols.txt"
 
     # Read mirror volume mounts (shared across all containers).
     MIRROR_ARGS=()
-    while read -r line; do
-        # shellcheck disable=SC2206
-        MIRROR_ARGS+=($line)
-    done < "/tmp/${PROJECT}-mirror-vols.txt"
+    read_volume_file "/tmp/${PROJECT}-mirror-vols.txt"
 
     AGENT_IDX=0
     while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt agent_auth_token agent_tag agent_driver; do
@@ -453,6 +746,29 @@ cmd_status() {
         docker inspect -f '{{.State.Status}}' "$NAME" 2>/dev/null \
             || echo "not found"
     done
+
+    while read -r NAME; do
+        [ -n "$NAME" ] || continue
+        local env_dump branch profile state
+        env_dump=$(docker inspect -f \
+            '{{range .Config.Env}}{{println .}}{{end}}' \
+            "$NAME" 2>/dev/null || true)
+        branch=$(printf '%s' "$env_dump" \
+            | grep '^SWARM_INTERACTIVE_BRANCH=' \
+            | head -1 | cut -d= -f2- || true)
+        profile=$(printf '%s' "$env_dump" \
+            | grep '^SWARM_INTERACTIVE_PROFILE=' \
+            | head -1 | cut -d= -f2- || true)
+        state=$(docker inspect -f '{{.State.Status}}' "$NAME" 2>/dev/null \
+            || echo "not found")
+        printf "%-30s " "${NAME}:"
+        printf "%s" "$state"
+        [ -n "$profile" ] && printf "  profile=%s" "$profile"
+        [ -n "$branch" ] && printf "  branch=%s" "$branch"
+        printf "\n"
+    done < <(docker ps -a --format '{{.Names}}' 2>/dev/null \
+        | grep -E "^${IMAGE_NAME}-interactive-" \
+        | sort || true)
 }
 
 cmd_wait() {
@@ -514,12 +830,7 @@ cmd_post_process() {
     fi
 
     if [ ! -d "$BARE_REPO" ]; then
-        echo "--- Creating bare repo for post-process ---"
-        git clone --bare "$REPO_ROOT" "$BARE_REPO"
-        git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
-        git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
-        git -C "$BARE_REPO" config core.sharedRepository world
-        chmod -R a+rwX "$BARE_REPO"
+        create_bare_repo "bare repo for post-process"
     fi
 
     build_image
@@ -529,18 +840,8 @@ cmd_post_process() {
 
     # Build mirror volume args from existing mirrors.
     local MIRROR_ARGS=()
-    cd "$REPO_ROOT"
-    git submodule foreach --quiet 'echo "$name"' 2>/dev/null | while read -r name; do
-        local safe_name="${name//\//_}"
-        local mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
-        if [ -d "$mirror" ]; then
-            echo "-v ${mirror}:/mirrors/${name}:ro"
-        fi
-    done > "/tmp/${PROJECT}-pp-vols.txt"
-    while read -r line; do
-        # shellcheck disable=SC2206
-        MIRROR_ARGS+=($line)
-    done < "/tmp/${PROJECT}-pp-vols.txt"
+    write_mirror_volume_file "/tmp/${PROJECT}-pp-vols.txt"
+    read_volume_file "/tmp/${PROJECT}-pp-vols.txt"
     rm -f "/tmp/${PROJECT}-pp-vols.txt"
 
     # Source the driver to access agent_docker_auth / agent_docker_env.
@@ -634,8 +935,20 @@ case "${1:-start}" in
     status)        cmd_status ;;
     wait)          cmd_wait ;;
     post-process)  cmd_post_process ;;
+    interactive)
+        shift
+        cmd_interactive chat "$@"
+        ;;
+    chat)
+        shift
+        cmd_interactive chat "$@"
+        ;;
+    shell)
+        shift
+        cmd_interactive shell "$@"
+        ;;
     *)
-        echo "Usage: $0 {start|stop|logs N|status|wait|post-process}" >&2
+        echo "Usage: $0 {start|stop|logs N|status|wait|post-process|interactive}" >&2
         echo "Try '$0 --help' for more information." >&2
         exit 1
         ;;

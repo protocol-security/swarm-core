@@ -291,7 +291,7 @@ echo ""
 echo "=== 6. tag field in agents.cfg ==="
 
 parse_agents_cfg() {
-    jq -r '.agents[] | range(.count) as $i |
+    jq -r '.agents[] | range(.count // 0) as $i |
         [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // "")] | join("|")' "$1"
 }
 
@@ -623,6 +623,22 @@ assert_eq "uppercase P can launch post-process" "1" \
 assert_eq "uppercase P has cancellation path" "1" \
     "$(printf '%s\n' "$pp_upper_case" \
         | grep -cF 'post-processing not started' || true)"
+
+# ============================================================
+echo ""
+echo "=== 13. Interactive dashboard rows ==="
+
+assert_eq "dashboard finds interactive containers" "1" \
+    "$(grep -cF 'interactive_container_names()' "$DASHBOARD_FILE")"
+assert_eq "dashboard reads interactive state file" "true" \
+    "$([ "$(grep -cF 'interactive_state' "$DASHBOARD_FILE" || true)" \
+        -gt 0 ] && echo true || echo false)"
+assert_eq "dashboard marks unharvested branches" "1" \
+    "$(grep -cF "printf 'unharvested'" "$DASHBOARD_FILE" || true)"
+assert_eq "dashboard renders I rows" "1" \
+    "$(grep -cF 'emit_row "I${int_idx}"' "$DASHBOARD_FILE" || true)"
+assert_eq "dashboard prints interactive branch" "1" \
+    "$(grep -cF 'SWARM_INTERACTIVE_BRANCH=' "$DASHBOARD_FILE" || true)"
 
 # ============================================================
 echo ""

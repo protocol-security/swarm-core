@@ -28,7 +28,7 @@ assert_eq() {
 
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
-    if echo "$haystack" | grep -qF -- "$needle"; then
+    if [[ "$haystack" == *"$needle"* ]]; then
         echo "  PASS: ${label}"
         PASS=$((PASS + 1))
     else
@@ -388,7 +388,7 @@ echo ""
 echo "=== 16. Driver interface completeness ==="
 
 _required_fns=(agent_default_model agent_name agent_cmd agent_version
-               agent_run agent_settings agent_extract_stats
+               agent_run agent_interactive_run agent_settings agent_extract_stats
                agent_activity_jq agent_docker_auth)
 
 source "$DRIVERS_DIR/claude-code.sh"
@@ -558,6 +558,13 @@ ANTHROPIC_API_KEY="" \
 AUTH_OUT=$(agent_docker_auth "" "" "oauth" "")
 assert_contains "cc auth oauth has CLAUDE_CODE_OAUTH_TOKEN" "CLAUDE_CODE_OAUTH_TOKEN" "$AUTH_OUT"
 assert_contains "cc auth oauth label" "SWARM_AUTH_MODE=oauth" "$AUTH_OUT"
+
+# Missing strict OAuth should not claim an authenticated container.
+AUTH_OUT=$(ANTHROPIC_API_KEY="" CLAUDE_CODE_OAUTH_TOKEN="" \
+    agent_docker_auth "" "" "oauth" "" 2>/dev/null)
+_line_count=$(echo "$AUTH_OUT" | grep -c "CLAUDE_CODE_OAUTH_TOKEN" || true)
+assert_eq "cc missing oauth has no token env" "0" "$_line_count"
+assert_contains "cc missing oauth label empty" "SWARM_AUTH_MODE=" "$AUTH_OUT"
 
 # API key mode.
 AUTH_OUT=$(ANTHROPIC_API_KEY="sk-test" agent_docker_auth "" "" "apikey" "")

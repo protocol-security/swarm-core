@@ -30,6 +30,12 @@ agent_run() {
     fi
 }
 
+agent_interactive_run() {
+    local model="$1" prompt_file="${2:-}"
+    printf 'Fake interactive session: model=%s prompt=%s\n' \
+        "$model" "$prompt_file"
+}
+
 # No agent-specific settings needed for the fake driver.
 agent_settings() { :; }
 

@@ -11,10 +11,12 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HARVEST_SH="$REPO_ROOT/harvest.sh"
 HARVEST_BARE=""
 GUARD_BARE=""
+INTERACTIVE_BARE=""
 cleanup() {
     rm -rf "$TMPDIR"
     [ -n "${HARVEST_BARE:-}" ] && rm -rf "$HARVEST_BARE"
     [ -n "${GUARD_BARE:-}" ]   && rm -rf "$GUARD_BARE"
+    [ -n "${INTERACTIVE_BARE:-}" ] && rm -rf "$INTERACTIVE_BARE"
 }
 trap cleanup EXIT
 
@@ -66,37 +68,73 @@ add_agent_commits() {
     rm -rf "$agent_dir"
 }
 
+add_interactive_commits() {
+    local branch="$1" n="$2"
+    local agent_dir="$TMPDIR/interactive-clone"
+    rm -rf "$agent_dir"
+    git clone -q "$TMPDIR/bare" "$agent_dir"
+    cd "$agent_dir"
+    git checkout -q -b "$branch" origin/agent-work
+    for i in $(seq 1 "$n"); do
+        echo "interactive $i" > "interactive-$i.txt"
+        git add "interactive-$i.txt"
+        git -c user.name=operator -c user.email=o@o \
+            -c commit.gpgsign=false \
+            commit -q -m "Interactive commit $i"
+    done
+    git push -q origin "HEAD:refs/heads/${branch}"
+    rm -rf "$agent_dir"
+}
+
 # --- Harvest logic (from harvest.sh) ---
 
 harvest() {
     local bare_repo="$1" work_dir="$2" dry_run="${3:-false}"
     local remote_name="_agent-harvest"
+    local branches=(agent-work)
+    local total_new=0
+    local branch remote_ref commit_log new_commits
     cd "$work_dir"
     git checkout -q main 2>/dev/null || git checkout -q master 2>/dev/null || true
 
     git remote remove "$remote_name" 2>/dev/null || true
     git remote add "$remote_name" "$bare_repo"
-    git fetch -q "$remote_name" agent-work
+    git fetch -q "$remote_name" '+refs/heads/*:refs/remotes/_agent-harvest/*'
 
-    local commit_log new_commits
-    commit_log=$(git log --oneline "$remote_name/agent-work" ^HEAD)
-    new_commits=$(echo "$commit_log" | grep -c . || true)
+    while IFS= read -r branch; do
+        [ -n "$branch" ] && branches+=("$branch")
+    done < <(git -C "$bare_repo" for-each-ref \
+        --format='%(refname:short)' refs/heads/swarm 2>/dev/null \
+        | grep -E '/interactive-' || true)
+
+    for branch in "${branches[@]}"; do
+        remote_ref="$remote_name/$branch"
+        commit_log=$(git log --oneline "$remote_ref" ^HEAD 2>/dev/null || true)
+        new_commits=$(echo "$commit_log" | grep -c . || true)
+        total_new=$((total_new + new_commits))
+    done
 
     if [ "$dry_run" = true ]; then
         git remote remove "$remote_name"
-        echo "dry:${new_commits}"
+        echo "dry:${total_new}"
         return
     fi
 
-    if [ "$new_commits" -eq 0 ]; then
+    if [ "$total_new" -eq 0 ]; then
         git remote remove "$remote_name"
         echo "noop:0"
         return
     fi
 
-    git merge -q "$remote_name/agent-work" --no-edit
+    for branch in "${branches[@]}"; do
+        remote_ref="$remote_name/$branch"
+        commit_log=$(git log --oneline "$remote_ref" ^HEAD 2>/dev/null || true)
+        new_commits=$(echo "$commit_log" | grep -c . || true)
+        [ "$new_commits" -eq 0 ] && continue
+        git merge -q "$remote_ref" --no-edit
+    done
     git remote remove "$remote_name"
-    echo "merged:${new_commits}"
+    echo "merged:${total_new}"
 }
 
 # ============================================================
@@ -110,6 +148,21 @@ assert_eq "3 commits merged" "merged:3" "$result"
 cd "$TMPDIR/work"
 assert_eq "file-1 exists" "true" "$([ -f file-1.txt ] && echo true || echo false)"
 assert_eq "file-3 exists" "true" "$([ -f file-3.txt ] && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 1.5 Harvest with interactive branch commits ==="
+
+setup_repos
+add_interactive_commits "swarm/test/interactive-hunter-a1b2" 2
+result=$(harvest "$TMPDIR/bare" "$TMPDIR/work")
+assert_eq "2 interactive commits merged" "merged:2" "$result"
+
+cd "$TMPDIR/work"
+assert_eq "interactive-1 exists" "true" \
+    "$([ -f interactive-1.txt ] && echo true || echo false)"
+assert_eq "interactive-2 exists" "true" \
+    "$([ -f interactive-2.txt ] && echo true || echo false)"
 
 # ============================================================
 echo ""
@@ -224,6 +277,60 @@ assert_eq "shows overflow tail" "true" \
 assert_eq "shows dry-run notice" "true" \
     "$(printf '%s\n' "$output" | grep -q 'dry run' \
         && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 7.5 Behavioural: harvest.sh sees interactive branches ==="
+
+INTERACTIVE_PROJECT="swarmtest-harvest-interactive-$$"
+INTERACTIVE_WORK="$TMPDIR/$INTERACTIVE_PROJECT"
+INTERACTIVE_BARE="/tmp/${INTERACTIVE_PROJECT}-upstream.git"
+INTERACTIVE_AGENT="$TMPDIR/harvest-interactive-agent"
+INTERACTIVE_BRANCH="swarm/test/interactive-hunter-a1b2"
+
+rm -rf "$INTERACTIVE_WORK" "$INTERACTIVE_BARE" "$INTERACTIVE_AGENT"
+mkdir -p "$INTERACTIVE_WORK"
+git init -q "$INTERACTIVE_WORK"
+cd "$INTERACTIVE_WORK"
+git -c user.name=test -c user.email=t@t -c commit.gpgsign=false \
+    commit -q --allow-empty -m "init"
+git clone -q --bare "$INTERACTIVE_WORK" "$INTERACTIVE_BARE"
+git -C "$INTERACTIVE_BARE" branch agent-work HEAD 2>/dev/null || true
+
+git clone -q "$INTERACTIVE_BARE" "$INTERACTIVE_AGENT"
+cd "$INTERACTIVE_AGENT"
+git checkout -q -b "$INTERACTIVE_BRANCH" origin/agent-work
+echo "human work" > human.txt
+git add human.txt
+git -c user.name=operator -c user.email=o@o -c commit.gpgsign=false \
+    commit -q -m "Human guided commit"
+git push -q origin "HEAD:refs/heads/${INTERACTIVE_BRANCH}"
+rm -rf "$INTERACTIVE_AGENT"
+
+cd "$INTERACTIVE_WORK"
+if int_output=$(bash "$HARVEST_SH" --dry 2>&1); then
+    int_rc=0
+else
+    int_rc=$?
+fi
+assert_eq "interactive dry-run exits 0" "0" "$int_rc"
+assert_eq "interactive branch header shown" "true" \
+    "$(printf '%s\n' "$int_output" \
+        | grep -q "^1 new commits on ${INTERACTIVE_BRANCH}:" \
+        && echo true || echo false)"
+
+if int_merge_output=$(bash "$HARVEST_SH" 2>&1); then
+    int_merge_rc=0
+else
+    int_merge_rc=$?
+fi
+assert_eq "interactive merge exits 0" "0" "$int_merge_rc"
+assert_eq "interactive merge names branch" "true" \
+    "$(printf '%s\n' "$int_merge_output" \
+        | grep -q -- "--- Merging ${INTERACTIVE_BRANCH} ---" \
+        && echo true || echo false)"
+assert_eq "interactive file merged" "true" \
+    "$([ -f human.txt ] && echo true || echo false)"
 
 # ============================================================
 echo ""

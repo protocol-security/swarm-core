@@ -49,9 +49,13 @@ parse_pp_base_url() { jq -r '.post_process.base_url // empty' "$1"; }
 parse_pp_api_key()  { jq -r '.post_process.api_key // empty' "$1"; }
 parse_pp_effort()   { jq -r '.post_process.effort // empty' "$1"; }
 parse_pp_max_idle() { jq -r '.post_process.max_idle // .max_idle // 3' "$1"; }
+parse_num_agents() {
+    jq '[.agents[]? | (.count // 0)] | add // 0' "$1"
+}
 
 parse_agents_cfg() {
-    jq -r '.tag as $dt | .driver as $dd | .agents[] | range(.count) as $i |
+    jq -r '.tag as $dt | .driver as $dd |
+        .agents[] | range(.count // 0) as $i |
         [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' "$1"
 }
 
@@ -268,6 +272,20 @@ assert_eq "sonnet effort" "medium" "$e2"
 
 IFS='|' read -r m4 u4 k4 e4 a4 c4 p4 t4 g4 d4 <<< "$LINE4"
 assert_eq "haiku effort (empty)" "" "$e4"
+
+cat > "$TMPDIR/omitted_count.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [
+    { "name": "headless", "count": 1, "model": "claude-opus-4-6" },
+    { "name": "manual", "model": "gpt-5.4", "driver": "codex-cli" }
+  ]
+}
+EOF
+assert_eq "omitted count defaults to zero" "1" \
+    "$(parse_num_agents "$TMPDIR/omitted_count.json")"
+assert_eq "omitted count not expanded into agents cfg" "1" \
+    "$(parse_agents_cfg "$TMPDIR/omitted_count.json" | wc -l | tr -d ' ')"
 
 # ============================================================
 echo ""
@@ -506,6 +524,72 @@ fi
 
 # ============================================================
 echo ""
+echo "=== 18. Interactive profile selection ==="
+
+_INTERACTIVE_FUNCS="$TMPDIR/interactive_funcs.sh"
+awk '
+    /^print_interactive_profiles\(\)[[:space:]]*\{/ { p = 1 }
+    /^cmd_interactive\(\)[[:space:]]*\{/ { exit }
+    p { print }
+' "$_LAUNCH" > "$_INTERACTIVE_FUNCS"
+# shellcheck source=/dev/null
+source "$_INTERACTIVE_FUNCS"
+
+cat > "$TMPDIR/interactive_named.json" <<'EOF'
+{
+  "driver": "codex-cli",
+  "agents": [
+    {
+      "name": "hunter",
+      "count": 0,
+      "model": "gpt-5.4",
+      "effort": "xhigh",
+      "auth": "chatgpt"
+    },
+    {
+      "name": "triage",
+      "count": 1,
+      "model": "claude-opus-4-6",
+      "driver": "claude-code"
+    }
+  ]
+}
+EOF
+
+CONFIG_FILE="$TMPDIR/interactive_named.json"
+select_interactive_profile hunter "" "$TMPDIR/profile.json"
+assert_eq "select named profile" "gpt-5.4" \
+    "$(jq -r '.model' "$TMPDIR/profile.json")"
+assert_eq "count zero profile selectable" "0" \
+    "$(jq -r '.count' "$TMPDIR/profile.json")"
+
+select_interactive_profile "" "2" "$TMPDIR/profile.json"
+assert_eq "select by agent index" "triage" \
+    "$(jq -r '.name' "$TMPDIR/profile.json")"
+
+cat > "$TMPDIR/interactive_single.json" <<'EOF'
+{
+  "agents": [
+    { "count": 0, "model": "fake-model", "driver": "fake" }
+  ]
+}
+EOF
+CONFIG_FILE="$TMPDIR/interactive_single.json"
+select_interactive_profile "" "" "$TMPDIR/profile.json"
+assert_eq "single unnamed profile selected by default" "fake" \
+    "$(jq -r '.driver' "$TMPDIR/profile.json")"
+
+CONFIG_FILE="$TMPDIR/interactive_named.json"
+if (select_interactive_profile "" "" "$TMPDIR/profile.json" 2>/dev/null); then
+    echo "  FAIL: ambiguous profile should error"
+    FAIL=$((FAIL + 1))
+else
+    echo "  PASS: ambiguous profile rejected"
+    PASS=$((PASS + 1))
+fi
+
+# ============================================================
+echo ""
 echo "=== 22. Auth label — credential source labels ==="
 
 # auth_token set → "token"
@@ -664,6 +748,9 @@ assert_eq "launch help says wait does not start agents" "true" \
 assert_eq "launch help says post-process harvests" "true" \
     "$([[ "$out" == *"Run only the post-processing agent"* \
         && "$out" == *"harvest"* ]] && echo true || echo false)"
+assert_eq "launch help lists interactive command" "true" \
+    "$([[ "$out" == *"interactive PROFILE"* \
+        && "$out" == *"agent profile"* ]] && echo true || echo false)"
 
 # dashboard.sh --help should exit 0 even without jq/docker/tput/bc.
 out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../dashboard.sh" --help 2>&1) \
@@ -1558,9 +1645,21 @@ EOF
 assert_eq "empty per-group driver falls back to top-level" "codex-cli" \
     "$(compute_swarm_agents "$TMPDIR/csa_empty_group_drv.json")"
 
+cat > "$TMPDIR/csa_interactive_zero.json" <<'EOF'
+{ "prompt": "p.md",
+  "driver": "claude-code",
+  "agents": [
+    { "name": "agent", "count": 1, "model": "claude-opus-4-6" },
+    { "name": "operator", "count": 0, "model": "gpt-5", "driver": "codex-cli" }
+  ] }
+EOF
+assert_eq "count zero interactive profile contributes driver" \
+    "claude-code,codex-cli" \
+    "$(compute_swarm_agents "$TMPDIR/csa_interactive_zero.json")"
+
 # ============================================================
 echo ""
-echo "=== 39. build_image is wired into both cmd_start and cmd_post_process ==="
+echo "=== 39. build_image is wired into launch entrypoints ==="
 
 # The PR #96 contract: a standalone post-process invocation must
 # rebuild the image with build-args derived from its own config so
@@ -1569,7 +1668,7 @@ echo "=== 39. build_image is wired into both cmd_start and cmd_post_process ==="
 # call site.
 _call_sites=$(grep -cE '^[[:space:]]+build_image[[:space:]]*$' \
     "$_LAUNCH_SH" || true)
-assert_eq "build_image has 2 call sites" "2" "$_call_sites"
+assert_eq "build_image has 3 call sites" "3" "$_call_sites"
 
 _pp_calls=$(awk '
     /^cmd_post_process\(\)[[:space:]]*\{/ { p = 1; next }
@@ -1586,6 +1685,14 @@ _start_calls=$(awk '
     END { print c + 0 }
 ' "$_LAUNCH_SH")
 assert_eq "cmd_start calls build_image" "1" "$_start_calls"
+
+_interactive_calls=$(awk '
+    /^cmd_interactive\(\)[[:space:]]*\{/ { p = 1; next }
+    p && /^\}[[:space:]]*$/ { p = 0 }
+    p && /^[[:space:]]+build_image[[:space:]]*$/ { c++ }
+    END { print c + 0 }
+' "$_LAUNCH_SH")
+assert_eq "cmd_interactive calls build_image" "1" "$_interactive_calls"
 
 # build_image must thread both the SWARM_AGENTS union and the
 # version pins; missing any of these would silently produce a
@@ -1675,6 +1782,33 @@ assert_eq "default grace: -t 60 in flags" "1" \
 override_flag=$(head -1 "$trap_dir/calls")
 assert_eq "SWARM_STOP_TIMEOUT=120 propagates to docker stop -t 120" "1" \
     "$(printf '%s\n' "$override_flag" | grep -cF 'stop -t 120')"
+
+# ============================================================
+echo ""
+echo "=== 41. interactive command wiring ==="
+
+CMD_INTERACTIVE_BODY=$(awk '
+    /^cmd_interactive\(\)[[:space:]]*\{/ { p = 1 }
+    p { print }
+    p && /^\}[[:space:]]*$/ { exit }
+' "$LAUNCH_FILE")
+
+assert_eq "interactive uses docker run -it" "1" \
+    "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
+        | grep -cF 'docker run -it')"
+assert_eq "interactive uses dedicated entrypoint" "1" \
+    "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
+        | grep -cF -- '--entrypoint /interactive.sh')"
+assert_eq "interactive exports branch env" "1" \
+    "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
+        | grep -cF 'SWARM_INTERACTIVE_BRANCH')"
+assert_eq "interactive supports --agent-index" "true" \
+    "$([ "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
+        | grep -cF -- '--agent-index' || true)" -gt 0 ] \
+        && echo true || echo false)"
+assert_eq "Dockerfile copies interactive entrypoint" "1" \
+    "$(grep -cF 'COPY --chmod=755 lib/interactive.sh /interactive.sh' \
+        "$TESTS_DIR/../Dockerfile")"
 
 # ============================================================
 echo ""

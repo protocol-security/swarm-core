@@ -22,7 +22,8 @@ Usage: $0
 
 Always-on TUI dashboard for swarm agents.
 Refreshes every 3 seconds. Shows per-agent model, auth source,
-status, cost, token usage, cache tokens, turns, and duration.
+status, cost, token usage, cache tokens, turns, duration, and
+interactive session branches.
 
 Keybindings:
   q           Quit the dashboard.
@@ -80,11 +81,12 @@ if [ -n "$CONFIG_FILE" ]; then
     if [ -n "$local_title" ]; then
         DASHBOARD_TITLE="$local_title"
     fi
-    NUM_AGENTS=$(jq '[.agents[].count] | add' "$CONFIG_FILE")
+    NUM_AGENTS=$(jq '[.agents[]? | (.count // 0)] | add // 0' \
+        "$CONFIG_FILE")
     MODEL_SUMMARY=$(jq -r \
         '(.prompt // "") as $dp | ($dp | split("/") | .[-1] // "" | rtrimstr(".md")) as $dp_stem |
-        [.agents[] |
-          "\(.count)x \(.model | split("/") | .[-1])" +
+        [.agents[] | (.count // 0) as $count | select($count > 0) |
+          "\($count)x \(.model | split("/") | .[-1])" +
           (if .context == "none" then " ctx:bare"
            elif .context == "slim" then " ctx:slim"
            else "" end) +
@@ -315,6 +317,56 @@ post_process_container_exists() {
     [ -n "$_pp_state" ] && [ "$_pp_state" != "none" ]
 }
 
+interactive_container_names() {
+    docker ps -a --format '{{.Names}}' 2>/dev/null \
+        | grep -E "^${IMAGE_NAME}-interactive-" \
+        | sort || true
+}
+
+read_interactive_state_value() {
+    local name="$1" key="$2"
+    local tmpf="/tmp/.swarm-interactive-${name}.state"
+    docker cp "${name}:/workspace/agent_logs/interactive_state" \
+        "$tmpf" 2>/dev/null || true
+    if [ ! -s "$tmpf" ]; then
+        rm -f "$tmpf"
+        return 0
+    fi
+    grep -E "^${key}=" "$tmpf" 2>/dev/null \
+        | head -1 | cut -d= -f2- || true
+    rm -f "$tmpf"
+}
+
+interactive_branch_status() {
+    local name="$1" branch="$2" state="$3"
+    local dirty=""
+
+    if [ "$state" = "running" ]; then
+        dirty=$(docker exec "$name" bash -lc \
+            'cd /workspace && [ -n "$(git status --porcelain=v1)" ] && echo dirty || echo clean' \
+            2>/dev/null || true)
+    else
+        dirty=$(read_interactive_state_value "$name" dirty)
+        [ "$dirty" = "true" ] && dirty="dirty"
+    fi
+    [ "$dirty" = "dirty" ] && { printf 'dirty'; return; }
+
+    if [ -n "$branch" ] && git -C "$BARE_REPO" rev-parse --verify \
+            --quiet "refs/heads/${branch}" >/dev/null 2>&1; then
+        local tip
+        tip=$(git -C "$BARE_REPO" rev-parse "refs/heads/${branch}")
+        if git -C "$REPO_ROOT" merge-base --is-ancestor \
+                "$tip" HEAD 2>/dev/null; then
+            printf 'harvested'
+        else
+            printf 'unharvested'
+        fi
+        return
+    fi
+
+    printf '%s' "$state"
+}
+
 emit_row() {
     local id_str="$1" model_str="$2" driver_str="$3" auth_str="$4"
     local status_color="$5" status_str="$6"
@@ -507,6 +559,49 @@ draw() {
             "$a_turns" "$(format_tps "$a_out" "$a_api_ms")" \
             "$(format_duration_ms "$a_dur")" "$agent_tag"
     done
+
+    local int_idx=0 int_name
+    while IFS= read -r int_name; do
+        [ -n "$int_name" ] || continue
+        int_idx=$((int_idx + 1))
+
+        local int_state int_env_dump int_model int_effort int_auth
+        local int_tag int_driver int_branch int_profile int_status
+        int_state=$(docker inspect -f '{{.State.Status}}' \
+            "$int_name" 2>/dev/null || echo "not found")
+        int_env_dump=$(docker inspect -f \
+            '{{range .Config.Env}}{{println .}}{{end}}' \
+            "$int_name" 2>/dev/null || true)
+        int_model=$(printf '%s' "$int_env_dump" | grep '^SWARM_MODEL=' \
+            | head -1 | cut -d= -f2- || true)
+        int_effort=$(printf '%s' "$int_env_dump" | grep '^SWARM_EFFORT=' \
+            | head -1 | cut -d= -f2- || true)
+        int_tag=$(printf '%s' "$int_env_dump" | grep '^SWARM_TAG=' \
+            | head -1 | cut -d= -f2- || true)
+        int_driver=$(printf '%s' "$int_env_dump" | grep '^SWARM_DRIVER=' \
+            | head -1 | cut -d= -f2- || true)
+        int_auth=$(printf '%s' "$int_env_dump" | grep '^SWARM_AUTH_MODE=' \
+            | head -1 | cut -d= -f2- || true)
+        int_branch=$(printf '%s' "$int_env_dump" \
+            | grep '^SWARM_INTERACTIVE_BRANCH=' \
+            | head -1 | cut -d= -f2- || true)
+        int_profile=$(printf '%s' "$int_env_dump" \
+            | grep '^SWARM_INTERACTIVE_PROFILE=' \
+            | head -1 | cut -d= -f2- || true)
+        int_status=$(interactive_branch_status \
+            "$int_name" "$int_branch" "$int_state")
+
+        printf "  ${DIM}%s${RESET}\n" \
+            "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
+        emit_row "I${int_idx}" "$(format_model "$int_model" "$int_effort")" \
+            "$(short_driver "$int_driver")" "$int_auth" \
+            "$DIM" "$int_status" \
+            "" "" "" "" "" "" "$int_tag"
+        if [ -n "$int_branch" ]; then
+            printf "      ${DIM}%s: %s${RESET}\n" \
+                "${int_profile:-interactive}" "$int_branch"
+        fi
+    done < <(interactive_container_names)
 
     # Post-process row. If the container exists, use live Docker
     # state; otherwise show configured post-processing before it
