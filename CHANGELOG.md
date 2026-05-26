@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.16 — 2026-05-26
 
 - **Fix: Docker project names are sanitized for uppercase repo
   basenames.**  `launch.sh` now derives a lowercase Docker-safe
