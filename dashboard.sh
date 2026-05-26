@@ -30,8 +30,8 @@ Keybindings:
   1-9         Tail logs for agent N.
   h           Harvest agent results into current branch.
   s           Stop numbered agents (not post-process).
-  p           Tail post-process logs when the PP container exists.
-  P           Start the post-processing agent after confirmation.
+  p           Tail post-process logs when the container exists.
+  P           Run post-process after confirmation.
 
 Environment:
   SWARM_TITLE    Dashboard title override.
@@ -40,9 +40,10 @@ HELP
     exit 0
 fi
 
+# shellcheck disable=SC1091
 source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq docker tput bc
-# shellcheck source=lib/project.sh
+# shellcheck disable=SC1091
 source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -245,6 +246,27 @@ short_driver() {
     esac
 }
 
+configured_agent_fields() {
+    local index="$1"
+    [ -n "${CONFIG_FILE:-}" ] || return 0
+    jq -r --argjson wanted "$index" '
+        .tag as $dt | .driver as $dd |
+        [
+          .agents[] as $agent |
+          ($agent.count // 0) as $count |
+          select($count > 0) |
+          range(0; $count) |
+          [
+            ($agent.model // ""),
+            ($agent.effort // ""),
+            ($agent.auth // ""),
+            ($agent.tag // $dt // ""),
+            ($agent.driver // $dd // "claude-code")
+          ] | @tsv
+        ][($wanted - 1)] // empty
+    ' "$CONFIG_FILE" 2>/dev/null || true
+}
+
 truncate_str() {
     local s="$1" max="${2:-16}"
     if [ "${#s}" -le "$max" ]; then
@@ -387,7 +409,7 @@ emit_row() {
     if $SHOW_TPS;   then printf " %6s" "$tps_str"; fi
     printf " %8s" "$dur_str"
     if $SHOW_TAG;   then printf "  %-${TAG_COL_W}s" "$tag_str"; fi
-    printf "${close}\n"
+    printf '%b\n' "$close"
 }
 
 emit_header() {
@@ -401,7 +423,7 @@ emit_header() {
     if $SHOW_TPS;   then printf " %6s" "Tok/s"; fi
     printf " %8s" "Time"
     if $SHOW_TAG;   then printf "  %-${TAG_COL_W}s" "Tag"; fi
-    printf "${RESET}\n"
+    printf '%b\n' "$RESET"
 }
 
 draw() {
@@ -494,6 +516,15 @@ draw() {
             agent_tag=$(printf '%s' "$env_dump" | grep '^SWARM_TAG=' | head -1 | cut -d= -f2- || true)
             agent_driver=$(printf '%s' "$env_dump" | grep '^SWARM_DRIVER=' | head -1 | cut -d= -f2- || true)
             auth_mode=$(printf '%s' "$env_dump" | grep '^SWARM_AUTH_MODE=' | head -1 | cut -d= -f2- || true)
+        else
+            local configured_fields
+            configured_fields=$(configured_agent_fields "$i")
+            if [ -n "$configured_fields" ]; then
+                IFS=$'\t' read -r model effort auth_mode agent_tag \
+                    agent_driver <<< "$configured_fields"
+                model="${model:-unknown}"
+                state="configured"
+            fi
         fi
 
         local model_label
@@ -650,7 +681,7 @@ draw() {
         esac
 
         printf "  ${DIM}%s${RESET}\n" "$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))"
-        emit_row "PP" "$pp_model_label" "$(short_driver "$pp_driver")" "$pp_auth_mode" \
+        emit_row "P" "$pp_model_label" "$(short_driver "$pp_driver")" "$pp_auth_mode" \
             "$pp_status_color" "$pp_state" \
             "$(format_cost "$pp_cost")" \
             "$(format_tokens "$pp_in")/$(format_tokens "$pp_out")" \
@@ -673,7 +704,7 @@ draw() {
         local pp_rule
         pp_rule=$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))
         printf "  ${DIM}%s${RESET}\n" "$pp_rule"
-        emit_row "PP" "$(format_model "$pp_model" "$pp_effort")" \
+        emit_row "P" "$(format_model "$pp_model" "$pp_effort")" \
             "$(short_driver "$pp_driver")" "$pp_auth_mode" \
             "$DIM" "configured" \
             "" "" "" "" "" "" "$pp_tag"
@@ -725,11 +756,11 @@ draw() {
     printf "  ${DIM}[s]${RESET} stop all"
     if post_process_container_exists; then
         # shellcheck disable=SC2059
-        printf "  ${DIM}[p]${RESET} pp logs"
+        printf "  ${DIM}[p]${RESET} post-process logs"
     fi
     if post_process_configured; then
         # shellcheck disable=SC2059
-        printf "  ${DIM}[P]${RESET} start pp"
+        printf "  ${DIM}[P]${RESET} post-process"
     fi
     printf "\n"
 }

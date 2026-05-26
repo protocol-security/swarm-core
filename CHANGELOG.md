@@ -15,7 +15,9 @@
   output shows interactive branches as `I*` rows with dirty,
   unharvested, or harvested state.  Claude Code OAuth profiles now
   warn when the host token is missing instead of labeling the
-  container as authenticated.
+  container as authenticated.  The dashboard also shows configured
+  numbered agents before their containers exist and labels the
+  post-process row as `P`, matching the key that runs it.
 
 ## 0.20.16 — 2026-05-26
 

@@ -98,6 +98,27 @@ short_driver() {
     esac
 }
 
+configured_agent_fields() {
+    local index="$1"
+    [ -n "${CONFIG_FILE:-}" ] || return 0
+    jq -r --argjson wanted "$index" '
+        .tag as $dt | .driver as $dd |
+        [
+          .agents[] as $agent |
+          ($agent.count // 0) as $count |
+          select($count > 0) |
+          range(0; $count) |
+          [
+            ($agent.model // ""),
+            ($agent.effort // ""),
+            ($agent.auth // ""),
+            ($agent.tag // $dt // ""),
+            ($agent.driver // $dd // "claude-code")
+          ] | @tsv
+        ][($wanted - 1)] // empty
+    ' "$CONFIG_FILE" 2>/dev/null || true
+}
+
 emit_row() {
     local id_str="$1" model_str="$2" driver_str="$3" auth_str="$4"
     local status_color="$5" status_str="$6"
@@ -419,15 +440,55 @@ assert_eq "pp pending inherits tag" "scan" "$pp_tag"
 
 SHOW_INOUT=false; SHOW_AUTH=true; SHOW_TURNS=false; SHOW_TPS=false
 SHOW_CACHE=false; SHOW_TAG=true; SHOW_DRIVER=true
-pending_line=$(emit_row "PP" "$(format_model "$pp_model" "$pp_effort")" \
+pending_line=$(emit_row "P" "$(format_model "$pp_model" "$pp_effort")" \
     "$(short_driver "$pp_driver")" "$pp_auth" "" "configured" \
     "" "" "" "" "" "" "$pp_tag")
-assert_eq "pending row has PP id" "true" \
-    "$(echo "$pending_line" | grep -q '^  PP' && echo true || echo false)"
+assert_eq "pending row has P id" "true" \
+    "$(echo "$pending_line" | grep -q '^  P' && echo true || echo false)"
 assert_eq "pending row says configured" "true" \
     "$(echo "$pending_line" | grep -q 'configured' && echo true || echo false)"
 assert_eq "pending row uses inherited tag" "true" \
     "$(echo "$pending_line" | grep -q 'scan' && echo true || echo false)"
+
+cat > "$TMPDIR/configured_agents.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "driver": "claude-code",
+  "tag": "top",
+  "agents": [
+    {
+      "name": "headless",
+      "count": 2,
+      "model": "claude-opus-4-6",
+      "auth": "oauth",
+      "context": "slim"
+    },
+    {
+      "name": "manual",
+      "model": "gpt-5.4",
+      "driver": "codex-cli",
+      "auth": "chatgpt"
+    },
+    {
+      "name": "codex-headless",
+      "count": 1,
+      "model": "gpt-5.4",
+      "driver": "codex-cli",
+      "auth": "chatgpt",
+      "effort": "medium",
+      "tag": "codex"
+    }
+  ]
+}
+EOF
+CONFIG_FILE="$TMPDIR/configured_agents.json"
+IFS=$'\t' read -r cfg_model cfg_effort cfg_auth cfg_tag cfg_driver \
+    <<< "$(configured_agent_fields 3)"
+assert_eq "configured row skips omitted count model" "gpt-5.4" "$cfg_model"
+assert_eq "configured row skips omitted count effort" "medium" "$cfg_effort"
+assert_eq "configured row skips omitted count auth" "chatgpt" "$cfg_auth"
+assert_eq "configured row uses per-agent tag" "codex" "$cfg_tag"
+assert_eq "configured row driver" "codex-cli" "$cfg_driver"
 
 # ============================================================
 echo ""
@@ -586,13 +647,17 @@ echo "=== 12. Post-process dashboard shortcuts ==="
 
 DASHBOARD_FILE="$TESTS_DIR/../dashboard.sh"
 
-assert_eq "help documents lowercase pp logs" "1" \
+assert_eq "help documents lowercase post-process logs" "1" \
     "$(grep -cF 'p           Tail post-process logs' "$DASHBOARD_FILE")"
-assert_eq "help documents uppercase pp start" "1" \
-    "$(grep -cF 'P           Start the post-processing agent' \
+assert_eq "help documents uppercase post-process run" "1" \
+    "$(grep -cF 'P           Run post-process after confirmation.' \
         "$DASHBOARD_FILE")"
 assert_eq "p and P are not the same case arm" "0" \
     "$(grep -cF 'p|P)' "$DASHBOARD_FILE" || true)"
+assert_eq "dashboard emits P post-process rows" "2" \
+    "$(grep -cF 'emit_row "P"' "$DASHBOARD_FILE")"
+assert_eq "dashboard does not emit PP post-process row" "0" \
+    "$(grep -cF 'emit_row "PP"' "$DASHBOARD_FILE" || true)"
 
 pp_lower_case=$(awk '
     /^[[:space:]]*p\)/ { p = 1 }
@@ -605,7 +670,7 @@ pp_upper_case=$(awk '
     p && /^                ;;/ { exit }
 ' "$DASHBOARD_FILE")
 
-assert_eq "lowercase p follows pp logs" "1" \
+assert_eq "lowercase p follows post-process logs" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'docker logs -f "$_pp_name"' || true)"
 assert_eq "lowercase p points to uppercase start" "1" \

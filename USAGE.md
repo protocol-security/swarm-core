@@ -320,8 +320,8 @@ do not count toward numbered-agent completion.
 | `1`-`9` | Logs for agent N. |
 | `h` | Harvest results. |
 | `s` | Stop numbered agents (not post-process). |
-| `p` | Logs for the post-process container, if it exists. |
-| `P` | Start post-process after confirmation. |
+| `p` | Post-process logs, if the container exists. |
+| `P` | Run post-process after confirmation. |
 
 ## Activity streaming
 
