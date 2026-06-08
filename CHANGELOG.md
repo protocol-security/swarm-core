@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.21.1 — 2026-06-08
+
+- **Fix: `post-process` propagates the container's exit code.**
+  `cmd_post_process` harvests unconditionally (best-effort recovery
+  of a crashed agent's in-flight commits) but now returns the
+  post-process container's exit code, so CI workflows and daemons
+  can gate publishing on it. A clean run still returns `0`;
+  previously the failure was swallowed whenever harvest succeeded.
+
 ## 0.21.0 — 2026-05-26
 
 - **Feature: interactive agent containers for human-guided work.**
