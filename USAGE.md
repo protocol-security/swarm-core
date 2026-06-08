@@ -324,6 +324,11 @@ do not count toward numbered-agent completion.
 | `s` | Stop numbered agents and post-process. |
 | `p` | Start post-process after confirmation. |
 
+The Model column appends the agent's reasoning effort as a
+parenthesised letter: `(h)` high, `(m)` medium, `(l)` low,
+`(x)` xhigh, `(n)` none, and `(M)` max. Models configured
+without an `effort` show no suffix.
+
 ## Activity streaming
 
 Agent activity streams to Docker logs in real time. Press

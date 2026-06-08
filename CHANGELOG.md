@@ -21,6 +21,9 @@
   for agent rows) and lowercase `p` starts post-processing. The
   log hint reads `[1-9/P]` once the container exists. Previously
   `p` tailed logs and `P` started the run.
+- **Docs: document the dashboard effort letters.** The Model
+  column's parenthesised suffix is `(h)` high, `(m)` medium,
+  `(l)` low, `(x)` xhigh, `(n)` none, and `(M)` max.
 
 ## 0.21.1 — 2026-06-08
 
