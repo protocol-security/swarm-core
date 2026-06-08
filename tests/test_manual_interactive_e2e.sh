@@ -56,6 +56,11 @@ assert_eq "fixture repo created" "true" \
     "$([ -d .git ] && echo true || echo false)"
 assert_eq "runbook created" "true" \
     "$([ -f MANUAL_STEPS.md ] && echo true || echo false)"
+assert_eq "post-process setup script created" "true" \
+    "$([ -x scripts/post-setup.sh ] && echo true || echo false)"
+assert_eq "post_process.setup runs the lighter script" \
+    "scripts/post-setup.sh" \
+    "$(jq -r '.post_process.setup // empty' swarm.json)"
 
 CODEX_BRANCH="swarm/test/interactive-codex-manual-123"
 CLAUDE_BRANCH="swarm/test/interactive-claude-manual-456"
