@@ -319,10 +319,15 @@ do not count toward numbered-agent completion.
 |-----|--------|
 | `q` | Quit. |
 | `1`-`9` | Logs for agent N. |
+| `P` | Post-process logs (the `P` row), if it exists. |
 | `h` | Harvest results. |
 | `s` | Stop numbered agents and post-process. |
-| `p` | Post-process logs, if the container exists. |
-| `P` | Start post-process after confirmation. |
+| `p` | Start post-process after confirmation. |
+
+The Model column appends the agent's reasoning effort as a
+parenthesised letter: `(h)` high, `(m)` medium, `(l)` low,
+`(x)` xhigh, `(n)` none, and `(M)` max. Models configured
+without an `effort` show no suffix.
 
 ## Activity streaming
 
@@ -448,6 +453,12 @@ post-processing, run `./launch.sh post-process`; use that command
 directly when you intentionally want to run only the post-process
 agent and then harvest.
 
+Before merging, `harvest.sh` tags the current branch tip with a
+local `swarm-harvest-<date>-<time>` tag (skipped on `--dry` and
+when nothing is new). Undo a harvest with
+`git reset --hard <tag>`. The tag is never pushed and does not
+interfere with the harvested branches.
+
 `post_process` also accepts `base_url`, `api_key`,
 `auth_token`, `auth`, `tag`, `driver`, and `max_idle` -- same
 fields as per-group agents -- to route post-processing through
@@ -455,6 +466,11 @@ a different provider or credential. `max_idle` controls how
 many consecutive sessions with no commits before the
 post-processor exits. When omitted it inherits the top-level
 `max_idle` (default: `3`).
+
+`post_process.setup` overrides the setup script for the
+post-process pass: a path runs that script, `false` or `""`
+skips setup (so a heavy top-level `setup` is not redone), and
+omitting the key inherits the top-level `setup`.
 
 `./launch.sh post-process` (and `wait` when it triggers
 post-processing) exits with the post-process container's exit

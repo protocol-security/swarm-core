@@ -28,10 +28,10 @@ interactive session branches.
 Keybindings:
   q           Quit the dashboard.
   1-9         Tail logs for agent N.
+  P           Tail post-process logs (the "P" row) when it exists.
   h           Harvest agent results into current branch.
   s           Stop numbered, interactive, and post-process agents.
-  p           Tail post-process logs when the container exists.
-  P           Start post-process after confirmation.
+  p           Start post-process after confirmation.
 
 Environment:
   SWARM_TITLE    Dashboard title override.
@@ -758,18 +758,21 @@ draw() {
     # Help bar.
     # shellcheck disable=SC2059
     printf " ${DIM}[q]${RESET} quit"
-    # shellcheck disable=SC2059
-    printf "  ${DIM}[1-9]${RESET} logs"
+    if post_process_container_exists; then
+        # The "P" row's logs join the numbered agent logs.
+        # shellcheck disable=SC2059
+        printf "  ${DIM}[1-9/P]${RESET} logs"
+    else
+        # shellcheck disable=SC2059
+        printf "  ${DIM}[1-9]${RESET} logs"
+    fi
     # shellcheck disable=SC2059
     printf "  ${DIM}[h]${RESET} harvest"
     # shellcheck disable=SC2059
     printf "  ${DIM}[s]${RESET} stop all"
-    if post_process_container_exists; then
+    if post_process_configured && ! post_process_container_exists; then
         # shellcheck disable=SC2059
-        printf "  ${DIM}[p]${RESET} post-process logs"
-    elif post_process_configured; then
-        # shellcheck disable=SC2059
-        printf "  ${DIM}[P]${RESET} post-process"
+        printf "  ${DIM}[p]${RESET} post-process"
     fi
     printf "\n"
 }
@@ -823,24 +826,8 @@ while true; do
                 enter_alt_screen
                 ;;
             p)
-                leave_alt_screen
-                _pp_name="${IMAGE_NAME}-post"
-                if post_process_container_exists; then
-                    echo "--- Logs for ${_pp_name} (Ctrl-C to return) ---"
-                    docker logs -f "$_pp_name" 2>&1 || true
-                    if ! docker inspect -f '{{.State.Running}}' \
-                            "$_pp_name" 2>/dev/null | grep -q true; then
-                        echo ""
-                        read -rp "Press Enter to return to dashboard..." _
-                    fi
-                else
-                    echo "(post-processing is not running -- press P to start)"
-                    echo ""
-                    read -rp "Press Enter to return to dashboard..." _
-                fi
-                enter_alt_screen
-                ;;
-            P)
+                # Lowercase p starts post-processing (an action),
+                # gated on confirmation and a stopped swarm.
                 leave_alt_screen
                 if ! post_process_configured; then
                     echo "(post-processing not configured)"
@@ -852,7 +839,7 @@ while true; do
                 fi
                 _pp_name="${IMAGE_NAME}-post"
                 if post_process_container_exists; then
-                    echo "(post-processing is already running -- press p for logs)"
+                    echo "(post-processing is already running -- press P for logs)"
                     echo "Stop it first with s before starting a new run."
                     echo ""
                     read -rp "Press Enter to return to dashboard..." _
@@ -880,6 +867,26 @@ while true; do
                     echo "(post-processing failed)"
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
+                enter_alt_screen
+                ;;
+            P)
+                # Uppercase P tails the "P" row's logs, mirroring how
+                # [1-9] tail the numbered agent rows.
+                leave_alt_screen
+                _pp_name="${IMAGE_NAME}-post"
+                if post_process_container_exists; then
+                    echo "--- Logs for ${_pp_name} (Ctrl-C to return) ---"
+                    docker logs -f "$_pp_name" 2>&1 || true
+                    if ! docker inspect -f '{{.State.Running}}' \
+                            "$_pp_name" 2>/dev/null | grep -q true; then
+                        echo ""
+                        read -rp "Press Enter to return to dashboard..." _
+                    fi
+                else
+                    echo "(post-processing is not running -- press p to start)"
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
+                fi
                 enter_alt_screen
                 ;;
         esac

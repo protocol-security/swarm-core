@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 0.22.0 — 2026-06-08
+
+- **Build: base the agent image on Debian trixie.** Replaces
+  `debian:bookworm-slim` (glibc 2.36) so binaries that require
+  glibc 2.39+ run inside the container.
+- **Build: install `unzip` in the agent image.** Available for
+  setup scripts and agents that need to extract archives.
+- **Feature: harvest tags a restore point before merging.**
+  `harvest.sh` creates a local `swarm-harvest-<date>-<time>` tag on
+  the pre-merge branch tip, so a harvest can be undone with
+  `git reset --hard <tag>`. Skipped on `--dry` and when nothing is
+  new; never pushed.
+- **Feature: `post_process.setup` overrides the post-process setup.**
+  A path runs a lighter setup, `false`/`""` skips setup so a heavy
+  top-level `setup` is not redone, and omitting it inherits the
+  top-level setup.
+- **Dashboard (breaking): swap the post-process keys.** `P` now
+  tails the post-process logs (matching the `P` row, like `[1-9]`
+  for agent rows) and lowercase `p` starts post-processing. The
+  log hint reads `[1-9/P]` once the container exists. Previously
+  `p` tailed logs and `P` started the run.
+- **Docs: document the dashboard effort letters.** The Model
+  column's parenthesised suffix is `(h)` high, `(m)` medium,
+  `(l)` low, `(x)` xhigh, `(n)` none, and `(M)` max.
+
 ## 0.21.1 — 2026-06-08
 
 - **Fix: `post-process` propagates the container's exit code.**

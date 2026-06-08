@@ -821,7 +821,7 @@ cmd_wait() {
 }
 
 cmd_post_process() {
-    local pp_prompt pp_model pp_base_url pp_api_key pp_effort pp_auth pp_auth_token pp_tag pp_driver pp_max_idle
+    local pp_prompt pp_model pp_base_url pp_api_key pp_effort pp_auth pp_auth_token pp_tag pp_driver pp_max_idle pp_setup
     pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE")
     pp_max_idle=$(jq -r '.post_process.max_idle // .max_idle // 3' "$CONFIG_FILE")
     pp_model=$(jq -r '.post_process.model // "claude-opus-4-6"' "$CONFIG_FILE")
@@ -835,6 +835,18 @@ cmd_post_process() {
     pp_tag=$(jq -r '.post_process.tag // .tag // empty' "$CONFIG_FILE")
     pp_tag="$(expand_env_ref "$pp_tag")"
     pp_driver=$(jq -r '.post_process.driver // .driver // "claude-code"' "$CONFIG_FILE")
+
+    # Resolve the post-process setup script.  An explicit
+    # post_process.setup wins (a path runs it, false/empty skips it so a
+    # heavy top-level setup is not redone); omitting the key inherits
+    # the top-level setup.
+    if jq -e '(.post_process // {}) | has("setup")' "$CONFIG_FILE" \
+            >/dev/null 2>&1; then
+        pp_setup=$(jq -r '.post_process.setup // ""' "$CONFIG_FILE")
+        [ "$pp_setup" = "false" ] && pp_setup=""
+    else
+        pp_setup="${SWARM_SETUP:-}"
+    fi
 
     if [ -z "$pp_prompt" ]; then
         echo "ERROR: post_process.prompt is not set in ${CONFIG_FILE}." >&2
@@ -892,7 +904,7 @@ cmd_post_process() {
         -e "SWARM_EFFORT=${pp_effort}" \
         -e "CLAUDE_MODEL=${pp_model}" \
         -e "SWARM_PROMPT=${pp_prompt}" \
-        -e "SWARM_SETUP=${SWARM_SETUP:-}" \
+        -e "SWARM_SETUP=${pp_setup}" \
         -e "MAX_IDLE=${pp_max_idle}" \
         -e "MAX_RETRY_WAIT=${MAX_RETRY_WAIT}" \
         -e "GIT_USER_NAME=${GIT_USER_NAME}" \
@@ -903,7 +915,7 @@ cmd_post_process() {
         -e "SWARM_DRIVER=${pp_driver}" \
         -e "SWARM_RUN_CONTEXT=${SWARM_RUN_CONTEXT}" \
         -e "SWARM_CFG_PROMPT=${pp_prompt}" \
-        -e "SWARM_CFG_SETUP=${SWARM_SETUP:-}" \
+        -e "SWARM_CFG_SETUP=${pp_setup}" \
         -e "SWARM_ACTIVITY_TIMEOUT=${SWARM_ACTIVITY_TIMEOUT:-0}" \
         -e "SWARM_ACTIVITY_POLL=${SWARM_ACTIVITY_POLL:-10}" \
         -e "SWARM_WATCHDOG_GRACE=${SWARM_WATCHDOG_GRACE:-10}" \

@@ -665,10 +665,10 @@ echo "=== 12. Post-process dashboard shortcuts ==="
 
 DASHBOARD_FILE="$TESTS_DIR/../dashboard.sh"
 
-assert_eq "help documents lowercase post-process logs" "1" \
-    "$(grep -cF 'p           Tail post-process logs' "$DASHBOARD_FILE")"
-assert_eq "help documents uppercase post-process run" "1" \
-    "$(grep -cF 'P           Start post-process after confirmation.' \
+assert_eq "help documents uppercase post-process logs" "1" \
+    "$(grep -cF 'P           Tail post-process logs' "$DASHBOARD_FILE")"
+assert_eq "help documents lowercase post-process run" "1" \
+    "$(grep -cF 'p           Start post-process after confirmation.' \
         "$DASHBOARD_FILE")"
 assert_eq "help documents stop includes every container type" "1" \
     "$(grep -cF \
@@ -710,33 +710,45 @@ help_bar=$(awk '
     p && /^[[:space:]]*printf "\\n"/ { exit }
 ' "$DASHBOARD_FILE")
 
-assert_eq "lowercase p follows post-process logs" "1" \
-    "$(printf '%s\n' "$pp_lower_case" \
+# Uppercase P tails the post-process "P" row's logs (like [1-9]).
+assert_eq "uppercase P follows post-process logs" "1" \
+    "$(printf '%s\n' "$pp_upper_case" \
         | grep -cF 'docker logs -f "$_pp_name"' || true)"
-assert_eq "lowercase p points to uppercase start" "1" \
-    "$(printf '%s\n' "$pp_lower_case" \
-        | grep -cF 'press P to start' || true)"
-assert_eq "lowercase p does not start post-process" "0" \
-    "$(printf '%s\n' "$pp_lower_case" \
+assert_eq "uppercase P points to lowercase start" "1" \
+    "$(printf '%s\n' "$pp_upper_case" \
+        | grep -cF 'press p to start' || true)"
+assert_eq "uppercase P does not start post-process" "0" \
+    "$(printf '%s\n' "$pp_upper_case" \
         | grep -cF '"$SWARM_DIR/launch.sh" post-process' || true)"
-assert_eq "uppercase P asks for confirmation" "true" \
-    "$([ "$(printf '%s\n' "$pp_upper_case" \
+# Lowercase p starts post-processing after confirmation.
+assert_eq "lowercase p asks for confirmation" "true" \
+    "$([ "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF '[y/N]' || true)" -gt 0 ] && echo true || echo false)"
-assert_eq "uppercase P can launch post-process" "1" \
-    "$(printf '%s\n' "$pp_upper_case" \
+assert_eq "lowercase p can launch post-process" "1" \
+    "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF '"$SWARM_DIR/launch.sh" post-process' || true)"
-assert_eq "uppercase P has cancellation path" "1" \
-    "$(printf '%s\n' "$pp_upper_case" \
+assert_eq "lowercase p has cancellation path" "1" \
+    "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'post-processing not started' || true)"
-assert_eq "footer hides P when post-process exists" "1" \
-    "$(printf '%s\n' "$help_bar" \
-        | grep -cF 'elif post_process_configured; then' || true)"
-assert_eq "uppercase P refuses to replace running post-process" "1" \
-    "$(printf '%s\n' "$pp_upper_case" \
+assert_eq "lowercase p refuses to replace running post-process" "1" \
+    "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'post-processing is already running' || true)"
-assert_eq "uppercase P has no replacement prompt" "0" \
-    "$(printf '%s\n' "$pp_upper_case" \
+assert_eq "lowercase p has no replacement prompt" "0" \
+    "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'Replace existing' || true)"
+assert_eq "lowercase p points to uppercase logs" "1" \
+    "$(printf '%s\n' "$pp_lower_case" \
+        | grep -cF 'press P for logs' || true)"
+assert_eq "footer merges P into the logs hint" "1" \
+    "$(printf '%s\n' "$help_bar" \
+        | grep -cF '[1-9/P]' || true)"
+assert_eq "footer offers lowercase p to start post-process" "1" \
+    "$(printf '%s\n' "$help_bar" \
+        | grep -cF '[p]' || true)"
+assert_eq "footer guards start hint on missing container" "1" \
+    "$(printf '%s\n' "$help_bar" \
+        | grep -cF 'post_process_configured && ! post_process_container_exists' \
+        || true)"
 assert_eq "s stops post-process container" "1" \
     "$(printf '%s\n' "$s_case" \
         | grep -cF 'docker stop "${IMAGE_NAME}-post"' || true)"

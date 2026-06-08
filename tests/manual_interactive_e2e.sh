@@ -15,7 +15,10 @@ set -euo pipefail
 # - Claude OAuth env forwarding;
 # - dashboard configured rows before containers exist;
 # - dashboard I* rows for interactive containers;
-# - dashboard P row and [P] post-process action.
+# - dashboard P row, with P tailing its logs and lowercase p
+#   starting the post-process run;
+# - post_process.setup override that runs a lighter post-process
+#   setup instead of inheriting the top-level setup.
 #
 # The generated config uses normal prompts and max_idle=3.  It does
 # not include a timeboxed "keep running for N minutes" prompt.  Stop
@@ -139,6 +142,25 @@ setup_log="test-results/setup-${setup_id}.log"
 EOF
 chmod +x "$REPO_DIR/scripts/setup.sh"
 
+cat > "$REPO_DIR/scripts/post-setup.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+
+# Lighter setup used only for the post-process pass.  swarm.json sets
+# post_process.setup to this script, so launch.sh runs it instead of
+# inheriting the heavier top-level scripts/setup.sh.  The unique marker
+# makes the override observable: it proves the post-process container
+# ran this lighter script and did not redo the top-level setup.
+mkdir -p test-results
+{
+    printf 'POST_SETUP_RAN at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'driver=%s model=%s\n' \
+        "${SWARM_DRIVER:-unknown}" \
+        "${SWARM_MODEL:-unknown}"
+} >> test-results/post-process-setup.log
+EOF
+chmod +x "$REPO_DIR/scripts/post-setup.sh"
+
 cat > "$REPO_DIR/prompts/headless.md" <<'EOF'
 You are running a manual claude-swarm smoke test in a disposable repo.
 
@@ -241,6 +263,7 @@ cat > "$REPO_DIR/swarm.json" <<'EOF'
   ],
   "post_process": {
     "prompt": "prompts/post-process.md",
+    "setup": "scripts/post-setup.sh",
     "driver": "codex-cli",
     "model": "gpt-5.4",
     "effort": "medium",
@@ -309,9 +332,10 @@ Expected result:
   \`unknown\` / \`not found\`.
 - Omitted \`count\` on \`claude-manual\` and \`count: 0\` on
   \`codex-manual\` should not add numbered rows.
-- The post-process row should appear as \`P\`, matching the key that
-  starts it.
-- The footer should show \`[P] post-process\`.
+- The post-process row should appear as \`P\`, the same letter as the
+  \`P\` key that tails its logs once it exists.
+- The footer should show \`[p] post-process\` -- lowercase \`p\`
+  starts the run.
 
 Press \`q\` to exit.
 
@@ -326,10 +350,11 @@ Expected result:
 - Five numbered containers start: 3 Claude OAuth and 2 Codex ChatGPT.
 - The dashboard header reports 5 agents.
 - Press \`1\` through \`5\` to inspect numbered-agent logs.
-- \`p\` should only tail post-process logs after a post-process
-  container exists.  When it appears, \`P\` should be hidden because
-  post-process is already running.
-- \`P\` should ask for confirmation before starting post-process.
+- \`P\` should only tail post-process logs after a post-process
+  container exists; the logs hint becomes \`[1-9/P]\` then.
+- \`p\` should ask for confirmation before starting post-process.
+  Once the container exists, the \`[p] post-process\` start hint
+  disappears (stop with \`s\` before starting another run).
 
 This fixture uses \`max_idle: 3\` and normal prompts, so agents can
 finish naturally.  Once you have seen enough, press \`s\` in the
@@ -434,10 +459,10 @@ Expected result:
 ./dashboard.sh
 \`\`\`
 
-Press \`P\`, confirm with \`y\`, and watch the \`P\` row.  After the
-post-process container exists, lowercase \`p\` should tail its logs and
-\`P\` should disappear.  Use \`s\` or \`./launch.sh stop\` before
-starting a new post-process run.
+Press \`p\`, confirm with \`y\`, and watch the \`P\` row.  After the
+post-process container exists, uppercase \`P\` tails its logs and the
+\`[p] post-process\` start hint disappears.  Use \`s\` or
+\`./launch.sh stop\` before starting a new post-process run.
 
 Equivalent non-dashboard command:
 
@@ -448,8 +473,27 @@ Equivalent non-dashboard command:
 Expected result:
 
 - Post-process uses the Codex ChatGPT profile from \`post_process\`.
+- Before the prompt runs, the container executes
+  \`scripts/post-setup.sh\` (from \`post_process.setup\`), which appends
+  a \`POST_SETUP_RAN\` line to \`test-results/post-process-setup.log\`.
+  This is the lighter post-process setup; the heavier top-level
+  \`scripts/setup.sh\` is not redone here.
 - It writes \`test-results/post-process-summary.md\`.
+- The summary lists \`post-process-setup.log\`, so the override stays
+  visible after harvest.
 - The summary ends with \`POST_PROCESS_DONE\`.
+
+The \`post_process.setup\` key has three modes.  This fixture ships the
+override (a path); to try the others, edit \`swarm.json\`:
+
+- Path (the default here): \`"setup": "scripts/post-setup.sh"\` runs
+  that lighter script for the post-process pass only.
+- Skip: \`"setup": false\` or \`"setup": ""\` runs no setup, so a heavy
+  top-level setup is not repeated.  \`post-process-setup.log\` is then
+  absent.
+- Inherit: remove the \`setup\` key from \`post_process\` to reuse the
+  top-level \`scripts/setup.sh\`; a \`test-results/setup-*.log\` for the
+  post-process pass appears instead.
 
 ## 8. Harvest And Inspect
 
