@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     jq \
     sudo \
+    unzip \
     openssh-client \
     && rm -rf /var/lib/apt/lists/*
 

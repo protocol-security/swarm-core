@@ -5,6 +5,8 @@
 - **Build: base the agent image on Debian trixie.** Replaces
   `debian:bookworm-slim` (glibc 2.36) so binaries that require
   glibc 2.39+ run inside the container.
+- **Build: install `unzip` in the agent image.** Available for
+  setup scripts and agents that need to extract archives.
 
 ## 0.21.1 — 2026-06-08
 
