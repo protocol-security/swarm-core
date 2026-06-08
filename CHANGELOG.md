@@ -7,6 +7,11 @@
   glibc 2.39+ run inside the container.
 - **Build: install `unzip` in the agent image.** Available for
   setup scripts and agents that need to extract archives.
+- **Feature: harvest tags a restore point before merging.**
+  `harvest.sh` creates a local `swarm-harvest-<date>-<time>` tag on
+  the pre-merge branch tip, so a harvest can be undone with
+  `git reset --hard <tag>`. Skipped on `--dry` and when nothing is
+  new; never pushed.
 
 ## 0.21.1 — 2026-06-08
 

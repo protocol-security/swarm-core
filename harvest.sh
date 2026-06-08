@@ -151,6 +151,16 @@ if [ "$TOTAL_NEW_COMMITS" -eq 0 ]; then
     exit 0
 fi
 
+# Tag a restore point on the pre-merge HEAD so this harvest can be
+# undone with `git reset --hard <tag>`.  The tag lives in refs/tags
+# and never collides with the harvested branches in refs/heads, so
+# it is safe alongside agent-work.  Skip if HEAD is already tagged.
+if ! git tag --points-at HEAD | grep -q '^swarm-harvest-'; then
+    harvest_tag="swarm-harvest-$(date +%Y-%m-%d-%H%M%S)"
+    git tag "$harvest_tag"
+    echo "Tagged restore point: ${harvest_tag}"
+fi
+
 echo ""
 for item in "${MERGE_BRANCHES[@]}"; do
     branch="${item%%|*}"

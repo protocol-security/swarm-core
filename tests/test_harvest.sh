@@ -12,11 +12,13 @@ HARVEST_SH="$REPO_ROOT/harvest.sh"
 HARVEST_BARE=""
 GUARD_BARE=""
 INTERACTIVE_BARE=""
+TAG_BARE=""
 cleanup() {
     rm -rf "$TMPDIR"
     [ -n "${HARVEST_BARE:-}" ] && rm -rf "$HARVEST_BARE"
     [ -n "${GUARD_BARE:-}" ]   && rm -rf "$GUARD_BARE"
     [ -n "${INTERACTIVE_BARE:-}" ] && rm -rf "$INTERACTIVE_BARE"
+    [ -n "${TAG_BARE:-}" ] && rm -rf "$TAG_BARE"
 }
 trap cleanup EXIT
 
@@ -472,6 +474,59 @@ assert_eq "fast-forward shows new commit header" "true" \
     "$(printf '%s\n' "$ff_output" \
         | grep -q '^1 new commits on agent-work:' \
         && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 10. Restore tag created before harvest ==="
+
+# harvest.sh tags the pre-merge branch tip with a local
+# swarm-harvest-<date>-<time> tag so a harvest can be undone with
+# `git reset --hard <tag>`.  The tag lives in refs/tags and is
+# skipped on --dry and when nothing is new.
+
+TAG_PROJECT="swarmtest-harvest-tag-$$"
+TAG_WORK="$TMPDIR/$TAG_PROJECT"
+TAG_BARE="/tmp/${TAG_PROJECT}-upstream.git"
+TAG_AGENT="$TMPDIR/harvest-tag-agent"
+
+rm -rf "$TAG_WORK" "$TAG_BARE" "$TAG_AGENT"
+mkdir -p "$TAG_WORK"
+git init -q "$TAG_WORK"
+cd "$TAG_WORK"
+git -c user.name=test -c user.email=t@t -c commit.gpgsign=false \
+    commit -q --allow-empty -m "init"
+git clone -q --bare "$TAG_WORK" "$TAG_BARE"
+git -C "$TAG_BARE" branch agent-work HEAD 2>/dev/null || true
+
+git clone -q "$TAG_BARE" "$TAG_AGENT"
+cd "$TAG_AGENT"
+git checkout -q agent-work
+echo "tag work" > tagwork.txt
+git add tagwork.txt
+git -c user.name=agent -c user.email=a@a -c commit.gpgsign=false \
+    commit -q -m "Agent commit for restore-tag test"
+git push -q origin agent-work
+rm -rf "$TAG_AGENT"
+
+cd "$TAG_WORK"
+# A dry run must not create a restore tag.
+bash "$HARVEST_SH" --dry >/dev/null 2>&1 || true
+assert_eq "dry run creates no restore tag" "0" \
+    "$(git tag --list 'swarm-harvest-*' | grep -c . || true)"
+
+# A real harvest tags the pre-merge HEAD, then merges.
+TAG_HEAD_BEFORE=$(git rev-parse HEAD)
+bash "$HARVEST_SH" >/dev/null 2>&1 || true
+assert_eq "harvest creates one restore tag" "1" \
+    "$(git tag --list 'swarm-harvest-*' | grep -c . || true)"
+TAG_NAME=$(git tag --list 'swarm-harvest-*' | head -1)
+assert_eq "restore tag points at pre-merge HEAD" "$TAG_HEAD_BEFORE" \
+    "$(git rev-parse "${TAG_NAME}^{commit}")"
+
+# A second harvest with nothing new must not add another tag.
+bash "$HARVEST_SH" >/dev/null 2>&1 || true
+assert_eq "noop harvest adds no restore tag" "1" \
+    "$(git tag --list 'swarm-harvest-*' | grep -c . || true)"
 
 # ============================================================
 echo ""

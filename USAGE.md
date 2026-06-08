@@ -448,6 +448,12 @@ post-processing, run `./launch.sh post-process`; use that command
 directly when you intentionally want to run only the post-process
 agent and then harvest.
 
+Before merging, `harvest.sh` tags the current branch tip with a
+local `swarm-harvest-<date>-<time>` tag (skipped on `--dry` and
+when nothing is new). Undo a harvest with
+`git reset --hard <tag>`. The tag is never pushed and does not
+interfere with the harvested branches.
+
 `post_process` also accepts `base_url`, `api_key`,
 `auth_token`, `auth`, `tag`, `driver`, and `max_idle` -- same
 fields as per-group agents -- to route post-processing through
