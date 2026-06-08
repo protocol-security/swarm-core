@@ -456,6 +456,12 @@ many consecutive sessions with no commits before the
 post-processor exits. When omitted it inherits the top-level
 `max_idle` (default: `3`).
 
+`./launch.sh post-process` (and `wait` when it triggers
+post-processing) exits with the post-process container's exit
+code. Harvest still runs first, so a crashed agent's in-flight
+commits are recovered locally, but a non-zero exit lets CI or
+daemons refuse to publish partial state.
+
 ## Context modes
 
 Motivated by [Evaluating AGENTS.md](https://arxiv.org/abs/2602.11988)
