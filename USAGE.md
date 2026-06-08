@@ -319,10 +319,10 @@ do not count toward numbered-agent completion.
 |-----|--------|
 | `q` | Quit. |
 | `1`-`9` | Logs for agent N. |
+| `P` | Post-process logs (the `P` row), if it exists. |
 | `h` | Harvest results. |
 | `s` | Stop numbered agents and post-process. |
-| `p` | Post-process logs, if the container exists. |
-| `P` | Start post-process after confirmation. |
+| `p` | Start post-process after confirmation. |
 
 ## Activity streaming
 

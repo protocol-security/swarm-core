@@ -16,6 +16,11 @@
   A path runs a lighter setup, `false`/`""` skips setup so a heavy
   top-level `setup` is not redone, and omitting it inherits the
   top-level setup.
+- **Dashboard (breaking): swap the post-process keys.** `P` now
+  tails the post-process logs (matching the `P` row, like `[1-9]`
+  for agent rows) and lowercase `p` starts post-processing. The
+  log hint reads `[1-9/P]` once the container exists. Previously
+  `p` tailed logs and `P` started the run.
 
 ## 0.21.1 — 2026-06-08
 
