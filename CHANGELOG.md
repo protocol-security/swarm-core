@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.22.0 — 2026-06-08
+
 - **Build: base the agent image on Debian trixie.** Replaces
   `debian:bookworm-slim` (glibc 2.36) so binaries that require
   glibc 2.39+ run inside the container.
