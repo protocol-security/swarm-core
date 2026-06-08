@@ -12,6 +12,10 @@
   the pre-merge branch tip, so a harvest can be undone with
   `git reset --hard <tag>`. Skipped on `--dry` and when nothing is
   new; never pushed.
+- **Feature: `post_process.setup` overrides the post-process setup.**
+  A path runs a lighter setup, `false`/`""` skips setup so a heavy
+  top-level `setup` is not redone, and omitting it inherits the
+  top-level setup.
 
 ## 0.21.1 — 2026-06-08
 

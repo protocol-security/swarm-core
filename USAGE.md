@@ -462,6 +462,11 @@ many consecutive sessions with no commits before the
 post-processor exits. When omitted it inherits the top-level
 `max_idle` (default: `3`).
 
+`post_process.setup` overrides the setup script for the
+post-process pass: a path runs that script, `false` or `""`
+skips setup (so a heavy top-level `setup` is not redone), and
+omitting the key inherits the top-level `setup`.
+
 `./launch.sh post-process` (and `wait` when it triggers
 post-processing) exits with the post-process container's exit
 code. Harvest still runs first, so a crashed agent's in-flight

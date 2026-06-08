@@ -1912,6 +1912,69 @@ assert_eq "cmd_post_process returns container exit code on failure" "1" \
 
 # ============================================================
 echo ""
+echo "=== 43. post_process.setup override ==="
+
+# A heavy top-level setup can be skipped or replaced for the
+# post-process pass: post_process.setup as a path runs that script,
+# false/empty skips setup, and omitting the key inherits the
+# top-level setup.  Mirrors the resolution in cmd_post_process.
+resolve_pp_setup() {
+    local config_file="$1"
+    local top_setup pp_setup
+    top_setup=$(jq -r '.setup // empty' "$config_file")
+    if jq -e '(.post_process // {}) | has("setup")' "$config_file" \
+            >/dev/null 2>&1; then
+        pp_setup=$(jq -r '.post_process.setup // ""' "$config_file")
+        [ "$pp_setup" = "false" ] && pp_setup=""
+    else
+        pp_setup="$top_setup"
+    fi
+    echo "$pp_setup"
+}
+
+cat > "$TMPDIR/pp_setup_inherit.json" <<'EOF'
+{ "prompt": "p.md", "setup": "scripts/setup.sh",
+  "post_process": { "prompt": "review.md" } }
+EOF
+assert_eq "pp setup inherits top-level" "scripts/setup.sh" \
+    "$(resolve_pp_setup "$TMPDIR/pp_setup_inherit.json")"
+
+cat > "$TMPDIR/pp_setup_path.json" <<'EOF'
+{ "prompt": "p.md", "setup": "scripts/setup.sh",
+  "post_process": { "prompt": "review.md", "setup": "scripts/light.sh" } }
+EOF
+assert_eq "pp setup path overrides" "scripts/light.sh" \
+    "$(resolve_pp_setup "$TMPDIR/pp_setup_path.json")"
+
+cat > "$TMPDIR/pp_setup_false.json" <<'EOF'
+{ "prompt": "p.md", "setup": "scripts/setup.sh",
+  "post_process": { "prompt": "review.md", "setup": false } }
+EOF
+assert_eq "pp setup false skips" "" \
+    "$(resolve_pp_setup "$TMPDIR/pp_setup_false.json")"
+
+cat > "$TMPDIR/pp_setup_empty.json" <<'EOF'
+{ "prompt": "p.md", "setup": "scripts/setup.sh",
+  "post_process": { "prompt": "review.md", "setup": "" } }
+EOF
+assert_eq "pp setup empty skips" "" \
+    "$(resolve_pp_setup "$TMPDIR/pp_setup_empty.json")"
+
+# The live function must wire pp_setup into both setup env vars.
+_pp_setup_body=$(awk '
+    /^cmd_post_process\(\)[[:space:]]*\{/ { p = 1 }
+    p { print }
+    p && /^\}[[:space:]]*$/ { exit }
+' "$_LAUNCH_SH")
+assert_eq "cmd_post_process passes pp_setup to SWARM_SETUP" "1" \
+    "$(printf '%s\n' "$_pp_setup_body" \
+        | grep -cF 'SWARM_SETUP=${pp_setup}' || true)"
+assert_eq "cmd_post_process passes pp_setup to SWARM_CFG_SETUP" "1" \
+    "$(printf '%s\n' "$_pp_setup_body" \
+        | grep -cF 'SWARM_CFG_SETUP=${pp_setup}' || true)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
