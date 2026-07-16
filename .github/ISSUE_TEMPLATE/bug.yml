@@ -15,14 +15,14 @@ body:
       label: Steps to reproduce
       description: Minimal steps to trigger the bug.
     validations:
-      required: true
+      required: false
   - type: textarea
     id: expected
     attributes:
       label: Expected vs actual behavior
       description: What you expected and what happened instead.
     validations:
-      required: true
+      required: false
   - type: input
     id: version
     attributes:
