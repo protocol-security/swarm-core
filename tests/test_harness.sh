@@ -2,6 +2,9 @@
 # shellcheck disable=SC2034
 set -euo pipefail
 
+# shellcheck source=_test_env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
+
 # Unit tests for harness.sh stat extraction and logic.
 # No Docker or API key required.
 
@@ -649,6 +652,12 @@ source "$TESTS_DIR/../lib/signing.sh"
 # Exercises configure_git_signing from lib/signing.sh against
 # a sandboxed $HOME so --global writes land in a scratch dir
 # instead of the tester's real ~/.gitconfig.
+with_sandboxed_git_config() {
+    local sandbox="$1"
+    shift
+    HOME="$sandbox" GIT_CONFIG_GLOBAL="$sandbox/.gitconfig" "$@"
+}
+
 run_signing_config() {
     local create_key="$1"
     local sandbox="$TMPDIR/sign-sandbox-$$-${RANDOM}"
@@ -660,12 +669,14 @@ run_signing_config() {
         touch "$key_path"
     fi
 
-    HOME="$sandbox" configure_git_signing "$key_path" "$dst_path"
+    with_sandboxed_git_config "$sandbox" \
+        configure_git_signing "$key_path" "$dst_path"
 
     local format gpgsign
-    format=$(HOME="$sandbox" git config --global --get gpg.format \
-        2>/dev/null || echo "none")
-    gpgsign=$(HOME="$sandbox" git config --global --get commit.gpgsign)
+    format=$(with_sandboxed_git_config "$sandbox" \
+        git config --global --get gpg.format 2>/dev/null || echo "none")
+    gpgsign=$(with_sandboxed_git_config "$sandbox" \
+        git config --global --get commit.gpgsign)
     echo "${format}|${gpgsign}"
     rm -rf "$sandbox"
 }
@@ -688,7 +699,8 @@ copy_src="$copy_sandbox/src_key"
 copy_dst="$copy_sandbox/dst_key"
 echo "fake-key-bytes" > "$copy_src"
 chmod 644 "$copy_src"
-HOME="$copy_sandbox" configure_git_signing "$copy_src" "$copy_dst"
+with_sandboxed_git_config "$copy_sandbox" \
+    configure_git_signing "$copy_src" "$copy_dst"
 assert_eq "key copied to scratch location" \
     "yes" \
     "$([ -f "$copy_dst" ] && echo yes || echo no)"
@@ -698,7 +710,8 @@ assert_eq "key copy has 0600 perms" \
         || stat -f '%Lp' "$copy_dst" 2>/dev/null)"
 assert_eq "user.signingkey points at copy" \
     "$copy_dst" \
-    "$(HOME="$copy_sandbox" git config --global --get user.signingkey)"
+    "$(with_sandboxed_git_config "$copy_sandbox" \
+        git config --global --get user.signingkey)"
 assert_eq "no swarm key written under \$HOME" \
     "no" \
     "$([ -e "$copy_sandbox/.ssh/swarm-signing-key" ] && echo yes || echo no)"
@@ -714,15 +727,16 @@ fail_src="$fail_sandbox/src_key"
 fail_dst="$fail_sandbox/no/such/dir/dst_key"
 touch "$fail_src"
 fail_rc=0
-HOME="$fail_sandbox" configure_git_signing "$fail_src" "$fail_dst" \
-    >/dev/null 2>&1 || fail_rc=$?
+with_sandboxed_git_config "$fail_sandbox" \
+    configure_git_signing "$fail_src" "$fail_dst" \
+        >/dev/null 2>&1 || fail_rc=$?
 assert_eq "install failure -> non-zero return" \
     "1" \
     "$fail_rc"
 assert_eq "install failure -> user.signingkey not set" \
     "" \
-    "$(HOME="$fail_sandbox" git config --global --get user.signingkey \
-        2>/dev/null)"
+    "$(with_sandboxed_git_config "$fail_sandbox" \
+        git config --global --get user.signingkey 2>/dev/null)"
 rm -rf "$fail_sandbox"
 
 # Defaults to /etc/swarm/signing_key when called with no arg;
@@ -730,10 +744,11 @@ rm -rf "$fail_sandbox"
 # exist and expecting the "absent" branch.
 default_path_sandbox="$TMPDIR/sign-default-$$-${RANDOM}"
 mkdir -p "$default_path_sandbox"
-HOME="$default_path_sandbox" configure_git_signing
+with_sandboxed_git_config "$default_path_sandbox" configure_git_signing
 assert_eq "default key path absent -> gpgsign false" \
     "false" \
-    "$(HOME="$default_path_sandbox" git config --global --get commit.gpgsign)"
+    "$(with_sandboxed_git_config "$default_path_sandbox" \
+        git config --global --get commit.gpgsign)"
 rm -rf "$default_path_sandbox"
 
 # ============================================================

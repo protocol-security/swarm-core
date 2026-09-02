@@ -2,6 +2,9 @@
 # shellcheck disable=SC2034
 set -uo pipefail
 
+# shellcheck source=_test_env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
+
 # tests/runtime_signal_trap.sh
 #
 # Drive the harness's emergency-push paths under real Docker.

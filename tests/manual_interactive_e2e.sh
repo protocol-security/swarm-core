@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# shellcheck source=_test_env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
+
 # Manual interactive E2E fixture generator.
 #
 # This is intentionally not named test_*.sh, so tests/test.sh --unit

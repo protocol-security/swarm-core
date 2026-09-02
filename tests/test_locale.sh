@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# shellcheck source=_test_env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
+
 # Guard against the regression reported in the bug:
 #   dashboard.sh: line 207: printf: 52.185737173...: invalid number
 # on systems using `,` as the decimal separator.  Pin the

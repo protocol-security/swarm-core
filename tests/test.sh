@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# shellcheck source=_test_env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
+
 # Smoke test: launch agents with a counting prompt, verify results.
 # Each agent N writes test-results/agent-N.txt with N*100..N*100+99.
 #
