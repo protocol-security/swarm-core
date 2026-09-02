@@ -404,11 +404,16 @@ hlog_pipe() {
 }
 
 AGENT_ID=3
-OUT=$(hlog "test message")
+OUT=$(
+    date() {
+        printf '%s\n' "12:34:56"
+    }
+    hlog "test message"
+)
 PLAIN=$(echo "$OUT" | strip_ansi)
 
 assert_contains "hlog timestamp" \
-    "$(date +%H:%M:%S)" "$PLAIN"
+    "12:34:56 harness[3] test message" "$PLAIN"
 assert_contains "hlog prefix" "harness[3]" "$PLAIN"
 assert_contains "hlog body" "test message" "$PLAIN"
 
