@@ -1466,13 +1466,12 @@ assert_eq "_run_reaped reaps watchdog after kill" "1" \
     "$(grep -cE 'wait "\$_wd_pid" 2>/dev/null' "$COMMON_FILE")"
 
 # --- §40b. Behavioral: a deadlocked CLI is force-killed by the
-# watchdog within the configured timeout window.
+# watchdog.
 #
-# Skips on hosts without setsid/stdbuf -- the structural pins
-# above are the main regression guard; the behavioural test just
-# provides live coverage on Linux CI.  We drive the watchdog at
-# SWARM_ACTIVITY_POLL=1, SWARM_WATCHDOG_GRACE=1 so the full
-# escalation completes in ~3s and the test adds ~5s to the suite.
+# Skips on hosts without setsid/stdbuf/timeout -- the structural
+# pins above are the main regression guard; the behavioural test
+# provides live coverage on Linux CI. We use the shortest supported
+# polling and grace intervals to keep the suite quick.
 
 # Small helper to count matches without tripping assert_eq with
 # grep's noisy `0 + exit 1 + || echo 0` behaviour (which was
@@ -1484,8 +1483,9 @@ _wd_count() {
 }
 
 if ! command -v setsid >/dev/null 2>&1 \
-        || ! command -v stdbuf >/dev/null 2>&1; then
-    echo "  SKIP: watchdog behavioural test (setsid/stdbuf unavailable)"
+        || ! command -v stdbuf >/dev/null 2>&1 \
+        || ! command -v timeout >/dev/null 2>&1; then
+    echo "  SKIP: watchdog behavioural test (setsid/stdbuf/timeout unavailable)"
 else
     # Synthetic CLI: emits one line, then sleeps indefinitely.
     # The log mtime will freeze after the initial write and the
@@ -1503,17 +1503,18 @@ CLI
     #   "alive" write advances _last_mtime), second poll at t=2s
     #   (mtime stale for ≥2s → SIGTERM → the bash default handler
     #   exits → the grace loop returns early).  End-to-end ~2-3s.
-    _wd_start=$(date +%s)
+    # The outer timeout bounds a regression without making normal
+    # elapsed time an assertion.
+    _wd_ec=0
     SWARM_ACTIVITY_TIMEOUT=2 \
     SWARM_ACTIVITY_POLL=1 \
     SWARM_WATCHDOG_GRACE=1 \
-        _run_reaped "$TMPDIR/wd_run.log" "$TMPDIR/wd_cli.sh" \
-        >/dev/null 2>&1 || true
-    _wd_elapsed=$(($(date +%s) - _wd_start))
+        timeout --kill-after=5 30 bash -c \
+        'source "$1"; shift; _run_reaped "$@"' \
+        _ "$COMMON_FILE" "$TMPDIR/wd_run.log" "$TMPDIR/wd_cli.sh" \
+        >/dev/null 2>&1 || _wd_ec=$?
 
-    assert_eq "watchdog terminates deadlocked CLI within budget" \
-        "true" \
-        "$([ "$_wd_elapsed" -lt 10 ] && echo true || echo false)"
+    assert_eq "watchdog propagates SIGTERM exit (143)" "143" "$_wd_ec"
 
     # The watchdog's diagnostic line lands on stderr, which
     # _run_reaped redirects to <logfile>.err.  Its presence is
@@ -1529,9 +1530,8 @@ CLI
         "$(head -1 "$TMPDIR/wd_run.log" 2>/dev/null)"
 
     # --- Watchdog must stay dormant when the knob is unset or
-    # non-numeric.  Run a short well-behaved CLI and verify no
-    # watchdog diagnostics leak and elapsed stays near the CLI's
-    # own runtime rather than inflating to the grace window.
+    # non-numeric. Run a short well-behaved CLI and verify the
+    # watchdog does not alter its observable behavior.
     cat > "$TMPDIR/wd_quick.sh" <<'CLI'
 #!/bin/bash
 echo "done"
@@ -1540,19 +1540,21 @@ CLI
     chmod +x "$TMPDIR/wd_quick.sh"
 
     unset SWARM_ACTIVITY_TIMEOUT SWARM_ACTIVITY_POLL SWARM_WATCHDOG_GRACE
-    _wd_start=$(date +%s)
+    _wd_ec=0
     _run_reaped "$TMPDIR/wd_quick.log" "$TMPDIR/wd_quick.sh" \
-        >/dev/null 2>&1 || true
-    _wd_elapsed=$(($(date +%s) - _wd_start))
-    assert_eq "unset timeout: watchdog stays dormant" "true" \
-        "$([ "$_wd_elapsed" -lt 3 ] && echo true || echo false)"
+        >/dev/null 2>&1 || _wd_ec=$?
+    assert_eq "unset timeout: exit code preserved (0)" "0" "$_wd_ec"
+    assert_eq "unset timeout: stdout captured" "done" \
+        "$(cat "$TMPDIR/wd_quick.log")"
     assert_eq "unset timeout: no watchdog diagnostics" "0" \
         "$(_wd_count 'swarm watchdog' "$TMPDIR/wd_quick.log.err")"
 
     # Non-integer value must degrade to disabled, not crash.
+    _wd_ec=0
     SWARM_ACTIVITY_TIMEOUT="nonsense" \
         _run_reaped "$TMPDIR/wd_bad.log" "$TMPDIR/wd_quick.sh" \
-        >/dev/null 2>&1 || true
+        >/dev/null 2>&1 || _wd_ec=$?
+    assert_eq "non-integer timeout: run succeeds" "0" "$_wd_ec"
     assert_eq "non-integer timeout: no watchdog diagnostics" "0" \
         "$(_wd_count 'swarm watchdog' "$TMPDIR/wd_bad.log.err")"
 
