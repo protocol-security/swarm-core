@@ -183,6 +183,22 @@ wait_for_session() {
     return 1
 }
 
+wait_for_test_commit() {
+    local name="$1" tag="$2" timeout="${3:-30}"
+    local i subject
+    for i in $(seq 1 "$timeout"); do
+        subject=$(docker exec "$name" \
+            git -C /workspace log -1 --format='%s' 2>/dev/null || true)
+        if [ "$subject" = "test commit [${tag}]" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    echo "    timed out waiting for test commit [${tag}] in ${name}"
+    docker logs "$name" 2>&1 | tail -15 | sed 's/^/      /'
+    return 1
+}
+
 await_exit() {
     local name="$1" timeout="${2:-90}"
     local i status
@@ -208,8 +224,7 @@ count_landed() {
 echo
 echo "=== Item 3: SIGTERM mid-session ==="
 start_container "${NAMES[0]}" -e TC_TAG=sigterm-tag
-wait_for_session "${NAMES[0]}" || exit 1
-sleep 2
+wait_for_test_commit "${NAMES[0]}" sigterm-tag || exit 1
 echo "  sending docker stop -t 60..."
 docker stop -t 60 "${NAMES[0]}" >/dev/null
 EXIT_3=$(await_exit "${NAMES[0]}")
@@ -224,8 +239,7 @@ echo
 
 echo "=== Item 4: SIGINT mid-session ==="
 start_container "${NAMES[1]}" -e TC_TAG=sigint-tag
-wait_for_session "${NAMES[1]}" || exit 1
-sleep 2
+wait_for_test_commit "${NAMES[1]}" sigint-tag || exit 1
 echo "  sending docker kill --signal=SIGINT..."
 docker kill --signal=SIGINT "${NAMES[1]}" >/dev/null
 EXIT_4=$(await_exit "${NAMES[1]}")
