@@ -1,0 +1,14 @@
+{
+  "prompt": "unused",
+  "driver": "pi",
+  "pi_version": "0.86.1",
+  "max_idle": 1,
+  "agents": [
+    {
+      "count": 1,
+      "model": "openai-codex/gpt-5.5",
+      "auth": "chatgpt",
+      "effort": "low"
+    }
+  ]
+}

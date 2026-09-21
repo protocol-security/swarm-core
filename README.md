@@ -156,4 +156,6 @@ Built-in drivers: `claude-code` (default), `gemini-cli`,
 and guide to writing a new driver.
 
 For Pi, set `"driver": "pi"` and use an Anthropic model ID or a Pi
-`provider/model` ID. See [Pi setup and authentication](USAGE.md#pi).
+`provider/model` ID. Codex subscriptions use `openai-codex/<model>`,
+`"auth": "chatgpt"`, and a dedicated `PI_AUTH_DIR` with Pi OAuth login.
+See [Pi setup and authentication](USAGE.md#pi).

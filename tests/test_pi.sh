@@ -6,6 +6,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/drivers/pi.sh
 source "$ROOT/lib/drivers/pi.sh"
+unset PI_CHATGPT_AUTH PI_AUTH_DIR
 
 PASS=0
 FAIL=0
@@ -96,7 +97,8 @@ for reason in error aborted; do
         "$(agent_detect_fatal "$WORK/error" 0)"
 done
 for error in '429 rate limit' '503 overloaded' '502 bad gateway' \
-        'fetch failed' '401 unauthorized' '400 extra usage required'; do
+        'fetch failed' '401 unauthorized' '400 extra usage required' \
+        'OAuth refresh failed for openai-codex: token_expired'; do
     jq -nc --arg error "$error" \
         '{type:"message_end",message:{role:"assistant",stopReason:"error",
           errorMessage:$error}}' > "$WORK/error"
@@ -197,6 +199,86 @@ assert_eq "credential file is private" auth.json \
     "$(find "$PI_CODING_AGENT_DIR/auth.json" -perm 600 -exec basename {} \;)"
 assert_eq "no generated config in workspace" no \
     "$([ -e .pi ] && echo yes || echo no)"
+
+# Subscription auth uses a dedicated shared Pi home, not Codex CLI auth.
+export PI_AUTH_DIR="$WORK/codex auth"
+mkdir -m 700 "$PI_AUTH_DIR"
+printf '%s\n' '{"openai-codex":{"type":"oauth","access":"access-test",
+ "refresh":"refresh-test","expires":0}}' > "$PI_AUTH_DIR/auth.json"
+chmod 600 "$PI_AUTH_DIR/auth.json"
+agent_docker_auth '' '' chatgpt '' > "$WORK/chatgpt-flags"
+codex_auth_path=$(cd "$PI_AUTH_DIR" && pwd -P)
+for flag in PI_CHATGPT_AUTH=1 SWARM_AUTH_MODE=chatgpt \
+        "type=bind,source=$codex_auth_path,target=/home/agent/.pi/agent"; do
+    assert_eq "chatgpt flag $flag" yes "$(has "$flag" "$WORK/chatgpt-flags")"
+done
+for flag in readonly ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN PI_API_KEY; do
+    assert_eq "chatgpt excludes $flag" no "$(has "$flag" "$WORK/chatgpt-flags")"
+done
+assert_eq "explicit key overrides chatgpt" \
+    $'-e\nPI_API_KEY=group-key\n-e\nSWARM_AUTH_MODE=key' \
+    "$(agent_docker_auth group-key '' chatgpt '')"
+assert_eq "missing chatgpt store never falls back" \
+    $'-e\nPI_CHATGPT_AUTH=1\n-e\nSWARM_AUTH_MODE=' \
+    "$(PI_AUTH_DIR='' agent_docker_auth '' '' chatgpt '' 2>/dev/null)"
+cp "$PI_AUTH_DIR/auth.json" "$WORK/auth-before.json"
+for invalid in '{}' 'not-json' \
+        '{"openai-codex":{"type":"api_key","key":"test"}}' \
+        '{"openai-codex":{"type":"oauth","access":"test"}}'; do
+    printf '%s\n' "$invalid" > "$PI_AUTH_DIR/auth.json"
+    assert_eq "invalid subscription store rejected" \
+        $'-e\nPI_CHATGPT_AUTH=1\n-e\nSWARM_AUTH_MODE=' \
+        "$(agent_docker_auth '' '' chatgpt '' 2>/dev/null)"
+done
+jq '. + {anthropic:{type:"api_key",key:"unrelated"}}' \
+    "$WORK/auth-before.json" > "$PI_AUTH_DIR/auth.json"
+assert_eq "other providers are not exposed" \
+    $'-e\nPI_CHATGPT_AUTH=1\n-e\nSWARM_AUTH_MODE=' \
+    "$(agent_docker_auth '' '' chatgpt '' 2>/dev/null)"
+cp "$WORK/auth-before.json" "$PI_AUTH_DIR/auth.json"
+mkdir "$WORK/codex,auth"
+cp "$WORK/auth-before.json" "$WORK/codex,auth/auth.json"
+assert_eq "unsafe mount path rejected" \
+    $'-e\nPI_CHATGPT_AUTH=1\n-e\nSWARM_AUTH_MODE=' \
+    "$(PI_AUTH_DIR="$WORK/codex,auth" \
+        agent_docker_auth '' '' chatgpt '' 2>/dev/null)"
+export PI_CHATGPT_AUTH=1 PI_CODING_AGENT_DIR="$PI_AUTH_DIR"
+PI_API_KEY=ambient SWARM_MODEL=openai-codex/gpt-5.4 \
+    agent_settings "$WORK/workspace"
+assert_eq "shared OAuth credentials never overwritten" \
+    "$(< "$WORK/auth-before.json")" "$(< "$PI_AUTH_DIR/auth.json")"
+assert_eq "Codex uses SSE" sse \
+    "$(jq -r '.transport' "$PI_AUTH_DIR/settings.json")"
+assert_eq "interactive sessions stay container-local" \
+    /home/agent/.pi/sessions \
+    "$(jq -r '.sessionDir' "$PI_AUTH_DIR/settings.json")"
+agent_run openai-codex/gpt-5.4 hi "$WORK/codex.log" >/dev/null
+assert_eq "Codex provider selected" yes "$(has openai-codex "$WORK/args")"
+assert_eq "Codex model selected" yes "$(has gpt-5.4 "$WORK/args")"
+agent_interactive_run openai-codex/gpt-5.5 "$WORK/system.md" >/dev/null
+assert_eq "Codex native provider selected" yes \
+    "$(has openai-codex "$WORK/args")"
+assert_eq "Codex native model selected" yes "$(has gpt-5.5 "$WORK/args")"
+assert_eq "Codex retains native UI" no "$(has --print "$WORK/args")"
+for model in gpt-5.4 openai/gpt-5.4 anthropic/claude-sonnet-4-6; do
+    rc=0
+    agent_run "$model" hi "$WORK/wrong.log" >/dev/null 2>&1 || rc=$?
+    assert_eq "chatgpt rejects $model" 1 "$rc"
+    assert_eq "wrong provider error is actionable" yes \
+        "$(has 'requires openai-codex/<model>' "$WORK/wrong.log.err")"
+done
+rc=0
+PI_BASE_URL=https://example.test agent_run openai-codex/gpt-5.4 hi \
+    "$WORK/wrong.log" >/dev/null 2>&1 || rc=$?
+assert_eq "subscription endpoint overrides rejected" 1 "$rc"
+rm "$PI_AUTH_DIR/auth.json"
+rc=0
+PI_API_KEY=ambient agent_run openai-codex/gpt-5.5 hi \
+    "$WORK/wrong.log" >/dev/null 2>&1 || rc=$?
+assert_eq "missing store rejects ambient key fallback" 1 "$rc"
+assert_eq "missing store error is actionable" yes \
+    "$(has 'dedicated PI_AUTH_DIR' "$WORK/wrong.log.err")"
+unset PI_CHATGPT_AUTH PI_AUTH_DIR
 
 agent_activity_jq > "$WORK/activity.jq"
 cat > "$WORK/activity" <<'JSONL'

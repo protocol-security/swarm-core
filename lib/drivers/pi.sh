@@ -17,11 +17,52 @@ _pi_provider() {
     esac
 }
 
+# Keep the shared subscription store limited to Codex credentials.
+_pi_has_codex_auth() {
+    [ -f "$1" ] && jq -e '
+        keys == ["openai-codex"] and
+        (."openai-codex" |
+            .type == "oauth" and
+            (.access | type == "string" and length > 0) and
+            (.refresh | type == "string" and length > 0) and
+            (.expires | type == "number"))
+    ' "$1" >/dev/null 2>&1
+}
+
+_pi_validate_chatgpt() {
+    local provider="$1" pi_home="$2"
+    if [ "$provider" != openai-codex ]; then
+        echo 'ERROR: Pi auth=chatgpt requires openai-codex/<model>.' >&2
+        return 1
+    fi
+    if [ -n "${PI_BASE_URL:-}" ]; then
+        echo 'ERROR: Pi auth=chatgpt does not allow base_url overrides.' >&2
+        return 1
+    fi
+    if ! _pi_has_codex_auth "$pi_home/auth.json" \
+            || [ ! -w "$pi_home" ] || [ ! -w "$pi_home/auth.json" ]; then
+        echo 'ERROR: Pi chatgpt needs a writable, dedicated PI_AUTH_DIR' >&2
+        echo 'containing only an openai-codex OAuth entry in auth.json.' >&2
+        return 1
+    fi
+}
+
 # Share model, effort, and system instructions across both CLI modes.
 _pi_invoke() {
     local mode="$1" model="$2" prompt_text="$3" append_file="$4"
     local logfile="${5:-}" provider effort="${PI_EFFORT:-}"
     provider=$(_pi_provider "$model")
+    if [ "${PI_CHATGPT_AUTH:-}" = 1 ]; then
+        local auth_error pi_home="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+        if ! auth_error=$(_pi_validate_chatgpt "$provider" "$pi_home" 2>&1); then
+            if [ "$mode" = json ]; then
+                : > "$logfile"
+                printf '%s\n' "$auth_error" > "${logfile}.err"
+            fi
+            printf '%s\n' "$auth_error" >&2
+            return 1
+        fi
+    fi
     if [[ "$model" == */* ]]; then
         model="${model#*/}"
     fi
@@ -71,22 +112,35 @@ agent_interactive_run() {
     _pi_invoke interactive "$model" "" "$append_file"
 }
 
-# Keep generated settings and credential references outside the worktree.
-# Each container has its own Pi home; no host auth/session files are mounted.
+# Keep generated settings and credentials outside the worktree. API-key
+# runs have private Pi homes. ChatGPT runs explicitly share a dedicated
+# home so Pi's auth.json.lock serializes refresh and token persistence.
 agent_settings() {
     local _workspace="$1" provider
     local pi_home="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
     provider=$(_pi_provider "${SWARM_MODEL:-$(agent_default_model)}")
-    mkdir -p "$pi_home"
-    chmod 700 "$pi_home"
+    if [ "${PI_CHATGPT_AUTH:-}" = 1 ]; then
+        _pi_validate_chatgpt "$provider" "$pi_home" || return 1
+    else
+        mkdir -p "$pi_home"
+        chmod 700 "$pi_home"
+    fi
     (
         umask 077
-        # The harness owns retries. Disable background billable cache warms.
-        printf '%s\n' \
-            '{"retry":{"enabled":false},"cacheWarming":"off",' \
-            '"enableInstallTelemetry":false}' \
-            > "$pi_home/settings.json"
-        if [ -n "${PI_API_KEY:-}" ]; then
+        # Atomic replacement keeps simultaneous container startups from
+        # reading a partially written shared settings file. Never replace
+        # shared auth.json: Pi locks and persists its refreshes itself.
+        local settings
+        settings=$(mktemp "$pi_home/.swarm-settings.XXXXXX") || exit 1
+        trap 'rm -f "$settings"' EXIT
+        jq -n --arg chatgpt "${PI_CHATGPT_AUTH:-}" '{
+            retry: {enabled: false}, cacheWarming: "off",
+            enableInstallTelemetry: false
+        } + (if $chatgpt == "1" then {
+            transport: "sse", sessionDir: "/home/agent/.pi/sessions"
+        } else {} end)' > "$settings" || exit 1
+        mv "$settings" "$pi_home/settings.json" || exit 1
+        if [ "${PI_CHATGPT_AUTH:-}" != 1 ] && [ -n "${PI_API_KEY:-}" ]; then
             # Store an env reference, not the secret or a shell expression.
             jq -n --arg provider "$provider" \
                 '{($provider): {type: "api_key", key: "$PI_API_KEY"}}' \
@@ -205,7 +259,7 @@ agent_docker_env() {
 
 # Explicit group credentials win. Otherwise select one auth source so a
 # host OAuth token cannot override auth=apikey inside Pi.
-# Other Pi providers use a qualified model and api_key or PI_API_KEY.
+# Other providers use api_key/PI_API_KEY or explicit Codex chatgpt auth.
 agent_docker_auth() {
     local api_key="$1" auth_token="$2" auth_mode="$3" base_url="$4"
     local oauth="${ANTHROPIC_OAUTH_TOKEN:-${CLAUDE_CODE_OAUTH_TOKEN:-}}"
@@ -219,6 +273,25 @@ agent_docker_auth() {
     elif [ -n "$api_key" ]; then
         printf -- '-e\nPI_API_KEY=%s\n' "$api_key"
         label="key"
+    elif [ "$auth_mode" = chatgpt ]; then
+        # Explicit opt-in only: do not mount the user's general Pi home.
+        # A directory mount shares both auth.json and its adjacent lock.
+        printf -- '-e\nPI_CHATGPT_AUTH=1\n'
+        local auth_dir="${PI_AUTH_DIR:-}"
+        if [ -n "$auth_dir" ] \
+                && _pi_has_codex_auth "$auth_dir/auth.json"; then
+            auth_dir=$(cd "$auth_dir" && pwd -P)
+            if [[ "$auth_dir" == *','* || "$auth_dir" == *$'\n'* ]]; then
+                echo 'WARNING: PI_AUTH_DIR cannot contain commas/newlines.' >&2
+            else
+                printf -- '--mount\ntype=bind,source=%s,' "$auth_dir"
+                printf 'target=/home/agent/.pi/agent\n'
+                label="chatgpt"
+            fi
+        else
+            echo 'WARNING: Pi auth=chatgpt needs a dedicated PI_AUTH_DIR' >&2
+            echo 'with only openai-codex OAuth credentials in auth.json.' >&2
+        fi
     elif [ "$auth_mode" = oauth ]; then
         if [ -n "$oauth" ]; then
             printf -- '-e\nANTHROPIC_OAUTH_TOKEN=%s\n' "$oauth"

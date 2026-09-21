@@ -77,6 +77,7 @@ Credentials stay as env vars (not in shell history).
 | `CODEX_AUTH_JSON` | `~/.codex/auth.json` | Path to Codex auth file (ChatGPT subscription). |
 | `GEMINI_API_KEY` | | Google API key (for Gemini CLI driver). |
 | `PI_API_KEY` | | Pi key for the selected provider; explicit group `api_key` takes precedence. |
+| `PI_AUTH_DIR` | | Dedicated writable Pi home for `auth: "chatgpt"`; contains only Codex OAuth credentials. |
 | `ANTHROPIC_OAUTH_TOKEN` | | Pi Anthropic OAuth token; falls back to `CLAUDE_CODE_OAUTH_TOKEN`. |
 | `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
 | `SWARM_TITLE` | | Dashboard title override. |
@@ -463,9 +464,11 @@ Unit tests (no Docker or API key):
 ```
 
 `--all` also runs `./tests/runtime_pi.sh`: the installed Pi CLI in Docker
-against a local test API, without credentials or paid model calls. It
+against test APIs, without real credentials or paid model calls. It
 checks the four tools, Git commits/pushes, idle exit, post-processing,
-harvest, activity, usage stats, and structured API failures. With Python
+harvest, activity, usage stats, and structured API failures. Two additional
+network-isolated Pi containers verify shared Codex OAuth refresh and
+persisted credentials using a test-only transport. With Python
 3 available on the host, it also checks native UI startup, `/quit`, and
 interactive branch push through a PTY; otherwise that check is skipped.
 This is not a substitute for live-provider verification.
@@ -660,7 +663,8 @@ Override the path with `CODEX_AUTH_JSON=/path/to/auth.json`.
 
 Set `"driver": "pi"` for numbered agents, interactive profiles, or
 post-processing. Pi runs inside the existing Docker boundary. The image
-installs Node.js, Pi, `fd`, and `ripgrep`; the host does not need Pi.
+installs Node.js, Pi, `fd`, and `ripgrep`. API-key and Anthropic-token runs
+do not need host Pi; Codex subscription setup uses Pi's `/login`.
 
 Bare model IDs select Anthropic. For another built-in Pi provider, use
 `provider/model`, including any slashes inside the model ID:
@@ -690,13 +694,14 @@ prompt in both modes.
 | Group `auth_token` | Anthropic Bearer token (`ANTHROPIC_AUTH_TOKEN`). |
 | `auth: "apikey"` | `PI_API_KEY`, then `ANTHROPIC_API_KEY`; no OAuth fallback. |
 | `auth: "oauth"` | `ANTHROPIC_OAUTH_TOKEN`, then `CLAUDE_CODE_OAUTH_TOKEN`. |
+| `auth: "chatgpt"` | Shared writable `PI_AUTH_DIR`; requires `openai-codex/<model>`. |
 | Omitted `auth` | `PI_API_KEY`, then Anthropic OAuth, then `ANTHROPIC_API_KEY`. |
 
 Group credentials override `auth`. Anthropic environment credentials
-apply only to Anthropic; other providers require an explicit `api_key`
-or `PI_API_KEY`. Host Pi auth files and sessions are not mounted. This
-driver does not import or refresh subscription credentials from Pi's
-`auth.json`; supplied OAuth tokens must remain valid for the run.
+apply only to Anthropic. Other providers require an explicit `api_key`
+or `PI_API_KEY`, except for the Codex subscription mode below. Pi's
+normal host auth/session directory is not automatically mounted.
+Supplied Anthropic OAuth tokens must remain valid for the run.
 
 **Anthropic subscription auth in third-party apps uses paid extra
 usage, not plan limits.** Enable/fund extra usage or use an API key.
@@ -704,8 +709,10 @@ An extra-usage rejection is fatal, not a reason to retry indefinitely.
 
 `base_url` overrides the selected built-in provider's endpoint through
 Pi's container-local `models.json`. It does not register unknown model
-IDs or custom API implementations. Secrets stay in environment variables;
-generated auth files contain environment references outside the worktree.
+IDs or custom API implementations. This override is not allowed with
+`auth: "chatgpt"`. For API-key/token modes, secrets stay in environment
+variables; generated auth files contain environment references outside
+the worktree.
 
 Headless runs use fresh, unsaved sessions with `read`, `write`, `edit`,
 and `bash`. Project Pi settings/extensions are not automatically trusted;
@@ -719,6 +726,56 @@ Startup network checks and telemetry are disabled. The harness owns
 retries; Pi's automatic retry and cache warming are disabled. Costs are
 Pi's provider-reported usage multiplied by its catalog rates, not a
 subscription invoice. Timing uses the harness's wall-clock fallback.
+
+#### Codex subscription through Pi
+
+Use Pi's `openai-codex` provider for a ChatGPT subscription, not its
+`openai` API-key provider. Log in with host Pi into a **dedicated**
+directory outside the worktree:
+
+```bash
+export PI_AUTH_DIR="$HOME/.config/swarm-core/pi-codex"
+install -d -m 700 "$PI_AUTH_DIR"
+PI_CODING_AGENT_DIR="$PI_AUTH_DIR" pi
+# In Pi: /login, select OpenAI Codex, finish login, then /quit.
+```
+
+Then configure the swarm:
+
+```json
+{
+  "driver": "pi",
+  "pi_version": "0.86.1",
+  "agents": [
+    { "count": 1, "model": "openai-codex/gpt-5.5",
+      "auth": "chatgpt", "effort": "low" }
+  ]
+}
+```
+
+Choose a model enabled for your account. The live smoke config uses
+`gpt-5.5`; model availability is not guaranteed by a successful login.
+This mode works for headless agents and native interactive profiles.
+
+The whole dedicated directory is mounted read-write at
+`/home/agent/.pi/agent`. Keep it private and writable by the container's
+agent user (UID 1000); `auth.json` should have mode 600 and contain only
+an `openai-codex` OAuth entry. Do not use your normal `~/.pi/agent`, add
+unrelated credentials/extensions, or copy the same refresh token into
+independent stores for parallel runs. `CODEX_AUTH_JSON` belongs to the
+separate `codex-cli` driver and is not used here.
+
+Pi shares `auth.json` and its adjacent lock across containers, refreshes
+expired credentials, and persists rotated tokens back to this directory.
+The driver replaces its `settings.json` at startup, uses SSE transport,
+and keeps new interactive sessions container-local. If refresh fails,
+log in again in the dedicated directory; there is no API-key fallback.
+
+Verify with a live subscription call:
+
+```bash
+./tests/test.sh --config tests/configs/pi-chatgpt.json
+```
 
 ### General rules
 

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Feature: support Codex subscriptions through Pi.** Add explicit
+  `auth: "chatgpt"` with `openai-codex/<model>` and a dedicated writable
+  `PI_AUTH_DIR`. Share Pi's auth lock and rotated credentials across
+  containers without importing unrelated host credentials or sessions.
+  Add validation, a live subscription smoke config, and a network-isolated
+  real-Pi test proving two agents share one OAuth refresh.
+
 - **Feature: add the `pi` driver.** Run Pi headlessly or through its
   native interactive UI, with effort selection, system-prompt injection,
   JSON activity/usage parsing, and structured-error detection. Support

@@ -20,7 +20,8 @@ NETWORK="${PROJECT}-network"
 API="${PROJECT}-api"
 BARE="/tmp/${PROJECT}-upstream.git"
 VERSION="${PI_TEST_VERSION:-0.86.1}"
-NAMES=("$API" "$IMAGE-1" "$IMAGE-post" "$IMAGE-error")
+NAMES=("$API" "$IMAGE-1" "$IMAGE-post" "$IMAGE-error"
+       "$IMAGE-codex-1" "$IMAGE-codex-2")
 cleanup() {
     local rc=$? name
     while IFS= read -r name; do
@@ -142,6 +143,44 @@ docker logs "$IMAGE-error" > "$WORK/error.log" 2>&1
 grep -q 'Pi fixture rejected the credential' "$WORK/error.log"
 printf 'PASS: zero-exit Pi API error becomes a failed container\n'
 
+# Real Pi processes share an expired, synthetic Codex OAuth credential.
+# The preload replaces only this test's network transport, including the
+# refresh endpoint. It rejects unexpected requests; no paid API is called.
+# shellcheck source=../lib/drivers/pi.sh
+source "$ROOT/lib/drivers/pi.sh"
+export PI_AUTH_DIR="$WORK/codex-auth"
+mkdir -m 700 "$PI_AUTH_DIR"
+(
+    umask 077
+    printf '%s\n' '{"openai-codex":{"type":"oauth","access":"expired",
+      "refresh":"fixture-refresh","expires":0}}' > "$PI_AUTH_DIR/auth.json"
+)
+AUTH_ARGS=()
+while IFS= read -r arg; do
+    AUTH_ARGS+=("$arg")
+done < <(agent_docker_auth '' '' chatgpt '')
+for i in 1 2; do
+    docker run -d --network none --name "$IMAGE-codex-$i" \
+        -v "$BARE:/upstream:rw" \
+        -v "$ROOT/tests/fixtures/pi-codex-api.cjs:/pi-codex-api.cjs:ro" \
+        -e NODE_OPTIONS=--require=/pi-codex-api.cjs \
+        -e SWARM_DRIVER=pi -e SWARM_MODEL=openai-codex/gpt-5.5 \
+        -e SWARM_PROMPT=prompts/main.md -e "AGENT_ID=codex-$i" \
+        -e MAX_IDLE=1 "${AUTH_ARGS[@]}" "$IMAGE" >/dev/null
+done
+for i in 1 2; do
+    wait_container "$IMAGE-codex-$i" 0
+    docker cp "$IMAGE-codex-$i:/workspace/agent_logs" \
+        "$WORK/codex-logs-$i" >/dev/null
+    grep -q 'PI_CODEX_AUTH_OK' "$WORK/codex-logs-$i/"*.log
+done
+test "$(wc -l < "$PI_AUTH_DIR/refresh-count" | tr -d ' ')" = 1
+jq -e '."openai-codex" | .refresh == "fixture-refresh-rotated"
+    and .expires > (now * 1000)' "$PI_AUTH_DIR/auth.json" >/dev/null
+test ! -e "$PI_AUTH_DIR/auth.json.lock"
+unset PI_AUTH_DIR
+printf 'PASS: Codex subscription auth, one shared refresh, and SSE responses\n'
+
 # Docker's interactive launcher requires a host PTY. Python is optional
 # and used only for this native-UI check, never for the driver itself.
 if command -v python3 >/dev/null 2>&1; then
@@ -197,8 +236,8 @@ PY
     test -n "$(git -C "$BARE" for-each-ref --format='%(refname)' \
         'refs/heads/swarm/*/interactive-pi-ui-*')"
     printf 'PASS: native Pi UI startup, /quit, and interactive branch push\n'
-    printf '  4 passed, 0 failed (real Pi, local test API)\n'
+    printf '  5 passed, 0 failed (real Pi, local test APIs)\n'
 else
     echo 'SKIP: native Pi UI check needs Python 3 for a host PTY'
-    printf '  3 passed, 0 failed (real Pi, local test API)\n'
+    printf '  4 passed, 0 failed (real Pi, local test APIs)\n'
 fi
