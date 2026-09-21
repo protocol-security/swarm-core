@@ -350,7 +350,8 @@ _session_end_push() {
         # state was submodule drift, which stash silently ignores).
         _stash_before=$(git stash list 2>/dev/null | wc -l)
         git stash push --include-untracked --quiet \
-            -m "claude-swarm pre-push $(date -u +%s)" 2>&1 | hlog_pipe || true
+            -m "swarm-core pre-push $(date -u +%s)" \
+            2>&1 | hlog_pipe || true
         _stash_after=$(git stash list 2>/dev/null | wc -l)
         if [ "$_stash_after" -gt "$_stash_before" ]; then
             hlog "pre-push stash: $(git rev-parse 'stash@{0}' 2>/dev/null)"

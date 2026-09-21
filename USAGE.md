@@ -13,6 +13,40 @@ SWARM_CONFIG=swarm.json ./launch.sh wait
 All configuration lives in the swarmfile (JSON).  Place a
 `swarm.json` in your repo root or point to it with `SWARM_CONFIG`.
 
+## Upgrading from claude-swarm
+
+The project is now named `swarm-core`. Script names, `swarm.json`,
+`SWARM_*` variables, drivers, dashboard controls, and Git branch/tag
+names are unchanged. The `Tools: swarm` commit trailer is unchanged.
+
+After the GitHub repository has been renamed, update a standalone
+checkout's remote from inside that checkout (use your actual remote
+name if it is not `origin`):
+
+```bash
+git remote set-url origin \
+  https://github.com/protocol-security/swarm-core.git
+```
+
+For an existing submodule at `tools/claude-swarm`, run this from the
+parent repository and commit the resulting `.gitmodules` change:
+
+```bash
+git submodule set-url tools/claude-swarm \
+  https://github.com/protocol-security/swarm-core.git
+```
+
+Use your actual submodule path. SSH users can use
+`git@github.com:protocol-security/swarm-core.git` instead of HTTPS.
+Keep existing checkout/submodule directories and script paths; moving
+or re-adding them is not required.
+
+Docker image/container names and `/tmp` state paths still derive from
+the target repository's sanitized directory name, not this tool's name.
+Do not rename or move a target checkout during an active run. Finish
+and harvest the run first: changing its directory name changes resource
+names, and existing bind mounts still refer to their original paths.
+
 ## Commands
 
 ```bash

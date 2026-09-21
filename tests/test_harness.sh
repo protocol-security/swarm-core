@@ -986,6 +986,9 @@ assert_eq "push path pre-stashes with --include-untracked" \
     "1" \
     "$(grep -cE '^[[:space:]]*git stash push --include-untracked --quiet' "$HARNESS_FILE")"
 
+assert_eq "pre-push stash uses swarm-core branding" "1" \
+    "$(grep -cF -- '-m "swarm-core pre-push ' "$HARNESS_FILE" || true)"
+
 # (2) Positive: submodule update --init --recursive --force after stash.
 assert_eq "push path force-syncs submodules" \
     "1" \
