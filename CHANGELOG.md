@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Rename: `claude-swarm` to `swarm-core`.** Update project links,
+  installation examples, issue-template branding, pre-push stash
+  labels, and test fixtures. Document URL updates for existing clones
+  and submodules without requiring directory changes. Commands,
+  configuration, drivers, dashboard behavior, runtime resource naming,
+  and `Tools: swarm` commit trailers are unchanged.
+
 ## 0.22.0 — 2026-06-08
 
 - **Build: base the agent image on Debian trixie.** Replaces

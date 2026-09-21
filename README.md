@@ -1,10 +1,18 @@
-# claude-swarm
+# swarm-core
 
-[![CI](https://github.com/protocol-security/claude-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/protocol-security/claude-swarm/actions/workflows/ci.yml)
+[![CI][ci-badge]][ci]
+
+[ci-badge]:
+  https://github.com/protocol-security/swarm-core/actions/workflows/ci.yml/badge.svg
+[ci]: https://github.com/protocol-security/swarm-core/actions/workflows/ci.yml
 
 N coding agents in Docker, coordinating through git.
 No orchestrator, no message passing.  Designed to support
 multiple agent CLIs via a driver abstraction layer.
+
+Previously named `claude-swarm`. Existing installations do not need
+new configuration or directory names; see
+[upgrading existing installations](USAGE.md#upgrading-from-claude-swarm).
 
 Based on the agent-team pattern from
 [Building a C Compiler with Large Language Models](https://www.anthropic.com/engineering/building-c-compiler).
@@ -23,14 +31,15 @@ For development: `shellcheck` for linting.
 Add as a submodule:
 
 ```bash
-git submodule add https://github.com/protocol-security/claude-swarm.git tools/claude-swarm
+git submodule add https://github.com/protocol-security/swarm-core.git \
+  tools/swarm-core
 ```
 
 Or clone standalone and run from your project directory
 (with a `swarm.json` in the project root):
 
 ```bash
-./path/to/claude-swarm/launch.sh start --dashboard
+./path/to/swarm-core/launch.sh start --dashboard
 ```
 
 ## How it works

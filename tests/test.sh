@@ -237,8 +237,8 @@ List all files in test-results/ and write a summary to
 test-results/summary.txt with the word DONE on the last line.
 Commit and push.
 PPPROMPT
-            cp "$pp_prompt" "$REPO_ROOT/.claude-swarm-pp-prompt.md"
-            jq -n --arg m "$dm" --arg pp ".claude-swarm-pp-prompt.md" \
+            cp "$pp_prompt" "$REPO_ROOT/.swarm-core-pp-prompt.md"
+            jq -n --arg m "$dm" --arg pp ".swarm-core-pp-prompt.md" \
                 '{prompt: "unused",
                   agents: [{count: '"$num_agents"', model: $m}],
                   post_process: {prompt: $pp, model: $m}}' \
@@ -280,7 +280,7 @@ PPPROMPT
             ;;
         config-per-prompt)
             jq -n --arg m "$dm" \
-                --arg ap ".claude-swarm-smoke-alt.md" \
+                --arg ap ".swarm-core-smoke-alt.md" \
                 '{prompt: "unused", agents: [
                     {count: 1, model: $m},
                     {count: 1, model: $m, prompt: $ap}
@@ -312,7 +312,7 @@ PPPROMPT
         "$TESTS_DIR/test.sh" "${args[@]}" || rc=$?
 
     rm -f "/tmp/${PROJECT}-inttest."*.json
-    rm -f "$REPO_ROOT/.claude-swarm-pp-prompt.md"
+    rm -f "$REPO_ROOT/.swarm-core-pp-prompt.md"
 
     return "$rc"
 }
@@ -380,7 +380,7 @@ cmd_help() {
     cat <<'HELP'
 Usage: ./test.sh [OPTIONS]
 
-Run claude-swarm tests.
+Run swarm-core tests.
 
 Options:
   (no args)         Single integration smoke test (needs Docker + API key).
@@ -465,8 +465,8 @@ NUM_AGENTS=$(jq '[.agents[]? | (.count // 0)] | add // 0' "$CONFIG_FILE")
 
 # Two prompt variants: default relies on injected git rules,
 # --no-inject uses explicit git commands for backward compat.
-PROMPT_FILE=".claude-swarm-smoke-test.md"
-SETUP_FILE=".claude-swarm-smoke-setup.sh"
+PROMPT_FILE=".swarm-core-smoke-test.md"
+SETUP_FILE=".swarm-core-smoke-setup.sh"
 
 write_prompt() {
     local dest="$1"
@@ -629,7 +629,7 @@ SETUP
 write_prompt "$REPO_ROOT"
 
 # Alt prompt for per-group prompt tests (same content, different name).
-ALT_PROMPT_FILE=".claude-swarm-smoke-alt.md"
+ALT_PROMPT_FILE=".swarm-core-smoke-alt.md"
 cp "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$ALT_PROMPT_FILE"
 
 TEMP_CONFIG=$(mktemp "/tmp/${PROJECT}-test-config.XXXXXX.json")

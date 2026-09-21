@@ -41,12 +41,12 @@ if ! docker info >/dev/null 2>&1; then
     exit 0
 fi
 
-IMAGE_TAG="claude-swarm-runtime-test"
-WORKDIR=$(mktemp -d /tmp/claude-swarm-runtime-XXXXXX)
+IMAGE_TAG="swarm-core-runtime-test"
+WORKDIR=$(mktemp -d /tmp/swarm-core-runtime-XXXXXX)
 NAMES=(
-    claude-swarm-runtime-test-1
-    claude-swarm-runtime-test-2
-    claude-swarm-runtime-test-3
+    swarm-core-runtime-test-1
+    swarm-core-runtime-test-2
+    swarm-core-runtime-test-3
 )
 
 cleanup() {

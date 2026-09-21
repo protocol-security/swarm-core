@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug in claude-swarm
+description: Report a bug in swarm-core
 labels: ["bug"]
 body:
   - type: textarea

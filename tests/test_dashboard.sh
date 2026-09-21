@@ -74,9 +74,12 @@ echo "=== 2. truncate_str ==="
 assert_eq "short (no truncation)"     "explore"           "$(truncate_str explore 16)"
 assert_eq "exact fit"                  "exactly-sixteen!" "$(truncate_str 'exactly-sixteen!' 16)"
 assert_eq "one over"                   "sevente~chars!!"  "$(truncate_str 'seventeen-chars!!' 16)"
-assert_eq "long smoke-reconcile"       ".claude~concile"  "$(truncate_str .claude-swarm-smoke-reconcile 16)"
-assert_eq "long smoke-alt"             ".claude~oke-alt"  "$(truncate_str .claude-swarm-smoke-alt 16)"
-assert_eq "long smoke-pp"              ".claude~moke-pp"  "$(truncate_str .claude-swarm-smoke-pp 16)"
+assert_eq "long smoke-reconcile" ".swarm-~concile" \
+    "$(truncate_str .swarm-core-smoke-reconcile 16)"
+assert_eq "long smoke-alt" ".swarm-~oke-alt" \
+    "$(truncate_str .swarm-core-smoke-alt 16)"
+assert_eq "long smoke-pp" ".swarm-~moke-pp" \
+    "$(truncate_str .swarm-core-smoke-pp 16)"
 assert_eq "max=8"                      "abc~fgh"          "$(truncate_str abcdefgh 7)"
 assert_eq "max=5"                      "ab~ef"            "$(truncate_str abcdef 5)"
 assert_eq "empty string"              ""                   "$(truncate_str '' 16)"

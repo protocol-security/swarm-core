@@ -140,7 +140,9 @@ build_oauth_extra_env() {
 # ============================================================
 echo "=== 0. Project ID sanitization ==="
 
-assert_eq "lowercase project unchanged" \
+assert_eq "swarm-core project unchanged" \
+    "swarm-core" "$(swarm_project_id "swarm-core")"
+assert_eq "legacy checkout project unchanged" \
     "claude-swarm" "$(swarm_project_id "claude-swarm")"
 assert_eq "uppercase project lowercased" \
     "leanmultisig-swarm" "$(swarm_project_id "leanMultisig-swarm")"
@@ -1797,7 +1799,7 @@ chmod +x "$FAKE_DOCKER_DIR/docker"
 # do not have to run the launch.sh argv dispatcher.
 cmd_stop_src=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
 
-# Default grace: 60.
+# Default grace: 60. Legacy-named containers remain addressable.
 : > "$trap_dir/calls"
 (
     eval "$cmd_stop_src"
@@ -1828,16 +1830,16 @@ assert_eq "default grace: interactive containers are stopped" "2" \
     "$(grep -cF 'stop -t 60 claude-swarm-fake-interactive-' \
         "$trap_dir/calls" || true)"
 
-# Env override: SWARM_STOP_TIMEOUT=120.
+# New project name with env override: SWARM_STOP_TIMEOUT=120.
 : > "$trap_dir/calls"
 (
     eval "$cmd_stop_src"
     NUM_AGENTS=2
-    IMAGE_NAME="claude-swarm-fake"
+    IMAGE_NAME="swarm-core-fake"
     PROJECT="fake"
     docker() {
         if [ "${1:-}" = "ps" ]; then
-            printf '%s\n' "claude-swarm-fake-interactive-codex-1"
+            printf '%s\n' "swarm-core-fake-interactive-codex-1"
             return 0
         fi
         command docker "$@"
@@ -1849,10 +1851,10 @@ override_flag=$(head -1 "$trap_dir/calls")
 assert_eq "SWARM_STOP_TIMEOUT=120 propagates to docker stop -t 120" "1" \
     "$(printf '%s\n' "$override_flag" | grep -cF 'stop -t 120')"
 assert_eq "SWARM_STOP_TIMEOUT=120 propagates to post-process" "1" \
-    "$(grep -cF 'stop -t 120 claude-swarm-fake-post' \
+    "$(grep -cF 'stop -t 120 swarm-core-fake-post' \
         "$trap_dir/calls" || true)"
 assert_eq "SWARM_STOP_TIMEOUT=120 propagates to interactive" "1" \
-    "$(grep -cF 'stop -t 120 claude-swarm-fake-interactive-codex-1' \
+    "$(grep -cF 'stop -t 120 swarm-core-fake-interactive-codex-1' \
         "$trap_dir/calls" || true)"
 
 # ============================================================
