@@ -121,15 +121,18 @@ compute_swarm_agents() {
 # produces exit-127 on first session -- see harness's `agent exited with code
 # 127` retry path).
 build_image() {
-    local swarm_agents cc_version codex_version
+    local swarm_agents cc_version codex_version pi_version
     swarm_agents=$(compute_swarm_agents "$CONFIG_FILE")
     cc_version=$(jq -r '.claude_code_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
     codex_version=$(jq -r '.codex_cli_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    pi_version=$(jq -r '.pi_version // empty' "$CONFIG_FILE" \
+        2>/dev/null || true)
     echo "--- Building agent image (agents: ${swarm_agents}) ---"
     docker build -t "$IMAGE_NAME" \
         --build-arg "SWARM_AGENTS=${swarm_agents}" \
         ${cc_version:+--build-arg "CLAUDE_CODE_VERSION=${cc_version}"} \
         ${codex_version:+--build-arg "CODEX_CLI_VERSION=${codex_version}"} \
+        ${pi_version:+--build-arg "PI_VERSION=${pi_version}"} \
         -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
 }
 

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Feature: add the `pi` driver.** Run Pi headlessly or through its
+  native interactive UI, with effort selection, system-prompt injection,
+  JSON activity/usage parsing, and structured-error detection. Support
+  Anthropic API keys/OAuth and provider-qualified models with explicit
+  keys. Add `pi_version` image pinning, unit coverage, a live smoke
+  config, and Docker E2E checks using the real Pi CLI and a local test
+  API. No existing driver or dashboard controls change.
+
 - **Rename: `claude-swarm` to `swarm-core`.** Update project links,
   installation examples, issue-template branding, pre-push stash
   labels, and test fixtures. Document URL updates for existing clones

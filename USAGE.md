@@ -76,6 +76,8 @@ Credentials stay as env vars (not in shell history).
 | `OPENAI_API_KEY` | | OpenAI API key (for Codex CLI driver). |
 | `CODEX_AUTH_JSON` | `~/.codex/auth.json` | Path to Codex auth file (ChatGPT subscription). |
 | `GEMINI_API_KEY` | | Google API key (for Gemini CLI driver). |
+| `PI_API_KEY` | | Pi key for the selected provider; explicit group `api_key` takes precedence. |
+| `ANTHROPIC_OAUTH_TOKEN` | | Pi Anthropic OAuth token; falls back to `CLAUDE_CODE_OAUTH_TOKEN`. |
 | `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
 | `SWARM_TITLE` | | Dashboard title override. |
 | `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
@@ -112,11 +114,13 @@ Per-group fields in `swarm.json` `agents` array:
 - Claude Code: `low`, `medium`, `high`, `max` (Opus only).
 - Codex CLI: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`.
 - Gemini CLI: ignored.
+- Pi: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`;
+  `none` maps to `off`. Pi clamps levels to the selected model's support.
 
 Top-level fields: `prompt`, `setup`, `max_idle` (default: `3`),
 `max_retry_wait`, `driver`, `inject_git_rules`,
 `git_user` (`name`, `email`, `signing_key`),
-`claude_code_version`, `codex_cli_version`, `title`, `tag`,
+`claude_code_version`, `codex_cli_version`, `pi_version`, `title`, `tag`,
 `pricing`, `docker_args`, `post_process`.
 
 ### Interactive profiles
@@ -359,8 +363,8 @@ do not count toward numbered-agent completion.
 | `p` | Start post-process after confirmation. |
 
 The Model column appends the agent's reasoning effort as a
-parenthesised letter: `(h)` high, `(m)` medium, `(l)` low,
-`(x)` xhigh, `(n)` none, and `(M)` max. Models configured
+parenthesised letter: `(h)` high, `(m)` medium or minimal, `(l)` low,
+`(x)` xhigh, `(n)` none, `(o)` off (Pi), and `(M)` max. Models configured
 without an `effort` show no suffix.
 
 ## Activity streaming
@@ -455,6 +459,21 @@ Unit tests (no Docker or API key):
 ./tests/test_harness.sh        # Stat extraction.
 ./tests/test_harvest.sh        # Harvest git ops.
 ./tests/test_launch.sh         # Launch logic.
+./tests/test_pi.sh             # Pi driver and build integration.
+```
+
+`--all` also runs `./tests/runtime_pi.sh`: the installed Pi CLI in Docker
+against a local test API, without credentials or paid model calls. It
+checks the four tools, Git commits/pushes, idle exit, post-processing,
+harvest, activity, usage stats, and structured API failures. With Python
+3 available on the host, it also checks native UI startup, `/quit`, and
+interactive branch push through a PTY; otherwise that check is skipped.
+This is not a substitute for live-provider verification.
+
+For a live Pi OAuth smoke test (billable Anthropic extra usage):
+
+```bash
+./tests/test.sh --config tests/configs/pi-only.json
 ```
 
 ## Post-processing
@@ -586,13 +605,13 @@ Three credential mechanisms serve different purposes:
   the container.  Values: `apikey`, `oauth`, `chatgpt`, or
   omit (auto-detect).
 
-- **`api_key`** — Per-group API key for third-party endpoints
-  (MiniMax, etc.).  Passed as `ANTHROPIC_API_KEY` inside the
-  container.  Supports `$VAR` references to host env vars.
+- **`api_key`** — Per-group provider API key, mapped to the
+  selected driver's credential mechanism. Supports `$VAR`
+  references to host env vars.
 
-- **`auth_token`** — Per-group Bearer token for endpoints
-  that use `ANTHROPIC_AUTH_TOKEN` (OpenRouter-style).  Clears
-  `ANTHROPIC_API_KEY` so Claude Code enters third-party mode.
+- **`auth_token`** — Per-group Bearer token for Anthropic-compatible
+  endpoints through Claude Code or Pi (`ANTHROPIC_AUTH_TOKEN`).
+  Claude Code clears `ANTHROPIC_API_KEY` to enter third-party mode.
   Supports `$VAR` references.
 
 ### Claude Code
@@ -636,6 +655,70 @@ then set `"auth": "chatgpt"` in your swarm config:
 
 The auth file is bind-mounted read-only into containers.
 Override the path with `CODEX_AUTH_JSON=/path/to/auth.json`.
+
+### Pi
+
+Set `"driver": "pi"` for numbered agents, interactive profiles, or
+post-processing. Pi runs inside the existing Docker boundary. The image
+installs Node.js, Pi, `fd`, and `ripgrep`; the host does not need Pi.
+
+Bare model IDs select Anthropic. For another built-in Pi provider, use
+`provider/model`, including any slashes inside the model ID:
+
+```json
+{
+  "driver": "pi",
+  "pi_version": "0.86.1",
+  "prompt": "tasks/work.md",
+  "agents": [
+    { "count": 1, "model": "anthropic/claude-sonnet-4-6",
+      "auth": "oauth", "effort": "low" },
+    { "name": "operator", "count": 0, "model": "openai/gpt-5.4",
+      "api_key": "$OPENAI_API_KEY", "effort": "high" }
+  ]
+}
+```
+
+Run `./launch.sh interactive operator` for Pi's native UI. As with the
+other interactive drivers, the profile prompt's path is displayed, not
+automatically submitted. Git instructions are appended to the system
+prompt in both modes.
+
+| Credential selection | Behavior |
+|---|---|
+| Group `api_key` | Explicit key for the selected Pi provider. |
+| Group `auth_token` | Anthropic Bearer token (`ANTHROPIC_AUTH_TOKEN`). |
+| `auth: "apikey"` | `PI_API_KEY`, then `ANTHROPIC_API_KEY`; no OAuth fallback. |
+| `auth: "oauth"` | `ANTHROPIC_OAUTH_TOKEN`, then `CLAUDE_CODE_OAUTH_TOKEN`. |
+| Omitted `auth` | `PI_API_KEY`, then Anthropic OAuth, then `ANTHROPIC_API_KEY`. |
+
+Group credentials override `auth`. Anthropic environment credentials
+apply only to Anthropic; other providers require an explicit `api_key`
+or `PI_API_KEY`. Host Pi auth files and sessions are not mounted. This
+driver does not import or refresh subscription credentials from Pi's
+`auth.json`; supplied OAuth tokens must remain valid for the run.
+
+**Anthropic subscription auth in third-party apps uses paid extra
+usage, not plan limits.** Enable/fund extra usage or use an API key.
+An extra-usage rejection is fatal, not a reason to retry indefinitely.
+
+`base_url` overrides the selected built-in provider's endpoint through
+Pi's container-local `models.json`. It does not register unknown model
+IDs or custom API implementations. Secrets stay in environment variables;
+generated auth files contain environment references outside the worktree.
+
+Headless runs use fresh, unsaved sessions with `read`, `write`, `edit`,
+and `bash`. Project Pi settings/extensions are not automatically trusted;
+the native interactive UI retains its trust prompt. Pi reads root
+`AGENTS.md`/`CLAUDE.md` natively; if neither exists (nor
+`AGENTS.override.md`), the driver appends `.claude/CLAUDE.md` when present.
+Existing context modes still only strip `.claude/`, not `.pi/` or root
+context files.
+
+Startup network checks and telemetry are disabled. The harness owns
+retries; Pi's automatic retry and cache warming are disabled. Costs are
+Pi's provider-reported usage multiplied by its catalog rates, not a
+subscription invoice. Timing uses the harness's wall-clock fallback.
 
 ### General rules
 
@@ -698,6 +781,7 @@ Built-in drivers:
 | `claude-code` | `claude` | Yes |
 | `gemini-cli` | `gemini` | |
 | `codex-cli` | `codex` | |
+| `pi` | `pi` | |
 | `fake` | (none) | Test double for unit testing |
 
 Set the driver globally in `swarm.json`:
@@ -743,6 +827,19 @@ swarmfile:
 The value is forwarded to `npm install -g @openai/codex@<ver>`
 inside the image build.  Leave the field unset (or empty) to
 keep the default "latest published release" behavior.
+
+### Pinning Pi version
+
+Set `pi_version` to pin `@earendil-works/pi-coding-agent` in the image:
+
+```json
+{ "pi_version": "0.86.1" }
+```
+
+Omit it to install the latest published release. The driver is tested
+with Pi 0.86.1 (Node.js 22.19+); older Pi releases may lack required
+CLI flags or event fields. npm lifecycle scripts are disabled during
+installation.
 
 ### Writing a new driver
 
