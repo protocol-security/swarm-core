@@ -2,6 +2,9 @@
 # shellcheck disable=SC2034
 set -euo pipefail
 
+# shellcheck source=_test_env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
+
 # Unit tests for lib/activity-filter.sh.
 # No Docker or API key required.
 

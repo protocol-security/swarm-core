@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# shellcheck source=_test_env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
+
 # Unit tests for harvest.sh logic.
 # Uses local git repos (no Docker or API key required).
 

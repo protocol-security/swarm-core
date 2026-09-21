@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# shellcheck source=_test_env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
+
 # Guard against the regression reported in issue #82:
 #   session-end `git pull --rebase && git push` at
 #   lib/harness.sh fails every retry when the target repo
@@ -10,11 +13,6 @@ set -euo pipefail
 #   `-c core.hooksPath=/dev/null` fix structurally, exercise
 #   the hook-suppression mechanism end-to-end, and pin the
 #   park-push retry loop both structurally and behaviorally.
-
-# Isolate from host gitconfig (signing keys, hooks, templates).
-# This test exercises rebase/push mechanics, not signing.
-export GIT_CONFIG_GLOBAL=/dev/null
-export GIT_CONFIG_SYSTEM=/dev/null
 
 PASS=0
 FAIL=0

@@ -19,7 +19,7 @@ jobs:
             launch.sh dashboard.sh harvest.sh \
             costs.sh progress.sh \
             lib/*.sh lib/drivers/*.sh \
-            tests/test_*.sh tests/test.sh
+            tests/*.sh
 
   unit-tests:
     strategy:

@@ -2,6 +2,9 @@
 # shellcheck disable=SC2034,SC2016
 set -euo pipefail
 
+# shellcheck source=_test_env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
+
 # Unit tests for dashboard.sh helper functions:
 #   format_model, truncate_str, and column layout (with optional Tag).
 # No Docker or API key required.
