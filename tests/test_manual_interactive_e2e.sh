@@ -59,6 +59,8 @@ assert_eq "fixture repo created" "true" \
     "$([ -d .git ] && echo true || echo false)"
 assert_eq "runbook created" "true" \
     "$([ -f MANUAL_STEPS.md ] && echo true || echo false)"
+assert_eq "fixture uses swarm-core branding" \
+    "# swarm-core manual interactive fixture" "$(head -1 README.md)"
 assert_eq "post-process setup script created" "true" \
     "$([ -x scripts/post-setup.sh ] && echo true || echo false)"
 assert_eq "post_process.setup runs the lighter script" \
