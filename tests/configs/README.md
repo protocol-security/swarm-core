@@ -39,6 +39,8 @@ done
 | `driver-post-process.json` | 2x gemini-2.5-pro (+ flash PP) | gemini-cli | `GEMINI_API_KEY` |
 | `heterogeneous-kitchen-sink.json` | Opus + 5x Gemini + Sonnet (+ PP) | mixed | `CLAUDE_CODE_OAUTH_TOKEN` + `ANTHROPIC_API_KEY` + `GEMINI_API_KEY` |
 | `codex-only.json` | 2x gpt-5.4 | codex-cli | `OPENAI_API_KEY` |
+| `pi-only.json` | 1x Sonnet 4.6 (low effort) | pi | `ANTHROPIC_OAUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN`; funded extra usage |
+| `pi-chatgpt.json` | 1x gpt-5.5 (low effort, chatgpt auth) | pi | Dedicated `PI_AUTH_DIR` with Pi OpenAI Codex login |
 | `codex-chatgpt.json` | 2x gpt-5.4 (chatgpt auth) | codex-cli | `~/.codex/auth.json` |
 | `codex-auth-mixed.json` | gpt-5.4 (chatgpt) + gpt-5.3-codex (apikey) + gpt-5.4 (auto) | codex-cli | `~/.codex/auth.json` + `OPENAI_API_KEY` |
 | `codex-mixed.json` | Opus + gpt-5.4 + gpt-5.3-codex + gpt-5.2 | mixed | `CLAUDE_CODE_OAUTH_TOKEN` + `OPENAI_API_KEY` |
@@ -57,6 +59,8 @@ done
 ./tests/test.sh --config tests/configs/driver-post-process.json
 ./tests/test.sh --config tests/configs/heterogeneous-kitchen-sink.json
 ./tests/test.sh --config tests/configs/codex-only.json
+./tests/test.sh --config tests/configs/pi-only.json
+./tests/test.sh --config tests/configs/pi-chatgpt.json
 ./tests/test.sh --config tests/configs/codex-chatgpt.json
 ./tests/test.sh --config tests/configs/codex-auth-mixed.json
 ./tests/test.sh --config tests/configs/codex-mixed.json
@@ -64,3 +68,16 @@ done
 
 The test runner injects its own prompt and setup script into the config,
 so the `"prompt": "unused"` field is overwritten at runtime.
+
+Pi's Anthropic OAuth requests use paid extra usage, not subscription
+plan limits. A token alone does not guarantee that a live Pi test can
+run. `./tests/runtime_pi.sh` instead tests the real CLI with a local API
+fixture and no real credentials; `--all` includes that Docker check.
+It also verifies that two network-isolated Pi containers share one OAuth
+refresh and persist the rotated Codex credentials.
+
+For `pi-chatgpt.json`, log into OpenAI Codex using Pi with a dedicated
+`PI_AUTH_DIR`, as described in [Pi setup](../../USAGE.md#pi). Keep that
+directory exported when running the test. This uses the ChatGPT
+subscription, not an OpenAI API key or `CODEX_AUTH_JSON`. Select a model
+available to your account; the config uses `openai-codex/gpt-5.5`.
