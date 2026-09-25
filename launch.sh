@@ -467,6 +467,11 @@ HELP
         done < <(agent_docker_env "$agent_effort")
     fi
 
+    # Forward Pi timeout/retry overrides from the host environment.
+    for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES; do
+        [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
+    done
+
     docker rm -f "$name" 2>/dev/null || true
 
     echo "--- Starting interactive ${profile_label} (${agent_model}) ---"
@@ -636,6 +641,11 @@ cmd_start() {
                 [ -n "$_de" ] && EXTRA_ENV+=("$_de")
             done < <(agent_docker_env "$eff")
         fi
+
+        # Forward Pi timeout/retry overrides from the host environment.
+        for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES; do
+            [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
+        done
 
         local price_input="" price_output="" price_cached=""
         local _price
@@ -885,6 +895,11 @@ cmd_post_process() {
             [ -n "$_de" ] && EXTRA_ENV+=("$_de")
         done < <(agent_docker_env "$pp_effort")
     fi
+
+    # Forward Pi timeout/retry overrides from the host environment.
+    for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES; do
+        [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
+    done
 
     local price_input="" price_output="" price_cached=""
     local _price

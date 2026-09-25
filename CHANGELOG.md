@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Feature: configurable Pi request timeout and in-session retry.**
+  The `pi` driver now writes `httpIdleTimeoutMs` from
+  `PI_HTTP_IDLE_TIMEOUT_MS` (default 300000, `0` disables) and enables
+  Pi's own retry when `PI_MAX_RETRIES` is positive. Both are forwarded
+  from the host environment or `docker_args`. Fixes agents exiting with
+  `Request timed out.` when a slow local backend queues a request for
+  more than five minutes. Defaults are unchanged.
+
 - **Feature: support Codex subscriptions through Pi.** Add explicit
   `auth: "chatgpt"` with `openai-codex/<model>` and a dedicated writable
   `PI_AUTH_DIR`. Share Pi's auth lock and rotated credentials across

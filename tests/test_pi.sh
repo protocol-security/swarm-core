@@ -195,6 +195,33 @@ assert_eq "cache warming disabled" off \
     "$(jq -r '.cacheWarming' "$PI_CODING_AGENT_DIR/settings.json")"
 assert_eq "telemetry disabled without effort" false \
     "$(jq -r '.enableInstallTelemetry' "$PI_CODING_AGENT_DIR/settings.json")"
+assert_eq "Pi default idle timeout kept" 300000 \
+    "$(jq -r '.httpIdleTimeoutMs' "$PI_CODING_AGENT_DIR/settings.json")"
+assert_eq "no retries by default" 0 \
+    "$(jq -r '.retry.maxRetries' "$PI_CODING_AGENT_DIR/settings.json")"
+PI_HTTP_IDLE_TIMEOUT_MS=1800000 PI_MAX_RETRIES=2 \
+    SWARM_MODEL=openai/gpt-5.4 agent_settings "$WORK/workspace"
+assert_eq "idle timeout override applied" 1800000 \
+    "$(jq -r '.httpIdleTimeoutMs' "$PI_CODING_AGENT_DIR/settings.json")"
+assert_eq "retry enabled with positive count" true \
+    "$(jq -r '.retry.enabled' "$PI_CODING_AGENT_DIR/settings.json")"
+assert_eq "retry count forwarded" 2 \
+    "$(jq -r '.retry.maxRetries' "$PI_CODING_AGENT_DIR/settings.json")"
+assert_eq "provider timeout left to Pi" null \
+    "$(jq -r '.retry.provider.timeoutMs' "$PI_CODING_AGENT_DIR/settings.json")"
+PI_HTTP_IDLE_TIMEOUT_MS=0 SWARM_MODEL=openai/gpt-5.4 \
+    agent_settings "$WORK/workspace"
+assert_eq "zero disables idle timeout" 0 \
+    "$(jq -r '.httpIdleTimeoutMs' "$PI_CODING_AGENT_DIR/settings.json")"
+assert_eq "non-numeric idle timeout rejected" fail \
+    "$(PI_HTTP_IDLE_TIMEOUT_MS=30s SWARM_MODEL=openai/gpt-5.4 \
+        agent_settings "$WORK/workspace" 2>/dev/null && echo ok || echo fail)"
+assert_eq "negative retry count rejected" fail \
+    "$(PI_MAX_RETRIES=-1 SWARM_MODEL=openai/gpt-5.4 \
+        agent_settings "$WORK/workspace" 2>/dev/null && echo ok || echo fail)"
+assert_eq "rejected override leaves last valid settings" 0 \
+    "$(jq -r '.httpIdleTimeoutMs' "$PI_CODING_AGENT_DIR/settings.json")"
+SWARM_MODEL=openai/gpt-5.4 agent_settings "$WORK/workspace"
 assert_eq "credential file is private" auth.json \
     "$(find "$PI_CODING_AGENT_DIR/auth.json" -perm 600 -exec basename {} \;)"
 assert_eq "no generated config in workspace" no \

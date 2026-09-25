@@ -125,6 +125,21 @@ agent_settings() {
         mkdir -p "$pi_home"
         chmod 700 "$pi_home"
     fi
+    # Pi's default httpIdleTimeoutMs (300000) also bounds how long a
+    # request may wait for response headers. Slow local backends that
+    # queue requests can exceed it, so allow an override. 0 disables the
+    # timeout inside Pi. Retry stays off unless a positive count is given.
+    local idle_ms="${PI_HTTP_IDLE_TIMEOUT_MS:-300000}"
+    local max_retries="${PI_MAX_RETRIES:-0}"
+    if ! [[ "$idle_ms" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: PI_HTTP_IDLE_TIMEOUT_MS must be a non-negative" \
+            "integer (milliseconds)." >&2
+        return 1
+    fi
+    if ! [[ "$max_retries" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: PI_MAX_RETRIES must be a non-negative integer." >&2
+        return 1
+    fi
     (
         umask 077
         # Atomic replacement keeps simultaneous container startups from
@@ -133,8 +148,13 @@ agent_settings() {
         local settings
         settings=$(mktemp "$pi_home/.swarm-settings.XXXXXX") || exit 1
         trap 'rm -f "$settings"' EXIT
-        jq -n --arg chatgpt "${PI_CHATGPT_AUTH:-}" '{
-            retry: {enabled: false}, cacheWarming: "off",
+        # Only httpIdleTimeoutMs is set: Pi maps 0 there to "disabled",
+        # whereas retry.provider.timeoutMs would pass 0 through literally.
+        jq -n --arg chatgpt "${PI_CHATGPT_AUTH:-}" \
+            --argjson idle "$idle_ms" --argjson retries "$max_retries" '{
+            httpIdleTimeoutMs: $idle,
+            retry: {enabled: ($retries > 0), maxRetries: $retries},
+            cacheWarming: "off",
             enableInstallTelemetry: false
         } + (if $chatgpt == "1" then {
             transport: "sse", sessionDir: "/home/agent/.pi/sessions"

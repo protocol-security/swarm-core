@@ -79,6 +79,8 @@ Credentials stay as env vars (not in shell history).
 | `PI_API_KEY` | | Pi key for the selected provider; explicit group `api_key` takes precedence. |
 | `PI_AUTH_DIR` | | Dedicated writable Pi home for `auth: "chatgpt"`; contains only Codex OAuth credentials. |
 | `ANTHROPIC_OAUTH_TOKEN` | | Pi Anthropic OAuth token; falls back to `CLAUDE_CODE_OAUTH_TOKEN`. |
+| `PI_HTTP_IDLE_TIMEOUT_MS` | `300000` | Pi driver: `httpIdleTimeoutMs` written to the container's Pi settings. Bounds the wait for response headers and stream data; `0` disables. See [Pi timeouts](#pi-timeouts-and-retries). |
+| `PI_MAX_RETRIES` | `0` | Pi driver: enable Pi's in-session request retry with this many attempts. `0` leaves retries to the harness. |
 | `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
 | `SWARM_TITLE` | | Dashboard title override. |
 | `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
@@ -722,10 +724,32 @@ the native interactive UI retains its trust prompt. Pi reads root
 Existing context modes still only strip `.claude/`, not `.pi/` or root
 context files.
 
-Startup network checks and telemetry are disabled. The harness owns
-retries; Pi's automatic retry and cache warming are disabled. Costs are
+Startup network checks and telemetry are disabled. By default the harness
+owns retries; Pi's automatic retry and cache warming are disabled. Costs are
 Pi's provider-reported usage multiplied by its catalog rates, not a
 subscription invoice. Timing uses the harness's wall-clock fallback.
+
+#### Pi timeouts and retries
+
+Pi's `httpIdleTimeoutMs` (default 300000) also bounds how long a request
+may wait for response headers. A local backend that queues requests and
+only starts streaming when it begins processing can exceed five minutes
+under load, and the session then fails with `Request timed out.` Two
+environment variables adjust the generated container settings; they are
+forwarded from the host environment or set through `docker_args`:
+
+```json
+"docker_args": ["-e", "PI_HTTP_IDLE_TIMEOUT_MS=1800000",
+                "-e", "PI_MAX_RETRIES=2"]
+```
+
+`PI_HTTP_IDLE_TIMEOUT_MS=0` disables the timeout inside Pi. A positive
+`PI_MAX_RETRIES` enables Pi's own retry, which re-issues the request inside
+the same session and keeps the conversation; the harness `max_retry_wait`
+fallback restarts the task from the prompt instead. Only
+`httpIdleTimeoutMs` is written, never `retry.provider.timeoutMs`. Keep
+`SWARM_ACTIVITY_TIMEOUT` above the backend's longest silent period, since a
+long prefill emits no log lines.
 
 #### Codex subscription through Pi
 
