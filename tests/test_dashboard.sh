@@ -63,6 +63,10 @@ assert_eq "bare string medium"   "gpt-4o (m)"             "$(format_model gpt-4o
 assert_eq "claude opus max"      "claude-opus-4-6 (M)"    "$(format_model claude-opus-4-6 max)"
 assert_eq "codex xhigh"          "gpt-5.4 (x)"            "$(format_model gpt-5.4 xhigh)"
 assert_eq "codex none"           "gpt-5.4 (n)"            "$(format_model gpt-5.4 none)"
+assert_eq "pi off" "claude-sonnet-4-6 (o)" \
+    "$(format_model claude-sonnet-4-6 off)"
+assert_eq "pi minimal" "claude-sonnet-4-6 (m)" \
+    "$(format_model claude-sonnet-4-6 minimal)"
 assert_eq "no effort"            "claude-opus-4-6"         "$(format_model claude-opus-4-6 "")"
 assert_eq "unknown no effort"    "unknown"                 "$(format_model unknown "")"
 assert_eq "empty default"        "unknown"                 "$(format_model)"
@@ -103,6 +107,8 @@ short_driver() {
         *)           printf '%s' "${1:-}" ;;
     esac
 }
+
+assert_eq "pi driver label" "pi" "$(short_driver pi)"
 
 normalize_docker_state() {
     local raw="$1" state
