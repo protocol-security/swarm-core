@@ -8,6 +8,12 @@
   and submodules without requiring directory changes. Commands,
   configuration, drivers, dashboard behavior, runtime resource naming,
   and `Tools: swarm` commit trailers are unchanged.
+- **Fix: dashboard `p` restarts an exited post-process.** The
+  dashboard blocked `p` whenever a post-process container existed,
+  so an exited one stranded the restart path even after `s`. It now
+  blocks only a running container and notes that an exited one will
+  be replaced. `p` also passes the dashboard's `SWARM_CONFIG` to
+  `launch.sh post-process`, so non-default configs are honoured.
 
 ## 0.22.0 — 2026-06-08
 

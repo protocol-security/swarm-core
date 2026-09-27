@@ -350,6 +350,12 @@ post_process_container_exists() {
     [ "$_pp_state" != "not found" ] && [ "$_pp_state" != "none" ]
 }
 
+post_process_container_running() {
+    local _pp_state
+    _pp_state=$(container_state "${IMAGE_NAME}-post")
+    [ "$_pp_state" = "running" ]
+}
+
 interactive_container_names() {
     docker ps -a --format '{{.Names}}' 2>/dev/null \
         | grep -E "^${IMAGE_NAME}-interactive-" \
@@ -770,7 +776,7 @@ draw() {
     printf "  ${DIM}[h]${RESET} harvest"
     # shellcheck disable=SC2059
     printf "  ${DIM}[s]${RESET} stop all"
-    if post_process_configured && ! post_process_container_exists; then
+    if post_process_configured && ! post_process_container_running; then
         # shellcheck disable=SC2059
         printf "  ${DIM}[p]${RESET} post-process"
     fi
@@ -838,13 +844,16 @@ while true; do
                     continue
                 fi
                 _pp_name="${IMAGE_NAME}-post"
-                if post_process_container_exists; then
+                if post_process_container_running; then
                     echo "(post-processing is already running -- press P for logs)"
                     echo "Stop it first with s before starting a new run."
                     echo ""
                     read -rp "Press Enter to return to dashboard..." _
                     enter_alt_screen
                     continue
+                fi
+                if post_process_container_exists; then
+                    echo "(previous post-process container will be replaced)"
                 fi
                 _pp_prompt="Start post-processing now? [y/N] "
                 read -r -p "$_pp_prompt" _pp_confirm || _pp_confirm=""
@@ -863,7 +872,8 @@ while true; do
                     docker stop "${IMAGE_NAME}-${i}" 2>/dev/null || true
                 done
                 echo "--- Starting post-processing ---"
-                "$SWARM_DIR/launch.sh" post-process || \
+                SWARM_CONFIG="$CONFIG_FILE" \
+                    "$SWARM_DIR/launch.sh" post-process || \
                     echo "(post-processing failed)"
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
