@@ -692,8 +692,30 @@ assert_eq "leading blank inspect fallback becomes not found" "not found" \
     "$(normalize_docker_state $'\nnot found')"
 assert_eq "leading blank inspect state keeps real state" "running" \
     "$(normalize_docker_state $'\nrunning')"
-assert_eq "dashboard uses normalized container state" "4" \
+assert_eq "dashboard uses normalized container state" "5" \
     "$(grep -cF 'container_state "' "$DASHBOARD_FILE")"
+
+# Post-process container predicates, loaded from dashboard.sh with
+# container_state stubbed.  Only a running container blocks p.
+eval "$(sed -n '/^post_process_container_exists()/,/^}/p;
+    /^post_process_container_running()/,/^}/p' "$DASHBOARD_FILE")"
+# Invoked by the eval'd predicates above.
+# shellcheck disable=SC2329
+container_state() { printf '%s' "$_stub_state"; }
+IMAGE_NAME="test-swarm"
+for _stub_state in running exited created paused "not found" none; do
+    _want_exists=true
+    case "$_stub_state" in
+        "not found"|none) _want_exists=false ;;
+    esac
+    _want_running=false
+    [ "$_stub_state" = "running" ] && _want_running=true
+    assert_eq "post-process exists when ${_stub_state}" "$_want_exists" \
+        "$(post_process_container_exists && echo true || echo false)"
+    assert_eq "post-process running when ${_stub_state}" "$_want_running" \
+        "$(post_process_container_running && echo true || echo false)"
+done
+unset -f container_state
 
 pp_lower_case=$(awk '
     /^[[:space:]]*p\)/ { p = 1 }
@@ -733,12 +755,22 @@ assert_eq "lowercase p asks for confirmation" "true" \
 assert_eq "lowercase p can launch post-process" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF '"$SWARM_DIR/launch.sh" post-process' || true)"
+assert_eq "lowercase p preserves dashboard config" "1" \
+    "$(printf '%s\n' "$pp_lower_case" \
+        | grep -cF 'SWARM_CONFIG="$CONFIG_FILE"' || true)"
 assert_eq "lowercase p has cancellation path" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'post-processing not started' || true)"
 assert_eq "lowercase p refuses to replace running post-process" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'post-processing is already running' || true)"
+assert_eq "lowercase p blocks only running post-process" "1" \
+    "$(printf '%s\n' "$pp_lower_case" \
+        | grep -cF 'if post_process_container_running; then' || true)"
+assert_eq "lowercase p allows exited post-process replacement" "1" \
+    "$(printf '%s\n' "$pp_lower_case" \
+        | grep -cF 'previous post-process container will be replaced' \
+        || true)"
 assert_eq "lowercase p has no replacement prompt" "0" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'Replace existing' || true)"
@@ -751,10 +783,14 @@ assert_eq "footer merges P into the logs hint" "1" \
 assert_eq "footer offers lowercase p to start post-process" "1" \
     "$(printf '%s\n' "$help_bar" \
         | grep -cF '[p]' || true)"
-assert_eq "footer guards start hint on missing container" "1" \
+assert_eq "footer guards start hint on running container" "1" \
     "$(printf '%s\n' "$help_bar" \
-        | grep -cF 'post_process_configured && ! post_process_container_exists' \
+        | grep -cF \
+            'post_process_configured && ! post_process_container_running' \
         || true)"
+assert_eq "footer keeps logs hint for exited container" "1" \
+    "$(printf '%s\n' "$help_bar" \
+        | grep -cF 'if post_process_container_exists; then' || true)"
 assert_eq "s stops post-process container" "1" \
     "$(printf '%s\n' "$s_case" \
         | grep -cF 'docker stop "${IMAGE_NAME}-post"' || true)"

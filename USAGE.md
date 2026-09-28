@@ -356,7 +356,7 @@ do not count toward numbered-agent completion.
 | `P` | Post-process logs (the `P` row), if it exists. |
 | `h` | Harvest results. |
 | `s` | Stop numbered agents and post-process. |
-| `p` | Start post-process after confirmation. |
+| `p` | Start post-process after confirmation; replaces an exited run. |
 
 The Model column appends the agent's reasoning effort as a
 parenthesised letter: `(h)` high, `(m)` medium, `(l)` low,
@@ -472,7 +472,7 @@ Add to `swarm.json`:
 }
 ```
 
-Trigger via `[P]` in the dashboard, `./launch.sh post-process`,
+Trigger via `[p]` in the dashboard, `./launch.sh post-process`,
 or automatically via `./launch.sh wait` after numbered agents have
 already been started. `./launch.sh wait` does not launch numbered
 agents.
