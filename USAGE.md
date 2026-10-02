@@ -108,7 +108,7 @@ Per-group fields in `swarm.json` `agents` array:
 | `auth` | `apikey`, `oauth`, `chatgpt`, omit | Which host credential to inject (see [Auth modes](#auth-modes)). |
 | `api_key` | key or `$VAR` | Per-group API key for third-party endpoints. |
 | `auth_token` | key or `$VAR` | Per-group Bearer token (OpenRouter-style). |
-| `base_url` | URL | Per-group API endpoint. |
+| `base_url` | URL | Per-group API endpoint. Registers the provider (built-in or custom) with full model metadata; tune via `PI_API_KIND`, `PI_CONTEXT_WINDOW`, `PI_MAX_TOKENS`. |
 | `tag` | string or `$VAR` | Label for grouping runs (default: top-level). |
 | `driver` | driver name | Agent driver override (default: top-level or `claude-code`). |
 
@@ -709,12 +709,15 @@ Supplied Anthropic OAuth tokens must remain valid for the run.
 usage, not plan limits.** Enable/fund extra usage or use an API key.
 An extra-usage rejection is fatal, not a reason to retry indefinitely.
 
-`base_url` overrides the selected built-in provider's endpoint through
-Pi's container-local `models.json`. It does not register unknown model
-IDs or custom API implementations. This override is not allowed with
-`auth: "chatgpt"`. For API-key/token modes, secrets stay in environment
-variables; generated auth files contain environment references outside
-the worktree.
+`base_url` registers the selected provider in Pi's container-local
+`models.json` as a full provider definition — built-in prefixes
+(`openrouter/...`) get their endpoint redirected, and custom prefixes
+(`ethereum-foundation/...`) resolve as first-class providers with the
+model declared (`api` defaults to `openai-completions`; metadata via
+`PI_API_KIND`, `PI_CONTEXT_WINDOW`, `PI_MAX_TOKENS`). This override is
+not allowed with `auth: "chatgpt"`. For API-key/token modes, secrets
+stay in environment variables; generated auth files contain
+environment references outside the worktree.
 
 Headless runs use fresh, unsaved sessions with `read`, `write`, `edit`,
 and `bash`. Project Pi settings/extensions are not automatically trusted;
