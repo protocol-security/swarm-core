@@ -116,9 +116,11 @@ agent_interactive_run() {
 # runs have private Pi homes. ChatGPT runs explicitly share a dedicated
 # home so Pi's auth.json.lock serializes refresh and token persistence.
 agent_settings() {
-    local _workspace="$1" provider
+    local _workspace="$1" provider model_id
     local pi_home="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
-    provider=$(_pi_provider "${SWARM_MODEL:-$(agent_default_model)}")
+    model_id="${SWARM_MODEL:-$(agent_default_model)}"
+    provider=$(_pi_provider "$model_id")
+    model_id="${model_id#*/}"
     if [ "${PI_CHATGPT_AUTH:-}" = 1 ]; then
         _pi_validate_chatgpt "$provider" "$pi_home" || return 1
     else
@@ -167,9 +169,39 @@ agent_settings() {
                 > "$pi_home/auth.json"
         fi
         if [ -n "${PI_BASE_URL:-}" ]; then
-            jq -n --arg provider "$provider" --arg url "$PI_BASE_URL" \
-                '{providers: {($provider): {baseUrl: $url}}}' \
-                > "$pi_home/models.json"
+            # Write a full provider definition, not a bare baseUrl
+            # override: built-in prefixes (openrouter/...) get their
+            # endpoint redirected, and non-built-in prefixes
+            # (ethereum-foundation/...) resolve as first-class custom
+            # providers instead of failing. Model metadata defaults
+            # suit OpenAI-compatible GLM-class endpoints; override per
+            # run with PI_API_KIND, PI_CONTEXT_WINDOW, PI_MAX_TOKENS.
+            jq -n \
+                --arg provider "$provider" \
+                --arg url "$PI_BASE_URL" \
+                --arg model "$model_id" \
+                --arg api "${PI_API_KIND:-openai-completions}" \
+                --argjson ctx "${PI_CONTEXT_WINDOW:-128000}" \
+                --argjson max "${PI_MAX_TOKENS:-8192}" \
+                --arg api_key "${PI_API_KEY:-}" \
+                '{
+                    providers: {
+                        ($provider): ({
+                            baseUrl: $url,
+                            api: $api,
+                            models: [{
+                                id: $model,
+                                name: $model,
+                                input: ["text"],
+                                contextWindow: $ctx,
+                                maxTokens: $max,
+                                cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}
+                            }]
+                        } + (if $api_key != "" then
+                            {apiKey: "$PI_API_KEY"}
+                        else {} end))
+                    }
+                }' > "$pi_home/models.json"
         fi
     )
 }
