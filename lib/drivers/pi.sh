@@ -176,11 +176,15 @@ agent_settings() {
             # providers instead of failing. Model metadata defaults
             # suit OpenAI-compatible GLM-class endpoints; override per
             # run with PI_API_KIND, PI_CONTEXT_WINDOW, PI_MAX_TOKENS.
+            local api_kind="${PI_API_KIND:-openai-completions}"
+            if [ "$provider" = anthropic ] && [ -z "${PI_API_KIND:-}" ]; then
+                api_kind="anthropic-messages"
+            fi
             jq -n \
                 --arg provider "$provider" \
                 --arg url "$PI_BASE_URL" \
                 --arg model "$model_id" \
-                --arg api "${PI_API_KIND:-openai-completions}" \
+                --arg api "$api_kind" \
                 --argjson ctx "${PI_CONTEXT_WINDOW:-128000}" \
                 --argjson max "${PI_MAX_TOKENS:-8192}" \
                 --arg api_key "${PI_API_KEY:-}" \
