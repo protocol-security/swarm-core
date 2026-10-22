@@ -36,6 +36,10 @@ cleanup() {
     fi
     docker rm -f "${NAMES[@]}" >/dev/null 2>&1 || true
     docker network rm "$NETWORK" >/dev/null 2>&1 || true
+    if [ -d "$WORK/codex-auth" ]; then
+        docker run --rm --user 0 -v "$WORK:$WORK" --entrypoint rm \
+            "$IMAGE" -rf "$WORK/codex-auth" >/dev/null 2>&1 || true
+    fi
     docker image rm "$IMAGE" >/dev/null 2>&1 || true
     rm -rf "$WORK" "$BARE"
     rm -f "/tmp/${PROJECT}-swarm.env"
@@ -155,6 +159,8 @@ mkdir -m 700 "$PI_AUTH_DIR"
     printf '%s\n' '{"openai-codex":{"type":"oauth","access":"expired",
       "refresh":"fixture-refresh","expires":0}}' > "$PI_AUTH_DIR/auth.json"
 )
+docker run --rm --user 0 -v "$PI_AUTH_DIR:/auth" \
+    --entrypoint chown "$IMAGE" -R 1000:1000 /auth
 AUTH_ARGS=()
 while IFS= read -r arg; do
     AUTH_ARGS+=("$arg")
@@ -174,10 +180,13 @@ for i in 1 2; do
         "$WORK/codex-logs-$i" >/dev/null
     grep -q 'PI_CODEX_AUTH_OK' "$WORK/codex-logs-$i/"*.log
 done
-test "$(wc -l < "$PI_AUTH_DIR/refresh-count" | tr -d ' ')" = 1
+docker cp "$IMAGE-codex-2:/home/agent/.pi/agent" \
+    "$WORK/codex-auth-check" >/dev/null
+test "$(wc -l < "$WORK/codex-auth-check/refresh-count" | tr -d ' ')" = 1
 jq -e '."openai-codex" | .refresh == "fixture-refresh-rotated"
-    and .expires > (now * 1000)' "$PI_AUTH_DIR/auth.json" >/dev/null
-test ! -e "$PI_AUTH_DIR/auth.json.lock"
+    and .expires > (now * 1000)' "$WORK/codex-auth-check/auth.json" \
+    >/dev/null
+test ! -e "$WORK/codex-auth-check/auth.json.lock"
 unset PI_AUTH_DIR
 printf 'PASS: Codex subscription auth, one shared refresh, and SSE responses\n'
 
