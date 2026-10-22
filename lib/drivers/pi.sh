@@ -180,11 +180,19 @@ agent_settings() {
             if [ "$provider" = anthropic ] && [ -z "${PI_API_KIND:-}" ]; then
                 api_kind="anthropic-messages"
             fi
+            local known_model=false
+            if pi --list-models "$provider $model_id" 2>/dev/null |
+                    awk -v provider="$provider" -v model="$model_id" \
+                    '$1 == provider && $2 == model { found = 1 }
+                     END { exit !found }'; then
+                known_model=true
+            fi
             jq -n \
                 --arg provider "$provider" \
                 --arg url "$PI_BASE_URL" \
                 --arg model "$model_id" \
                 --arg api "$api_kind" \
+                --argjson known "$known_model" \
                 --argjson ctx "${PI_CONTEXT_WINDOW:-128000}" \
                 --argjson max "${PI_MAX_TOKENS:-8192}" \
                 --arg api_key "${PI_API_KEY:-}" \
@@ -192,7 +200,12 @@ agent_settings() {
                     providers: {
                         ($provider): ({
                             baseUrl: $url,
-                            api: $api,
+                            api: $api
+                        } + (if $known then {
+                            modelOverrides: {
+                                ($model): {contextWindow: $ctx, maxTokens: $max}
+                            }
+                        } else {
                             models: [{
                                 id: $model,
                                 name: $model,
@@ -201,7 +214,7 @@ agent_settings() {
                                 maxTokens: $max,
                                 cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}
                             }]
-                        } + (if $api_key != "" then
+                        } end) + (if $api_key != "" then
                             {apiKey: "$PI_API_KEY"}
                         else {} end))
                     }
