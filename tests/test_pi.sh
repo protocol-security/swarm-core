@@ -42,6 +42,13 @@ export PI_TEST_ARGS="$WORK/args" PI_TEST_LOG="$WORK/events"
 cat > "$WORK/bin/pi" <<'CLI'
 #!/bin/bash
 if [ "${1:-}" = --version ]; then echo 0.86.1-test; exit; fi
+if [ "${1:-}" = --list-models ]; then
+    printf 'provider model context max-out thinking images\n'
+    if [ "${2:-}" = 'openai gpt-5.4' ]; then
+        printf 'openai gpt-5.4 1M 128K yes no\n'
+    fi
+    exit
+fi
 printf '%s\n' "$@" > "$PI_TEST_ARGS"
 cat "$PI_TEST_LOG"
 exit "${PI_TEST_EXIT:-0}"
@@ -189,6 +196,16 @@ assert_eq "auth stores reference not secret" '$PI_API_KEY' \
     "$(jq -r '.openai.key' "$PI_CODING_AGENT_DIR/auth.json")"
 assert_eq "base URL assigned to selected provider" https://example.test \
     "$(jq -r '.providers.openai.baseUrl' "$PI_CODING_AGENT_DIR/models.json")"
+assert_eq "known model keeps catalog definition" true \
+    "$(jq -e '(.providers.openai.models == null) and
+        .providers.openai.modelOverrides["gpt-5.4"].contextWindow == 128000 and
+        (.providers.openai.modelOverrides["gpt-5.4"].cost == null)' \
+        "$PI_CODING_AGENT_DIR/models.json" >/dev/null && echo true)"
+PI_API_KEY='!not-a-shell-command' PI_BASE_URL=https://example.test \
+    SWARM_MODEL=openai/custom-model agent_settings "$WORK/workspace"
+assert_eq "custom model keeps zero-cost metadata" \
+    "0" "$(jq -r '.providers.openai.models[0].cost.input' \
+        "$PI_CODING_AGENT_DIR/models.json")"
 assert_eq "retries delegated to harness" false \
     "$(jq -r '.retry.enabled' "$PI_CODING_AGENT_DIR/settings.json")"
 assert_eq "cache warming disabled" off \
