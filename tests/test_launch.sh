@@ -1973,6 +1973,37 @@ assert_eq "cmd_post_process passes pp_setup to SWARM_CFG_SETUP" "1" \
         | grep -cF 'SWARM_CFG_SETUP=${pp_setup}' || true)"
 
 # ============================================================
+echo "=== 44. Pi timeout/retry overrides reach every container ==="
+# Each docker-run path (start, interactive, post-process) must forward
+# PI_HTTP_IDLE_TIMEOUT_MS and PI_MAX_RETRIES when set on the host.
+for _fn in cmd_start cmd_interactive cmd_post_process; do
+    _pi_fwd=$(awk -v fn="$_fn" '
+        $0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1; next }
+        p && /^\}[[:space:]]*$/ { p = 0 }
+        p && /for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES/ { c++ }
+        END { print c + 0 }
+    ' "$_LAUNCH_SH")
+    assert_eq "${_fn} forwards Pi overrides" "1" "$_pi_fwd"
+done
+
+# Mirrors the EXTRA_ENV loop: unset variables add nothing, set ones
+# become -e pairs.
+_pi_env_mirror() {
+    local -a EXTRA_ENV=() _pv
+    for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES; do
+        [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
+    done
+    echo "${EXTRA_ENV[*]+"${EXTRA_ENV[*]}"}"
+}
+assert_eq "no Pi overrides by default" "" \
+    "$(PI_HTTP_IDLE_TIMEOUT_MS='' PI_MAX_RETRIES='' _pi_env_mirror)"
+assert_eq "idle timeout forwarded" "-e PI_HTTP_IDLE_TIMEOUT_MS=1800000" \
+    "$(PI_HTTP_IDLE_TIMEOUT_MS=1800000 PI_MAX_RETRIES='' _pi_env_mirror)"
+assert_eq "both overrides forwarded" \
+    "-e PI_HTTP_IDLE_TIMEOUT_MS=0 -e PI_MAX_RETRIES=2" \
+    "$(PI_HTTP_IDLE_TIMEOUT_MS=0 PI_MAX_RETRIES=2 _pi_env_mirror)"
+
+# ============================================================
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"

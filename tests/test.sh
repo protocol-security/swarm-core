@@ -66,7 +66,8 @@ run_all_tests() {
     # test_session_end_push.sh §6 / §7 cannot prove the signal trap
     # actually fires; this phase does.  Skips cleanly when Docker
     # is unavailable so --all stays useful on hosts without it.
-    echo "=== Phase 1.5: Runtime emergency-push test ==="
+    # Also runs the real Pi CLI against a local test API, without keys.
+    echo "=== Phase 1.5: Docker runtime tests ==="
     echo ""
     if ! command -v docker >/dev/null 2>&1; then
         echo "  SKIP  (docker not found)"
@@ -75,16 +76,19 @@ run_all_tests() {
         echo "  SKIP  (docker daemon not running)"
         runtime_skip=1
     else
-        local rt_start rt_elapsed rt_rc=0
-        rt_start=$(date +%s)
-        "$TESTS_DIR/runtime_signal_trap.sh" || rt_rc=$?
-        rt_elapsed=$(( $(date +%s) - rt_start ))
-        if [ "$rt_rc" -eq 0 ]; then
-            printf "  PASS  runtime_signal_trap.sh (%ds)\n" "$rt_elapsed"
-        else
-            printf "  FAIL  runtime_signal_trap.sh (%ds)\n" "$rt_elapsed"
-            runtime_fail=1
-        fi
+        local rt_test rt_start rt_elapsed rt_rc
+        for rt_test in runtime_signal_trap.sh runtime_pi.sh; do
+            rt_rc=0
+            rt_start=$(date +%s)
+            "$TESTS_DIR/$rt_test" || rt_rc=$?
+            rt_elapsed=$(( $(date +%s) - rt_start ))
+            if [ "$rt_rc" -eq 0 ]; then
+                printf "  PASS  %s (%ds)\n" "$rt_test" "$rt_elapsed"
+            else
+                printf "  FAIL  %s (%ds)\n" "$rt_test" "$rt_elapsed"
+                runtime_fail=1
+            fi
+        done
     fi
     echo ""
 

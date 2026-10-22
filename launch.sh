@@ -121,15 +121,18 @@ compute_swarm_agents() {
 # produces exit-127 on first session -- see harness's `agent exited with code
 # 127` retry path).
 build_image() {
-    local swarm_agents cc_version codex_version
+    local swarm_agents cc_version codex_version pi_version
     swarm_agents=$(compute_swarm_agents "$CONFIG_FILE")
     cc_version=$(jq -r '.claude_code_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
     codex_version=$(jq -r '.codex_cli_version // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    pi_version=$(jq -r '.pi_version // empty' "$CONFIG_FILE" \
+        2>/dev/null || true)
     echo "--- Building agent image (agents: ${swarm_agents}) ---"
     docker build -t "$IMAGE_NAME" \
         --build-arg "SWARM_AGENTS=${swarm_agents}" \
         ${cc_version:+--build-arg "CLAUDE_CODE_VERSION=${cc_version}"} \
         ${codex_version:+--build-arg "CODEX_CLI_VERSION=${codex_version}"} \
+        ${pi_version:+--build-arg "PI_VERSION=${pi_version}"} \
         -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
 }
 
@@ -464,6 +467,11 @@ HELP
         done < <(agent_docker_env "$agent_effort")
     fi
 
+    # Forward Pi timeout/retry overrides from the host environment.
+    for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES; do
+        [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
+    done
+
     docker rm -f "$name" 2>/dev/null || true
 
     echo "--- Starting interactive ${profile_label} (${agent_model}) ---"
@@ -633,6 +641,11 @@ cmd_start() {
                 [ -n "$_de" ] && EXTRA_ENV+=("$_de")
             done < <(agent_docker_env "$eff")
         fi
+
+        # Forward Pi timeout/retry overrides from the host environment.
+        for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES; do
+            [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
+        done
 
         local price_input="" price_output="" price_cached=""
         local _price
@@ -882,6 +895,11 @@ cmd_post_process() {
             [ -n "$_de" ] && EXTRA_ENV+=("$_de")
         done < <(agent_docker_env "$pp_effort")
     fi
+
+    # Forward Pi timeout/retry overrides from the host environment.
+    for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES; do
+        [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
+    done
 
     local price_input="" price_output="" price_cached=""
     local _price
