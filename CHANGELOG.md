@@ -24,6 +24,15 @@
   prompt injection created were not writable by the agent, so its
   pushes failed. Both are now writable for any UID, as
   `create_bare_repo` makes the real bare repo.
+- **Fix: no post-process driver without `post_process`.**
+  `compute_swarm_agents` added a post-process driver to the
+  `SWARM_AGENTS` build arg even when the swarmfile had no
+  `post_process` section. The fallback resolved to the top-level
+  `driver` or to `claude-code`, so a swarm whose groups all set their
+  own driver could install a CLI that no container runs, since
+  `launch.sh post-process` exits before the build when
+  `post_process.prompt` is unset. The driver now joins the union only
+  when `post_process` is present and not null.
 
 ## 0.22.0 — 2026-06-08
 
