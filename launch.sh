@@ -91,7 +91,8 @@ rm_docker_dir() {
 }
 
 # Compute the comma-separated SWARM_AGENTS build-arg from a config:
-# the union of every agent group's driver and the post-process driver.
+# the union of every agent group's driver and, when post_process is
+# present and not null, the post-process driver.
 # Used as a Dockerfile build-arg to gate per-CLI install layers; missing
 # a driver here is what produces "command not found" inside the agent.
 compute_swarm_agents() {
@@ -105,7 +106,10 @@ compute_swarm_agents() {
         out="${out:+${out},}${drv}"
     done < <(jq -r '.agents[]? | (.driver // "")' "$cfg")
     local pp_drv
-    pp_drv=$(jq -r '.post_process.driver // .driver // "claude-code"' "$cfg")
+    pp_drv=$(jq -r '
+        if .post_process == null then ""
+        else (.post_process.driver // .driver // "claude-code")
+        end' "$cfg")
     if [ -n "$pp_drv" ] && [[ "$seen" != *" $pp_drv "* ]]; then
         out="${out:+${out},}${pp_drv}"
     fi
