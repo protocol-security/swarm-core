@@ -41,8 +41,10 @@ Use your actual submodule path. SSH users can use
 Keep existing checkout/submodule directories and script paths; moving
 or re-adding them is not required.
 
-Docker image/container names and `/tmp` state paths still derive from
-the target repository's sanitized directory name, not this tool's name.
+Docker image/container names and the runtime directory still derive
+from the target repository's sanitized directory name, not this tool's
+name. State that older releases left in `/tmp` is not reused; see
+[Upgrading from `/tmp` state](#upgrading-from-tmp-state).
 Do not rename or move a target checkout during an active run. Finish
 and harvest the run first: changing its directory name changes resource
 names, and existing bind mounts still refer to their original paths.
@@ -78,6 +80,7 @@ Credentials stay as env vars (not in shell history).
 | `GEMINI_API_KEY` | | Google API key (for Gemini CLI driver). |
 | `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
 | `SWARM_TITLE` | | Dashboard title override. |
+| `SWARM_RUNTIME_DIR` | | See [Runtime directory](#runtime-directory). |
 | `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
 | `SWARM_ACTIVITY_TIMEOUT` | `0` | Seconds of logfile silence before the in-container watchdog SIGTERMs the agent CLI's process group.  `0` disables.  See [Activity watchdog](#activity-watchdog). |
 | `SWARM_ACTIVITY_POLL` | `10` | Watchdog mtime-poll interval, in seconds.  Rarely needs tuning. |
@@ -800,31 +803,78 @@ synthetic JSONL stream that completes instantly.  This catches
 path errors, missing dependencies, and config issues before any
 real agent run.
 
-Clean up afterwards:
+Clean up afterwards as described in [Cleanup](#cleanup).
+
+## Runtime directory
+
+Each project keeps its host-side state in one directory:
+
+| Path | Content |
+|------|---------|
+| `upstream.git` | Bare repo that containers mount at `/upstream`. |
+| `mirrors/<name>.git` | Submodule mirrors (`/mirrors`, read-only). |
+| `swarm.env` | State file for a standalone dashboard. |
+
+The directory is `$XDG_STATE_HOME/swarm-core/<project>`, which is
+`~/.local/state/swarm-core/<project>` when `XDG_STATE_HOME` is unset
+or relative. Set `SWARM_RUNTIME_DIR` to an absolute path to put it
+elsewhere, and set it the same way for every command of a run
+(`launch.sh`, `harvest.sh`, `dashboard.sh`, `progress.sh`): each one
+resolves the directory on its own. `launch.sh start` prints the
+directory it used.
+
+`launch.sh` creates the directory with mode 700 and refuses one that
+is a symlink, belongs to another user, has any group or other
+permission bits, or (on macOS) has an ACL entry that allows access;
+`harvest.sh` and `progress.sh` refuse it too. On macOS it also refuses
+to create the directory below an inheritable ACL entry that allows
+access, since the new directory would inherit it. The
+bare repo inside stays writable for every UID, because the
+container's `agent` user can have a different UID from the host user
+(native Linux); the directory around it keeps other host users out.
+
+### Upgrading from `/tmp` state
+
+Older releases kept this state in `/tmp/<project>-upstream.git`,
+`/tmp/<project>-mirror-*.git` and `/tmp/<project>-swarm.env`, where
+any local user could write to it. It is never reused. While
+`/tmp/<project>-upstream.git` exists and belongs to you, `start`,
+`post-process`, `interactive`, `chat`, `shell` and `harvest.sh` stop
+and print the commands below. To keep agent commits from the old bare
+repo, fetch its branches and review them before merging anything:
 
 ```bash
-PROJECT=$(basename $(pwd))
-docker rm -f ${PROJECT}-agent-1 2>/dev/null
-rm -rf /tmp/${PROJECT}-upstream.git
+git fetch /tmp/<project>-upstream.git \
+    '+refs/heads/*:refs/remotes/legacy-swarm/*'
+```
+
+Then remove the old state. The agents wrote part of the old bare repo
+as the container's user, and on Linux a plain `rm -rf` cannot delete
+those files, so remove the bare repo through Docker. The error message
+lists the exact paths; this form also works in zsh when there are no
+mirrors:
+
+```bash
+docker run --rm -v /tmp:/tmp alpine rm -rf /tmp/<project>-upstream.git
+rm -rf /tmp/<project>-swarm.env
+find -H /tmp -maxdepth 1 -name '<project>-mirror-*.git' -exec rm -rf {} +
 ```
 
 ## Cleanup
 
-After a swarm run, the following artifacts remain on disk:
-
-| Artifact | Path |
-|----------|------|
-| Bare repo | `/tmp/<project>-upstream.git` |
-| Submodule mirrors | `/tmp/<project>-mirror-*.git` |
-| Agent containers | `<project>-agent-N` |
-| State file | `/tmp/<project>-swarm.env` |
-Remove everything for a fresh start:
+After a swarm run, the agent containers (`<project>-agent-N`,
+`<project>-agent-post`, `<project>-agent-interactive-*`) and the
+[runtime directory](#runtime-directory) remain. Harvest first, then
+remove both for a fresh start. The agents write to the bare repo as
+the container's user, and on Linux a plain `rm -rf` cannot delete
+those files, so the bare repo goes through Docker first, the way
+`launch.sh` removes an old one. Use the directory that
+`launch.sh start` printed on its `Runtime:` line:
 
 ```bash
-PROJECT=$(basename $(pwd))
-docker rm -f $(docker ps -aq --filter "name=${PROJECT}-agent-") 2>/dev/null
-rm -rf /tmp/${PROJECT}-upstream.git /tmp/${PROJECT}-mirror-*.git
-rm -f  /tmp/${PROJECT}-swarm.env
+docker rm -f $(docker ps -aq --filter "name=<project>-agent-") 2>/dev/null
+docker run --rm -v "<runtime dir>:/runtime" alpine rm -rf /runtime/upstream.git
+rm -rf "<runtime dir>"
 ```
 
 ## Verify image

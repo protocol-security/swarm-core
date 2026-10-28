@@ -55,6 +55,20 @@ assert_eq "CI checks every test script" "1" \
     "$(grep -cF 'tests/*.sh' "$CI_YML")"
 
 echo ""
+echo "=== 3. Integration test runtime directory ==="
+
+# tests/test.sh must not remove a directory the caller pointed
+# SWARM_RUNTIME_DIR at, even when launch.sh refused it.
+TEST_SH="$TESTS_DIR/test.sh"
+assert_eq "integration run allocates its own runtime directory" "1" \
+    "$(grep -cE '^TEST_RUNTIME_DIR=\$\(mktemp -d\)$' "$TEST_SH")"
+assert_eq "integration run exports it as SWARM_RUNTIME_DIR" "1" \
+    "$(grep -cF 'export SWARM_RUNTIME_DIR="$TEST_RUNTIME_DIR"' "$TEST_SH")"
+assert_eq "cleanup removes only that directory" \
+    '    rm_docker_dir "$TEST_RUNTIME_DIR"' \
+    "$(awk '/^cleanup\(\) \{/,/^\}/' "$TEST_SH" | grep 'rm_docker_dir')"
+
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

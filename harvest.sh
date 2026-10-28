@@ -12,7 +12,8 @@ source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT="$(swarm_project_id "$(basename "$REPO_ROOT")")"
-BARE_REPO="/tmp/${PROJECT}-upstream.git"
+RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
+BARE_REPO="${RUNTIME_DIR}/upstream.git"
 REMOTE_NAME="_agent-harvest"
 DRY_RUN=false
 
@@ -28,8 +29,10 @@ Options:
   --dry        Show what would be merged without actually merging.
   -h, --help   Show this help message.
 
-The bare repo is expected at /tmp/<project>-upstream.git,
-created by launch.sh when starting agents.
+The bare repo lives in the project's runtime directory, which
+launch.sh creates when starting agents: SWARM_RUNTIME_DIR if set,
+else \$XDG_STATE_HOME/swarm-core/<project> (by default
+~/.local/state/swarm-core/<project>).
 HELP
             exit 0
             ;;
@@ -75,10 +78,12 @@ warn_dirty_interactive_containers() {
         | sort || true)
 }
 
+swarm_refuse_legacy_state "$PROJECT" || exit 1
 if [ ! -d "$BARE_REPO" ]; then
     echo "ERROR: ${BARE_REPO} not found." >&2
     exit 1
 fi
+swarm_runtime_check "$RUNTIME_DIR" || exit 1
 
 cd "$REPO_ROOT"
 warn_dirty_interactive_containers
@@ -122,7 +127,7 @@ for branch in "${HARVEST_BRANCHES[@]}"; do
         echo "would re-introduce removed commits." >&2
         echo "" >&2
         echo "Resolve by wiping and recreating the bare repo:" >&2
-        echo "  rm -rf ${BARE_REPO}" >&2
+        echo "  $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
         echo "  ./launch.sh ...   # recreates the bare from current HEAD" >&2
         git remote remove "$REMOTE_NAME"
         exit 1
