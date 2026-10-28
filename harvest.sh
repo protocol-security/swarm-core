@@ -6,12 +6,12 @@ set -euo pipefail
 
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SWARM_DIR/lib/check-deps.sh"
-check_deps git
+check_deps git jq
 # shellcheck source=lib/project.sh
 source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-PROJECT="$(swarm_project_id "$(basename "$REPO_ROOT")")"
+PROJECT="$(swarm_project_resolve "$REPO_ROOT")" || exit 1
 RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
 BARE_REPO="${RUNTIME_DIR}/upstream.git"
 REMOTE_NAME="_agent-harvest"
@@ -41,17 +41,20 @@ HELP
 done
 
 warn_dirty_interactive_containers() {
-    command -v docker >/dev/null 2>&1 || return 0
-    local image_name="${PROJECT}-agent"
-    local name state dirty tmpd tmpf branch
+    [ "$DOCKER_UP" = true ] || return 0
+    local name id state dirty tmpd tmpf branch
 
     while IFS= read -r name; do
         [ -n "$name" ] || continue
-        state=$(docker inspect -f '{{.State.Status}}' "$name" \
+        # Act on the ID of a container this checkout created.
+        id=$(swarm_own_container_id "$name" "$CHECKOUT_PATH" "$PROJECT") \
+            || exit 1
+        [ -n "$id" ] || continue
+        state=$(docker inspect -f '{{.State.Status}}' "$id" \
             2>/dev/null || echo "")
         dirty=""
         if [ "$state" = "running" ]; then
-            dirty=$(docker exec "$name" bash -lc \
+            dirty=$(docker exec "$id" bash -lc \
                 'cd /workspace && [ -n "$(git status --porcelain=v1)" ] && echo true || echo false' \
                 2>/dev/null || true)
         else
@@ -59,7 +62,7 @@ warn_dirty_interactive_containers() {
             # goes into a private directory.
             tmpd=$(mktemp -d)
             tmpf="${tmpd}/interactive_state"
-            docker cp "${name}:/workspace/agent_logs/interactive_state" \
+            docker cp "${id}:/workspace/agent_logs/interactive_state" \
                 "$tmpf" 2>/dev/null || true
             if [ -s "$tmpf" ]; then
                 dirty=$(grep '^dirty=' "$tmpf" \
@@ -73,17 +76,27 @@ warn_dirty_interactive_containers() {
             echo "WARNING: ${name} has uncommitted interactive work" >&2
             [ -n "${branch:-}" ] && echo "         branch: ${branch}" >&2
         fi
-    done < <(docker ps -a --format '{{.Names}}' 2>/dev/null \
-        | grep -E "^${image_name}-interactive-" \
+    done < <(swarm_interactive_container_names "$PROJECT" 2>/dev/null \
         | sort || true)
 }
 
-swarm_refuse_legacy_state "$PROJECT" || exit 1
+swarm_refuse_legacy_state "$(swarm_project_id "$(basename "$REPO_ROOT")")" \
+    || exit 1
 if [ ! -d "$BARE_REPO" ]; then
     echo "ERROR: ${BARE_REPO} not found." >&2
     exit 1
 fi
 swarm_runtime_check "$RUNTIME_DIR" || exit 1
+swarm_runtime_owner_check "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
+CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")"
+# Harvest looks into interactive containers only when Docker answers.
+# Without Docker, or with its daemon down, it touches no container and
+# skips this check; the merge itself needs only git.
+DOCKER_UP=false
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    DOCKER_UP=true
+    swarm_containers_verify "$PROJECT" "$REPO_ROOT" || exit 1
+fi
 
 cd "$REPO_ROOT"
 warn_dirty_interactive_containers

@@ -741,7 +741,7 @@ help_bar=$(awk '
 # Uppercase P tails the post-process "P" row's logs (like [1-9]).
 assert_eq "uppercase P follows post-process logs" "1" \
     "$(printf '%s\n' "$pp_upper_case" \
-        | grep -cF 'docker logs -f "$_pp_name"' || true)"
+        | grep -cF '_ref=$(own_ref "$_pp_name")' || true)"
 assert_eq "uppercase P points to lowercase start" "1" \
     "$(printf '%s\n' "$pp_upper_case" \
         | grep -cF 'press p to start' || true)"
@@ -793,7 +793,7 @@ assert_eq "footer keeps logs hint for exited container" "1" \
         | grep -cF 'if post_process_container_exists; then' || true)"
 assert_eq "s stops post-process container" "1" \
     "$(printf '%s\n' "$s_case" \
-        | grep -cF 'docker stop "${IMAGE_NAME}-post"' || true)"
+        | grep -cF 'stop_own_container "${IMAGE_NAME}-post"' || true)"
 assert_eq "s stops interactive containers" "1" \
     "$(printf '%s\n' "$s_case" \
         | grep -cF 'interactive_container_names' || true)"
@@ -879,13 +879,14 @@ echo "=== 15. load_state reads JSON without running it ==="
 
 # runtime_ok and lib/project.sh come from section 14.
 _ls_tmp=$(mktemp -d)
-_ls_fn="$_ls_tmp/load_state.sh"
-awk '/^load_state\(\)[[:space:]]*\{/ { p = 1 }
-     p { print }
-     p && /^\}[[:space:]]*$/ { exit }' \
-    "$TESTS_DIR/../dashboard.sh" > "$_ls_fn"
-# shellcheck source=/dev/null
-source "$_ls_fn"
+for _fn in state_value load_state; do
+    awk -v fn="$_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
+         p { print }
+         p && /^\}[[:space:]]*$/ { exit }' \
+        "$TESTS_DIR/../dashboard.sh" > "$_ls_tmp/$_fn.sh"
+    # shellcheck source=/dev/null
+    source "$_ls_tmp/$_fn.sh"
+done
 
 RUNTIME_DIR="$_ls_tmp/rt"
 STATE_FILE="$RUNTIME_DIR/state.json"
@@ -927,11 +928,29 @@ for _ls_label in '"config_label": ""' '"config_label": null' ''; do
     _ls_rc=0
     load_state || _ls_rc=$?
     assert_eq "state loads with label (${_ls_label:-missing})" "0" "$_ls_rc"
-    assert_eq "label is cleared (${_ls_label:-missing})" "" \
+    if [ "$_ls_label" = '"config_label": ""' ]; then
+        _ls_want=""
+    else
+        _ls_want="before"
+    fi
+    assert_eq "label from (${_ls_label:-missing})" "$_ls_want" \
         "$SWARM_CONFIG_LABEL"
 done
 assert_eq "swarmfile path keeps its newline" "$_ls_cfg" "$SWARM_CONFIG"
 assert_eq "title shown on one line" "two lines" "$SWARM_TITLE"
+# A state that records only the owner (interactive or post-process
+# before any start) leaves the caller's settings alone.
+jq -n '{schema: "swarm-core.state/v1", project: "p", repo_root: "/r"}' \
+    > "$STATE_FILE"
+SWARM_CONFIG="/mine/custom.json" SWARM_TITLE="my title"
+_ls_rc=0
+load_state || _ls_rc=$?
+assert_eq "owner-only state loads" "0" "$_ls_rc"
+assert_eq "owner-only state keeps the caller's SWARM_CONFIG" \
+    "/mine/custom.json" "$SWARM_CONFIG"
+assert_eq "owner-only state keeps the caller's title" "my title" \
+    "$SWARM_TITLE"
+
 _ls_cfg_nl="/c/swarm.json
 "
 jq -n --arg c "$_ls_cfg_nl" \
@@ -946,6 +965,69 @@ _ls_rc=0
 load_state || _ls_rc=$?
 assert_eq "state in an open runtime dir is not loaded" "1" "$_ls_rc"
 rm -rf "$_ls_tmp"
+
+# ============================================================
+echo ""
+echo "=== 16. identity_ok follows the runtime and the containers ==="
+
+# A dashboard can start before the runtime directory exists, and
+# another checkout can create it or its containers afterwards.
+_id_tmp=$(mktemp -d)
+for _fn in identity_ok own_ref; do
+    awk -v fn="$_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
+         p { print }
+         p && /^\}[[:space:]]*$/ { exit }' \
+        "$TESTS_DIR/../dashboard.sh" > "$_id_tmp/$_fn.sh"
+    # shellcheck source=/dev/null
+    source "$_id_tmp/$_fn.sh"
+done
+NL=$'\n'
+OWN_CONTAINERS=""
+REPO_ROOT="$_id_tmp/repo"
+PROJECT="proj"
+RUNTIME_DIR="$_id_tmp/rt"
+mkdir -p "$REPO_ROOT"
+_id_ctr=""
+# Stands in for the Docker CLI; identity_ok reaches it.
+# shellcheck disable=SC2329
+docker() { printf '%s\n' "$_id_ctr"; }
+assert_eq "no runtime and no containers" "true" \
+    "$(identity_ok 2>/dev/null && echo true || echo false)"
+mkdir -m 700 "$RUNTIME_DIR"
+jq -n --arg r "$_id_tmp/elsewhere" \
+    '{schema: "swarm-core.state/v1", repo_root: $r}' \
+    > "$RUNTIME_DIR/state.json"
+assert_eq "runtime created later by another checkout" "false" \
+    "$(identity_ok 2>/dev/null && echo true || echo false)"
+jq -n --arg r "$(cd -P "$REPO_ROOT" && pwd -P)" \
+    '{schema: "swarm-core.state/v1", repo_root: $r}' \
+    > "$RUNTIME_DIR/state.json"
+assert_eq "own runtime" "true" \
+    "$(identity_ok 2>/dev/null && echo true || echo false)"
+chmod 755 "$RUNTIME_DIR"
+assert_eq "runtime open to other users" "false" \
+    "$(identity_ok 2>/dev/null && echo true || echo false)"
+chmod 700 "$RUNTIME_DIR"
+_id_ctr='{"name":"proj-agent-1","project":"proj","owner":"/elsewhere"}'
+assert_eq "container of another checkout" "false" \
+    "$(identity_ok 2>/dev/null && echo true || echo false)"
+
+# Docker calls in the dashboard use own_ref: the ID of this checkout's
+# container under a name, or nothing when another project holds it.
+_id_ctr=$(jq -nc --arg o "$(cd -P "$REPO_ROOT" && pwd -P)" \
+    '{id: "cid-1", name: "proj-agent-1", project: "proj", owner: $o}')
+_id_ctr="${_id_ctr}
+$(jq -nc '{id: "cid-x", name: "proj-agent-2", project: "other",
+           owner: "/x"}')"
+identity_ok 2>/dev/null || true
+assert_eq "own_ref gives the ID of this checkout's container" "cid-1" \
+    "$(own_ref proj-agent-1)"
+assert_eq "own_ref gives nothing for another project's container" "" \
+    "$(own_ref proj-agent-2)"
+assert_eq "own_ref gives nothing for a prefix of a name" "" \
+    "$(own_ref proj-agent)"
+unset -f docker
+rm -rf "$_id_tmp"
 
 # ============================================================
 echo ""

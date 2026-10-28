@@ -21,6 +21,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Keep the host's Docker out of these tests: this docker answers like a
+# client whose daemon is down and logs what it was asked.  Sections that
+# need containers put their own fake in front of it.
+_down_bin="$TMPDIR/docker-down"
+_down_log="$TMPDIR/docker-down.log"
+mkdir -p "$_down_bin"
+printf '#!/bin/bash\necho "$*" >> "%s"\nexit 1\n' "$_down_log" \
+    > "$_down_bin/docker"
+chmod +x "$_down_bin/docker"
+PATH="$_down_bin:$PATH"
+
 # Point harvest.sh at a private runtime directory below TMPDIR.
 use_runtime() {
     SWARM_RUNTIME_DIR="$TMPDIR/runtime-$1"
@@ -357,10 +368,24 @@ _cp_log="$TMPDIR/docker-cp.log"
 _shared_tmp="$TMPDIR/shared-tmp"
 mkdir -p "$_fake_bin" "$_shared_tmp"
 chmod 1777 "$_shared_tmp"
+_ctr_name="${INTERACTIVE_PROJECT}-agent-interactive-hunter-a1b2"
+_ctr_owner=$(cd -P "$INTERACTIVE_WORK" && pwd -P)
 cat > "$_fake_bin/docker" <<EOF
 #!/bin/bash
 case "\$1" in
-    ps) echo "${INTERACTIVE_PROJECT}-agent-interactive-hunter-a1b2" ;;
+    ps)
+        # Owner listing and name listing, both JSON.
+        case "\$*" in
+            *)
+                printf '{"name":"%s","project":"%s","owner":"%s"}\n' \
+                    "$_ctr_name" "\${FAKE_PROJECT-$INTERACTIVE_PROJECT}" \
+                    "\${FAKE_OWNER-$_ctr_owner}" ;;
+        esac ;;
+    container)
+        printf '{"id":"cid-1","labels":{"swarm-core.checkout":"%s",%s}}\n' \
+            "\${FAKE_OWNER-$_ctr_owner}" \
+            "\"swarm-core.project\":\"$INTERACTIVE_PROJECT\"" ;;
+    info) exit 0 ;;
     inspect) echo "exited" ;;
     cp)
         printf 'dirty=true\nbranch=${INTERACTIVE_BRANCH}\n' > "\$3"
@@ -630,6 +655,110 @@ assert_eq "message names the mode fix" "true" \
     "$(printf '%s\n' "$open_output" | grep -qF 'chmod 700' \
         && echo true || echo false)"
 chmod 700 "$SWARM_RUNTIME_DIR"
+
+# ============================================================
+echo ""
+echo "=== 13. Behavioural: harvest.sh refuses another checkout's runtime ==="
+
+# The runtime directory from section 11 now names another checkout.
+jq -n --arg root "$TMPDIR/elsewhere/${LEGACY_PROJECT}" \
+    '{schema: "swarm-core.state/v1", repo_root: $root}' \
+    > "$SWARM_RUNTIME_DIR/state.json"
+cd "$LEGACY_WORK"
+owner_rc=0
+owner_output=$(bash "$HARVEST_SH" --dry 2>&1) || owner_rc=$?
+assert_eq "another checkout's runtime stops harvest" "1" "$owner_rc"
+assert_eq "message names SWARM_PROJECT" "true" \
+    "$(printf '%s\n' "$owner_output" | grep -q SWARM_PROJECT \
+        && echo true || echo false)"
+rm -f "$SWARM_RUNTIME_DIR/state.json"
+
+# ============================================================
+echo ""
+echo "=== 15. harvest.sh and progress.sh need jq ==="
+
+# They read the JSON state file.  Run them with a PATH that has git
+# and dirname but no jq.
+_nojq_bin="$TMPDIR/nojq-bin"
+mkdir -p "$_nojq_bin"
+ln -s "$(command -v git)" "$_nojq_bin/git"
+ln -s "$(command -v dirname)" "$_nojq_bin/dirname"
+ln -s "$(command -v docker 2>/dev/null || command -v true)" \
+    "$_nojq_bin/docker"
+cd "$LEGACY_WORK"
+for _tool in harvest.sh progress.sh; do
+    nojq_rc=0
+    nojq_out=$(PATH="$_nojq_bin" /bin/bash "$REPO_ROOT/$_tool" 2>&1) \
+        || nojq_rc=$?
+    assert_eq "${_tool} without jq fails" "1" "$nojq_rc"
+    assert_eq "${_tool} names jq as missing" "true" \
+        "$(printf '%s\n' "$nojq_out" \
+            | grep -q 'Missing required tools: jq' \
+            && echo true || echo false)"
+done
+
+# ============================================================
+echo ""
+echo "=== 16. Behavioural: harvest.sh refuses foreign containers ==="
+
+# harvest.sh runs docker exec and docker cp in interactive containers,
+# so a container named for this project id has to be this checkout's.
+cd "$INTERACTIVE_WORK"
+for _fake_owner in /elsewhere/proj ""; do
+    ctr_rc=0
+    _fake_project="$INTERACTIVE_PROJECT"
+    [ -n "$_fake_owner" ] || _fake_project=""
+    ctr_out=$(PATH="$_fake_bin:$PATH" FAKE_OWNER="$_fake_owner" \
+        FAKE_PROJECT="$_fake_project" \
+        SWARM_RUNTIME_DIR="$TMPDIR/runtime-interactive" \
+        bash "$HARVEST_SH" --dry 2>&1) || ctr_rc=$?
+    assert_eq "container owned by '${_fake_owner:-nobody}' stops harvest" \
+        "1" "$ctr_rc"
+    assert_eq "message names the container (${_fake_owner:-nobody})" \
+        "true" \
+        "$(printf '%s\n' "$ctr_out" | grep -qF "$_ctr_name" \
+            && echo true || echo false)"
+done
+
+# ============================================================
+echo ""
+echo "=== 17. Behavioural: harvest.sh with the Docker daemon down ==="
+
+# The merge needs only git.  With Docker installed but its daemon down,
+# harvest skips every container operation instead of failing.
+DOWN_WORK="$TMPDIR/swarmtest-harvest-down-$$"
+git init -q "$DOWN_WORK"
+git -C "$DOWN_WORK" -c user.name=test -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m "init"
+use_runtime down
+git clone -q --bare "$DOWN_WORK" "$SWARM_RUNTIME_DIR/upstream.git"
+git -C "$SWARM_RUNTIME_DIR/upstream.git" branch agent-work HEAD
+cd "$DOWN_WORK"
+: > "$_down_log"
+down_rc=0
+bash "$HARVEST_SH" --dry >/dev/null 2>&1 || down_rc=$?
+assert_eq "harvest runs with the daemon down" "0" "$down_rc"
+# check_deps asks for the version; harvest itself only asks whether the
+# daemon is up.
+assert_eq "no container operation is attempted" "" \
+    "$(grep -vE '^(--version|info)( |$)' "$_down_log" || true)"
+
+# ============================================================
+echo ""
+echo "=== 18. Behavioural: progress.sh with the Docker daemon down ==="
+
+# progress.sh shows the commit history with git alone and reports the
+# containers as unavailable.
+cd "$DOWN_WORK"
+progress_rc=0
+progress_out=$(bash "$REPO_ROOT/progress.sh" 2>&1) || progress_rc=$?
+assert_eq "progress runs with the daemon down" "0" "$progress_rc"
+assert_eq "progress shows the history" "true" \
+    "$(printf '%s\n' "$progress_out" | grep -qF '=== Recent commits ===' \
+        && echo true || echo false)"
+assert_eq "progress reports Docker as unavailable" "true" \
+    "$(printf '%s\n' "$progress_out" | grep -qF '(docker not available)' \
+        && echo true || echo false)"
 
 # ============================================================
 echo ""
