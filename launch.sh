@@ -44,6 +44,8 @@ Environment:
   SWARM_CONFIG              Path to swarmfile (or place swarm.json in repo root).
   SWARM_TITLE               Dashboard title override.
   SWARM_SKIP_DEP_CHECK      Set to 1 to silence version warnings.
+  SWARM_RUNTIME_DIR         Runtime directory (bare repo, mirrors, state);
+                            default ~/.local/state/swarm-core/<project>.
 HELP
     exit 0
 fi
@@ -59,7 +61,10 @@ PROJECT="$(swarm_project_id "$PROJECT_RAW")"
 SWARM_RUN_HASH="$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo "unknown")"
 SWARM_RUN_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
 SWARM_RUN_CONTEXT="${PROJECT_RAW}@${SWARM_RUN_HASH} (${SWARM_RUN_BRANCH})"
-BARE_REPO="/tmp/${PROJECT}-upstream.git"
+RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
+BARE_REPO="${RUNTIME_DIR}/upstream.git"
+MIRROR_DIR="${RUNTIME_DIR}/mirrors"
+STATE_FILE="${RUNTIME_DIR}/swarm.env"
 IMAGE_NAME="${PROJECT}-agent"
 
 # Expand a single $VAR reference from the host environment.
@@ -133,6 +138,14 @@ build_image() {
         -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
 }
 
+# Lifecycle commands call this before they touch the bare repo or the
+# mirrors: stop on state that older releases left in /tmp, then create
+# or check the private runtime directory.
+prepare_runtime() {
+    swarm_refuse_legacy_state "$PROJECT" || exit 1
+    swarm_runtime_init "$RUNTIME_DIR" || exit 1
+}
+
 create_bare_repo() {
     local label="${1:-bare repo}"
     echo "--- Creating ${label} ---"
@@ -140,6 +153,9 @@ create_bare_repo() {
     git clone --bare "$REPO_ROOT" "$BARE_REPO"
     git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
     git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
+    # The container's agent user can have a different UID from the host
+    # user, so the repo stays writable for everyone.  The owner-only
+    # runtime directory around it keeps other host users out.
     git -C "$BARE_REPO" config core.sharedRepository world
     chmod -R a+rwX "$BARE_REPO"
 }
@@ -160,18 +176,19 @@ ensure_bare_repo_for_interactive() {
              "${bare_head:0:7} behind local HEAD" \
              "${local_head:0:7})." >&2
         echo "       Remove it to start from current HEAD:" >&2
-        echo "       rm -rf ${BARE_REPO}" >&2
+        echo "       $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
         exit 1
     fi
 }
 
 mirror_submodules() {
     cd "$REPO_ROOT"
+    mkdir -p "$MIRROR_DIR"
     git submodule foreach --quiet 'echo "$name|$toplevel/.git/modules/$sm_path"' | \
     while IFS='|' read -r name gitdir; do
         local safe_name mirror
         safe_name="${name//\//_}"
-        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
+        mirror="${MIRROR_DIR}/${safe_name}.git"
         rm_docker_dir "$mirror"
         echo "--- Mirroring submodule: ${name} ---"
         git clone --bare "$gitdir" "$mirror"
@@ -193,7 +210,7 @@ mirror_volume_args() {
     while IFS= read -r name; do
         [ -n "$name" ] || continue
         safe_name="${name//\//_}"
-        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
+        mirror="${MIRROR_DIR}/${safe_name}.git"
         [ -d "$mirror" ] || continue
         MIRROR_ARGS+=(-v "${mirror}:/mirrors/${name}:ro")
     done <<< "$names"
@@ -441,6 +458,7 @@ HELP
         exit 1
     fi
 
+    prepare_runtime
     ensure_bare_repo_for_interactive
     mirror_submodules
     build_image
@@ -523,6 +541,8 @@ cmd_start() {
         fi
     done <<< "$group_prompts"
 
+    prepare_runtime
+
     # Refuse to overwrite a bare repo that diverges from local HEAD.
     # Distinguish two directions so the message leads with the remediation
     # that actually works.  The `--is-ancestor` check runs in the local
@@ -544,14 +564,14 @@ cmd_start() {
                      "${LOCAL_HEAD:0:7})." >&2
                 echo "       Remove it to start a fresh run from" \
                      "current HEAD:" >&2
-                echo "       rm -rf ${BARE_REPO}" >&2
+                echo "       $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
             else
                 echo "ERROR: ${BARE_REPO} has unharvested agent" \
                      "commits (agent-work ${BARE_HEAD:0:7} vs local" \
                      "HEAD ${LOCAL_HEAD:0:7})." >&2
                 echo "       Run harvest.sh first, or if you've" \
                      "already integrated those commits:" >&2
-                echo "       rm -rf ${BARE_REPO}" >&2
+                echo "       $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
             fi
             exit 1
         fi
@@ -689,7 +709,7 @@ cmd_start() {
     state_config_label=$(basename "$CONFIG_FILE")
     local config_title
     config_title=$(jq -r '.title // empty' "$CONFIG_FILE" 2>/dev/null || true)
-    cat > "/tmp/${PROJECT}-swarm.env" <<ENVEOF
+    cat > "$STATE_FILE" <<ENVEOF
 SWARM_TITLE="${SWARM_TITLE:-${config_title}}"
 SWARM_CONFIG="${CONFIG_FILE}"
 SWARM_NUM_AGENTS="${NUM_AGENTS}"
@@ -707,6 +727,7 @@ ENVEOF
     echo "Stop:"
     echo "  $0 stop"
     echo ""
+    echo "Runtime:   ${RUNTIME_DIR}"
     echo "Bare repo: ${BARE_REPO}"
 }
 
@@ -737,7 +758,11 @@ cmd_stop() {
     docker stop -t "$stop_timeout" "$NAME" 2>/dev/null \
         && echo "  stopped ${NAME}" \
         || echo "  ${NAME} not running"
-    rm -f "/tmp/${PROJECT}-swarm.env"
+    # stop never creates the runtime directory and touches the state
+    # file only when the directory passes the check.
+    if swarm_runtime_check "$RUNTIME_DIR" 2>/dev/null; then
+        rm -f "$STATE_FILE"
+    fi
 }
 
 cmd_logs() {
@@ -847,6 +872,7 @@ cmd_post_process() {
         exit 1
     fi
 
+    prepare_runtime
     if [ ! -d "$BARE_REPO" ]; then
         create_bare_repo "bare repo for post-process"
     fi

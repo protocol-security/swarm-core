@@ -1444,14 +1444,14 @@ check_bare_preflight() {
              "${local_head:0:7})." >&2
         echo "       Remove it to start a fresh run from" \
              "current HEAD:" >&2
-        echo "       rm -rf ${bare}" >&2
+        echo "       $(swarm_bare_rm_command "$(dirname "$bare")")" >&2
     else
         echo "ERROR: ${bare} has unharvested agent commits" \
              "(agent-work ${bare_head:0:7} vs local HEAD" \
              "${local_head:0:7})." >&2
         echo "       Run harvest.sh first, or if you've" \
              "already integrated those commits:" >&2
-        echo "       rm -rf ${bare}" >&2
+        echo "       $(swarm_bare_rm_command "$(dirname "$bare")")" >&2
     fi
     return 1
 }
@@ -1505,9 +1505,9 @@ assert_eq "unharvested -> names short BARE_HEAD" "1" \
 assert_eq "unharvested -> names short LOCAL_HEAD" "1" \
     "$(echo "$_bp_unh_err" \
         | grep -cE "local HEAD ${_bp_B:0:7}" || true)"
-assert_eq "unharvested -> rm -rf remediation still offered" "1" \
+assert_eq "unharvested -> removal through Docker still offered" "1" \
     "$(echo "$_bp_unh_err" \
-        | grep -cE "rm -rf ${_bp_bare}" || true)"
+        | grep -cF "alpine rm -rf /runtime/upstream.git" || true)"
 if check_bare_preflight "$_bp_bare" "$_bp_local" \
         >/dev/null 2>&1; then
     _bp_unh_rc="zero"
@@ -1530,7 +1530,7 @@ assert_eq "stale -> 'is stale' wording" "1" \
 assert_eq "stale -> 'behind local HEAD' wording" "1" \
     "$(echo "$_bp_stale_err" \
         | grep -cE 'behind local HEAD' || true)"
-assert_eq "stale -> leads with rm -rf as remediation" "1" \
+assert_eq "stale -> leads with removal as remediation" "1" \
     "$(echo "$_bp_stale_err" \
         | grep -cE 'Remove it to start a fresh run' || true)"
 assert_eq "stale -> does NOT instruct to run harvest.sh" "0" \
@@ -1806,6 +1806,8 @@ cmd_stop_src=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
     NUM_AGENTS=3
     IMAGE_NAME="claude-swarm-fake"
     PROJECT="fake"
+    RUNTIME_DIR="$trap_dir/runtime"
+    STATE_FILE="$RUNTIME_DIR/swarm.env"
     docker() {
         if [ "${1:-}" = "ps" ]; then
             printf '%s\n' \
@@ -1837,6 +1839,8 @@ assert_eq "default grace: interactive containers are stopped" "2" \
     NUM_AGENTS=2
     IMAGE_NAME="swarm-core-fake"
     PROJECT="fake"
+    RUNTIME_DIR="$trap_dir/runtime"
+    STATE_FILE="$RUNTIME_DIR/swarm.env"
     docker() {
         if [ "${1:-}" = "ps" ]; then
             printf '%s\n' "swarm-core-fake-interactive-codex-1"
@@ -1856,6 +1860,42 @@ assert_eq "SWARM_STOP_TIMEOUT=120 propagates to post-process" "1" \
 assert_eq "SWARM_STOP_TIMEOUT=120 propagates to interactive" "1" \
     "$(grep -cF 'stop -t 120 swarm-core-fake-interactive-codex-1' \
         "$trap_dir/calls" || true)"
+
+# stop removes the state file only from a runtime directory that passes
+# the check, and never creates the directory.
+run_stop_with_runtime() {
+    (
+        eval "$cmd_stop_src"
+        NUM_AGENTS=1
+        IMAGE_NAME="stop-fake"
+        PROJECT="fake"
+        RUNTIME_DIR="$1"
+        STATE_FILE="$RUNTIME_DIR/swarm.env"
+        # Called by the evaluated cmd_stop.
+        # shellcheck disable=SC2329
+        docker() { return 0; }
+        cmd_stop >/dev/null 2>&1 || true
+    )
+}
+_stop_target="$TMPDIR/stop-target"
+_stop_rt="$TMPDIR/stop-runtime"
+mkdir -m 700 "$_stop_target"
+: > "$_stop_target/swarm.env"
+ln -s "$_stop_target" "$_stop_rt"
+run_stop_with_runtime "$_stop_rt"
+assert_eq "stop leaves state behind a symlinked runtime" "true" \
+    "$([ -e "$_stop_target/swarm.env" ] && echo true || echo false)"
+rm -f "$_stop_rt"
+
+run_stop_with_runtime "$TMPDIR/stop-missing"
+assert_eq "stop does not create a missing runtime" "false" \
+    "$([ -e "$TMPDIR/stop-missing" ] && echo true || echo false)"
+
+mkdir -m 700 "$_stop_rt"
+: > "$_stop_rt/swarm.env"
+run_stop_with_runtime "$_stop_rt"
+assert_eq "stop removes state from a private runtime" "false" \
+    "$([ -e "$_stop_rt/swarm.env" ] && echo true || echo false)"
 
 # ============================================================
 echo ""
@@ -1998,18 +2038,18 @@ git -C "$_mva_top" -c protocol.file.allow=always \
 git -C "$_mva_top" -c protocol.file.allow=always \
     submodule add -q "$_mva_sub" "no-mirror" 2>/dev/null
 
-_mva_project="swarmtest-mva-$$"
-_mva_mirror="/tmp/${_mva_project}-mirror-lib space.git"
+# The runtime directory lives under $HOME, which can contain a space.
+_mva_mirrors="$TMPDIR/state dir/mirrors"
+_mva_mirror="${_mva_mirrors}/lib space.git"
 mkdir -p "$_mva_mirror"
 _mva_out=$(
-    PROJECT="$_mva_project"
+    MIRROR_DIR="$_mva_mirrors"
     REPO_ROOT="$_mva_top"
     mirror_volume_args
     printf '<%s>\n' "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}"
 )
-rm -rf "$_mva_mirror"
 
-assert_eq "space in a submodule name stays in one mount" \
+assert_eq "spaces in the path and the name stay in one mount" \
     "<-v>
 <${_mva_mirror}:/mirrors/lib space:ro>" "$_mva_out"
 
@@ -2017,7 +2057,7 @@ _mva_plain="$TMPDIR/mva-plain"
 git init -q "$_mva_plain"
 _mva_rc=0
 _mva_out=$(
-    PROJECT="$_mva_project"
+    MIRROR_DIR="$_mva_mirrors"
     REPO_ROOT="$_mva_plain"
     mirror_volume_args
     printf '%s' "${#MIRROR_ARGS[@]}"
@@ -2030,7 +2070,7 @@ assert_eq "no submodules: no mounts" "0" "$_mva_out"
 mkdir -p "$TMPDIR/mva-not-a-repo"
 _mva_rc=0
 (
-    PROJECT="$_mva_project"
+    MIRROR_DIR="$_mva_mirrors"
     REPO_ROOT="$TMPDIR/mva-not-a-repo"
     mirror_volume_args
 ) >/dev/null 2>&1 || _mva_rc=$?
@@ -2038,16 +2078,52 @@ assert_eq "failed submodule listing returns an error" "1" "$_mva_rc"
 
 # ============================================================
 echo ""
-echo "=== 45. Transient files come from mktemp ==="
+echo "=== 45. No fixed /tmp paths in the engine scripts ==="
 
 # Fixed names in /tmp can be created or read by another local user.
+# Transient files come from mktemp and the rest lives in the runtime
+# directory; only lib/project.sh names the legacy /tmp paths.
 _root="$TESTS_DIR/.."
-_fixed='agents\.cfg|interactive-|mirror-vols|pp-vols|progress-check'
-_fixed="/tmp/(\.swarm-|\\\$\{PROJECT\}-(${_fixed}))"
-assert_eq "no fixed /tmp names for transient files" "" \
-    "$(grep -nE "$_fixed" \
+assert_eq "no fixed /tmp paths" "" \
+    "$(grep -n '/tmp/' \
         "$_root/launch.sh" "$_root/harvest.sh" "$_root/dashboard.sh" \
         "$_root/costs.sh" "$_root/progress.sh" || true)"
+
+# ============================================================
+echo ""
+echo "=== 46. Recovery hints quote the bare repo path ==="
+
+# The runtime directory can contain shell metacharacters, so a printed
+# removal hint must name the same path when it is pasted.
+_hint_fn="$TMPDIR/ensure_bare_repo_for_interactive.sh"
+awk '/^ensure_bare_repo_for_interactive\(\)[[:space:]]*\{/ { p = 1 }
+     p { print }
+     p && /^\}[[:space:]]*$/ { exit }' \
+    "$_LAUNCH_SH" > "$_hint_fn"
+# shellcheck source=/dev/null
+source "$_hint_fn"
+
+_hint_repo="$TMPDIR/hint-repo"
+_hint_bare="$TMPDIR/"'run $HOME "q"/upstream.git'
+git init -q "$_hint_repo"
+git -C "$_hint_repo" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m one
+git clone -q --bare "$_hint_repo" "$_hint_bare"
+git -C "$_hint_bare" branch agent-work HEAD
+git -C "$_hint_repo" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m two
+_hint_out=$(
+    cd "$_hint_repo"
+    RUNTIME_DIR="$(dirname "$_hint_bare")"
+    BARE_REPO="$_hint_bare"
+    ensure_bare_repo_for_interactive 2>&1
+) || true
+_hint=$(printf '%s\n' "$_hint_out" | grep 'docker run ' || true)
+_hint="${_hint#*docker run }"
+eval "set -- $_hint"
+assert_eq "stale bare hint quotes the path for the shell" \
+    "$(dirname "$_hint_bare"):/runtime /runtime/upstream.git" \
+    "${3:-} ${7:-}"
 
 # ============================================================
 echo ""

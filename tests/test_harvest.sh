@@ -12,18 +12,21 @@ FAIL=0
 TMPDIR=$(mktemp -d)
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HARVEST_SH="$REPO_ROOT/harvest.sh"
-HARVEST_BARE=""
-GUARD_BARE=""
-INTERACTIVE_BARE=""
-TAG_BARE=""
+LEGACY_BARE=""
 cleanup() {
     rm -rf "$TMPDIR"
-    [ -n "${HARVEST_BARE:-}" ] && rm -rf "$HARVEST_BARE"
-    [ -n "${GUARD_BARE:-}" ]   && rm -rf "$GUARD_BARE"
-    [ -n "${INTERACTIVE_BARE:-}" ] && rm -rf "$INTERACTIVE_BARE"
-    [ -n "${TAG_BARE:-}" ] && rm -rf "$TAG_BARE"
+    if [ -n "$LEGACY_BARE" ]; then
+        rm -rf "$LEGACY_BARE"
+    fi
 }
 trap cleanup EXIT
+
+# Point harvest.sh at a private runtime directory below TMPDIR.
+use_runtime() {
+    SWARM_RUNTIME_DIR="$TMPDIR/runtime-$1"
+    export SWARM_RUNTIME_DIR
+    mkdir -m 700 "$SWARM_RUNTIME_DIR"
+}
 
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
@@ -236,7 +239,8 @@ echo "=== 7. Behavioural: harvest.sh --dry survives >20 commits ==="
 
 HARVEST_PROJECT="swarmtest-harvest-sigpipe-$$"
 HARVEST_WORK="$TMPDIR/$HARVEST_PROJECT"
-HARVEST_BARE="/tmp/${HARVEST_PROJECT}-upstream.git"
+use_runtime sigpipe
+HARVEST_BARE="$SWARM_RUNTIME_DIR/upstream.git"
 
 rm -rf "$HARVEST_BARE" "$HARVEST_WORK"
 mkdir -p "$HARVEST_WORK"
@@ -289,7 +293,8 @@ echo "=== 7.5 Behavioural: harvest.sh sees interactive branches ==="
 
 INTERACTIVE_PROJECT="swarmtest-harvest-interactive-$$"
 INTERACTIVE_WORK="$TMPDIR/$INTERACTIVE_PROJECT"
-INTERACTIVE_BARE="/tmp/${INTERACTIVE_PROJECT}-upstream.git"
+use_runtime interactive
+INTERACTIVE_BARE="$SWARM_RUNTIME_DIR/upstream.git"
 INTERACTIVE_AGENT="$TMPDIR/harvest-interactive-agent"
 INTERACTIVE_BRANCH="swarm/test/interactive-hunter-a1b2"
 
@@ -447,7 +452,9 @@ echo "=== 9. Behavioural: harvest.sh refuses divergent bare ==="
 
 GUARD_PROJECT="swarmtest-harvest-guard-$$"
 GUARD_WORK="$TMPDIR/$GUARD_PROJECT"
-GUARD_BARE="/tmp/${GUARD_PROJECT}-upstream.git"
+# Shell metacharacters in the path check the quoting of the rm hint.
+use_runtime 'guard $HOME "q"'
+GUARD_BARE="$SWARM_RUNTIME_DIR/upstream.git"
 GUARD_AGENT="$TMPDIR/harvest-guard-agent"
 
 rm -rf "$GUARD_WORK" "$GUARD_BARE" "$GUARD_AGENT"
@@ -493,10 +500,12 @@ assert_eq "guard names short HEAD in diagnostic" "true" \
     "$(printf '%s\n' "$guard_output" \
         | grep -qE "HEAD:[[:space:]]+${HEAD_BEFORE:0:7}" \
         && echo true || echo false)"
-assert_eq "guard names the bare path in remediation" "true" \
-    "$(printf '%s\n' "$guard_output" \
-        | grep -qF "rm -rf ${GUARD_BARE}" \
-        && echo true || echo false)"
+guard_hint=$(printf '%s\n' "$guard_output" | grep '^  docker run ' || true)
+guard_hint="${guard_hint#  docker run }"
+eval "set -- $guard_hint"
+assert_eq "guard names the bare path in remediation" \
+    "$(dirname "$GUARD_BARE"):/runtime /runtime/upstream.git" \
+    "${3:-} ${7:-}"
 assert_eq "no merge commit produced" "$HEAD_BEFORE" "$HEAD_AFTER"
 assert_eq "_agent-harvest remote cleaned up after failure" "" \
     "$(git remote | grep -E '^_agent-harvest$' || true)"
@@ -536,7 +545,8 @@ echo "=== 10. Restore tag created before harvest ==="
 
 TAG_PROJECT="swarmtest-harvest-tag-$$"
 TAG_WORK="$TMPDIR/$TAG_PROJECT"
-TAG_BARE="/tmp/${TAG_PROJECT}-upstream.git"
+use_runtime tag
+TAG_BARE="$SWARM_RUNTIME_DIR/upstream.git"
 TAG_AGENT="$TMPDIR/harvest-tag-agent"
 
 rm -rf "$TAG_WORK" "$TAG_BARE" "$TAG_AGENT"
@@ -577,6 +587,49 @@ assert_eq "restore tag points at pre-merge HEAD" "$TAG_HEAD_BEFORE" \
 bash "$HARVEST_SH" >/dev/null 2>&1 || true
 assert_eq "noop harvest adds no restore tag" "1" \
     "$(git tag --list 'swarm-harvest-*' | grep -c . || true)"
+
+# ============================================================
+echo ""
+echo "=== 11. Behavioural: harvest.sh refuses legacy /tmp state ==="
+
+LEGACY_PROJECT="swarmtest-harvest-legacy-$$"
+LEGACY_WORK="$TMPDIR/$LEGACY_PROJECT"
+LEGACY_BARE="/tmp/${LEGACY_PROJECT}-upstream.git"
+use_runtime legacy
+git init -q "$LEGACY_WORK"
+git -C "$LEGACY_WORK" -c user.name=test -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m "init"
+git clone -q --bare "$LEGACY_WORK" "$SWARM_RUNTIME_DIR/upstream.git"
+mkdir -p "$LEGACY_BARE"
+
+cd "$LEGACY_WORK"
+legacy_rc=0
+legacy_output=$(bash "$HARVEST_SH" --dry 2>&1) || legacy_rc=$?
+assert_eq "legacy state stops harvest" "1" "$legacy_rc"
+assert_eq "legacy message names the old path" "true" \
+    "$(printf '%s\n' "$legacy_output" \
+        | grep -qF "git fetch ${LEGACY_BARE}" \
+        && echo true || echo false)"
+assert_eq "legacy state is left in place" "true" \
+    "$([ -d "$LEGACY_BARE" ] && echo true || echo false)"
+rm -rf "$LEGACY_BARE"
+
+legacy_rc=0
+bash "$HARVEST_SH" --dry >/dev/null 2>&1 || legacy_rc=$?
+assert_eq "harvest runs once the old state is gone" "0" "$legacy_rc"
+
+# ============================================================
+echo ""
+echo "=== 12. Behavioural: harvest.sh refuses an open runtime dir ==="
+
+chmod 755 "$SWARM_RUNTIME_DIR"
+open_rc=0
+open_output=$(bash "$HARVEST_SH" --dry 2>&1) || open_rc=$?
+assert_eq "group/world readable runtime stops harvest" "1" "$open_rc"
+assert_eq "message names the mode fix" "true" \
+    "$(printf '%s\n' "$open_output" | grep -qF 'chmod 700' \
+        && echo true || echo false)"
+chmod 700 "$SWARM_RUNTIME_DIR"
 
 # ============================================================
 echo ""

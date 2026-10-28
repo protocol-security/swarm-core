@@ -22,12 +22,14 @@ source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT="$(swarm_project_id "$(basename "$REPO_ROOT")")"
-BARE_REPO="/tmp/${PROJECT}-upstream.git"
+RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
+BARE_REPO="${RUNTIME_DIR}/upstream.git"
 
 if [ ! -d "$BARE_REPO" ]; then
     echo "ERROR: ${BARE_REPO} not found. Are agents running?" >&2
     exit 1
 fi
+swarm_runtime_check "$RUNTIME_DIR" || exit 1
 
 CHECK_DIR=$(mktemp -d)
 trap 'rm -rf "$CHECK_DIR"' EXIT

@@ -49,7 +49,14 @@ source "$SWARM_DIR/lib/project.sh"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT_RAW="$(basename "$REPO_ROOT")"
 PROJECT="$(swarm_project_id "$PROJECT_RAW")"
-BARE_REPO="/tmp/${PROJECT}-upstream.git"
+RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
+BARE_REPO="${RUNTIME_DIR}/upstream.git"
+
+# Read nothing from the runtime directory unless only the current user
+# can reach it: the bare repo inside is writable for every UID.
+runtime_ok() {
+    swarm_runtime_check "$RUNTIME_DIR" 2>/dev/null
+}
 IMAGE_NAME="${PROJECT}-agent"
 START_TIME=$(date +%s)
 
@@ -63,9 +70,10 @@ DEFAULT_TITLE="${PROJECT_RAW}"
 USER_TITLE="${SWARM_TITLE:-}"
 
 # Source state file written by launch.sh (fills in env vars
-# that a standalone dashboard would otherwise lack).
-STATE_FILE="/tmp/${PROJECT}-swarm.env"
-if [ -f "$STATE_FILE" ]; then
+# that a standalone dashboard would otherwise lack), but only from a
+# runtime directory that no other user can write to.
+STATE_FILE="${RUNTIME_DIR}/swarm.env"
+if [ -f "$STATE_FILE" ] && runtime_ok; then
     # shellcheck disable=SC1090
     source "$STATE_FILE"
 fi
@@ -394,7 +402,8 @@ interactive_branch_status() {
     fi
     [ "$dirty" = "dirty" ] && { printf 'dirty'; return; }
 
-    if [ -n "$branch" ] && git -C "$BARE_REPO" rev-parse --verify \
+    if [ -n "$branch" ] && runtime_ok \
+            && git -C "$BARE_REPO" rev-parse --verify \
             --quiet "refs/heads/${branch}" >/dev/null 2>&1; then
         local tip
         tip=$(git -C "$BARE_REPO" rev-parse "refs/heads/${branch}")
@@ -449,7 +458,7 @@ emit_header() {
 
 draw() {
     # Re-read state file so display updates on every refresh.
-    if [ -f "$STATE_FILE" ]; then
+    if [ -f "$STATE_FILE" ] && runtime_ok; then
         # shellcheck disable=SC1090
         source "$STATE_FILE"
         DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
@@ -745,7 +754,7 @@ draw() {
     echo ""
 
     # Recent commits.
-    if [ -d "$BARE_REPO" ]; then
+    if [ -d "$BARE_REPO" ] && runtime_ok; then
         local commit_count
         commit_count=$(git -C "$BARE_REPO" rev-list --count refs/heads/agent-work 2>/dev/null || echo 0)
         printf " ${BOLD}Recent commits${RESET} ${DIM}(%s total):${RESET}\n" "$commit_count"
@@ -753,6 +762,10 @@ draw() {
         while IFS= read -r line; do
             printf "   ${DIM}%s${RESET}\n" "$line"
         done
+    elif [ -d "$BARE_REPO" ]; then
+        # shellcheck disable=SC2059
+        printf " ${DIM}(runtime directory is not private: %s)${RESET}\n" \
+            "$RUNTIME_DIR"
     else
         # shellcheck disable=SC2059
         printf " ${DIM}(bare repo not found -- are agents running?)${RESET}\n"

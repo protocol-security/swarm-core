@@ -45,9 +45,9 @@ Or clone standalone and run from your project directory
 ## How it works
 
 ```
-Host                         /tmp (bare repos)
-~/project/ ── git clone ──>  project-upstream.git (rw)
-               --bare        project-mirror-*.git (ro)
+Host                         runtime dir (mode 700)
+~/project/ ── git clone ──>  upstream.git (rw)
+               --bare        mirrors/*.git (ro)
                                         |
                                         | docker volumes
                                         |
@@ -66,6 +66,10 @@ All containers mount the same bare repo. Each runs
 `lib/harness.sh` which loops: reset to `origin/agent-work`,
 run one agent session, push. When one agent pushes, others
 see the changes on the next fetch.
+
+The runtime directory is private to the user who runs the swarm,
+`~/.local/state/swarm-core/<project>` by default (see
+[USAGE.md](USAGE.md#runtime-directory)).
 
 Interactive containers use the same image and setup, but start a
 human-guided driver UI or shell on a separate

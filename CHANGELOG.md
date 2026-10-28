@@ -35,6 +35,20 @@
   `costs.sh` and `harvest.sh`, and the `progress.sh` checkout used
   fixed names in `/tmp` that another local user could read or
   create first.
+- **Runtime (breaking): engine state moves out of `/tmp`.** The bare
+  repo, the submodule mirrors and the dashboard state file now live
+  in a per-project runtime directory,
+  `$XDG_STATE_HOME/swarm-core/<project>` (by default
+  `~/.local/state/swarm-core/<project>`), or in `SWARM_RUNTIME_DIR`
+  when set. `launch.sh` creates it with mode 700 and refuses one that
+  is a symlink, belongs to another user, has group or other
+  permission bits, or on macOS has an ACL entry that allows access
+  (it is not created below an inheritable one). The bare repo inside
+  keeps its open modes, so the container's `agent` user can push
+  whatever its UID. State left in `/tmp` by older releases is not
+  reused: while `/tmp/<project>-upstream.git` exists and belongs to
+  the user, `start`, `post-process`, `interactive` and `harvest.sh`
+  stop and print the commands to fetch its branches and remove it.
 
 ## 0.22.0 — 2026-06-08
 
