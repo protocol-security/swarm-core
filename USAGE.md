@@ -84,6 +84,7 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_RUNTIME_DIR` | | See [Runtime directory](#runtime-directory). |
 | `SWARM_PROJECT` | | See [Project identity](#project-identity). |
 | `SWARM_ENGAGEMENT_ID` | | See [Engagements](#engagements). |
+| `SWARM_LOCK_FD` | | See [Engagement lock](#engagement-lock). |
 | `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
 | `SWARM_ACTIVITY_TIMEOUT` | `0` | Seconds of logfile silence before the in-container watchdog SIGTERMs the agent CLI's process group.  `0` disables.  See [Activity watchdog](#activity-watchdog). |
 | `SWARM_ACTIVITY_POLL` | `10` | Watchdog mtime-poll interval, in seconds.  Rarely needs tuning. |
@@ -821,6 +822,7 @@ Each project keeps its host-side state in one directory:
 | `upstream.git` | Bare repo that containers mount at `/upstream`. |
 | `mirrors/<name>.git` | Submodule mirrors (`/mirrors`, read-only). |
 | `state.json` | State file for a standalone dashboard. |
+| `engagement.lock` | Lock that lifecycle commands hold. |
 
 The state file is JSON (`swarm-core.state/v1`, mode 600) that
 `launch.sh start` replaces in one rename; the dashboard reads it with
@@ -887,6 +889,35 @@ starting with a letter or digit), or a generated
 only when `SWARM_ENGAGEMENT_ID` is unset or equal to the recorded id,
 so a caller that names its engagement cannot act on another one. An
 empty value counts as set and is refused.
+
+### Engagement lock
+
+`start`, `post-process`, `interactive`, `chat`, `shell` and
+`harvest.sh` take `engagement.lock` in the runtime directory with
+`flock -n` before they change anything, and fail at once while another
+operation holds it. `start` and `post-process` keep it until they exit
+(`harvest.sh` started by them shares it). `interactive` keeps it until
+the session's container runs, so its mounts are in place before
+another command could replace them, and then lets it go for the rest
+of the session; `start --dashboard` lets it go before the dashboard
+opens. `stop`, `status`, `logs`, `progress.sh`, `costs.sh` and the
+dashboard never take it, and containers push through git without it.
+
+A caller that runs several commands as one unit can hold the lock
+itself and pass the descriptor in `SWARM_LOCK_FD`. The engine checks
+that the descriptor is open on that lock file and locks through it:
+
+```bash
+(
+    exec 9>>"<runtime dir>/engagement.lock"
+    flock -n 9 || exit 1
+    SWARM_LOCK_FD=9 ./launch.sh start || exit $?
+    SWARM_LOCK_FD=9 ./launch.sh wait
+)   # The lock goes when the subshell exits.
+```
+
+`flock` comes with util-linux on Linux; on macOS install it with
+`brew install flock`.
 
 ### Upgrading from `/tmp` state
 

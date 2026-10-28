@@ -779,6 +779,23 @@ rm -f "$SWARM_RUNTIME_DIR/state.json"
 
 # ============================================================
 echo ""
+echo "=== 20. Behavioural: harvest.sh takes the engagement lock ==="
+
+cd "$DOWN_WORK"
+exec 8>>"$SWARM_RUNTIME_DIR/engagement.lock"
+flock -n 8
+lock_rc=0
+"$BASH" "$HARVEST_SH" --dry >/dev/null 2>&1 8>&- || lock_rc=$?
+assert_eq "harvest fails while another operation holds the lock" "1" \
+    "$lock_rc"
+lock_rc=0
+SWARM_LOCK_FD=8 "$BASH" "$HARVEST_SH" --dry >/dev/null 2>&1 || lock_rc=$?
+assert_eq "harvest runs under the caller's lock (SWARM_LOCK_FD)" "0" \
+    "$lock_rc"
+exec 8>&-
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
