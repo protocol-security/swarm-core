@@ -7,12 +7,15 @@
 
 swarm_project_id() {
     local raw="${1:-}" lower out="" c last_sep=false i
+    # The letters are spelled out: a range such as [a-z] follows the
+    # locale and can match letters that Docker names do not allow.
+    local alnum="abcdefghijklmnopqrstuvwxyz0123456789"
     lower="$(printf '%s' "$raw" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
 
     for ((i = 0; i < ${#lower}; i++)); do
         c="${lower:i:1}"
         case "$c" in
-            [a-z0-9])
+            ["$alnum"])
                 out+="$c"
                 last_sep=false
                 ;;
@@ -33,7 +36,7 @@ swarm_project_id() {
 
     while [ -n "$out" ]; do
         case "${out: -1}" in
-            [a-z0-9]) break ;;
+            ["$alnum"]) break ;;
             *) out="${out%?}" ;;
         esac
     done

@@ -688,11 +688,12 @@ for _eid in "" -a .a "a b" 'a$b' "a/b" "$(printf 'a%.0s' $(seq 1 65))"; do
     assert_eq "invalid engagement id: '${_eid:0:12}'" "1" \
         "$(status_of swarm_engagement_id_valid "$_eid")"
 done
-# The check is ASCII whatever the locale.
+# The check is ASCII whatever the locale.  "$BASH" is the shell running
+# this file: Bash 3.2 ranges follow the locale, Bash 5 ones do not.
 for _loc in en_US.UTF-8 C.UTF-8; do
     for _eid in "é" "İd" "a·b"; do
         assert_eq "non-ASCII id '${_eid}' is refused under ${_loc}" "1" \
-            "$(LC_ALL="$_loc" bash -c \
+            "$(LC_ALL="$_loc" "$BASH" -c \
                 'source "$1"; swarm_engagement_id_valid "$2"; echo $?' \
                 _ "$TESTS_DIR/../lib/project.sh" "$_eid" 2>/dev/null)"
     done

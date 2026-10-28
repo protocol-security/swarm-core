@@ -76,6 +76,10 @@
   `harvest.sh` and the dashboard refuse to act when
   `SWARM_ENGAGEMENT_ID` names a different engagement than the recorded
   one.
+- **Fix: project ids are ASCII in every locale.** Under a UTF-8 locale
+  the sanitizer kept letters such as `é` in the id, which Docker
+  rejects in image and container names; they now become separators
+  like other characters.
 
 ## 0.22.0 — 2026-06-08
 
