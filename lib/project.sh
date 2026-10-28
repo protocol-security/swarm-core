@@ -291,3 +291,255 @@ swarm_state_write() {
         return 1
     fi
 }
+
+# Project id for a checkout: SWARM_PROJECT when set, otherwise the
+# sanitized basename of the repository root.  The runtime directory,
+# the image and the container names all derive from it.
+swarm_project_resolve() {
+    local root="$1" id
+    if [ -n "${SWARM_PROJECT:-}" ]; then
+        id=$(swarm_project_id "$SWARM_PROJECT")
+        if [ "$id" != "$SWARM_PROJECT" ]; then
+            echo "ERROR: SWARM_PROJECT must be a project id: lowercase" \
+                 "letters and digits, with '.', '_' or '-' between" \
+                 "them (for example '${id}')." >&2
+            return 1
+        fi
+        printf '%s' "$id"
+        return 0
+    fi
+    swarm_project_id "$(basename "$root")"
+}
+
+# Physical path of a checkout, the form recorded as its owner.
+swarm_checkout_path() {
+    (cd -P "$1" && pwd -P)
+}
+
+# Apply a jq filter to the state file and replace it.  A missing file
+# starts from an empty object; a file that is not valid state is an
+# error.  Extra arguments go to jq (--arg name value, ...).
+swarm_state_update() {
+    local file="$1" filter="$2" state
+    shift 2
+    if [ -e "$file" ] || [ -L "$file" ]; then
+        state=$(swarm_state_read "$file") || {
+            echo "ERROR: not a ${SWARM_STATE_SCHEMA} state file: ${file}" >&2
+            return 1
+        }
+    else
+        state='{}'
+    fi
+    state=$(printf '%s' "$state" | jq -c \
+        --arg schema "$SWARM_STATE_SCHEMA" "$@" \
+        ".schema = \$schema | ${filter}") || return 1
+    swarm_state_write "$file" "$state"
+}
+
+# The state file records which checkout owns a runtime directory, so
+# two checkouts that resolve to the same project id never share its
+# bare repo, image or containers.  Fail when the directory belongs to
+# another checkout.  Callers run swarm_runtime_check first.
+swarm_runtime_owner_check() {
+    local dir="$1" root="$2" project="$3" file canonical state owner
+    file="$dir/state.json"
+    if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+        return 0
+    fi
+    canonical=$(swarm_checkout_path "$root") || return 1
+    state=$(swarm_state_read "$file") || {
+        echo "ERROR: not a ${SWARM_STATE_SCHEMA} state file: ${file}" >&2
+        return 1
+    }
+    owner=$(printf '%s' "$state" | jq -r '.repo_root // empty') \
+        || return 1
+    if [ -n "$owner" ] && [ "$owner" != "$canonical" ]; then
+        echo "ERROR: project id '${project}' belongs to another" \
+             "checkout." >&2
+        echo "  runtime:  ${dir}" >&2
+        echo "  owner:    ${owner}" >&2
+        echo "  this one: ${canonical}" >&2
+        echo "Give this checkout its own id with SWARM_PROJECT. If it" \
+             "is the same checkout at a new path, harvest from the old" \
+             "path first, or remove the runtime directory once nothing" \
+             "in it is needed." >&2
+        return 1
+    fi
+}
+
+# Record this checkout as the owner of the runtime directory, or fail
+# when another checkout owns it.
+swarm_runtime_claim() {
+    local dir="$1" root="$2" project="$3" canonical
+    swarm_runtime_owner_check "$dir" "$root" "$project" || return 1
+    canonical=$(swarm_checkout_path "$root") || return 1
+    swarm_state_update "$dir/state.json" \
+        '.project = $project | .repo_root = $root' \
+        --arg project "$project" --arg root "$canonical"
+}
+
+# Read-only commands run this: when the runtime directory exists it
+# has to be private and owned by this checkout.  A missing directory
+# is fine, and nothing is created.
+swarm_runtime_verify() {
+    local dir="$1" root="$2" project="$3"
+    if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+        return 0
+    fi
+    swarm_runtime_check "$dir" || return 1
+    swarm_runtime_owner_check "$dir" "$root" "$project"
+}
+
+# Every container the engine creates carries its project id and the
+# checkout that created it in these labels.
+SWARM_PROJECT_LABEL="swarm-core.project"
+SWARM_CHECKOUT_LABEL="swarm-core.checkout"
+
+# docker ps format and jq definitions for the project's containers.  A
+# container is the project's when its project label is the id,
+# whatever its name; one without labels (from an older release) counts
+# when its name is a numbered agent, post-process or interactive name of
+# the id.  Names are matched literally, so a '.' in the id matches only
+# itself.
+SWARM_CONTAINER_FORMAT='{"id":{{json .ID}},"name":{{json .Names}},"project":'
+SWARM_CONTAINER_FORMAT+='{{json (.Label "'"$SWARM_PROJECT_LABEL"'")}},'
+SWARM_CONTAINER_FORMAT+='"owner":{{json (.Label "'"$SWARM_CHECKOUT_LABEL"'")}}'
+SWARM_CONTAINER_FORMAT+='}'
+SWARM_JQ_PROJECT_CONTAINER='def project_name($prefix):
+    startswith($prefix)
+    and (ltrimstr($prefix) as $rest
+        | $rest == "post"
+          or ($rest | startswith("interactive-"))
+          or ($rest | test("^[0-9]+$")));
+def project_container($project):
+    .project == $project
+    or (.project == "" and (.name | project_name($project + "-agent-")));'
+
+# Print the project's containers as JSON lines (id, name, project,
+# owner).
+# Two listings: by project label, which finds a labeled container even
+# after a rename, and by name, for unlabeled ones (Docker's name filter
+# is a regular expression and only narrows that list).
+swarm_project_containers() {
+    local project="$1" by_label by_name
+    by_label=$(docker ps -a \
+        --filter "label=${SWARM_PROJECT_LABEL}=${project}" \
+        --format "$SWARM_CONTAINER_FORMAT") || return 1
+    by_name=$(docker ps -a --filter "name=${project}-agent-" \
+        --format "$SWARM_CONTAINER_FORMAT") || return 1
+    printf '%s\n%s\n' "$by_label" "$by_name" \
+        | jq -cs --arg project "$project" "${SWARM_JQ_PROJECT_CONTAINER}"'
+            map(select(project_container($project)))
+            | unique_by(.name) | .[]'
+}
+
+# Print the names of the project's containers, one per line.
+swarm_project_container_names() {
+    local project="$1" containers
+    containers=$(swarm_project_containers "$project") || return 1
+    printf '%s\n' "$containers" | jq -r '.name'
+}
+
+# Print the names of the project's interactive containers.
+swarm_interactive_container_names() {
+    local project="$1" names
+    names=$(swarm_project_container_names "$project") || return 1
+    printf '%s\n' "$names" | while IFS= read -r name; do
+        case "$name" in
+            "${project}-agent-interactive-"*) printf '%s\n' "$name" ;;
+        esac
+    done
+}
+
+# Container names are shared by everything on the Docker host, while
+# the runtime directory can live anywhere, so two checkouts with the
+# same project id could still reach each other's containers.  Fail when
+# one of the project's containers belongs to another checkout, or has
+# no label because an older release created it.
+swarm_containers_verify() {
+    local project="$1" root="$2" canonical containers foreign
+    local others unlabeled
+    canonical=$(swarm_checkout_path "$root") || return 1
+    containers=$(swarm_project_containers "$project") || {
+        echo "ERROR: cannot list Docker containers." >&2
+        return 1
+    }
+    foreign=$(printf '%s\n' "$containers" | jq -r --arg root "$canonical" '
+        select(.owner != $root)
+        | "  \(.name) (\(if .owner == "" then "no owner label"
+                         else "owner: " + .owner end))"') || {
+        echo "ERROR: cannot read the Docker container list." >&2
+        return 1
+    }
+    if [ -z "$foreign" ]; then
+        return 0
+    fi
+    echo "ERROR: containers of project id '${project}' do not belong" \
+         "to this checkout:" >&2
+    printf '%s\n' "$foreign" >&2
+    others=$(printf '%s\n' "$containers" | jq -rs --arg root "$canonical" \
+        'map(select(.owner != "" and .owner != $root)) | length') \
+        || others=1
+    unlabeled=$(printf '%s\n' "$containers" \
+        | jq -rs 'map(select(.owner == "") | .name) | join(" ")') \
+        || unlabeled=""
+    if [ "$others" != 0 ]; then
+        echo "Give this checkout its own id with SWARM_PROJECT, or stop" \
+             "those containers from the checkout that owns them and" \
+             "remove them with docker rm once their work is harvested." >&2
+    fi
+    # An older release started these, and its agents push to the bare
+    # repository in /tmp: stopping them without the grace period can
+    # lose their last commits.
+    if [ -n "$unlabeled" ]; then
+        echo "Containers without an owner label come from an older" \
+             "swarm-core. Stop them with the grace ./launch.sh stop" \
+             "gives, so their agents can push their last commits:" >&2
+        echo "  docker stop -t ${SWARM_STOP_TIMEOUT:-60} ${unlabeled}" >&2
+        echo "Then fetch their work and remove them as \"Upgrading from" \
+             "/tmp state\" in USAGE.md describes." >&2
+    fi
+    return 1
+}
+
+# Print the ID of container NAME when it carries this project id and
+# this checkout, nothing when there is no such container, and fail
+# (saying why) otherwise.  Callers act on the printed ID, so a
+# container that takes the name later is not touched.
+swarm_own_container_id() {
+    local name="$1" checkout="$2" project="$3" info verdict
+    info=$(docker container inspect --format \
+        '{"id":{{json .Id}},"labels":{{json .Config.Labels}}}' \
+        "$name" 2>/dev/null) || return 0
+    verdict=$(printf '%s\n' "$info" | jq -r --arg me "$checkout" \
+        --arg project "$project" --arg pkey "$SWARM_PROJECT_LABEL" \
+        --arg ckey "$SWARM_CHECKOUT_LABEL" '
+        (.labels // {}) as $l
+        | ($l[$pkey] // "") as $p
+        | ($l[$ckey] // "") as $owner
+        | if $p != $project and $p != "" then "project: " + $p
+          elif $owner == $me and $p == $project then "own " + .id
+          elif $owner == "" then "no owner label"
+          else "owner: " + $owner end') || {
+        echo "ERROR: cannot read container ${name}." >&2
+        return 1
+    }
+    case "$verdict" in
+        "own "*)
+            printf '%s' "${verdict#own }" ;;
+        *)
+            echo "ERROR: container ${name} does not belong to this" \
+                 "checkout and project (${verdict})." >&2
+            return 1 ;;
+    esac
+}
+
+# Print "name id" lines for the project's containers that this checkout
+# owns, so that callers can address each container by ID.
+swarm_own_containers() {
+    local project="$1" root="$2" canonical containers
+    canonical=$(swarm_checkout_path "$root") || return 1
+    containers=$(swarm_project_containers "$project") || return 1
+    printf '%s\n' "$containers" | jq -r --arg root "$canonical" \
+        'select(.owner == $root) | "\(.name) \(.id)"'
+}
