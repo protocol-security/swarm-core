@@ -397,6 +397,48 @@ assert_eq "bare removal mounts the runtime directory only" "<run>
 <-rf>
 </runtime/upstream.git>" "$_rm_args"
 
+# ============================================================
+echo ""
+echo "=== 5. State file ==="
+
+# Print "refused" when a command fails, "accepted" otherwise.
+verdict_of() {
+    if "$@" >/dev/null 2>&1; then
+        printf 'accepted'
+    else
+        printf 'refused'
+    fi
+}
+
+_sf_dir="$TMPDIR/state-rt"
+mkdir -m 700 "$_sf_dir"
+_sf="$_sf_dir/state.json"
+_sf_json='{"schema":"swarm-core.state/v1","title":"t"}'
+(umask 022 && swarm_state_write "$_sf" "$_sf_json")
+assert_eq "state file is mode 600 despite umask 022" "600" \
+    "$(swarm_file_mode "$_sf")"
+assert_eq "state file round trip" "$_sf_json" "$(swarm_state_read "$_sf")"
+swarm_state_write "$_sf" '{"schema":"swarm-core.state/v1","title":"u"}'
+assert_eq "write replaces the file" "u" \
+    "$(swarm_state_read "$_sf" | jq -r .title)"
+assert_eq "no temporary file is left" "state.json" "$(ls "$_sf_dir")"
+
+printf '%s\n' '{"schema":"other/v1"}' > "$_sf"
+assert_eq "another schema is refused" "refused" \
+    "$(verdict_of swarm_state_read "$_sf")"
+printf '%s\n' '[{"schema":"swarm-core.state/v1"}]' > "$_sf"
+assert_eq "a non-object is refused" "refused" \
+    "$(verdict_of swarm_state_read "$_sf")"
+printf '%s\n%s\n' "$_sf_json" "$_sf_json" > "$_sf"
+assert_eq "two objects are refused" "refused" \
+    "$(verdict_of swarm_state_read "$_sf")"
+printf 'SWARM_TITLE="x"\n' > "$_sf"
+assert_eq "the old env format is refused" "refused" \
+    "$(verdict_of swarm_state_read "$_sf")"
+: > "$_sf"
+assert_eq "an empty file is refused" "refused" \
+    "$(verdict_of swarm_state_read "$_sf")"
+
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"

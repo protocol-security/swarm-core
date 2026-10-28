@@ -69,14 +69,41 @@ DEFAULT_TITLE="${PROJECT_RAW}"
 # Save user's explicit env var so it takes priority over state file.
 USER_TITLE="${SWARM_TITLE:-}"
 
-# Source state file written by launch.sh (fills in env vars
-# that a standalone dashboard would otherwise lack), but only from a
-# runtime directory that no other user can write to.
-STATE_FILE="${RUNTIME_DIR}/swarm.env"
-if [ -f "$STATE_FILE" ] && runtime_ok; then
-    # shellcheck disable=SC1090
-    source "$STATE_FILE"
-fi
+# Load the state file written by launch.sh start into the variables a
+# standalone dashboard would otherwise lack.  The file is JSON read with
+# jq, never sourced, and only from a runtime directory that no other
+# user can write to.
+STATE_FILE="${RUNTIME_DIR}/state.json"
+load_state() {
+    local state title config agents summary label
+    if [ ! -f "$STATE_FILE" ] || ! runtime_ok; then
+        return 1
+    fi
+    state=$(swarm_state_read "$STATE_FILE") || return 1
+    # One jq call per field keeps each value whole.  Values shown on
+    # screen lose CR and LF; the swarmfile path stays exact.  Nothing is
+    # assigned until every field has been read.
+    title=$(printf '%s' "$state" \
+        | jq -r '.title // "" | tostring | gsub("[\r\n]"; " ")') || return 1
+    # The trailing "x" keeps any trailing newline of the path.
+    config=$(printf '%s' "$state" | jq -j '(.config // "") + "x"') \
+        || return 1
+    config="${config%x}"
+    agents=$(printf '%s' "$state" \
+        | jq -r '.num_agents // "" | tostring') || return 1
+    summary=$(printf '%s' "$state" \
+        | jq -r '.model_summary // "" | tostring | gsub("[\r\n]"; " ")') \
+        || return 1
+    label=$(printf '%s' "$state" \
+        | jq -r '.config_label // "" | tostring | gsub("[\r\n]"; " ")') \
+        || return 1
+    SWARM_TITLE="$title"
+    SWARM_CONFIG="$config"
+    SWARM_NUM_AGENTS="$agents"
+    SWARM_MODEL_SUMMARY="$summary"
+    SWARM_CONFIG_LABEL="$label"
+}
+load_state || true
 
 DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
 
@@ -458,9 +485,7 @@ emit_header() {
 
 draw() {
     # Re-read state file so display updates on every refresh.
-    if [ -f "$STATE_FILE" ] && runtime_ok; then
-        # shellcheck disable=SC1090
-        source "$STATE_FILE"
+    if load_state; then
         DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
         NUM_AGENTS="${SWARM_NUM_AGENTS:-$NUM_AGENTS}"
         MODEL_SUMMARY="${SWARM_MODEL_SUMMARY:-$MODEL_SUMMARY}"
