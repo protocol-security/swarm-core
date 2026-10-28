@@ -152,6 +152,23 @@ assert_eq "leading/trailing separators trimmed" \
     "repo" "$(swarm_project_id "_Repo.")"
 assert_eq "empty/all separators fallback" \
     "swarm" "$(swarm_project_id "---")"
+# Docker names are ASCII; a UTF-8 locale must not let other letters in.
+# "$BASH" runs the checks in the shell running this file: Bash 3.2
+# ranges follow the locale, Bash 5 ranges are ASCII by default.
+for _loc in en_US.UTF-8 C.UTF-8; do
+    assert_eq "non-ASCII letters become separators under ${_loc}" \
+        "caf-repo" \
+        "$(LC_ALL="$_loc" "$BASH" -c 'source "$1"; swarm_project_id "$2"' \
+            _ "$TESTS_DIR/../lib/project.sh" "Café Repo" 2>/dev/null)"
+    assert_eq "an all non-ASCII name falls back under ${_loc}" "swarm" \
+        "$(LC_ALL="$_loc" "$BASH" -c 'source "$1"; swarm_project_id "$2"' \
+            _ "$TESTS_DIR/../lib/project.sh" "éàü" 2>/dev/null)"
+    assert_eq "SWARM_PROJECT with a non-ASCII letter is refused (${_loc})" \
+        "1" \
+        "$(LC_ALL="$_loc" SWARM_PROJECT="café" "$BASH" -c \
+            'source "$1"; swarm_project_resolve /src/x >/dev/null; echo $?' \
+            _ "$TESTS_DIR/../lib/project.sh" 2>/dev/null)"
+done
 
 # ============================================================
 echo "=== 1. Model name shortening ==="
