@@ -179,25 +179,24 @@ mirror_submodules() {
     done
 }
 
-write_mirror_volume_file() {
-    local output_file="$1"
-    cd "$REPO_ROOT"
-    git submodule foreach --quiet 'echo "$name"' 2>/dev/null | \
-    while read -r name; do
-        local safe_name mirror
+# Fill MIRROR_ARGS with one read-only mount per mirrored submodule.
+# Each mount stays a single argument, so a space in a path or in a
+# submodule name does not split it.
+mirror_volume_args() {
+    local names name safe_name mirror
+    names=$(cd "$REPO_ROOT" \
+        && git submodule foreach --quiet 'echo "$name"' 2>/dev/null) || {
+        echo "ERROR: cannot list the submodules of ${REPO_ROOT}." >&2
+        return 1
+    }
+    MIRROR_ARGS=()
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
         safe_name="${name//\//_}"
         mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
         [ -d "$mirror" ] || continue
-        echo "-v ${mirror}:/mirrors/${name}:ro"
-    done > "$output_file"
-}
-
-read_volume_file() {
-    local input_file="$1"
-    while read -r line; do
-        # shellcheck disable=SC2206
-        [ -n "$line" ] && MIRROR_ARGS+=($line)
-    done < "$input_file"
+        MIRROR_ARGS+=(-v "${mirror}:/mirrors/${name}:ro")
+    done <<< "$names"
 }
 
 available_drivers() {
@@ -446,11 +445,9 @@ HELP
     mirror_submodules
     build_image
 
-    local vols_file="/tmp/${PROJECT}-interactive-vols.txt"
-    write_mirror_volume_file "$vols_file"
     MIRROR_ARGS=()
-    read_volume_file "$vols_file"
-    rm -f "$vols_file" "$profile_file"
+    mirror_volume_args
+    rm -f "$profile_file"
 
     local EXTRA_ENV=()
     while IFS= read -r _ae; do
@@ -592,12 +589,9 @@ cmd_start() {
 
     build_image
 
-    # Build mirror volume args from discovered submodules.
-    write_mirror_volume_file "/tmp/${PROJECT}-mirror-vols.txt"
-
-    # Read mirror volume mounts (shared across all containers).
+    # Mirror volume mounts, shared across all containers.
     MIRROR_ARGS=()
-    read_volume_file "/tmp/${PROJECT}-mirror-vols.txt"
+    mirror_volume_args
 
     AGENT_IDX=0
     while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt agent_auth_token agent_tag agent_driver; do
@@ -676,7 +670,7 @@ cmd_start() {
             "$IMAGE_NAME"
     done < "$AGENTS_CFG"
 
-    rm -f "/tmp/${PROJECT}-mirror-vols.txt" "/tmp/${PROJECT}-agents.cfg"
+    rm -f "/tmp/${PROJECT}-agents.cfg"
 
     # Write state file so a standalone dashboard can pick up config.
     local state_model_summary state_config_label
@@ -864,9 +858,7 @@ cmd_post_process() {
 
     # Build mirror volume args from existing mirrors.
     local MIRROR_ARGS=()
-    write_mirror_volume_file "/tmp/${PROJECT}-pp-vols.txt"
-    read_volume_file "/tmp/${PROJECT}-pp-vols.txt"
-    rm -f "/tmp/${PROJECT}-pp-vols.txt"
+    mirror_volume_args
 
     # Source the driver to access agent_docker_auth / agent_docker_env.
     # shellcheck source=lib/drivers/claude-code.sh

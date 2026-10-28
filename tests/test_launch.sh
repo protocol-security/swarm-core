@@ -1974,6 +1974,70 @@ assert_eq "cmd_post_process passes pp_setup to SWARM_CFG_SETUP" "1" \
 
 # ============================================================
 echo ""
+echo "=== 44. mirror_volume_args keeps each mount whole ==="
+
+# Source the live helper.  Mounts used to go through a text file that
+# was re-read with word splitting, so a space split one mount into
+# several docker arguments.
+_mva_fn="$TMPDIR/mirror_volume_args.sh"
+awk '/^mirror_volume_args\(\)[[:space:]]*\{/ { p = 1 }
+     p { print }
+     p && /^\}[[:space:]]*$/ { exit }' \
+    "$_LAUNCH_SH" > "$_mva_fn"
+# shellcheck source=/dev/null
+source "$_mva_fn"
+
+_mva_sub="$TMPDIR/mva-sub"
+_mva_top="$TMPDIR/mva-top"
+git init -q "$_mva_sub"
+git -C "$_mva_sub" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m init
+git init -q "$_mva_top"
+git -C "$_mva_top" -c protocol.file.allow=always \
+    submodule add -q "$_mva_sub" "lib space" 2>/dev/null
+git -C "$_mva_top" -c protocol.file.allow=always \
+    submodule add -q "$_mva_sub" "no-mirror" 2>/dev/null
+
+_mva_project="swarmtest-mva-$$"
+_mva_mirror="/tmp/${_mva_project}-mirror-lib space.git"
+mkdir -p "$_mva_mirror"
+_mva_out=$(
+    PROJECT="$_mva_project"
+    REPO_ROOT="$_mva_top"
+    mirror_volume_args
+    printf '<%s>\n' "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}"
+)
+rm -rf "$_mva_mirror"
+
+assert_eq "space in a submodule name stays in one mount" \
+    "<-v>
+<${_mva_mirror}:/mirrors/lib space:ro>" "$_mva_out"
+
+_mva_plain="$TMPDIR/mva-plain"
+git init -q "$_mva_plain"
+_mva_rc=0
+_mva_out=$(
+    PROJECT="$_mva_project"
+    REPO_ROOT="$_mva_plain"
+    mirror_volume_args
+    printf '%s' "${#MIRROR_ARGS[@]}"
+) || _mva_rc=$?
+assert_eq "no submodules: success" "0" "$_mva_rc"
+assert_eq "no submodules: no mounts" "0" "$_mva_out"
+
+# A failed submodule listing must stop the launch instead of starting
+# containers without their mirrors.
+mkdir -p "$TMPDIR/mva-not-a-repo"
+_mva_rc=0
+(
+    PROJECT="$_mva_project"
+    REPO_ROOT="$TMPDIR/mva-not-a-repo"
+    mirror_volume_args
+) >/dev/null 2>&1 || _mva_rc=$?
+assert_eq "failed submodule listing returns an error" "1" "$_mva_rc"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

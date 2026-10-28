@@ -24,6 +24,11 @@
   prompt injection created were not writable by the agent, so its
   pushes failed. Both are now writable for any UID, as
   `create_bare_repo` makes the real bare repo.
+- **Fix: a space no longer splits a submodule mirror mount.**
+  `launch.sh` wrote the mirror mounts to a text file and read them
+  back with word splitting, so a submodule name containing a space
+  turned one `-v` mount into several Docker arguments. The mounts
+  are now built as an array.
 
 ## 0.22.0 — 2026-06-08
 
