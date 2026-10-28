@@ -816,6 +816,65 @@ assert_eq "dashboard prints interactive branch" "1" \
 
 # ============================================================
 echo ""
+echo "=== 14. Runtime directory is read only when private ==="
+
+# The bare repo in the runtime directory is writable for every UID, so
+# the dashboard must not read it (or the state file) when the
+# directory is open to other users or is a symlink.
+# shellcheck disable=SC1091 source=../lib/project.sh
+source "$TESTS_DIR/../lib/project.sh"
+_rt_tmp=$(mktemp -d)
+for _fn in runtime_ok interactive_branch_status; do
+    awk -v fn="$_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
+         p { print }
+         p && /^\}[[:space:]]*$/ { exit }' \
+        "$TESTS_DIR/../dashboard.sh" > "$_rt_tmp/$_fn.sh"
+    # shellcheck source=/dev/null
+    source "$_rt_tmp/$_fn.sh"
+done
+# Stopped containers report their state through docker cp; not needed.
+read_interactive_state_value() { :; }
+
+REPO_ROOT="$_rt_tmp/repo"
+RUNTIME_DIR="$_rt_tmp/rt"
+BARE_REPO="$RUNTIME_DIR/upstream.git"
+git init -q "$REPO_ROOT"
+git -C "$REPO_ROOT" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m init
+mkdir -m 700 "$RUNTIME_DIR"
+git clone -q --bare "$REPO_ROOT" "$BARE_REPO"
+git -C "$BARE_REPO" branch swarm/x/interactive-a HEAD
+
+assert_eq "private runtime is readable" "true" \
+    "$(runtime_ok && echo true || echo false)"
+assert_eq "branch status reads the bare repo" "harvested" \
+    "$(interactive_branch_status c swarm/x/interactive-a exited)"
+
+chmod 755 "$RUNTIME_DIR"
+assert_eq "open runtime is not readable" "false" \
+    "$(runtime_ok && echo true || echo false)"
+assert_eq "branch status skips an open runtime" "exited" \
+    "$(interactive_branch_status c swarm/x/interactive-a exited)"
+chmod 700 "$RUNTIME_DIR"
+
+mv "$RUNTIME_DIR" "$_rt_tmp/real"
+ln -s "$_rt_tmp/real" "$RUNTIME_DIR"
+assert_eq "symlinked runtime is not readable" "false" \
+    "$(runtime_ok && echo true || echo false)"
+assert_eq "branch status skips a symlinked runtime" "exited" \
+    "$(interactive_branch_status c swarm/x/interactive-a exited)"
+
+# Every read of the bare repo in draw() sits behind runtime_ok.
+_draw_body=$(awk '/^draw\(\)[[:space:]]*\{/,/^\}/' \
+    "$TESTS_DIR/../dashboard.sh")
+assert_eq "draw() reads the bare repo only behind runtime_ok" \
+    '    if [ -d "$BARE_REPO" ] && runtime_ok; then' \
+    "$(printf '%s\n' "$_draw_body" \
+        | grep -E '^    if \[ -d "\$BARE_REPO" \]')"
+rm -rf "$_rt_tmp"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
