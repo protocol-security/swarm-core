@@ -69,6 +69,13 @@ assert_eq "cleanup removes only that directory" \
     "$(awk '/^cleanup\(\) \{/,/^\}/' "$TEST_SH" | grep 'rm_docker_dir')"
 
 echo ""
+echo "=== 4. Unit test dependencies ==="
+
+# launch.sh and harvest.sh lock with flock(1), which macOS lacks.
+assert_eq "macOS unit job installs flock" "1" \
+    "$(grep -cE 'brew install .*flock' "$CI_YML")"
+
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

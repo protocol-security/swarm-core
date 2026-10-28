@@ -21,6 +21,7 @@ Based on the agent-team pattern from
 
 - [Docker](https://docs.docker.com/get-docker/)
 - bash (5.0+), git, jq, bc
+- flock (util-linux on Linux; `brew install flock` on macOS)
 - tput (ncurses) — used by the dashboard
 - An Anthropic API key, OAuth token, or compatible endpoint
 
