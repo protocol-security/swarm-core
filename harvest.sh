@@ -88,6 +88,7 @@ if [ ! -d "$BARE_REPO" ]; then
 fi
 swarm_runtime_check "$RUNTIME_DIR" || exit 1
 swarm_runtime_owner_check "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
+swarm_lock "$RUNTIME_DIR" || exit 1
 swarm_engagement_env_check || exit 1
 swarm_engagement_join "$RUNTIME_DIR/state.json" || exit 1
 CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")"

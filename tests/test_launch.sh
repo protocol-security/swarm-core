@@ -2527,6 +2527,129 @@ assert_eq "wait refuses another engagement" "1" "$_eng_rc"
 
 # ============================================================
 echo ""
+echo "=== 51. Engagement lock ==="
+
+# start fails at once while another operation holds the lock, before
+# it touches the bare repo or Docker.
+_lk_rt="$TMPDIR/lock-runtime"
+_lk_log="$TMPDIR/lock-docker.log"
+_lk_bin="$TMPDIR/lock-bin"
+mkdir -p "$_lk_bin"
+mkdir -m 700 "$_lk_rt"
+cat > "$_lk_bin/docker" <<EOF
+#!/bin/bash
+echo "\$*" >> "$_lk_log"
+[ "\$1 \$2" = "container inspect" ] && exit 1
+# The interactive container reports "created" until the session marks
+# itself running.  The session checks the lock before that and again
+# while it runs, prints a line, and exits with FAKE_EXIT.  With
+# FAKE_NEVER_RUNS the container never starts.
+if [ "\$1" = inspect ]; then
+    if [ -e "$_lk_rt.running" ]; then echo running; else echo created; fi
+    exit 0
+fi
+if [ "\$1 \$2" = "run -it" ]; then
+    if flock -n 6 6>>"$_lk_rt/engagement.lock"; then
+        echo "lock free before the container runs" >> "$_lk_log"
+    fi
+    [ -n "\${FAKE_NEVER_RUNS:-}" ] && exit 3
+    : > "$_lk_rt.running"
+    for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        if flock -n 6 6>>"$_lk_rt/engagement.lock"; then
+            echo "lock free during session" >> "$_lk_log"
+            break
+        fi
+        sleep 0.1
+    done
+    echo "SESSION OUTPUT"
+    rm -f "$_lk_rt.running"
+    exit "\${FAKE_EXIT:-0}"
+fi
+exit 0
+EOF
+chmod +x "$_lk_bin/docker"
+run_lock() {
+    (cd "$_st_repo" && PATH="$_lk_bin:$PATH" SWARM_RUNTIME_DIR="$_lk_rt" \
+        SWARM_CONFIG=sub/configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+        "$BASH" "$_LAUNCH_SH" "$@" 2>&1)
+}
+exec 8>>"$_lk_rt/engagement.lock"
+flock -n 8
+: > "$_lk_log"
+_lk_rc=0
+run_lock start 8>&- >/dev/null || _lk_rc=$?
+assert_eq "start fails while the lock is held" "1" "$_lk_rc"
+assert_eq "start creates no bare repo then" "false" \
+    "$([ -e "$_lk_rt/upstream.git" ] && echo true || echo false)"
+assert_eq "start runs no container then" "0" \
+    "$(grep -c '^run ' "$_lk_log" || true)"
+_lk_rc=0
+(cd "$_st_repo" && PATH="$_lk_bin:$PATH" SWARM_RUNTIME_DIR="$_lk_rt" \
+    SWARM_CONFIG=sub/configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+    SWARM_LOCK_FD=8 "$BASH" "$_LAUNCH_SH" start >/dev/null 2>&1) \
+    || _lk_rc=$?
+assert_eq "start with the holder's SWARM_LOCK_FD runs" "0" "$_lk_rc"
+exec 8>&-
+
+# An interactive session keeps the lock until its container runs (its
+# mounts are then in place) and gives it up for the rest of the
+# session; docker run keeps the terminal, so output and exit status
+# come straight from the container.
+: > "$_lk_log"
+_lk_rc=0
+_lk_out=$(FAKE_EXIT=4 run_lock interactive --agent-index 1) || _lk_rc=$?
+assert_eq "the lock is held until the container runs" "0" \
+    "$(grep -c 'lock free before the container runs' "$_lk_log" || true)"
+assert_eq "the lock is free once the container runs" "1" \
+    "$(grep -c 'lock free during session' "$_lk_log" || true)"
+assert_eq "the session's output reaches the terminal" "true" \
+    "$(printf '%s\n' "$_lk_out" | grep -q 'SESSION OUTPUT' \
+        && echo true || echo false)"
+assert_eq "interactive returns the container's exit status" "4" "$_lk_rc"
+# A container that never starts: docker run fails, launch.sh exits, and
+# the helper lets the lock go once it sees that.
+: > "$_lk_log"
+_lk_rc=0
+FAKE_NEVER_RUNS=1 run_lock interactive --agent-index 1 >/dev/null \
+    || _lk_rc=$?
+assert_eq "a container that never starts fails interactive" "3" "$_lk_rc"
+_lk_free=1
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if flock -n 6 6>>"$_lk_rt/engagement.lock"; then
+        _lk_free=0
+        break
+    fi
+    sleep 0.1
+done
+assert_eq "the lock is free soon after that" "0" "$_lk_free"
+# A caller that reads the output to EOF before it reaps launch.sh, as
+# Python's communicate() does, must get EOF once launch.sh is done: the
+# helper may not keep the output pipe open.  perl reads like that; the
+# alarm ends a hang after 20 s.
+_lk_rc=0
+(cd "$_st_repo" && PATH="$_lk_bin:$PATH" SWARM_RUNTIME_DIR="$_lk_rt" \
+    SWARM_CONFIG=sub/configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+    FAKE_NEVER_RUNS=1 perl -e '
+        alarm 20;
+        open(my $p, "-|", @ARGV) or exit 9;
+        local $/;
+        my $out = <$p>;
+        close $p;
+        exit($? >> 8);
+    ' "$BASH" "$_LAUNCH_SH" interactive --agent-index 1 2>/dev/null) \
+    || _lk_rc=$?
+assert_eq "a reader that waits for EOF gets it and the exit status" "3" \
+    "$_lk_rc"
+
+# start --dashboard execs the dashboard, which runs until closed; the
+# lock must be released first.
+assert_eq "start --dashboard unlocks before exec" "1" \
+    "$(awk '/^    start\)/,/;;/' "$_LAUNCH_SH" \
+        | grep -A1 'swarm_unlock' | grep -c 'exec "$SWARM_DIR/dashboard.sh"' \
+        || true)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

@@ -621,3 +621,73 @@ swarm_engagement_join() {
         return 1
     fi
 }
+
+# Succeed when descriptor FD is open on FILE (same device and inode).
+# Linux resolves /dev/fd/N to the open file, so the test builtin can
+# compare them.  macOS reports /dev/fd/N on its own device, so there
+# the descriptor is checked with fstat through the system perl.
+swarm_fd_is_file() {
+    local fd="$1" file="$2"
+    if [ "$(uname -s)" = Darwin ]; then
+        /usr/bin/perl -e '
+            open(my $fh, ">&=", $ARGV[0]) or exit 1;
+            my @a = stat($fh) or exit 1;
+            my @b = stat($ARGV[1]) or exit 1;
+            exit(($a[0] == $b[0] && $a[1] == $b[1]) ? 0 : 1);
+        ' "$fd" "$file" 2>/dev/null
+        return
+    fi
+    [ -e "/dev/fd/$fd" ] && [ "/dev/fd/$fd" -ef "$file" ]
+}
+
+# Take the engagement lock of runtime directory DIR, or fail at once
+# when another operation holds it.  flock(1) keeps the lock for as long
+# as the descriptor stays open, so children that inherit it share it.
+# A caller that already holds the lock passes its descriptor in
+# SWARM_LOCK_FD: the engine checks that the descriptor is this lock
+# file and locks through it.
+swarm_lock() {
+    local dir="$1" lock fd
+    lock="$dir/engagement.lock"
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "ERROR: flock is required to lock ${lock}" \
+             "(on macOS: brew install flock)." >&2
+        return 1
+    fi
+    if [ -n "${SWARM_LOCK_FD:-}" ]; then
+        fd="$SWARM_LOCK_FD"
+        case "$fd" in
+            *[!0123456789]*)
+                echo "ERROR: SWARM_LOCK_FD must be a descriptor number." >&2
+                return 1 ;;
+        esac
+        if [ "$fd" -lt 3 ] || ! swarm_fd_is_file "$fd" "$lock"; then
+            echo "ERROR: SWARM_LOCK_FD ${fd} is not open on ${lock}." >&2
+            return 1
+        fi
+    else
+        if [ -L "$lock" ]; then
+            echo "ERROR: lock file is a symlink: ${lock}" >&2
+            return 1
+        fi
+        fd=9
+        exec 9>>"$lock" || return 1
+    fi
+    if ! flock -n "$fd"; then
+        echo "ERROR: another swarm-core operation holds ${lock}." >&2
+        return 1
+    fi
+    SWARM_LOCK_FD="$fd"
+    export SWARM_LOCK_FD
+}
+
+# Close this process's lock descriptor.  A lock that a caller passed in
+# stays held by the caller.
+swarm_unlock() {
+    local fd="${SWARM_LOCK_FD:-}"
+    case "$fd" in
+        ''|*[!0123456789]*) return 0 ;;
+    esac
+    eval "exec ${fd}>&-"
+    unset SWARM_LOCK_FD
+}

@@ -50,6 +50,8 @@ Environment:
                             and containers (default: the repo name).
   SWARM_ENGAGEMENT_ID       Engagement id for a new bare repo, or the one
                             later commands expect (default: generated).
+  SWARM_LOCK_FD             Descriptor of an engagement lock the caller
+                            already holds.
 HELP
     exit 0
 fi
@@ -198,14 +200,36 @@ own_container_state() {
         || printf 'not found'
 }
 
+# Hold the lock descriptors this process inherited until container NAME
+# has started (running, or already stopped), file STOP exists, or
+# process PARENT is gone.  cmd_interactive creates STOP as soon as
+# docker run returns; the parent check covers a launch.sh that was
+# killed.  There is no timeout: a slow start keeps the lock, to protect
+# what the container is about to mount.
+hold_lock_until_running() {
+    local name="$1" parent="$2" stop="$3" state
+    while [ ! -e "$stop" ] && kill -0 "$parent" 2>/dev/null; do
+        state=$(docker inspect -f '{{.State.Status}}' "$name" \
+            2>/dev/null || true)
+        case "$state" in
+            running|exited|dead) return 0 ;;
+        esac
+        sleep 0.1
+    done
+}
+
 # Lifecycle commands call this before they touch the bare repo or the
 # mirrors: stop on state that older releases left in /tmp (named after
 # the directory, as they did), create or check the private runtime
-# directory, and record this checkout as its owner.
+# directory, take its engagement lock, and record this checkout as its
+# owner.  The lock stays held until the command exits, except that
+# interactive releases it once its container runs and start --dashboard
+# before the dashboard opens; children such as harvest.sh inherit it.
 prepare_runtime() {
     swarm_refuse_legacy_state "$(swarm_project_id "$PROJECT_RAW")" \
         || exit 1
     swarm_runtime_init "$RUNTIME_DIR" || exit 1
+    swarm_lock "$RUNTIME_DIR" || exit 1
     swarm_runtime_claim "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
 }
 
@@ -602,6 +626,22 @@ HELP
 
     remove_own_container "$name"
 
+    # The session can last hours and only pushes through git, so it runs
+    # without the lock, but the lock has to last until the container
+    # runs: its mounts are made at start, and a concurrent start could
+    # otherwise replace the bare repo or the mirrors first.  A helper
+    # that inherits the lock descriptor holds it until then; this shell
+    # drops its own copy so that docker run, which keeps the terminal
+    # for the whole session, does not inherit it.
+    # The helper gets no stdio, so it never keeps a caller's output pipe
+    # open.  Its stop file lives in the private runtime directory.
+    local helper stop rc=0
+    stop="${RUNTIME_DIR}/.interactive-$$.stop"
+    rm -f "$stop"
+    hold_lock_until_running "$name" "$$" "$stop" \
+        </dev/null >/dev/null 2>&1 &
+    helper=$!
+    swarm_unlock
     echo "--- Starting interactive ${profile_label} (${agent_model}) ---"
     echo "Branch: ${branch}"
     docker run -it \
@@ -632,7 +672,13 @@ HELP
         -e "SWARM_INTERACTIVE_PROFILE=${profile_label}" \
         -e "SWARM_INTERACTIVE_MODE=${mode}" \
         --entrypoint /interactive.sh \
-        "$IMAGE_NAME"
+        "$IMAGE_NAME" || rc=$?
+    # docker run has returned: the container ran or never will.  wait
+    # only reaps this shell's own child, so a reused PID is never hit.
+    : > "$stop"
+    wait "$helper" 2>/dev/null || true
+    rm -f "$stop"
+    return "$rc"
 }
 
 cmd_start() {
@@ -1093,6 +1139,8 @@ case "${1:-start}" in
         parse_start_args "$@"
         cmd_start
         if $OPEN_DASHBOARD; then
+            # The dashboard runs until closed; it must not keep the lock.
+            swarm_unlock
             exec "$SWARM_DIR/dashboard.sh"
         fi
         ;;

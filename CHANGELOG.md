@@ -76,6 +76,14 @@
   `harvest.sh` and the dashboard refuse to act when
   `SWARM_ENGAGEMENT_ID` names a different engagement than the recorded
   one.
+- **Feature (breaking): engagement lock.** `start`, `post-process`,
+  `interactive`/`chat`/`shell` and `harvest.sh` take
+  `engagement.lock` in the runtime directory with `flock -n` and fail
+  at once when another operation holds it, so two runs can no longer
+  replace the bare repo or the mirrors at the same time. A caller that
+  holds the lock passes its descriptor in `SWARM_LOCK_FD`, which the
+  engine checks against the lock file. `flock` is now required (on
+  macOS: `brew install flock`).
 - **Fix: project ids are ASCII in every locale.** Under a UTF-8 locale
   the sanitizer kept letters such as `é` in the id, which Docker
   rejects in image and container names; they now become separators

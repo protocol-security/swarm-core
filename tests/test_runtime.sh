@@ -745,6 +745,67 @@ assert_contains "the refusal names the recorded engagement" "eng-1" \
     "$(SWARM_ENGAGEMENT_ID=eng-2 swarm_engagement_join "$_eng_file" 2>&1 \
         || true)"
 
+# ============================================================
+echo ""
+echo "=== 8. Engagement lock ==="
+
+_lk_dir="$TMPDIR/lock-rt"
+mkdir -m 700 "$_lk_dir"
+_lk_file="$_lk_dir/engagement.lock"
+: > "$TMPDIR/other-file"
+
+assert_eq "a free lock is taken" "0" "$(env -u SWARM_LOCK_FD \
+    "$BASH" -c 'source "$1"; swarm_lock "$2" && printf %s "$SWARM_LOCK_FD"' \
+    _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" >/dev/null 2>&1; echo $?)"
+assert_eq "the lock descriptor is exported" "9" \
+    "$(env -u SWARM_LOCK_FD "$BASH" -c \
+        'source "$1"; swarm_lock "$2" && printf %s "$SWARM_LOCK_FD"' \
+        _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" 2>/dev/null)"
+
+# Hold the lock in this shell on descriptor 8.
+exec 8>>"$_lk_file"
+flock -n 8
+assert_eq "another process fails at once while it is held" "1" \
+    "$(env -u SWARM_LOCK_FD "$BASH" -c 'source "$1"; swarm_lock "$2"' \
+        _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" >/dev/null 2>&1 8>&-; \
+       echo $?)"
+assert_contains "the refusal names the lock file" "engagement.lock" \
+    "$(env -u SWARM_LOCK_FD "$BASH" -c 'source "$1"; swarm_lock "$2"' \
+        _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" 2>&1 8>&-)"
+assert_eq "a child given SWARM_LOCK_FD=8 shares the held lock" "0" \
+    "$(SWARM_LOCK_FD=8 "$BASH" -c 'source "$1"; swarm_lock "$2"' \
+        _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" >/dev/null 2>&1; \
+       echo $?)"
+exec 7>>"$TMPDIR/other-file"
+assert_eq "SWARM_LOCK_FD open on another file is refused" "1" \
+    "$(SWARM_LOCK_FD=7 "$BASH" -c 'source "$1"; swarm_lock "$2"' \
+        _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" >/dev/null 2>&1; \
+       echo $?)"
+exec 7>&-
+assert_eq "SWARM_LOCK_FD that is not open is refused" "1" \
+    "$(SWARM_LOCK_FD=6 "$BASH" -c 'source "$1"; swarm_lock "$2"' \
+        _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" >/dev/null 2>&1 6>&-; \
+       echo $?)"
+for _bad in x 1 "8 9"; do
+    assert_eq "SWARM_LOCK_FD='${_bad}' is refused" "1" \
+        "$(SWARM_LOCK_FD="$_bad" "$BASH" -c 'source "$1"; swarm_lock "$2"' \
+            _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" >/dev/null 2>&1; \
+           echo $?)"
+done
+exec 8>&-
+assert_eq "the lock is free once the holder closes it" "0" \
+    "$(env -u SWARM_LOCK_FD "$BASH" -c 'source "$1"; swarm_lock "$2"' \
+        _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" >/dev/null 2>&1; \
+       echo $?)"
+
+_fd_check='source "$1"; exec 5>>"$2"; swarm_fd_is_file 5 "$3"; echo $?'
+assert_eq "swarm_fd_is_file: same file" "0" \
+    "$("$BASH" -c "$_fd_check" _ "$TESTS_DIR/../lib/project.sh" \
+        "$_lk_file" "$_lk_file")"
+assert_eq "swarm_fd_is_file: another file" "1" \
+    "$("$BASH" -c "$_fd_check" _ "$TESTS_DIR/../lib/project.sh" \
+        "$TMPDIR/other-file" "$_lk_file")"
+
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
