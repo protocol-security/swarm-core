@@ -439,6 +439,243 @@ assert_eq "the old env format is refused" "refused" \
 assert_eq "an empty file is refused" "refused" \
     "$(verdict_of swarm_state_read "$_sf")"
 
+# ============================================================
+echo ""
+echo "=== 6. Project identity ==="
+
+assert_eq "default id is the sanitized basename" "my-repo" \
+    "$(env -u SWARM_PROJECT bash -c 'source "$1"; swarm_project_resolve "$2"' \
+        _ "$TESTS_DIR/../lib/project.sh" "/src/My Repo")"
+assert_eq "SWARM_PROJECT sets the id" "proj-b" \
+    "$(SWARM_PROJECT=proj-b swarm_project_resolve /src/proj)"
+assert_eq "SWARM_PROJECT must already be an id" "1" \
+    "$(SWARM_PROJECT="Proj B" status_of swarm_project_resolve /src/proj)"
+assert_contains "the error suggests the id form" "proj-b" \
+    "$(SWARM_PROJECT="Proj B" swarm_project_resolve /src/proj 2>&1 || true)"
+
+_own_a="$TMPDIR/own/a/proj"
+_own_b="$TMPDIR/own/b/proj"
+_own_rt="$TMPDIR/own-rt"
+mkdir -p "$_own_a" "$_own_b"
+mkdir -m 700 "$_own_rt"
+swarm_runtime_claim "$_own_rt" "$_own_a" proj
+assert_eq "claim records the owner" "$(cd -P "$_own_a" && pwd -P)" \
+    "$(jq -r .repo_root "$_own_rt/state.json")"
+assert_eq "claim records the project id" "proj" \
+    "$(jq -r .project "$_own_rt/state.json")"
+assert_eq "claim keeps the schema" "swarm-core.state/v1" \
+    "$(jq -r .schema "$_own_rt/state.json")"
+assert_eq "the owner can claim again" "0" \
+    "$(status_of swarm_runtime_claim "$_own_rt" "$_own_a" proj)"
+ln -s "$_own_a" "$TMPDIR/own/a-link"
+assert_eq "the owner through a symlinked path is the same checkout" "0" \
+    "$(status_of swarm_runtime_owner_check "$_own_rt" \
+        "$TMPDIR/own/a-link" proj)"
+assert_eq "another checkout is refused" "1" \
+    "$(status_of swarm_runtime_claim "$_own_rt" "$_own_b" proj)"
+_own_msg=$(swarm_runtime_owner_check "$_own_rt" "$_own_b" proj 2>&1 || true)
+assert_contains "the refusal names SWARM_PROJECT" "SWARM_PROJECT" "$_own_msg"
+assert_contains "the refusal names the owner" \
+    "$(cd -P "$_own_a" && pwd -P)" "$_own_msg"
+assert_eq "a refused claim leaves the owner alone" \
+    "$(cd -P "$_own_a" && pwd -P)" "$(jq -r .repo_root "$_own_rt/state.json")"
+
+swarm_state_update "$_own_rt/state.json" '.title = $t' --arg t "run 1"
+assert_eq "an update keeps the owner" "$(cd -P "$_own_a" && pwd -P)" \
+    "$(jq -r .repo_root "$_own_rt/state.json")"
+assert_eq "an update sets the field" "run 1" \
+    "$(jq -r .title "$_own_rt/state.json")"
+
+printf 'SWARM_TITLE="x"\n' > "$_own_rt/state.json"
+assert_eq "an unreadable state file is refused" "1" \
+    "$(status_of swarm_runtime_owner_check "$_own_rt" "$_own_a" proj)"
+assert_eq "an unreadable state file is not overwritten" "1" \
+    "$(status_of swarm_runtime_claim "$_own_rt" "$_own_a" proj)"
+
+assert_eq "verify accepts a missing runtime" "0" \
+    "$(status_of swarm_runtime_verify "$TMPDIR/none" "$_own_a" proj)"
+assert_eq "verify does not create it" "false" \
+    "$([ -e "$TMPDIR/none" ] && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 6b. Container owners ==="
+
+_ctr_root="$(cd -P "$_own_a" && pwd -P)"
+# Print docker ps lines in the JSON form swarm_containers_verify asks
+# for, from "name project owner" triples.
+ctr_listing() {
+    while [ $# -gt 0 ]; do
+        jq -nc --arg n "$1" --arg p "$2" --arg o "$3" \
+            '{name: $n, project: $p, owner: $o}'
+        shift 3
+    done
+}
+containers_verdict() {
+    # The docker stub runs inside the functions under test and would see
+    # their locals first, so this name carries a prefix of its own.
+    local _cv_listing="$1"
+    (
+        # Stands in for the Docker CLI; swarm_containers_verify calls it.
+        # shellcheck disable=SC2329
+        docker() { printf '%s\n' "$_cv_listing"; }
+        status_of swarm_containers_verify proj "$_own_a"
+    )
+}
+assert_eq "no containers" "0" "$(containers_verdict "")"
+assert_eq "own numbered, post and interactive containers" "0" \
+    "$(containers_verdict "$(ctr_listing proj-agent-1 proj "$_ctr_root" \
+        proj-agent-post proj "$_ctr_root" \
+        proj-agent-interactive-x-1 proj "$_ctr_root")")"
+assert_eq "a container of another checkout is refused" "1" \
+    "$(containers_verdict "$(ctr_listing proj-agent-2 proj /elsewhere/proj)")"
+assert_eq "an unlabeled container is refused" "1" \
+    "$(containers_verdict "$(ctr_listing proj-agent-post "" "")")"
+assert_eq "unlabeled names of other projects are ignored" "0" \
+    "$(containers_verdict "$(ctr_listing proj-agent-agent-1 "" "" \
+        proj-agent-x "" "" proj-agentx-1 "" "")")"
+# Project ids can overlap as names: proj-agent-interactive-tools has a
+# container proj-agent-interactive-tools-agent-1.  Its project label
+# keeps it out of proj's containers.
+assert_eq "a labeled container of an overlapping id is ignored" "0" \
+    "$(containers_verdict "$(ctr_listing \
+        proj-agent-interactive-tools-agent-1 proj-agent-interactive-tools \
+        /elsewhere/tools)")"
+_ctr_msg=$(
+    # shellcheck disable=SC2329
+    docker() { ctr_listing proj-agent-2 proj /elsewhere/proj; }
+    swarm_containers_verify proj "$_own_a" 2>&1 || true
+)
+assert_contains "the refusal names the container" "proj-agent-2" "$_ctr_msg"
+assert_contains "the refusal names the owner" "/elsewhere/proj" "$_ctr_msg"
+assert_contains "another checkout's containers: use SWARM_PROJECT" \
+    "own id with SWARM_PROJECT" "$_ctr_msg"
+assert_eq "another checkout's containers: no old-release steps" "0" \
+    "$(printf '%s\n' "$_ctr_msg" | grep -c 'older swarm-core' || true)"
+
+# Containers of an older release get the upgrade steps instead: stop
+# with the grace, so their agents can still push to /tmp.
+_ctr_msg=$(
+    # shellcheck disable=SC2329
+    docker() { ctr_listing proj-agent-1 "" "" proj-agent-post "" ""; }
+    swarm_containers_verify proj "$_own_a" 2>&1 || true
+)
+assert_contains "old containers: stop them with the grace" \
+    "  docker stop -t ${SWARM_STOP_TIMEOUT:-60} proj-agent-1 proj-agent-post" \
+    "$_ctr_msg"
+assert_contains "old containers: points to the upgrade steps" \
+    "Upgrading from" "$_ctr_msg"
+assert_eq "old containers: no SWARM_PROJECT advice" "0" \
+    "$(printf '%s\n' "$_ctr_msg" | grep -c 'SWARM_PROJECT' || true)"
+assert_eq "old containers: no docker rm -f advice" "0" \
+    "$(printf '%s\n' "$_ctr_msg" | grep -c 'rm -f' || true)"
+assert_eq "a failing docker ps is refused" "1" \
+    "$(
+        # shellcheck disable=SC2329
+        docker() { return 1; }
+        status_of swarm_containers_verify proj "$_own_a"
+    )"
+
+# Discovery has to find a labeled container whatever its name.  This
+# stub honours docker ps filters: label=swarm-core.project=ID matches
+# the project label exactly, name=P matches names that contain P.  The
+# containers come from FILTER_TABLE lines "name project owner", with
+# "-" for an empty field.
+filter_docker() {
+    local filter="" name project owner
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --filter) filter="$2"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    printf '%s\n' "$FILTER_TABLE" | while read -r name project owner; do
+        [ -n "$name" ] || continue
+        project="${project#-}" owner="${owner#-}"
+        case "$filter" in
+            label=swarm-core.project=*)
+                [ "$project" = "${filter#label=swarm-core.project=}" ] \
+                    || continue ;;
+            name=*)
+                case "$name" in
+                    *"${filter#name=}"*) ;;
+                    *) continue ;;
+                esac ;;
+        esac
+        jq -nc --arg n "$name" --arg p "$project" --arg o "$owner" \
+            '{name: $n, project: $p, owner: $o}'
+    done
+}
+filter_verdict() {
+    (
+        # shellcheck disable=SC2329
+        docker() { filter_docker "$@"; }
+        status_of swarm_containers_verify proj "$_own_a"
+    )
+}
+FILTER_TABLE="archived-proj proj /elsewhere"
+assert_eq "a renamed container of another checkout is found" "1" \
+    "$(filter_verdict)"
+FILTER_TABLE="proj-agent-1 proj ${_ctr_root}
+archived-proj proj ${_ctr_root}"
+assert_eq "own containers, renamed or not, pass" "0" "$(filter_verdict)"
+FILTER_TABLE="proj-agent-2 - -"
+assert_eq "an unlabeled container is found by its name" "1" \
+    "$(filter_verdict)"
+FILTER_TABLE="other-thing other /x"
+assert_eq "an unrelated container is not found" "0" "$(filter_verdict)"
+
+# Name selection is literal: a '.' in the id matches only itself.
+_names_out=$(
+    # shellcheck disable=SC2329
+    docker() {
+        ctr_listing a.b-agent-1 a.b /r axb-agent-2 axb /r \
+            a.b-agent-post a.b /r a.b-agent-interactive-x a.b /r \
+            axb-agent-interactive-y "" "" a.b-agent-agent-3 "" ""
+    }
+    swarm_project_container_names a.b | tr '\n' ' '
+)
+assert_eq "project container names are matched literally" \
+    "a.b-agent-1 a.b-agent-interactive-x a.b-agent-post " "$_names_out"
+_names_out=$(
+    # shellcheck disable=SC2329
+    docker() {
+        ctr_listing app-agent-1 app /r app-agent-interactive-x app /r \
+            app-agent-interactive-tools-agent-1 app-agent-interactive-tools /r
+    }
+    swarm_interactive_container_names app | tr '\n' ' '
+)
+assert_eq "interactive names exclude an overlapping project's container" \
+    "app-agent-interactive-x " "$_names_out"
+
+# swarm_own_container_id: the ID of an own container, nothing for a
+# missing one, a refusal for another checkout's or an unlabeled one.
+own_id_of() {
+    local _oi_labels="$1"
+    (
+        # shellcheck disable=SC2329
+        docker() {
+            [ "$_oi_labels" = missing ] && return 1
+            printf '{"id":"cid","labels":%s}\n' "$_oi_labels"
+        }
+        _oi_rc=0
+        _oi_out=$(swarm_own_container_id proj-agent-1 "$_ctr_root" proj \
+            2>/dev/null) || _oi_rc=$?
+        printf '%s:%s' "$_oi_rc" "$_oi_out"
+    )
+}
+assert_eq "own container gives its ID" "0:cid" \
+    "$(own_id_of "$(jq -nc --arg o "$_ctr_root" \
+        '{"swarm-core.project": "proj", "swarm-core.checkout": $o}')")"
+assert_eq "missing container gives nothing" "0:" "$(own_id_of missing)"
+assert_eq "another checkout's container is refused" "1:" \
+    "$(own_id_of '{"swarm-core.project": "proj",
+                   "swarm-core.checkout": "/elsewhere"}')"
+assert_eq "another project's container is refused" "1:" \
+    "$(own_id_of "$(jq -nc --arg o "$_ctr_root" \
+        '{"swarm-core.project": "other", "swarm-core.checkout": $o}')")"
+assert_eq "an unlabeled container is refused" "1:" "$(own_id_of null)"
+
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"

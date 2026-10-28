@@ -1777,14 +1777,17 @@ echo "=== 40. cmd_stop gives the harness time to push ==="
 # flag's presence, the default, and the env-var override.
 LAUNCH_FILE="$TESTS_DIR/../launch.sh"
 CMD_STOP_BODY=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
-assert_eq "cmd_stop passes -t to docker stop" "3" \
-    "$(printf '%s\n' "$CMD_STOP_BODY" \
-        | grep -cF 'docker stop -t "$stop_timeout"')"
+STOP_OWN_BODY=$(awk '/^stop_own_container\(\) \{/,/^\}$/' "$LAUNCH_FILE")
+assert_eq "stop_own_container passes -t to docker stop" "1" \
+    "$(printf '%s\n' "$STOP_OWN_BODY" \
+        | grep -cF 'docker stop -t "$timeout"')"
+assert_eq "cmd_stop passes the grace to every stop" "3" \
+    "$(printf '%s\n' "$CMD_STOP_BODY" | grep -cF '"$stop_timeout"')"
 assert_eq "cmd_stop defaults grace to 60s" "1" \
     "$(printf '%s\n' "$CMD_STOP_BODY" \
         | grep -cF 'stop_timeout="${SWARM_STOP_TIMEOUT:-60}"')"
 
-# Fake docker so we can observe the exact flags cmd_stop uses.
+# A fake docker on PATH logs the calls that reach the CLI.
 FAKE_DOCKER_DIR=$(mktemp -d)
 trap_dir="$TMPDIR/cmd_stop_invocations"
 mkdir -p "$trap_dir"
@@ -1795,74 +1798,120 @@ exit 0
 FAKE
 chmod +x "$FAKE_DOCKER_DIR/docker"
 
-# Pull cmd_stop out of launch.sh into a sourceable file so we
-# do not have to run the launch.sh argv dispatcher.
-cmd_stop_src=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
+# Pull cmd_stop and its helper out of launch.sh into sourceable text
+# so we do not have to run the launch.sh argv dispatcher.
+cmd_stop_src=$(printf '%s\n%s\n' "$CMD_STOP_BODY" "$STOP_OWN_BODY")
 
-# Default grace: 60. Legacy-named containers remain addressable.
+# Run cmd_stop with a docker function in front of the fake CLI.  It
+# answers the container list (STOP_LIST, "name project" pairs, all owned
+# by this checkout) and the label lookups: every container is this
+# checkout's and this project's, with ID "id-<name>", except the names
+# in STOP_FOREIGN.
+run_stop() {
+    (
+        eval "$cmd_stop_src"
+        CHECKOUT_PATH="/checkout"
+        # Called by cmd_stop and the lib/project.sh helpers.
+        # shellcheck disable=SC2329
+        docker() {
+            local last owner
+            for last; do :; done
+            case "${1:-} ${2:-}" in
+                "ps -a")
+                    # shellcheck disable=SC2086
+                    set -- ${STOP_LIST:-}
+                    while [ $# -gt 1 ]; do
+                        jq -nc --arg n "$1" --arg p "$2" \
+                            --arg o "$CHECKOUT_PATH" \
+                            '{name: $n, project: $p, owner: $o}'
+                        shift 2
+                    done
+                    return 0 ;;
+                "container inspect")
+                    owner="$CHECKOUT_PATH"
+                    case " ${STOP_FOREIGN:-} " in
+                        *" ${last} "*) owner="/elsewhere" ;;
+                    esac
+                    jq -nc --arg id "id-${last}" --arg o "$owner" \
+                        --arg p "$PROJECT" \
+                        '{id: $id, labels: {"swarm-core.checkout": $o,
+                                            "swarm-core.project": $p}}'
+                    return 0 ;;
+            esac
+            command docker "$@"
+        }
+        PATH="$FAKE_DOCKER_DIR:$PATH" cmd_stop >/dev/null 2>&1 || true
+    )
+}
+
+# Default grace: 60 for the agents, the post-process container and the
+# interactive containers.
 : > "$trap_dir/calls"
-(
-    eval "$cmd_stop_src"
-    NUM_AGENTS=3
-    IMAGE_NAME="claude-swarm-fake"
-    PROJECT="fake"
-    RUNTIME_DIR="$trap_dir/runtime"
-    STATE_FILE="$RUNTIME_DIR/state.json"
-    docker() {
-        if [ "${1:-}" = "ps" ]; then
-            printf '%s\n' \
-                "claude-swarm-fake-interactive-codex-1" \
-                "claude-swarm-fake-interactive-claude-2"
-            return 0
-        fi
-        command docker "$@"
-    }
-    PATH="$FAKE_DOCKER_DIR:$PATH" cmd_stop >/dev/null 2>&1 || true
-)
+NUM_AGENTS=3 PROJECT="claude-swarm-fake" IMAGE_NAME="claude-swarm-fake-agent" \
+    STOP_LIST="claude-swarm-fake-agent-interactive-codex-1 claude-swarm-fake
+claude-swarm-fake-agent-interactive-claude-2 claude-swarm-fake" run_stop
 default_calls=$(wc -l < "$trap_dir/calls" | tr -d ' ')
 assert_eq "default grace: 3 agents plus 2 interactive plus post" \
     "6" "$default_calls"
 default_flag=$(head -1 "$trap_dir/calls")
 assert_eq "default grace: -t 60 in flags" "1" \
     "$(printf '%s\n' "$default_flag" | grep -cF 'stop -t 60')"
-assert_eq "default grace: post-process is stopped" "1" \
-    "$(grep -cF 'stop -t 60 claude-swarm-fake-post' \
+assert_eq "default grace: post-process is stopped by ID" "1" \
+    "$(grep -cF 'stop -t 60 id-claude-swarm-fake-agent-post' \
         "$trap_dir/calls" || true)"
 assert_eq "default grace: interactive containers are stopped" "2" \
-    "$(grep -cF 'stop -t 60 claude-swarm-fake-interactive-' \
+    "$(grep -cF 'stop -t 60 id-claude-swarm-fake-agent-interactive-' \
         "$trap_dir/calls" || true)"
 
 # New project name with env override: SWARM_STOP_TIMEOUT=120.
 : > "$trap_dir/calls"
-(
-    eval "$cmd_stop_src"
-    NUM_AGENTS=2
-    IMAGE_NAME="swarm-core-fake"
-    PROJECT="fake"
-    RUNTIME_DIR="$trap_dir/runtime"
-    STATE_FILE="$RUNTIME_DIR/state.json"
-    docker() {
-        if [ "${1:-}" = "ps" ]; then
-            printf '%s\n' "swarm-core-fake-interactive-codex-1"
-            return 0
-        fi
-        command docker "$@"
-    }
-    SWARM_STOP_TIMEOUT=120 PATH="$FAKE_DOCKER_DIR:$PATH" \
-        cmd_stop >/dev/null 2>&1 || true
-)
+NUM_AGENTS=2 PROJECT="swarm-core-fake" IMAGE_NAME="swarm-core-fake-agent" \
+    STOP_LIST="swarm-core-fake-agent-interactive-codex-1 swarm-core-fake" \
+    SWARM_STOP_TIMEOUT=120 run_stop
 override_flag=$(head -1 "$trap_dir/calls")
 assert_eq "SWARM_STOP_TIMEOUT=120 propagates to docker stop -t 120" "1" \
     "$(printf '%s\n' "$override_flag" | grep -cF 'stop -t 120')"
 assert_eq "SWARM_STOP_TIMEOUT=120 propagates to post-process" "1" \
-    "$(grep -cF 'stop -t 120 swarm-core-fake-post' \
+    "$(grep -cF 'stop -t 120 id-swarm-core-fake-agent-post' \
         "$trap_dir/calls" || true)"
 assert_eq "SWARM_STOP_TIMEOUT=120 propagates to interactive" "1" \
-    "$(grep -cF 'stop -t 120 swarm-core-fake-interactive-codex-1' \
+    "$(grep -cF 'stop -t 120 id-swarm-core-fake-agent-interactive-codex-1' \
         "$trap_dir/calls" || true)"
 
-# stop removes the state file only from a runtime directory that passes
-# the check, and never creates the directory.
+# A '.' in the project id matches only itself: axb's interactive
+# container is not a.b's.
+: > "$trap_dir/calls"
+NUM_AGENTS=1 PROJECT="a.b" IMAGE_NAME="a.b-agent" \
+    STOP_LIST="a.b-agent-interactive-x a.b axb-agent-interactive-y axb" \
+    run_stop
+assert_eq "dotted id: its own interactive container is stopped" "1" \
+    "$(grep -cF 'stop -t 60 id-a.b-agent-interactive-x' \
+        "$trap_dir/calls" || true)"
+assert_eq "dotted id: a look-alike name is not stopped" "0" \
+    "$(grep -cF 'axb' "$trap_dir/calls" || true)"
+
+# A container that another checkout created under one of the names
+# after the check at the top is skipped, by its label.
+: > "$trap_dir/calls"
+NUM_AGENTS=2 PROJECT="fake" IMAGE_NAME="fake-agent" \
+    STOP_FOREIGN="fake-agent-2" run_stop
+assert_eq "foreign container under the name is not stopped" "0" \
+    "$(grep -cF 'id-fake-agent-2' "$trap_dir/calls" || true)"
+assert_eq "own containers are still stopped" "1" \
+    "$(grep -cF 'stop -t 60 id-fake-agent-1' "$trap_dir/calls" || true)"
+
+# Ids can overlap as names: project app-agent-interactive-tools names
+# its first agent app-agent-interactive-tools-agent-1.  Even from the
+# same checkout, app's stop must leave that container alone.
+: > "$trap_dir/calls"
+_tools_name="app-agent-interactive-tools-agent-1"
+NUM_AGENTS=1 PROJECT="app" IMAGE_NAME="app-agent" \
+    STOP_LIST="${_tools_name} app-agent-interactive-tools" run_stop
+assert_eq "overlapping id: the other project's container is not stopped" \
+    "0" "$(grep -cF 'interactive-tools' "$trap_dir/calls" || true)"
+
+# stop never creates the runtime directory and leaves the state file in
+# place, since it names the owner.
 run_stop_with_runtime() {
     (
         eval "$cmd_stop_src"
@@ -1871,6 +1920,7 @@ run_stop_with_runtime() {
         PROJECT="fake"
         RUNTIME_DIR="$1"
         STATE_FILE="$RUNTIME_DIR/state.json"
+        CHECKOUT_PATH="/checkout"
         # Called by the evaluated cmd_stop.
         # shellcheck disable=SC2329
         docker() { return 0; }
@@ -1894,7 +1944,7 @@ assert_eq "stop does not create a missing runtime" "false" \
 mkdir -m 700 "$_stop_rt"
 : > "$_stop_rt/state.json"
 run_stop_with_runtime "$_stop_rt"
-assert_eq "stop removes state from a private runtime" "false" \
+assert_eq "stop keeps the state file, which names the owner" "true" \
     "$([ -e "$_stop_rt/state.json" ] && echo true || echo false)"
 
 # ============================================================
@@ -2180,7 +2230,9 @@ _st_bin="$TMPDIR/start-bin"
 _st_repo="$TMPDIR/start-repo"
 _st_rt="$TMPDIR/start-runtime"
 mkdir -p "$_st_bin" "$_st_repo/sub/configs"
-printf '#!/bin/bash\nexit 0\n' > "$_st_bin/docker"
+# Like the real CLI, inspecting a missing container fails.
+printf '#!/bin/bash\n[ "$1 $2" = "container inspect" ] && exit 1\nexit 0\n' \
+    > "$_st_bin/docker"
 chmod +x "$_st_bin/docker"
 git init -q "$_st_repo"
 echo "Prompt." > "$_st_repo/prompt.md"
@@ -2252,6 +2304,149 @@ assert_eq "start with a newline in the directory name succeeds" "0" \
     "$_st_rc"
 assert_eq "the swarmfile in 'configs<LF>' is used" "newline dir" \
     "$(jq -r .title "$_st_rt3/state.json" 2>/dev/null)"
+
+# Every container start passes the owner label.
+_lbl_bin="$TMPDIR/label-bin"
+_lbl_log="$TMPDIR/label-docker.log"
+mkdir -p "$_lbl_bin"
+: > "$_lbl_log"
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"
+[ "$1 $2" = "container inspect" ] && exit 1\nexit 0\n' \
+    "$_lbl_log" > "$_lbl_bin/docker"
+chmod +x "$_lbl_bin/docker"
+(cd "$_st_repo/sub" \
+    && PATH="$_lbl_bin:$PATH" SWARM_RUNTIME_DIR="$TMPDIR/label-runtime" \
+        SWARM_CONFIG=configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+        bash "$_LAUNCH_SH" start >/dev/null 2>&1) || true
+_lbl_want="--label swarm-core.checkout=$(cd -P "$_st_repo" && pwd -P)"
+assert_eq "docker run carries the checkout label" "1" \
+    "$(grep '^run ' "$_lbl_log" | grep -cF -- "$_lbl_want" || true)"
+assert_eq "docker run carries the project label" "1" \
+    "$(grep '^run ' "$_lbl_log" \
+        | grep -cF -- '--label swarm-core.project=start-repo' || true)"
+
+# ============================================================
+echo ""
+echo "=== 49. A second checkout with the same name is refused ==="
+
+# Two checkouts named start-repo resolve to the same project id, so the
+# second may not touch the first one's runtime, image or containers.
+_id_state="$TMPDIR/id-state"
+_id_a="$TMPDIR/id-a/start-repo"
+_id_b="$TMPDIR/id-b/start-repo"
+mkdir -p "$TMPDIR/id-a" "$TMPDIR/id-b" "$_id_state"
+for _id_repo in "$_id_a" "$_id_b"; do
+    git clone -q "$_st_repo" "$_id_repo"
+done
+run_launch() {
+    local repo="$1"
+    shift
+    (cd "$repo" && env -u SWARM_RUNTIME_DIR PATH="$_st_bin:$PATH" \
+        XDG_STATE_HOME="$_id_state" SWARM_CONFIG=sub/configs/swarm.json \
+        SWARM_SKIP_DEP_CHECK=1 "$@" bash "$_LAUNCH_SH" status 2>&1)
+}
+_id_rc=0
+(cd "$_id_a" && env -u SWARM_RUNTIME_DIR PATH="$_st_bin:$PATH" \
+    XDG_STATE_HOME="$_id_state" SWARM_CONFIG=sub/configs/swarm.json \
+    SWARM_SKIP_DEP_CHECK=1 bash "$_LAUNCH_SH" start >/dev/null 2>&1) \
+    || _id_rc=$?
+assert_eq "first checkout starts" "0" "$_id_rc"
+_id_rc=0
+_id_out=$(run_launch "$_id_b") || _id_rc=$?
+assert_eq "second checkout is refused" "1" "$_id_rc"
+assert_eq "the refusal names SWARM_PROJECT" "true" \
+    "$(printf '%s\n' "$_id_out" | grep -q SWARM_PROJECT \
+        && echo true || echo false)"
+_id_rc=0
+run_launch "$_id_b" SWARM_PROJECT=start-repo-b >/dev/null || _id_rc=$?
+assert_eq "SWARM_PROJECT gives it its own id" "0" "$_id_rc"
+_id_rc=0
+run_launch "$_id_a" >/dev/null || _id_rc=$?
+assert_eq "the owner still works" "0" "$_id_rc"
+
+# A separate runtime directory does not make container names separate:
+# with A's agent container present, B (same id, its own runtime) must
+# not start and must not remove the container.
+_id_bin="$TMPDIR/id-bin"
+_id_log="$TMPDIR/id-docker.log"
+mkdir -p "$_id_bin"
+: > "$_id_log"
+cat > "$_id_bin/docker" <<EOF
+#!/bin/bash
+echo "\$*" >> "$_id_log"
+if [ "\$1" = ps ]; then
+    jq -nc --arg o "$(cd -P "$_id_a" && pwd -P)" \
+        '{name: "start-repo-agent-1", project: "start-repo", owner: \$o}'
+fi
+[ "\$1 \$2" = "container inspect" ] && exit 1
+exit 0
+EOF
+chmod +x "$_id_bin/docker"
+_id_rc=0
+(cd "$_id_b" && PATH="$_id_bin:$PATH" \
+    SWARM_RUNTIME_DIR="$TMPDIR/id-b-runtime" \
+    SWARM_CONFIG=sub/configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+    bash "$_LAUNCH_SH" start >/dev/null 2>&1) || _id_rc=$?
+assert_eq "B with its own runtime is refused by A's container" "1" \
+    "$_id_rc"
+assert_eq "B removes no container" "0" \
+    "$(grep -c '^rm ' "$_id_log" || true)"
+assert_eq "B creates no runtime directory" "false" \
+    "$([ -e "$TMPDIR/id-b-runtime" ] && echo true || echo false)"
+
+# The container can also appear after the check at the top (builds take
+# minutes): the listing is empty, but by the time start reuses the name
+# another checkout owns it.  start must not remove it.
+cat > "$_id_bin/docker" <<EOF
+#!/bin/bash
+echo "\$*" >> "$_id_log"
+if [ "\$1 \$2" = "container inspect" ]; then
+    jq -nc --arg o "/elsewhere/start-repo" \
+        '{id: "late-id", labels: {"swarm-core.checkout": \$o,
+                                  "swarm-core.project": "start-repo"}}'
+fi
+exit 0
+EOF
+: > "$_id_log"
+_id_rc=0
+(cd "$_id_b" && PATH="$_id_bin:$PATH" \
+    SWARM_RUNTIME_DIR="$TMPDIR/id-b-runtime-2" \
+    SWARM_CONFIG=sub/configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+    bash "$_LAUNCH_SH" start >/dev/null 2>&1) || _id_rc=$?
+assert_eq "a container that appears later stops start" "1" "$_id_rc"
+assert_eq "the late container is not removed" "0" \
+    "$(grep -c '^rm ' "$_id_log" || true)"
+assert_eq "no agent container is started" "0" \
+    "$(grep -c '^run -d' "$_id_log" || true)"
+
+# A container of another project can hold one of the names commands
+# address (here start-repo-agent-1, labeled for project "other").
+# logs, status and wait must not read it.
+cat > "$_id_bin/docker" <<EOF
+#!/bin/bash
+echo "\$*" >> "$_id_log"
+if [ "\$1 \$2" = "container inspect" ]; then
+    jq -nc '{id: "other-id", labels: {"swarm-core.project": "other",
+                                      "swarm-core.checkout": "/x"}}'
+fi
+exit 0
+EOF
+run_named() {
+    (cd "$_id_a" && PATH="$_id_bin:$PATH" XDG_STATE_HOME="$_id_state" \
+        SWARM_CONFIG=sub/configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+        bash "$_LAUNCH_SH" "$@" 2>&1)
+}
+: > "$_id_log"
+_id_rc=0
+run_named logs 1 >/dev/null || _id_rc=$?
+assert_eq "logs refuses another project's container" "1" "$_id_rc"
+assert_eq "logs reads nothing from it" "0" \
+    "$(grep -c '^logs ' "$_id_log" || true)"
+assert_eq "status marks it as not ours" "true" \
+    "$(run_named status | grep -q 'start-repo-agent-1: *not ours' \
+        && echo true || echo false)"
+assert_eq "status reads nothing from it" "0" \
+    "$(grep -c '^inspect ' "$_id_log" || true)"
 
 # ============================================================
 echo ""

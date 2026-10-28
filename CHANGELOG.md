@@ -54,6 +54,21 @@
   file. The dashboard reads it with jq instead of sourcing it, so a
   quote in a title no longer breaks the file and `$(...)` in it never
   runs. The swarmfile path is recorded as an absolute path.
+- **Feature (breaking): one checkout per project id, and
+  `SWARM_PROJECT`.** The state file records the checkout that owns a
+  runtime directory, and containers carry their project id and the
+  checkout that created them in `swarm-core.project` and
+  `swarm-core.checkout` labels. Every `launch.sh` command, `harvest.sh`,
+  `progress.sh`, `costs.sh` and the dashboard refuse to act when another
+  checkout owns the runtime directory or one of the project's
+  containers. Unlabeled containers from older releases count as
+  someone else's; "Upgrading from `/tmp` state" in USAGE.md says how
+  to stop them, fetch their work and remove them. Removing or
+  stopping a container checks its labels again and acts on its ID. Two
+  checkouts with the same directory name used to share a bare repo, an
+  image and containers; the second one now gets an error and can set
+  `SWARM_PROJECT` to its own id. `launch.sh stop` no longer deletes
+  the state file.
 
 ## 0.22.0 — 2026-06-08
 

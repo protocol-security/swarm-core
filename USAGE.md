@@ -42,8 +42,9 @@ Keep existing checkout/submodule directories and script paths; moving
 or re-adding them is not required.
 
 Docker image/container names and the runtime directory still derive
-from the target repository's sanitized directory name, not this tool's
-name. State that older releases left in `/tmp` is not reused; see
+from the target repository's sanitized directory name (or
+`SWARM_PROJECT`), not this tool's name. State that older releases left
+in `/tmp` is not reused; see
 [Upgrading from `/tmp` state](#upgrading-from-tmp-state).
 Do not rename or move a target checkout during an active run. Finish
 and harvest the run first: changing its directory name changes resource
@@ -81,6 +82,7 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
 | `SWARM_TITLE` | | Dashboard title override. |
 | `SWARM_RUNTIME_DIR` | | See [Runtime directory](#runtime-directory). |
+| `SWARM_PROJECT` | | See [Project identity](#project-identity). |
 | `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
 | `SWARM_ACTIVITY_TIMEOUT` | `0` | Seconds of logfile silence before the in-container watchdog SIGTERMs the agent CLI's process group.  `0` disables.  See [Activity watchdog](#activity-watchdog). |
 | `SWARM_ACTIVITY_POLL` | `10` | Watchdog mtime-poll interval, in seconds.  Rarely needs tuning. |
@@ -440,6 +442,10 @@ to render as `Think: <summary>` unchanged.
 ```
 
 Flags combine: `./tests/test.sh --config f.json --no-inject`.
+
+Smoke tests take the project id from the directory name.  When
+another checkout on the Docker host already uses it, set
+`SWARM_PROJECT`: `SWARM_PROJECT=swarm-core-2 ./tests/test.sh`.
 
 The test harness uses its own built-in prompt (counting +
 reasoning) regardless of config. The reasoning step exercises
@@ -823,9 +829,9 @@ The directory is `$XDG_STATE_HOME/swarm-core/<project>`, which is
 `~/.local/state/swarm-core/<project>` when `XDG_STATE_HOME` is unset
 or relative. Set `SWARM_RUNTIME_DIR` to an absolute path to put it
 elsewhere, and set it the same way for every command of a run
-(`launch.sh`, `harvest.sh`, `dashboard.sh`, `progress.sh`): each one
-resolves the directory on its own. `launch.sh start` prints the
-directory it used.
+(`launch.sh`, `harvest.sh`, `dashboard.sh`, `progress.sh`,
+`costs.sh`): each one resolves the directory on its own.
+`launch.sh start` prints the directory it used.
 
 `launch.sh` creates the directory with mode 700 and refuses one that
 is a symlink, belongs to another user, has any group or other
@@ -837,6 +843,37 @@ bare repo inside stays writable for every UID, because the
 container's `agent` user can have a different UID from the host user
 (native Linux); the directory around it keeps other host users out.
 
+### Project identity
+
+The project id names the runtime directory, the image
+(`<project>-agent`) and the containers (`<project>-agent-N`, ...).
+`SWARM_PROJECT` sets it; otherwise it comes from the repository root's
+directory name: lowercased, ASCII letters and digits kept, `.`, `_` and
+`-` kept as separators, any other character turned into `-`, a run of
+separators reduced to its first one, separators at either end dropped,
+and `swarm` when nothing is left (`My.Repo` gives `my.repo`, `My Repo!`
+gives `my-repo`). A `SWARM_PROJECT` value that is not already in that
+form is refused, and the error shows the accepted form.
+
+The state file records which checkout owns the runtime directory.
+Every `launch.sh` command, `harvest.sh`, `progress.sh`, `costs.sh` and
+the dashboard refuse to act when another checkout owns it, so two
+checkouts with the same directory name never share a bare repo, an
+image or containers: give the second one its own `SWARM_PROJECT`. A
+checkout moved to a new path is refused the same way. Harvest from the
+old path first, or remove the runtime directory once nothing in it is
+needed. `launch.sh stop` keeps the state file.
+
+Container names are shared by everything on the Docker host, and the
+runtime directory can live anywhere, so containers carry their project
+id and the checkout that created them in `swarm-core.project` and
+`swarm-core.checkout` labels. Every command refuses to act while one of
+the project's containers belongs to another checkout, or has no labels
+because an older release created it (see
+[Upgrading from `/tmp` state](#upgrading-from-tmp-state)). Removing or
+stopping a container checks its labels again and acts on its ID.
+`harvest.sh` only looks into containers when the Docker daemon answers.
+
 ### Upgrading from `/tmp` state
 
 Older releases kept this state in `/tmp/<project>-upstream.git`,
@@ -844,17 +881,32 @@ Older releases kept this state in `/tmp/<project>-upstream.git`,
 any local user could write to it. It is never reused. While
 `/tmp/<project>-upstream.git` exists and belongs to you, `start`,
 `post-process`, `interactive`, `chat`, `shell` and `harvest.sh` stop
-and print the commands below. To keep agent commits from the old bare
-repo, fetch its branches and review them before merging anything:
+and print the commands below.
+
+Containers that an older release started carry no labels, so
+`launch.sh` refuses every command while they exist, `stop` included,
+before it gets to the `/tmp` check (see
+[Project identity](#project-identity)). Their agents push to the old
+bare repo. Stop the containers that the error lists with the grace
+`./launch.sh stop` gives, so the agents can still push their last
+commits:
+
+```bash
+docker stop -t "${SWARM_STOP_TIMEOUT:-60}" <container>...
+```
+
+To keep agent commits from the old bare repo, fetch its branches and
+review them before merging anything:
 
 ```bash
 git fetch /tmp/<project>-upstream.git \
     '+refs/heads/*:refs/remotes/legacy-swarm/*'
 ```
 
-Then remove the old state. The agents wrote part of the old bare repo
-as the container's user, and on Linux a plain `rm -rf` cannot delete
-those files, so remove the bare repo through Docker. The error message
+Then remove the old containers with `docker rm`, and the old state
+with the commands below. The agents wrote part of the old bare repo as
+the container's user, and on Linux a plain `rm -rf` cannot delete those
+files, so remove the bare repo through Docker. The error about `/tmp`
 lists the exact paths; this form also works in zsh when there are no
 mirrors:
 
@@ -876,7 +928,8 @@ those files, so the bare repo goes through Docker first, the way
 `launch.sh start` printed on its `Runtime:` line:
 
 ```bash
-docker rm -f $(docker ps -aq --filter "name=<project>-agent-") 2>/dev/null
+docker rm -f $(docker ps -aq \
+    --filter "label=swarm-core.project=<project>") 2>/dev/null
 docker run --rm -v "<runtime dir>:/runtime" alpine rm -rf /runtime/upstream.git
 rm -rf "<runtime dir>"
 ```
@@ -886,7 +939,7 @@ rm -rf "<runtime dir>"
 ```bash
 docker run --rm --entrypoint bash \
     -e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" \
-    $(basename $(pwd))-agent \
+    <project>-agent \
     -c 'claude --dangerously-skip-permissions \
         -p "What model are you? Reply with model id only." \
         --model claude-opus-4-6 2>&1'

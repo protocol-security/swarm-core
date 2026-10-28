@@ -186,10 +186,14 @@ echo "=== 9. costs.sh effort tag (real script, stub docker) ==="
 STUB_BIN="$TMPDIR/stub-bin"
 PROJ_DIR="$TMPDIR/proj"
 mkdir -p "$STUB_BIN" "$PROJ_DIR"
+PROJ_OWNER=$(cd -P "$PROJ_DIR" && pwd -P)
 cat > "$STUB_BIN/docker" <<'STUB'
 #!/bin/bash
 case "$1" in
-    ps) echo "proj-agent-1" ;;
+    ps)
+        # Both listings return id, name, project and owner as JSON.
+        printf '{"id":"%s","name":"%s","project":"%s","owner":"%s"}\n' \
+            cid-1 proj-agent-1 proj "$STUB_OWNER" ;;
     inspect)
         case "$3" in
             *State.Status*) echo "exited" ;;
@@ -208,6 +212,7 @@ git -C "$PROJ_DIR" init -q
 COSTS_SH="$(cd "$(dirname "$0")/.." && pwd)/costs.sh"
 rc=0
 out=$(cd "$PROJ_DIR" && PATH="$STUB_BIN:$PATH" SWARM_SKIP_DEP_CHECK=1 \
+    SWARM_RUNTIME_DIR="$TMPDIR/no-runtime" STUB_OWNER="$PROJ_OWNER" \
     "$COSTS_SH" 2>&1) || rc=$?
 assert_eq "exits 0 with an effort level" "0" "$rc"
 assert_eq "effort tag is uppercase" "1" \
@@ -222,11 +227,16 @@ echo "=== 10. costs.sh copies stats into a private temp dir ==="
 # /tmp/.swarm-stats-<name>.tsv path.
 _fake_bin="$TMPDIR/fake-bin"
 _cp_log="$TMPDIR/docker-cp.log"
-mkdir -p "$_fake_bin"
+_costs_repo="$TMPDIR/costs-repo"
+mkdir -p "$_fake_bin" "$_costs_repo"
+_costs_owner=$(cd -P "$_costs_repo" && pwd -P)
 cat > "$_fake_bin/docker" <<EOF
 #!/bin/bash
 case "\$1" in
-    ps) echo "costs-repo-agent-1" ;;
+    ps)
+        # Both listings return id, name, project and owner as JSON.
+        printf '{"id":"%s","name":"%s","project":"%s","owner":"%s"}\n' \
+            cid-1 costs-repo-agent-1 costs-repo "$_costs_owner" ;;
     inspect)
         case "\$3" in
             *Env*) echo "CLAUDE_MODEL=claude-opus-4-6" ;;
@@ -240,10 +250,10 @@ EOF
 chmod +x "$_fake_bin/docker"
 
 _costs_sh="$(cd "$(dirname "$0")/.." && pwd)/costs.sh"
-_costs_repo="$TMPDIR/costs-repo"
 git init -q "$_costs_repo"
 _costs_out=$(cd "$_costs_repo" \
-    && PATH="$_fake_bin:$PATH" bash "$_costs_sh" --json 2>/dev/null || true)
+    && PATH="$_fake_bin:$PATH" SWARM_RUNTIME_DIR="$TMPDIR/no-runtime" \
+        bash "$_costs_sh" --json 2>/dev/null || true)
 _cp_dest=$(head -1 "$_cp_log" 2>/dev/null || true)
 
 assert_eq "stats are read through docker cp" "0.5" \
