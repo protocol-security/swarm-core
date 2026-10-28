@@ -40,7 +40,7 @@ done
 warn_dirty_interactive_containers() {
     command -v docker >/dev/null 2>&1 || return 0
     local image_name="${PROJECT}-agent"
-    local name state dirty tmpf branch
+    local name state dirty tmpd tmpf branch
 
     while IFS= read -r name; do
         [ -n "$name" ] || continue
@@ -52,7 +52,10 @@ warn_dirty_interactive_containers() {
                 'cd /workspace && [ -n "$(git status --porcelain=v1)" ] && echo true || echo false' \
                 2>/dev/null || true)
         else
-            tmpf="/tmp/.swarm-harvest-${name}.state"
+            # docker cp gives the copy the source file's mode, so it
+            # goes into a private directory.
+            tmpd=$(mktemp -d)
+            tmpf="${tmpd}/interactive_state"
             docker cp "${name}:/workspace/agent_logs/interactive_state" \
                 "$tmpf" 2>/dev/null || true
             if [ -s "$tmpf" ]; then
@@ -61,7 +64,7 @@ warn_dirty_interactive_containers() {
                 branch=$(grep '^branch=' "$tmpf" \
                     | head -1 | cut -d= -f2- || true)
             fi
-            rm -f "$tmpf"
+            rm -rf "$tmpd"
         fi
         if [ "$dirty" = "true" ]; then
             echo "WARNING: ${name} has uncommitted interactive work" >&2

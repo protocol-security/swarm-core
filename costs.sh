@@ -42,10 +42,13 @@ if [ "${1:-}" = "--json" ]; then
     JSON_MODE=true
 fi
 
+COSTS_TMPDIR=$(mktemp -d)
+trap 'rm -rf "$COSTS_TMPDIR"' EXIT
+
 read_agent_stats() {
     local name=$1 agent_id=$2
     local stats_file="agent_logs/stats_agent_${agent_id}.tsv"
-    local tmpf="/tmp/.swarm-stats-${name}.tsv"
+    local tmpf="${COSTS_TMPDIR}/stats-${name}.tsv"
     docker cp "${name}:/workspace/${stats_file}" "$tmpf" 2>/dev/null || true
     if [ ! -s "$tmpf" ]; then
         rm -f "$tmpf"

@@ -160,9 +160,13 @@ handle_resize() {
 trap handle_resize SIGWINCH
 handle_resize
 
+# Private scratch directory for files copied out of containers.
+DASH_TMPDIR=$(mktemp -d)
+
 cleanup() {
     tput rmcup 2>/dev/null || true
     tput cnorm 2>/dev/null || true
+    rm -rf "$DASH_TMPDIR"
 }
 trap cleanup EXIT
 
@@ -292,7 +296,7 @@ truncate_str() {
 read_agent_stats() {
     local name=$1 agent_id=$2
     local stats_file="agent_logs/stats_agent_${agent_id}.tsv"
-    local tmpf="/tmp/.swarm-stats-${name}.tsv"
+    local tmpf="${DASH_TMPDIR}/stats-${name}.tsv"
     docker cp "${name}:/workspace/${stats_file}" "$tmpf" 2>/dev/null || true
     if [ ! -s "$tmpf" ]; then
         rm -f "$tmpf"
@@ -311,7 +315,7 @@ read_agent_stats() {
 read_idle_state() {
     local name=$1 agent_id=$2
     local idle_file="agent_logs/idle_agent_${agent_id}"
-    local tmpf="/tmp/.swarm-idle-${name}"
+    local tmpf="${DASH_TMPDIR}/idle-${name}"
     docker cp "${name}:/workspace/${idle_file}" "$tmpf" 2>/dev/null || true
     if [ -s "$tmpf" ]; then
         cat "$tmpf"
@@ -325,7 +329,7 @@ read_idle_state() {
 read_retry_state() {
     local name=$1 agent_id=$2
     local retry_file="agent_logs/retry_agent_${agent_id}"
-    local tmpf="/tmp/.swarm-retry-${name}"
+    local tmpf="${DASH_TMPDIR}/retry-${name}"
     docker cp "${name}:/workspace/${retry_file}" "$tmpf" 2>/dev/null || true
     if [ -s "$tmpf" ]; then
         cat "$tmpf"
@@ -364,7 +368,7 @@ interactive_container_names() {
 
 read_interactive_state_value() {
     local name="$1" key="$2"
-    local tmpf="/tmp/.swarm-interactive-${name}.state"
+    local tmpf="${DASH_TMPDIR}/interactive-${name}.state"
     docker cp "${name}:/workspace/agent_logs/interactive_state" \
         "$tmpf" 2>/dev/null || true
     if [ ! -s "$tmpf" ]; then

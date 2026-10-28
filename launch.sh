@@ -382,7 +382,7 @@ HELP
     done
 
     local profile_file
-    profile_file="/tmp/${PROJECT}-interactive-profile-$$.json"
+    profile_file=$(mktemp)
     select_interactive_profile "$selector" "$selector_index" "$profile_file"
 
     local profile_name profile_label safe_profile short_id branch name
@@ -564,7 +564,7 @@ cmd_start() {
 
     # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
-    AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
+    AGENTS_CFG=$(mktemp)
     jq -r '.tag as $dt | .driver as $dd |
         .agents[] | range(.count // 0) as $i |
         [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' \
@@ -670,7 +670,7 @@ cmd_start() {
             "$IMAGE_NAME"
     done < "$AGENTS_CFG"
 
-    rm -f "/tmp/${PROJECT}-agents.cfg"
+    rm -f "$AGENTS_CFG"
 
     # Write state file so a standalone dashboard can pick up config.
     local state_model_summary state_config_label

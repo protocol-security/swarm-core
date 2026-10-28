@@ -29,6 +29,12 @@
   back with word splitting, so a submodule name containing a space
   turned one `-v` mount into several Docker arguments. The mounts
   are now built as an array.
+- **Fix: transient files come from `mktemp`.** The agent list and
+  the interactive profile written by `launch.sh` (both can hold
+  `api_key` values), the `docker cp` copies made by the dashboard,
+  `costs.sh` and `harvest.sh`, and the `progress.sh` checkout used
+  fixed names in `/tmp` that another local user could read or
+  create first.
 
 ## 0.22.0 — 2026-06-08
 

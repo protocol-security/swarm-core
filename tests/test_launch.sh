@@ -2038,6 +2038,19 @@ assert_eq "failed submodule listing returns an error" "1" "$_mva_rc"
 
 # ============================================================
 echo ""
+echo "=== 45. Transient files come from mktemp ==="
+
+# Fixed names in /tmp can be created or read by another local user.
+_root="$TESTS_DIR/.."
+_fixed='agents\.cfg|interactive-|mirror-vols|pp-vols|progress-check'
+_fixed="/tmp/(\.swarm-|\\\$\{PROJECT\}-(${_fixed}))"
+assert_eq "no fixed /tmp names for transient files" "" \
+    "$(grep -nE "$_fixed" \
+        "$_root/launch.sh" "$_root/harvest.sh" "$_root/dashboard.sh" \
+        "$_root/costs.sh" "$_root/progress.sh" || true)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

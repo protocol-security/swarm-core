@@ -339,6 +339,53 @@ assert_eq "interactive file merged" "true" \
 
 # ============================================================
 echo ""
+echo "=== 7.6 Behavioural: interactive state copy stays private ==="
+
+# docker cp gives the copy the mode of the source file, so a 0644
+# interactive_state stays readable by other users unless the copy
+# lands in a private directory of its own.  The fake docker reports
+# one stopped interactive container and logs where the copy went.
+# TMPDIR points at a world-writable directory like /tmp; GNU mktemp
+# honours it, macOS mktemp uses the per-user temp directory instead.
+_fake_bin="$TMPDIR/fake-docker"
+_cp_log="$TMPDIR/docker-cp.log"
+_shared_tmp="$TMPDIR/shared-tmp"
+mkdir -p "$_fake_bin" "$_shared_tmp"
+chmod 1777 "$_shared_tmp"
+cat > "$_fake_bin/docker" <<EOF
+#!/bin/bash
+case "\$1" in
+    ps) echo "${INTERACTIVE_PROJECT}-agent-interactive-hunter-a1b2" ;;
+    inspect) echo "exited" ;;
+    cp)
+        printf 'dirty=true\nbranch=${INTERACTIVE_BRANCH}\n' > "\$3"
+        chmod 644 "\$3"
+        printf '%s|%s\n' "\$3" \
+            "\$(ls -ld "\$(dirname "\$3")" | cut -c1-10)" >> "$_cp_log"
+        ;;
+esac
+EOF
+chmod +x "$_fake_bin/docker"
+
+cd "$INTERACTIVE_WORK"
+_dirty_out=$(PATH="$_fake_bin:$PATH" TMPDIR="$_shared_tmp" \
+    bash "$HARVEST_SH" --dry 2>&1 || true)
+_cp_entry=$(head -1 "$_cp_log" 2>/dev/null || true)
+_cp_dest="${_cp_entry%%|*}"
+assert_eq "dirty interactive container is reported" "true" \
+    "$(printf '%s\n' "$_dirty_out" \
+        | grep -q 'has uncommitted interactive work' \
+        && echo true || echo false)"
+assert_eq "copy lands in an owner-only directory" "drwx------" \
+    "${_cp_entry##*|}"
+assert_eq "copy is removed after the check" "false" \
+    "$([ -n "$_cp_dest" ] && [ -e "$_cp_dest" ] && echo true || echo false)"
+assert_eq "copy directory is removed after the check" "false" \
+    "$([ -n "$_cp_dest" ] && [ -e "$(dirname "$_cp_dest")" ] \
+        && echo true || echo false)"
+
+# ============================================================
+echo ""
 echo "=== 8. SIGPIPE regression: guarded pipe survives big log ==="
 
 # Synthetic log large enough to overflow the kernel pipe buffer
