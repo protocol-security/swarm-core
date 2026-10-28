@@ -762,6 +762,23 @@ assert_eq "progress reports Docker as unavailable" "true" \
 
 # ============================================================
 echo ""
+echo "=== 19. Behavioural: harvest.sh checks the engagement ==="
+
+jq -n '{schema: "swarm-core.state/v1", engagement_id: "eng-1"}' \
+    > "$SWARM_RUNTIME_DIR/state.json"
+cd "$DOWN_WORK"
+eng_rc=0
+SWARM_ENGAGEMENT_ID=eng-2 bash "$HARVEST_SH" --dry >/dev/null 2>&1 \
+    || eng_rc=$?
+assert_eq "harvest refuses another engagement" "1" "$eng_rc"
+eng_rc=0
+SWARM_ENGAGEMENT_ID=eng-1 bash "$HARVEST_SH" --dry >/dev/null 2>&1 \
+    || eng_rc=$?
+assert_eq "harvest joins the recorded engagement" "0" "$eng_rc"
+rm -f "$SWARM_RUNTIME_DIR/state.json"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

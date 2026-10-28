@@ -676,6 +676,74 @@ assert_eq "another project's container is refused" "1:" \
         '{"swarm-core.project": "other", "swarm-core.checkout": $o}')")"
 assert_eq "an unlabeled container is refused" "1:" "$(own_id_of null)"
 
+# ============================================================
+echo ""
+echo "=== 7. Engagement id ==="
+
+for _eid in a eng-1 run.2026_10 "$(printf 'a%.0s' $(seq 1 64))"; do
+    assert_eq "valid engagement id: ${_eid:0:12}" "0" \
+        "$(status_of swarm_engagement_id_valid "$_eid")"
+done
+for _eid in "" -a .a "a b" 'a$b' "a/b" "$(printf 'a%.0s' $(seq 1 65))"; do
+    assert_eq "invalid engagement id: '${_eid:0:12}'" "1" \
+        "$(status_of swarm_engagement_id_valid "$_eid")"
+done
+# The check is ASCII whatever the locale.
+for _loc in en_US.UTF-8 C.UTF-8; do
+    for _eid in "é" "İd" "a·b"; do
+        assert_eq "non-ASCII id '${_eid}' is refused under ${_loc}" "1" \
+            "$(LC_ALL="$_loc" bash -c \
+                'source "$1"; swarm_engagement_id_valid "$2"; echo $?' \
+                _ "$TESTS_DIR/../lib/project.sh" "$_eid" 2>/dev/null)"
+    done
+done
+assert_eq "generated id has a time and a random part" "true" \
+    "$(env -u SWARM_ENGAGEMENT_ID bash -c \
+        'source "$1"; swarm_engagement_new' _ \
+        "$TESTS_DIR/../lib/project.sh" \
+        | grep -qE '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$' \
+        && echo true || echo false)"
+assert_eq "SWARM_ENGAGEMENT_ID names the new engagement" "eng-1" \
+    "$(SWARM_ENGAGEMENT_ID=eng-1 swarm_engagement_new)"
+assert_eq "a bad SWARM_ENGAGEMENT_ID is refused" "1" \
+    "$(SWARM_ENGAGEMENT_ID="a b" status_of swarm_engagement_env_check)"
+
+_eng_dir="$TMPDIR/eng"
+mkdir -m 700 "$_eng_dir"
+_eng_file="$_eng_dir/state.json"
+assert_eq "joining without a recorded id and no request works" "0" \
+    "$(env -u SWARM_ENGAGEMENT_ID bash -c \
+        'source "$1"; swarm_engagement_join "$2"' _ \
+        "$TESTS_DIR/../lib/project.sh" "$_eng_file" >/dev/null 2>&1; \
+       echo $?)"
+assert_eq "naming an id while none is recorded is refused" "1" \
+    "$(SWARM_ENGAGEMENT_ID=eng-1 status_of swarm_engagement_join \
+        "$_eng_file")"
+swarm_state_update "$_eng_file" '.engagement_id = $id' --arg id eng-1
+assert_eq "the recorded engagement can be joined" "0" \
+    "$(SWARM_ENGAGEMENT_ID=eng-1 status_of swarm_engagement_join \
+        "$_eng_file")"
+assert_eq "joining without naming an id works" "0" \
+    "$(env -u SWARM_ENGAGEMENT_ID bash -c \
+        'source "$1"; swarm_engagement_join "$2"' _ \
+        "$TESTS_DIR/../lib/project.sh" "$_eng_file" >/dev/null 2>&1; \
+       echo $?)"
+assert_eq "another engagement is refused" "1" \
+    "$(SWARM_ENGAGEMENT_ID=eng-2 status_of swarm_engagement_join \
+        "$_eng_file")"
+assert_eq "an empty SWARM_ENGAGEMENT_ID is not a free pass" "1" \
+    "$(SWARM_ENGAGEMENT_ID="" status_of swarm_engagement_join \
+        "$_eng_file")"
+assert_eq "an empty SWARM_ENGAGEMENT_ID fails the format check" "1" \
+    "$(SWARM_ENGAGEMENT_ID="" status_of swarm_engagement_env_check)"
+assert_eq "an unset SWARM_ENGAGEMENT_ID passes the format check" "0" \
+    "$(env -u SWARM_ENGAGEMENT_ID bash -c \
+        'source "$1"; swarm_engagement_env_check' _ \
+        "$TESTS_DIR/../lib/project.sh" >/dev/null 2>&1; echo $?)"
+assert_contains "the refusal names the recorded engagement" "eng-1" \
+    "$(SWARM_ENGAGEMENT_ID=eng-2 swarm_engagement_join "$_eng_file" 2>&1 \
+        || true)"
+
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"

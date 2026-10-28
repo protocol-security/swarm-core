@@ -986,6 +986,7 @@ OWN_CONTAINERS=""
 REPO_ROOT="$_id_tmp/repo"
 PROJECT="proj"
 RUNTIME_DIR="$_id_tmp/rt"
+STATE_FILE="$RUNTIME_DIR/state.json"
 mkdir -p "$REPO_ROOT"
 _id_ctr=""
 # Stands in for the Docker CLI; identity_ok reaches it.
@@ -1008,6 +1009,15 @@ chmod 755 "$RUNTIME_DIR"
 assert_eq "runtime open to other users" "false" \
     "$(identity_ok 2>/dev/null && echo true || echo false)"
 chmod 700 "$RUNTIME_DIR"
+jq -n --arg r "$(cd -P "$REPO_ROOT" && pwd -P)" \
+    '{schema: "swarm-core.state/v1", repo_root: $r, engagement_id: "e1"}' \
+    > "$RUNTIME_DIR/state.json"
+assert_eq "the recorded engagement" "true" \
+    "$(SWARM_ENGAGEMENT_ID=e1 identity_ok 2>/dev/null && echo true \
+        || echo false)"
+assert_eq "another engagement" "false" \
+    "$(SWARM_ENGAGEMENT_ID=e2 identity_ok 2>/dev/null && echo true \
+        || echo false)"
 _id_ctr='{"name":"proj-agent-1","project":"proj","owner":"/elsewhere"}'
 assert_eq "container of another checkout" "false" \
     "$(identity_ok 2>/dev/null && echo true || echo false)"
