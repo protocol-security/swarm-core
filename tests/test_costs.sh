@@ -215,6 +215,49 @@ assert_eq "effort tag is uppercase" "1" \
 
 # ============================================================
 echo ""
+echo "=== 10. costs.sh copies stats into a private temp dir ==="
+
+# Run the real script against a fake docker that serves one agent and
+# records where `docker cp` writes.  The copy used to land on a fixed
+# /tmp/.swarm-stats-<name>.tsv path.
+_fake_bin="$TMPDIR/fake-bin"
+_cp_log="$TMPDIR/docker-cp.log"
+mkdir -p "$_fake_bin"
+cat > "$_fake_bin/docker" <<EOF
+#!/bin/bash
+case "\$1" in
+    ps) echo "costs-repo-agent-1" ;;
+    inspect)
+        case "\$3" in
+            *Env*) echo "CLAUDE_MODEL=claude-opus-4-6" ;;
+            *) echo "exited" ;;
+        esac ;;
+    cp)
+        printf '%s\n' "\$3" >> "$_cp_log"
+        printf '1\t0.5\t100\t200\t10\tx\t3000\tx\t4\n' > "\$3" ;;
+esac
+EOF
+chmod +x "$_fake_bin/docker"
+
+_costs_sh="$(cd "$(dirname "$0")/.." && pwd)/costs.sh"
+_costs_repo="$TMPDIR/costs-repo"
+git init -q "$_costs_repo"
+_costs_out=$(cd "$_costs_repo" \
+    && PATH="$_fake_bin:$PATH" bash "$_costs_sh" --json 2>/dev/null || true)
+_cp_dest=$(head -1 "$_cp_log" 2>/dev/null || true)
+
+assert_eq "stats are read through docker cp" "0.5" \
+    "$(printf '%s' "$_costs_out" | jq -r '.agents[0].cost_usd' 2>/dev/null)"
+assert_eq "copy target is not a fixed /tmp name" "false" \
+    "$([[ "$_cp_dest" == /tmp/.swarm-* ]] && echo true || echo false)"
+assert_eq "copy target is gone after the run" "false" \
+    "$([ -n "$_cp_dest" ] && [ -e "$_cp_dest" ] && echo true || echo false)"
+assert_eq "copy target directory is removed too" "false" \
+    "$([ -n "$_cp_dest" ] && [ -e "$(dirname "$_cp_dest")" ] \
+        && echo true || echo false)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
