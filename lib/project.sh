@@ -270,3 +270,24 @@ swarm_bare_rm_command() {
     printf 'docker run --rm -v %s:/runtime alpine' "$(printf '%q' "$1")"
     printf ' rm -rf /runtime/upstream.git'
 }
+
+SWARM_STATE_SCHEMA="swarm-core.state/v1"
+
+# Print the state file as compact JSON when it holds exactly one
+# swarm-core.state/v1 object; fail otherwise.
+swarm_state_read() {
+    jq -cse --arg schema "$SWARM_STATE_SCHEMA" \
+        'select(length == 1) | .[0] | objects
+         | select(.schema == $schema)' "$1" 2>/dev/null
+}
+
+# Replace the state file with one rename, so a reader never sees a
+# partly written file.  mktemp creates the new file with mode 600.
+swarm_state_write() {
+    local file="$1" json="$2" tmp
+    tmp=$(mktemp "${file}.XXXXXX") || return 1
+    if ! printf '%s\n' "$json" > "$tmp" || ! mv -f "$tmp" "$file"; then
+        rm -f "$tmp"
+        return 1
+    fi
+}

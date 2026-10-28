@@ -875,6 +875,80 @@ rm -rf "$_rt_tmp"
 
 # ============================================================
 echo ""
+echo "=== 15. load_state reads JSON without running it ==="
+
+# runtime_ok and lib/project.sh come from section 14.
+_ls_tmp=$(mktemp -d)
+_ls_fn="$_ls_tmp/load_state.sh"
+awk '/^load_state\(\)[[:space:]]*\{/ { p = 1 }
+     p { print }
+     p && /^\}[[:space:]]*$/ { exit }' \
+    "$TESTS_DIR/../dashboard.sh" > "$_ls_fn"
+# shellcheck source=/dev/null
+source "$_ls_fn"
+
+RUNTIME_DIR="$_ls_tmp/rt"
+STATE_FILE="$RUNTIME_DIR/state.json"
+mkdir -m 700 "$RUNTIME_DIR"
+jq -n --arg t "x \$(touch $_ls_tmp/pwned)" \
+    '{schema: "swarm-core.state/v1", title: $t,
+      config: "/c/swarm.json", num_agents: 3,
+      model_summary: "3x m", config_label: "swarm.json"}' > "$STATE_FILE"
+SWARM_TITLE="" SWARM_CONFIG="" SWARM_NUM_AGENTS=""
+SWARM_MODEL_SUMMARY="" SWARM_CONFIG_LABEL=""
+_ls_rc=0
+load_state || _ls_rc=$?
+assert_eq "valid state loads" "0" "$_ls_rc"
+assert_eq "title stays literal" "x \$(touch $_ls_tmp/pwned)" "$SWARM_TITLE"
+assert_eq "title is not run" "false" \
+    "$([ -e "$_ls_tmp/pwned" ] && echo true || echo false)"
+assert_eq "config" "/c/swarm.json" "$SWARM_CONFIG"
+assert_eq "agent count" "3" "$SWARM_NUM_AGENTS"
+assert_eq "model summary" "3x m" "$SWARM_MODEL_SUMMARY"
+assert_eq "config label" "swarm.json" "$SWARM_CONFIG_LABEL"
+
+printf 'SWARM_TITLE="from env file"\n' > "$STATE_FILE"
+SWARM_TITLE="kept"
+_ls_rc=0
+load_state || _ls_rc=$?
+assert_eq "env-format file is not loaded" "1" "$_ls_rc"
+assert_eq "variables keep their values" "kept" "$SWARM_TITLE"
+
+# Fields may be empty, null or missing; the swarmfile path is kept
+# exactly, newline included, while shown values lose CR and LF.
+_ls_cfg="/c/new
+line/swarm.json"
+for _ls_label in '"config_label": ""' '"config_label": null' ''; do
+    jq -n --arg c "$_ls_cfg" "{schema: \"swarm-core.state/v1\",
+        title: \"two\\nlines\", config: \$c, num_agents: 2,
+        model_summary: \"2x m\" ${_ls_label:+, $_ls_label}}" \
+        > "$STATE_FILE"
+    SWARM_CONFIG_LABEL="before"
+    _ls_rc=0
+    load_state || _ls_rc=$?
+    assert_eq "state loads with label (${_ls_label:-missing})" "0" "$_ls_rc"
+    assert_eq "label is cleared (${_ls_label:-missing})" "" \
+        "$SWARM_CONFIG_LABEL"
+done
+assert_eq "swarmfile path keeps its newline" "$_ls_cfg" "$SWARM_CONFIG"
+assert_eq "title shown on one line" "two lines" "$SWARM_TITLE"
+_ls_cfg_nl="/c/swarm.json
+"
+jq -n --arg c "$_ls_cfg_nl" \
+    '{schema: "swarm-core.state/v1", config: $c}' > "$STATE_FILE"
+load_state || true
+assert_eq "swarmfile path keeps a trailing newline" "$_ls_cfg_nl" \
+    "$SWARM_CONFIG"
+
+jq -n '{schema: "swarm-core.state/v1", title: "t"}' > "$STATE_FILE"
+chmod 755 "$RUNTIME_DIR"
+_ls_rc=0
+load_state || _ls_rc=$?
+assert_eq "state in an open runtime dir is not loaded" "1" "$_ls_rc"
+rm -rf "$_ls_tmp"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

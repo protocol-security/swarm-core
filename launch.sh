@@ -64,7 +64,7 @@ SWARM_RUN_CONTEXT="${PROJECT_RAW}@${SWARM_RUN_HASH} (${SWARM_RUN_BRANCH})"
 RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
 BARE_REPO="${RUNTIME_DIR}/upstream.git"
 MIRROR_DIR="${RUNTIME_DIR}/mirrors"
-STATE_FILE="${RUNTIME_DIR}/swarm.env"
+STATE_FILE="${RUNTIME_DIR}/state.json"
 IMAGE_NAME="${PROJECT}-agent"
 
 # Expand a single $VAR reference from the host environment.
@@ -144,6 +144,39 @@ build_image() {
 prepare_runtime() {
     swarm_refuse_legacy_state "$PROJECT" || exit 1
     swarm_runtime_init "$RUNTIME_DIR" || exit 1
+}
+
+# Record the run in the state file, so a standalone dashboard can show
+# its title, swarmfile and agent summary.  The file is JSON that
+# readers parse with jq; nothing sources it.
+write_state_file() {
+    local model_summary config_title state
+    model_summary=$(jq -r \
+        '(.prompt // "") as $dp | ($dp | split("/") | .[-1] // "" | rtrimstr(".md")) as $dp_stem |
+        [.agents[] | (.count // 0) as $count | select($count > 0) |
+          "\($count)x \(.model | split("/") | .[-1])" +
+          (if .context == "none" then " ctx:bare"
+           elif .context == "slim" then " ctx:slim"
+           else "" end) +
+          (if .prompt and .prompt != $dp then
+            ":" + (.prompt | split("/") | .[-1] | rtrimstr(".md") |
+              if startswith($dp_stem + "-") then .[$dp_stem | length + 1:] else . end)
+           else "" end)] | join(", ")' \
+        "$CONFIG_FILE")
+    config_title=$(jq -r '.title // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    state=$(jq -n \
+        --arg schema "$SWARM_STATE_SCHEMA" \
+        --arg project "$PROJECT" \
+        --arg title "${SWARM_TITLE:-${config_title}}" \
+        --arg config "$CONFIG_FILE" \
+        --argjson num_agents "$NUM_AGENTS" \
+        --arg model_summary "$model_summary" \
+        --arg config_label "$(basename "$CONFIG_FILE")" \
+        '{schema: $schema, project: $project, title: $title,
+          config: $config, num_agents: $num_agents,
+          model_summary: $model_summary,
+          config_label: $config_label}') || return 1
+    swarm_state_write "$STATE_FILE" "$state"
 }
 
 create_bare_repo() {
@@ -234,6 +267,20 @@ if [ ! -f "$CONFIG_FILE" ]; then
     echo "ERROR: Swarmfile ${CONFIG_FILE} not found." >&2
     exit 1
 fi
+# Keep an absolute path: start changes into the repository root before
+# it reads the swarmfile again, and the state file records the path for
+# a dashboard started elsewhere.  Parameter expansion and the "x"
+# sentinel keep trailing newlines in directory names, which dirname and
+# command substitution would drop.
+case "$CONFIG_FILE" in
+    */*) _config_dir="${CONFIG_FILE%/*}" ;;
+    *) _config_dir="." ;;
+esac
+_config_dir=$(CDPATH='' cd -P -- "${_config_dir:-/}" && pwd -P && echo x) \
+    || { echo "ERROR: cannot resolve ${CONFIG_FILE}." >&2; exit 1; }
+_config_dir="${_config_dir%x}"
+_config_dir="${_config_dir%$'\n'}"
+CONFIG_FILE="${_config_dir%/}/${CONFIG_FILE##*/}"
 
 SWARM_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
 SWARM_SETUP=$(jq -r '.setup // empty' "$CONFIG_FILE")
@@ -692,30 +739,7 @@ cmd_start() {
 
     rm -f "$AGENTS_CFG"
 
-    # Write state file so a standalone dashboard can pick up config.
-    local state_model_summary state_config_label
-    state_model_summary=$(jq -r \
-        '(.prompt // "") as $dp | ($dp | split("/") | .[-1] // "" | rtrimstr(".md")) as $dp_stem |
-        [.agents[] | (.count // 0) as $count | select($count > 0) |
-          "\($count)x \(.model | split("/") | .[-1])" +
-          (if .context == "none" then " ctx:bare"
-           elif .context == "slim" then " ctx:slim"
-           else "" end) +
-          (if .prompt and .prompt != $dp then
-            ":" + (.prompt | split("/") | .[-1] | rtrimstr(".md") |
-              if startswith($dp_stem + "-") then .[$dp_stem | length + 1:] else . end)
-           else "" end)] | join(", ")' \
-        "$CONFIG_FILE")
-    state_config_label=$(basename "$CONFIG_FILE")
-    local config_title
-    config_title=$(jq -r '.title // empty' "$CONFIG_FILE" 2>/dev/null || true)
-    cat > "$STATE_FILE" <<ENVEOF
-SWARM_TITLE="${SWARM_TITLE:-${config_title}}"
-SWARM_CONFIG="${CONFIG_FILE}"
-SWARM_NUM_AGENTS="${NUM_AGENTS}"
-SWARM_MODEL_SUMMARY="${state_model_summary}"
-SWARM_CONFIG_LABEL="${state_config_label}"
-ENVEOF
+    write_state_file
 
     echo ""
     echo "--- ${NUM_AGENTS} agents launched ---"

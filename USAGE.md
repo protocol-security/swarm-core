@@ -813,7 +813,11 @@ Each project keeps its host-side state in one directory:
 |------|---------|
 | `upstream.git` | Bare repo that containers mount at `/upstream`. |
 | `mirrors/<name>.git` | Submodule mirrors (`/mirrors`, read-only). |
-| `swarm.env` | State file for a standalone dashboard. |
+| `state.json` | State file for a standalone dashboard. |
+
+The state file is JSON (`swarm-core.state/v1`, mode 600) that
+`launch.sh start` replaces in one rename; the dashboard reads it with
+jq and never sources it.
 
 The directory is `$XDG_STATE_HOME/swarm-core/<project>`, which is
 `~/.local/state/swarm-core/<project>` when `XDG_STATE_HOME` is unset

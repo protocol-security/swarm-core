@@ -49,6 +49,11 @@
   reused: while `/tmp/<project>-upstream.git` exists and belongs to
   the user, `start`, `post-process`, `interactive` and `harvest.sh`
   stop and print the commands to fetch its branches and remove it.
+- **Runtime (breaking): the state file is JSON.** `state.json`
+  (`swarm-core.state/v1`, mode 600) replaces the `swarm.env` shell
+  file. The dashboard reads it with jq instead of sourcing it, so a
+  quote in a title no longer breaks the file and `$(...)` in it never
+  runs. The swarmfile path is recorded as an absolute path.
 
 ## 0.22.0 — 2026-06-08
 

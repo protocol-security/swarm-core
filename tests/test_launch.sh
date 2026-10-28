@@ -1807,7 +1807,7 @@ cmd_stop_src=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
     IMAGE_NAME="claude-swarm-fake"
     PROJECT="fake"
     RUNTIME_DIR="$trap_dir/runtime"
-    STATE_FILE="$RUNTIME_DIR/swarm.env"
+    STATE_FILE="$RUNTIME_DIR/state.json"
     docker() {
         if [ "${1:-}" = "ps" ]; then
             printf '%s\n' \
@@ -1840,7 +1840,7 @@ assert_eq "default grace: interactive containers are stopped" "2" \
     IMAGE_NAME="swarm-core-fake"
     PROJECT="fake"
     RUNTIME_DIR="$trap_dir/runtime"
-    STATE_FILE="$RUNTIME_DIR/swarm.env"
+    STATE_FILE="$RUNTIME_DIR/state.json"
     docker() {
         if [ "${1:-}" = "ps" ]; then
             printf '%s\n' "swarm-core-fake-interactive-codex-1"
@@ -1870,7 +1870,7 @@ run_stop_with_runtime() {
         IMAGE_NAME="stop-fake"
         PROJECT="fake"
         RUNTIME_DIR="$1"
-        STATE_FILE="$RUNTIME_DIR/swarm.env"
+        STATE_FILE="$RUNTIME_DIR/state.json"
         # Called by the evaluated cmd_stop.
         # shellcheck disable=SC2329
         docker() { return 0; }
@@ -1880,11 +1880,11 @@ run_stop_with_runtime() {
 _stop_target="$TMPDIR/stop-target"
 _stop_rt="$TMPDIR/stop-runtime"
 mkdir -m 700 "$_stop_target"
-: > "$_stop_target/swarm.env"
+: > "$_stop_target/state.json"
 ln -s "$_stop_target" "$_stop_rt"
 run_stop_with_runtime "$_stop_rt"
 assert_eq "stop leaves state behind a symlinked runtime" "true" \
-    "$([ -e "$_stop_target/swarm.env" ] && echo true || echo false)"
+    "$([ -e "$_stop_target/state.json" ] && echo true || echo false)"
 rm -f "$_stop_rt"
 
 run_stop_with_runtime "$TMPDIR/stop-missing"
@@ -1892,10 +1892,10 @@ assert_eq "stop does not create a missing runtime" "false" \
     "$([ -e "$TMPDIR/stop-missing" ] && echo true || echo false)"
 
 mkdir -m 700 "$_stop_rt"
-: > "$_stop_rt/swarm.env"
+: > "$_stop_rt/state.json"
 run_stop_with_runtime "$_stop_rt"
 assert_eq "stop removes state from a private runtime" "false" \
-    "$([ -e "$_stop_rt/swarm.env" ] && echo true || echo false)"
+    "$([ -e "$_stop_rt/state.json" ] && echo true || echo false)"
 
 # ============================================================
 echo ""
@@ -2124,6 +2124,134 @@ eval "set -- $_hint"
 assert_eq "stale bare hint quotes the path for the shell" \
     "$(dirname "$_hint_bare"):/runtime /runtime/upstream.git" \
     "${3:-} ${7:-}"
+
+# ============================================================
+echo ""
+echo "=== 47. write_state_file writes JSON state ==="
+
+# The old env-format file broke on a quote in the title and ran any
+# $(...) in it when the dashboard sourced it.
+_wsf_fn="$TMPDIR/write_state_file.sh"
+awk '/^write_state_file\(\)[[:space:]]*\{/ { p = 1 }
+     p { print }
+     p && /^\}[[:space:]]*$/ { exit }' \
+    "$_LAUNCH_SH" > "$_wsf_fn"
+# shellcheck source=/dev/null
+source "$_wsf_fn"
+
+_wsf_dir="$TMPDIR/wsf"
+mkdir -m 700 "$_wsf_dir"
+cat > "$_wsf_dir/swarm.json" <<'EOF'
+{ "title": "say \"hi\" $(touch pwned)",
+  "prompt": "prompts/task.md",
+  "agents": [{ "count": 2, "model": "claude-opus-4-6" }] }
+EOF
+_wsf_out=$(
+    CONFIG_FILE="$_wsf_dir/swarm.json"
+    NUM_AGENTS=2
+    PROJECT="proj"
+    STATE_FILE="$_wsf_dir/state.json"
+    SWARM_TITLE=""
+    write_state_file && cat "$STATE_FILE"
+)
+assert_eq "state schema" "swarm-core.state/v1" \
+    "$(jq -r .schema <<< "$_wsf_out")"
+assert_eq "title is kept verbatim" 'say "hi" $(touch pwned)' \
+    "$(jq -r .title <<< "$_wsf_out")"
+assert_eq "swarmfile path" "$_wsf_dir/swarm.json" \
+    "$(jq -r .config <<< "$_wsf_out")"
+assert_eq "num_agents is a number" "number" \
+    "$(jq -r '.num_agents | type' <<< "$_wsf_out")"
+assert_eq "model summary" "2x claude-opus-4-6" \
+    "$(jq -r .model_summary <<< "$_wsf_out")"
+assert_eq "config label" "swarm.json" \
+    "$(jq -r .config_label <<< "$_wsf_out")"
+assert_eq "state file is mode 600" "600" \
+    "$(swarm_file_mode "$_wsf_dir/state.json")"
+
+# ============================================================
+echo ""
+echo "=== 48. start from a subdirectory with a relative SWARM_CONFIG ==="
+
+# start changes into the repository root before it reads the swarmfile
+# again, so a relative SWARM_CONFIG has to be resolved first.  A fake
+# docker accepts every call; git, jq and the runtime directory are real.
+_st_bin="$TMPDIR/start-bin"
+_st_repo="$TMPDIR/start-repo"
+_st_rt="$TMPDIR/start-runtime"
+mkdir -p "$_st_bin" "$_st_repo/sub/configs"
+printf '#!/bin/bash\nexit 0\n' > "$_st_bin/docker"
+chmod +x "$_st_bin/docker"
+git init -q "$_st_repo"
+echo "Prompt." > "$_st_repo/prompt.md"
+cat > "$_st_repo/sub/configs/swarm.json" <<'EOF'
+{ "prompt": "prompt.md", "title": "start test", "driver": "fake",
+  "agents": [{ "count": 1, "model": "fake" }] }
+EOF
+git -C "$_st_repo" add -A
+git -C "$_st_repo" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q -m init
+_st_rc=0
+_st_out=$(cd "$_st_repo/sub" \
+    && PATH="$_st_bin:$PATH" SWARM_RUNTIME_DIR="$_st_rt" \
+        SWARM_CONFIG=configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+        bash "$_LAUNCH_SH" start 2>&1) || _st_rc=$?
+assert_eq "start succeeds" "0" "$_st_rc"
+assert_eq "runtime directory is private" "700" \
+    "$(swarm_file_mode "$_st_rt" 2>/dev/null)"
+assert_eq "bare repo is in the runtime directory" "true" \
+    "$([ -d "$_st_rt/upstream.git" ] && echo true || echo false)"
+assert_eq "state records the absolute swarmfile path" \
+    "$(cd "$_st_repo/sub/configs" && pwd -P)/swarm.json" \
+    "$(jq -r .config "$_st_rt/state.json" 2>/dev/null)"
+assert_eq "state records the title" "start test" \
+    "$(jq -r .title "$_st_rt/state.json" 2>/dev/null)"
+assert_eq "start prints the runtime directory" "true" \
+    "$(printf '%s\n' "$_st_out" | grep -qF "Runtime:   ${_st_rt}" \
+        && echo true || echo false)"
+# With CDPATH set, cd prints where it went, which must not end up in
+# the resolved swarmfile path.
+_st_rc=0
+(cd "$_st_repo/sub" \
+    && PATH="$_st_bin:$PATH" SWARM_RUNTIME_DIR="$_st_rt" CDPATH=. \
+        SWARM_CONFIG=configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+        bash "$_LAUNCH_SH" status >/dev/null 2>&1) || _st_rc=$?
+assert_eq "CDPATH does not change the swarmfile path" "0" "$_st_rc"
+
+# A symlink followed by ".." resolves on the physical path, as the
+# existence check does, not on the spelled one.
+mkdir -p "$_st_repo/other/inner"
+sed 's/start test/physical/' "$_st_repo/sub/configs/swarm.json" \
+    > "$_st_repo/other/swarm.json"
+sed 's/start test/logical/' "$_st_repo/sub/configs/swarm.json" \
+    > "$_st_repo/sub/swarm.json"
+ln -s "$_st_repo/other/inner" "$_st_repo/sub/link"
+_st_rt2="$TMPDIR/start-runtime-2"
+_st_rc=0
+(cd "$_st_repo/sub" \
+    && PATH="$_st_bin:$PATH" SWARM_RUNTIME_DIR="$_st_rt2" \
+        SWARM_CONFIG=link/../swarm.json SWARM_SKIP_DEP_CHECK=1 \
+        bash "$_LAUNCH_SH" start >/dev/null 2>&1) || _st_rc=$?
+assert_eq "start through symlink/.. succeeds" "0" "$_st_rc"
+assert_eq "symlink/.. picks the physical swarmfile" "physical" \
+    "$(jq -r .title "$_st_rt2/state.json" 2>/dev/null)"
+
+# A directory name may end in a newline; dirname and command
+# substitution would drop it and pick configs/ instead.
+_st_nl_dir="$_st_repo/sub/configs"$'\n'
+mkdir -p "$_st_nl_dir"
+sed 's/start test/newline dir/' "$_st_repo/sub/configs/swarm.json" \
+    > "$_st_nl_dir/swarm.json"
+_st_rt3="$TMPDIR/start-runtime-3"
+_st_rc=0
+(cd "$_st_repo/sub" \
+    && PATH="$_st_bin:$PATH" SWARM_RUNTIME_DIR="$_st_rt3" \
+        SWARM_CONFIG=$'configs\n/swarm.json' SWARM_SKIP_DEP_CHECK=1 \
+        bash "$_LAUNCH_SH" start >/dev/null 2>&1) || _st_rc=$?
+assert_eq "start with a newline in the directory name succeeds" "0" \
+    "$_st_rc"
+assert_eq "the swarmfile in 'configs<LF>' is used" "newline dir" \
+    "$(jq -r .title "$_st_rt3/state.json" 2>/dev/null)"
 
 # ============================================================
 echo ""
