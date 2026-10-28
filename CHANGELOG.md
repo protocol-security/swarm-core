@@ -33,6 +33,11 @@
   `launch.sh post-process` exits before the build when
   `post_process.prompt` is unset. The driver now joins the union only
   when `post_process` is present and not null.
+- **Fix: a space no longer splits a submodule mirror mount.**
+  `launch.sh` wrote the mirror mounts to a text file and read them
+  back with word splitting, so a submodule name containing a space
+  turned one `-v` mount into several Docker arguments. The mounts
+  are now built as an array.
 
 ## 0.22.0 — 2026-06-08
 
