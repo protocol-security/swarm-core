@@ -543,3 +543,78 @@ swarm_own_containers() {
     printf '%s\n' "$containers" | jq -r --arg root "$canonical" \
         'select(.owner == $root) | "\(.name) \(.id)"'
 }
+
+# An engagement is one life of the bare repo: it starts when the bare
+# repo is created, and every later phase (post-process, interactive,
+# harvest) belongs to it.  The id is SWARM_ENGAGEMENT_ID when the
+# caller sets it, otherwise one the engine makes up.
+
+# ASCII letters and digits, spelled out: bracket ranges such as
+# [A-Za-z] follow the locale and can match other letters.
+SWARM_ALNUM="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+# Succeed when the argument is a usable engagement id: 1 to 64 ASCII
+# letters, digits, '.', '_' or '-', starting with a letter or digit.
+swarm_engagement_id_valid() {
+    local id="$1"
+    case "$id" in
+        ["$SWARM_ALNUM"]*) ;;
+        *) return 1 ;;
+    esac
+    case "$id" in
+        *[!"$SWARM_ALNUM"._-]*) return 1 ;;
+    esac
+    [ "${#id}" -le 64 ]
+}
+
+# Print the id for a new engagement.
+swarm_engagement_new() {
+    local rand
+    if [ -n "${SWARM_ENGAGEMENT_ID+x}" ]; then
+        printf '%s' "$SWARM_ENGAGEMENT_ID"
+        return 0
+    fi
+    rand=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n') || return 1
+    printf '%s-%s' "$(date -u +%Y%m%dT%H%M%SZ)" "$rand"
+}
+
+# Fail when SWARM_ENGAGEMENT_ID is set and is not a usable id.  Set but
+# empty counts as set: only an unset variable means "no engagement
+# named".
+swarm_engagement_env_check() {
+    if [ -n "${SWARM_ENGAGEMENT_ID+x}" ] \
+            && ! swarm_engagement_id_valid "$SWARM_ENGAGEMENT_ID"; then
+        echo "ERROR: SWARM_ENGAGEMENT_ID must be 1-64 letters, digits," \
+             "'.', '_' or '-', starting with a letter or digit." >&2
+        return 1
+    fi
+}
+
+# Print the engagement recorded in the state file (empty when none).
+swarm_engagement_recorded() {
+    local file="$1" state
+    if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+        return 0
+    fi
+    state=$(swarm_state_read "$file") || {
+        echo "ERROR: not a ${SWARM_STATE_SCHEMA} state file: ${file}" >&2
+        return 1
+    }
+    printf '%s' "$state" | jq -r '.engagement_id // empty'
+}
+
+# A later phase joins the recorded engagement.  Fail when the caller
+# names a different one, or names one while none is recorded.
+swarm_engagement_join() {
+    local file="$1" recorded
+    recorded=$(swarm_engagement_recorded "$file") || return 1
+    if [ -z "${SWARM_ENGAGEMENT_ID+x}" ]; then
+        return 0
+    fi
+    if [ -z "$recorded" ] || [ "$SWARM_ENGAGEMENT_ID" != "$recorded" ]; then
+        echo "ERROR: SWARM_ENGAGEMENT_ID is ${SWARM_ENGAGEMENT_ID}, but" \
+             "the bare repo belongs to engagement" \
+             "'${recorded:-<none recorded>}'." >&2
+        return 1
+    fi
+}

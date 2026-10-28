@@ -283,10 +283,18 @@ exit 0
 FD
 chmod +x "$FAKE_DIR/docker"
 
+# cmd_stop checks the engagement in the state file before its banner,
+# and stops containers through stop_own_container and lib/project.sh.
+# shellcheck disable=SC1091 source=../lib/project.sh
+source "$REPO_ROOT/lib/project.sh"
 CMD_STOP_BODY=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_SH")
+STOP_OWN_BODY=$(awk '/^stop_own_container\(\) \{/,/^\}$/' "$LAUNCH_SH")
+STATE_FILE="$WORKDIR/no-state.json"
+CHECKOUT_PATH="$WORKDIR"
 
 BANNER_DEFAULT=$(
     eval "$CMD_STOP_BODY"
+    eval "$STOP_OWN_BODY"
     NUM_AGENTS=2 IMAGE_NAME=fake PROJECT=fake \
         PATH="$FAKE_DIR:$PATH" cmd_stop 2>&1 | head -1
 )
@@ -295,6 +303,7 @@ check "default banner" \
 
 BANNER_120=$(
     eval "$CMD_STOP_BODY"
+    eval "$STOP_OWN_BODY"
     NUM_AGENTS=2 IMAGE_NAME=fake PROJECT=fake \
         PATH="$FAKE_DIR:$PATH" SWARM_STOP_TIMEOUT=120 cmd_stop 2>&1 \
         | head -1
