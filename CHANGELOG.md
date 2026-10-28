@@ -69,6 +69,13 @@
   image and containers; the second one now gets an error and can set
   `SWARM_PROJECT` to its own id. `launch.sh stop` no longer deletes
   the state file.
+- **Feature: engagement ids.** Creating the bare repo starts an
+  engagement whose id goes into the state file: `SWARM_ENGAGEMENT_ID`
+  when set, otherwise a generated `<UTC time>-<random hex>` id, which
+  `launch.sh` prints. `post-process`, `interactive`, `stop`, `wait`,
+  `harvest.sh` and the dashboard refuse to act when
+  `SWARM_ENGAGEMENT_ID` names a different engagement than the recorded
+  one.
 
 ## 0.22.0 — 2026-06-08
 

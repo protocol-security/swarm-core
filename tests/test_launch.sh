@@ -1811,6 +1811,7 @@ run_stop() {
     (
         eval "$cmd_stop_src"
         CHECKOUT_PATH="/checkout"
+        STATE_FILE="$TMPDIR/no-such-state.json"
         # Called by cmd_stop and the lib/project.sh helpers.
         # shellcheck disable=SC2329
         docker() {
@@ -1929,8 +1930,9 @@ run_stop_with_runtime() {
 }
 _stop_target="$TMPDIR/stop-target"
 _stop_rt="$TMPDIR/stop-runtime"
+_stop_state='{"schema":"swarm-core.state/v1"}'
 mkdir -m 700 "$_stop_target"
-: > "$_stop_target/state.json"
+printf '%s\n' "$_stop_state" > "$_stop_target/state.json"
 ln -s "$_stop_target" "$_stop_rt"
 run_stop_with_runtime "$_stop_rt"
 assert_eq "stop leaves state behind a symlinked runtime" "true" \
@@ -1942,7 +1944,7 @@ assert_eq "stop does not create a missing runtime" "false" \
     "$([ -e "$TMPDIR/stop-missing" ] && echo true || echo false)"
 
 mkdir -m 700 "$_stop_rt"
-: > "$_stop_rt/state.json"
+printf '%s\n' "$_stop_state" > "$_stop_rt/state.json"
 run_stop_with_runtime "$_stop_rt"
 assert_eq "stop keeps the state file, which names the owner" "true" \
     "$([ -e "$_stop_rt/state.json" ] && echo true || echo false)"
@@ -2166,6 +2168,7 @@ _hint_out=$(
     cd "$_hint_repo"
     RUNTIME_DIR="$(dirname "$_hint_bare")"
     BARE_REPO="$_hint_bare"
+    STATE_FILE="$TMPDIR/hint-state.json"
     ensure_bare_repo_for_interactive 2>&1
 ) || true
 _hint=$(printf '%s\n' "$_hint_out" | grep 'docker run ' || true)
@@ -2447,6 +2450,63 @@ assert_eq "status marks it as not ours" "true" \
         && echo true || echo false)"
 assert_eq "status reads nothing from it" "0" \
     "$(grep -c '^inspect ' "$_id_log" || true)"
+
+# ============================================================
+echo ""
+echo "=== 50. Engagement id ==="
+
+# start records the engagement of the new bare repo; later phases
+# refuse a different SWARM_ENGAGEMENT_ID.
+assert_eq "start records a generated engagement id" "true" \
+    "$(jq -r .engagement_id "$_st_rt/state.json" 2>/dev/null \
+        | grep -qE '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$' \
+        && echo true || echo false)"
+_eng_rt="$TMPDIR/eng-runtime"
+run_eng() {
+    (cd "$_st_repo" && PATH="$_st_bin:$PATH" SWARM_RUNTIME_DIR="$_eng_rt" \
+        SWARM_CONFIG=sub/configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+        "$@" 2>&1)
+}
+_eng_rc=0
+run_eng env SWARM_ENGAGEMENT_ID=eng-1 bash "$_LAUNCH_SH" start \
+    >/dev/null || _eng_rc=$?
+assert_eq "start with SWARM_ENGAGEMENT_ID succeeds" "0" "$_eng_rc"
+assert_eq "start records SWARM_ENGAGEMENT_ID" "eng-1" \
+    "$(jq -r .engagement_id "$_eng_rt/state.json" 2>/dev/null)"
+_eng_rc=0
+run_eng env SWARM_ENGAGEMENT_ID=eng-2 bash "$_LAUNCH_SH" interactive \
+    --agent-index 1 >/dev/null || _eng_rc=$?
+assert_eq "interactive refuses another engagement" "1" "$_eng_rc"
+_eng_rc=0
+run_eng env SWARM_ENGAGEMENT_ID=eng-1 bash "$_LAUNCH_SH" interactive \
+    --agent-index 1 >/dev/null || _eng_rc=$?
+assert_eq "interactive joins the recorded engagement" "0" "$_eng_rc"
+_eng_rc=0
+run_eng env SWARM_ENGAGEMENT_ID="bad id" bash "$_LAUNCH_SH" status \
+    >/dev/null || _eng_rc=$?
+assert_eq "a malformed SWARM_ENGAGEMENT_ID is refused" "1" "$_eng_rc"
+_eng_rc=0
+run_eng env SWARM_ENGAGEMENT_ID= bash "$_LAUNCH_SH" status \
+    >/dev/null || _eng_rc=$?
+assert_eq "an empty SWARM_ENGAGEMENT_ID is refused" "1" "$_eng_rc"
+_eng_log="$TMPDIR/eng-docker.log"
+_eng_bin="$TMPDIR/eng-bin"
+mkdir -p "$_eng_bin"
+printf '#!/bin/bash\necho "$*" >> "%s"
+[ "$1 $2" = "container inspect" ] && exit 1\nexit 0\n' \
+    "$_eng_log" > "$_eng_bin/docker"
+chmod +x "$_eng_bin/docker"
+: > "$_eng_log"
+_eng_rc=0
+run_eng env PATH="$_eng_bin:$PATH" SWARM_ENGAGEMENT_ID=eng-2 \
+    bash "$_LAUNCH_SH" stop >/dev/null || _eng_rc=$?
+assert_eq "stop refuses another engagement" "1" "$_eng_rc"
+assert_eq "stop stops nothing then" "0" \
+    "$(grep -c '^stop ' "$_eng_log" || true)"
+_eng_rc=0
+run_eng env PATH="$_eng_bin:$PATH" SWARM_ENGAGEMENT_ID=eng-2 \
+    bash "$_LAUNCH_SH" wait >/dev/null || _eng_rc=$?
+assert_eq "wait refuses another engagement" "1" "$_eng_rc"
 
 # ============================================================
 echo ""

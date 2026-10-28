@@ -70,6 +70,8 @@ OWN_CONTAINERS=""
 identity_ok() {
     local own
     swarm_runtime_verify "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" \
+        && swarm_engagement_env_check \
+        && swarm_engagement_join "$RUNTIME_DIR/state.json" \
         && swarm_containers_verify "$PROJECT" "$REPO_ROOT" \
         && own=$(swarm_own_containers "$PROJECT" "$REPO_ROOT") \
         && OWN_CONTAINERS="${NL}${own}${NL}"

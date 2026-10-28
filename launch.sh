@@ -48,6 +48,8 @@ Environment:
                             default ~/.local/state/swarm-core/<project>.
   SWARM_PROJECT             Project id for the runtime directory, image
                             and containers (default: the repo name).
+  SWARM_ENGAGEMENT_ID       Engagement id for a new bare repo, or the one
+                            later commands expect (default: generated).
 HELP
     exit 0
 fi
@@ -76,6 +78,7 @@ swarm_containers_verify "$PROJECT" "$REPO_ROOT" || exit 1
 CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")"
 CHECKOUT_LABEL="${SWARM_CHECKOUT_LABEL}=${CHECKOUT_PATH}"
 PROJECT_LABEL="${SWARM_PROJECT_LABEL}=${PROJECT}"
+swarm_engagement_env_check || exit 1
 
 # Expand a single $VAR reference from the host environment.
 # Supports "$VAR" (entire value is a reference) only -- not inline
@@ -248,6 +251,19 @@ create_bare_repo() {
     # runtime directory around it keeps other host users out.
     git -C "$BARE_REPO" config core.sharedRepository world
     chmod -R a+rwX "$BARE_REPO"
+    begin_engagement
+}
+
+# A new bare repo starts a new engagement: record its id, which every
+# later phase checks against SWARM_ENGAGEMENT_ID.
+begin_engagement() {
+    local id
+    id=$(swarm_engagement_new) || exit 1
+    swarm_state_update "$STATE_FILE" \
+        '.engagement_id = $id | .engagement_started_at = $at' \
+        --arg id "$id" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        || exit 1
+    echo "Engagement: ${id}"
 }
 
 ensure_bare_repo_for_interactive() {
@@ -255,6 +271,7 @@ ensure_bare_repo_for_interactive() {
         create_bare_repo "bare repo for interactive session"
         return
     fi
+    swarm_engagement_join "$STATE_FILE" || exit 1
 
     local bare_head local_head
     bare_head=$(git -C "$BARE_REPO" rev-parse --verify --quiet \
@@ -824,6 +841,7 @@ cmd_stop() {
     # mid-rebase on a busy bare repo.  Override via env:
     #   SWARM_STOP_TIMEOUT=120 ./launch.sh stop
     local stop_timeout="${SWARM_STOP_TIMEOUT:-60}"
+    swarm_engagement_join "$STATE_FILE" || exit 1
     echo "--- Stopping agents (grace ${stop_timeout}s) ---"
     for i in $(seq 1 "$NUM_AGENTS"); do
         stop_own_container "${IMAGE_NAME}-${i}" "$stop_timeout"
@@ -883,6 +901,7 @@ cmd_status() {
 }
 
 cmd_wait() {
+    swarm_engagement_join "$STATE_FILE" || exit 1
     echo "--- Waiting for all agents to finish ---"
 
     while true; do
@@ -960,6 +979,8 @@ cmd_post_process() {
     prepare_runtime
     if [ ! -d "$BARE_REPO" ]; then
         create_bare_repo "bare repo for post-process"
+    else
+        swarm_engagement_join "$STATE_FILE" || exit 1
     fi
 
     build_image

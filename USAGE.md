@@ -83,6 +83,7 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_TITLE` | | Dashboard title override. |
 | `SWARM_RUNTIME_DIR` | | See [Runtime directory](#runtime-directory). |
 | `SWARM_PROJECT` | | See [Project identity](#project-identity). |
+| `SWARM_ENGAGEMENT_ID` | | See [Engagements](#engagements). |
 | `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
 | `SWARM_ACTIVITY_TIMEOUT` | `0` | Seconds of logfile silence before the in-container watchdog SIGTERMs the agent CLI's process group.  `0` disables.  See [Activity watchdog](#activity-watchdog). |
 | `SWARM_ACTIVITY_POLL` | `10` | Watchdog mtime-poll interval, in seconds.  Rarely needs tuning. |
@@ -873,6 +874,19 @@ because an older release created it (see
 [Upgrading from `/tmp` state](#upgrading-from-tmp-state)). Removing or
 stopping a container checks its labels again and acts on its ID.
 `harvest.sh` only looks into containers when the Docker daemon answers.
+
+### Engagements
+
+An engagement is one life of the bare repo. It begins when `start`
+creates the bare repo, or when `post-process` or `interactive` creates
+it because none exists, and the state file records its id: the value
+of `SWARM_ENGAGEMENT_ID` (1-64 letters, digits, `.`, `_` or `-`,
+starting with a letter or digit), or a generated
+`<UTC time>-<random hex>` id. `post-process`, `interactive`, `stop`,
+`wait`, `harvest.sh` and the dashboard act on an existing engagement
+only when `SWARM_ENGAGEMENT_ID` is unset or equal to the recorded id,
+so a caller that names its engagement cannot act on another one. An
+empty value counts as set and is refused.
 
 ### Upgrading from `/tmp` state
 
