@@ -684,7 +684,12 @@ cp "$INJECT_DIR/$PROMPT_FILE" "$INJECT_DIR/$ALT_PROMPT_FILE"
 git add "$PROMPT_FILE" "$SETUP_FILE" "$ALT_PROMPT_FILE"
 git -c user.name="test" -c user.email="test@test" \
     commit --quiet -m "tmp: smoke test prompt"
-git push --quiet origin agent-work
+# The push creates object directories as the host user, and the agents
+# may already be running.  Under the usual umask those directories are
+# not writable by others, so an agent whose UID differs from the host
+# user's could not push into them; umask 000 opens them up as
+# create_bare_repo opens the rest, before the prompt is published.
+(umask 000 && git push --quiet origin agent-work)
 rm -rf "$INJECT_DIR"
 cd "$REPO_ROOT"
 

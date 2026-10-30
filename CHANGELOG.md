@@ -18,6 +18,12 @@
   used `${var^^}`, which `/bin/bash` 3.2 on macOS rejects as a bad
   substitution, so `costs.sh` failed whenever an agent set `effort`.
   It now uppercases the letter with `tr`.
+- **Fix: tests when host and agent UIDs differ.** On native Linux
+  with a host UID other than the agent's 1000, the runtime signal
+  test's bare repo and the object directories the smoke test's
+  prompt injection created were not writable by the agent, so its
+  pushes failed. Both are now writable for any UID, as
+  `create_bare_repo` makes the real bare repo.
 
 ## 0.22.0 — 2026-06-08
 
