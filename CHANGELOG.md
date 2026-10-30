@@ -14,6 +14,10 @@
   blocks only a running container and notes that an exited one will
   be replaced. `p` also passes the dashboard's `SWARM_CONFIG` to
   `launch.sh post-process`, so non-default configs are honoured.
+- **Fix: `costs.sh` with an effort level on macOS.** The effort tag
+  used `${var^^}`, which `/bin/bash` 3.2 on macOS rejects as a bad
+  substitution, so `costs.sh` failed whenever an agent set `effort`.
+  It now uppercases the letter with `tr`.
 
 ## 0.22.0 — 2026-06-08
 
