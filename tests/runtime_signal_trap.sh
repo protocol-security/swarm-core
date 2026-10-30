@@ -51,6 +51,12 @@ NAMES=(
 
 cleanup() {
     docker rm -f "${NAMES[@]}" 2>/dev/null >/dev/null || true
+    # The agents wrote into upstream.git as the container's user, whose
+    # files rm cannot always delete on native Linux.  Remove them as
+    # root with the test image, which needs no pull.
+    docker run --rm --user 0 --entrypoint rm \
+        -v "$WORKDIR:/workdir" "$IMAGE_TAG" -rf /workdir/upstream.git \
+        >/dev/null 2>&1 || true
     rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
@@ -104,6 +110,10 @@ git clone -q "$WORKDIR/upstream.git" "$WORKDIR/seed"
     git push -q origin agent-work
 )
 rm -rf "$WORKDIR/seed"
+# The agent user pushes back here.  On native Linux its UID may differ
+# from the host user's, so share the repo as create_bare_repo does.
+git -C "$WORKDIR/upstream.git" config core.sharedRepository world
+chmod -R a+rwX "$WORKDIR/upstream.git"
 
 # Synthetic driver mounted at /drivers/test-committer.sh.  agent_run
 # commits a file in /workspace, then either sleeps so we can
