@@ -179,6 +179,42 @@ assert_eq "7384 seconds" "2h 03m"  "$(format_duration 7384)"
 
 # ============================================================
 echo ""
+echo "=== 9. costs.sh effort tag (real script, stub docker) ==="
+
+# Run costs.sh through its #!/bin/bash shebang, which is Bash 3.2 on
+# macOS, against a stub docker that reports one agent with an effort.
+STUB_BIN="$TMPDIR/stub-bin"
+PROJ_DIR="$TMPDIR/proj"
+mkdir -p "$STUB_BIN" "$PROJ_DIR"
+cat > "$STUB_BIN/docker" <<'STUB'
+#!/bin/bash
+case "$1" in
+    ps) echo "proj-agent-1" ;;
+    inspect)
+        case "$3" in
+            *State.Status*) echo "exited" ;;
+            *Config.Env*)
+                printf 'CLAUDE_MODEL=claude-opus-4-6\n'
+                printf 'CLAUDE_CODE_EFFORT_LEVEL=high\n'
+                ;;
+        esac
+        ;;
+    cp) printf '1\t0.5\t100\t50\t0\t0\t2000\t0\t3\n' > "$3" ;;
+esac
+STUB
+chmod +x "$STUB_BIN/docker"
+git -C "$PROJ_DIR" init -q
+
+COSTS_SH="$(cd "$(dirname "$0")/.." && pwd)/costs.sh"
+rc=0
+out=$(cd "$PROJ_DIR" && PATH="$STUB_BIN:$PATH" SWARM_SKIP_DEP_CHECK=1 \
+    "$COSTS_SH" 2>&1) || rc=$?
+assert_eq "exits 0 with an effort level" "0" "$rc"
+assert_eq "effort tag is uppercase" "1" \
+    "$(printf '%s\n' "$out" | grep -c 'opus-4-6 \[H\]' || true)"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

@@ -119,8 +119,9 @@ for cname in $containers; do
     effort=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
     short="${model/claude-/}"
     if [ -n "$effort" ]; then
-        eff_tag="${effort:0:1}"
-        short="${short} [${eff_tag^^}]"
+        # No ${var^^}: /bin/bash is 3.2 on macOS.
+        eff_tag=$(printf '%s' "${effort:0:1}" | tr '[:lower:]' '[:upper:]')
+        short="${short} [${eff_tag}]"
     fi
 
     stats=$(read_agent_stats "$cname" "$agent_id")
