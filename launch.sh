@@ -44,6 +44,14 @@ Environment:
   SWARM_CONFIG              Path to swarmfile (or place swarm.json in repo root).
   SWARM_TITLE               Dashboard title override.
   SWARM_SKIP_DEP_CHECK      Set to 1 to silence version warnings.
+  SWARM_RUNTIME_DIR         Runtime directory (bare repo, mirrors, state);
+                            default ~/.local/state/swarm-core/<project>.
+  SWARM_PROJECT             Project id for the runtime directory, image
+                            and containers (default: the repo name).
+  SWARM_ENGAGEMENT_ID       Engagement id for a new bare repo, or the one
+                            later commands expect (default: generated).
+  SWARM_LOCK_FD             Descriptor of an engagement lock the caller
+                            already holds.
 HELP
     exit 0
 fi
@@ -55,12 +63,24 @@ source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT_RAW="$(basename "$REPO_ROOT")"
-PROJECT="$(swarm_project_id "$PROJECT_RAW")"
+PROJECT="$(swarm_project_resolve "$REPO_ROOT")" || exit 1
 SWARM_RUN_HASH="$(git -C "$REPO_ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo "unknown")"
 SWARM_RUN_BRANCH="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
 SWARM_RUN_CONTEXT="${PROJECT_RAW}@${SWARM_RUN_HASH} (${SWARM_RUN_BRANCH})"
-BARE_REPO="/tmp/${PROJECT}-upstream.git"
+RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
+BARE_REPO="${RUNTIME_DIR}/upstream.git"
+MIRROR_DIR="${RUNTIME_DIR}/mirrors"
+STATE_FILE="${RUNTIME_DIR}/state.json"
 IMAGE_NAME="${PROJECT}-agent"
+
+# Every command acts on this project's containers or runtime directory,
+# so none runs when the directory belongs to another checkout.
+swarm_runtime_verify "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
+swarm_containers_verify "$PROJECT" "$REPO_ROOT" || exit 1
+CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")"
+CHECKOUT_LABEL="${SWARM_CHECKOUT_LABEL}=${CHECKOUT_PATH}"
+PROJECT_LABEL="${SWARM_PROJECT_LABEL}=${PROJECT}"
+swarm_engagement_env_check || exit 1
 
 # Expand a single $VAR reference from the host environment.
 # Supports "$VAR" (entire value is a reference) only -- not inline
@@ -133,6 +153,116 @@ build_image() {
         -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
 }
 
+# Remove this checkout's container NAME before the name is reused.  The
+# label is checked again here, since another checkout can create the
+# container after the check at the top, and removal goes by ID; when a
+# foreign container takes the name afterwards, docker run fails on it.
+remove_own_container() {
+    local id
+    id=$(swarm_own_container_id "$1" "$CHECKOUT_PATH" "$PROJECT") || exit 1
+    if [ -n "$id" ]; then
+        docker rm -f "$id" >/dev/null
+    fi
+}
+
+# Stop this checkout's container NAME by ID, after checking its label
+# again; a container of another checkout under that name is skipped.
+stop_own_container() {
+    local name="$1" timeout="$2" id
+    if ! id=$(swarm_own_container_id "$name" "$CHECKOUT_PATH" \
+            "$PROJECT"); then
+        echo "  ${name} skipped: not this checkout's container"
+        return 0
+    fi
+    if [ -n "$id" ] \
+            && docker stop -t "$timeout" "$id" >/dev/null 2>&1; then
+        echo "  stopped ${name}"
+    else
+        echo "  ${name} not running"
+    fi
+}
+
+# Print the state of this checkout's container NAME: its Docker status,
+# "not found" when there is none, or "not ours" when a container of
+# another checkout or project holds the name.
+own_container_state() {
+    local id
+    if ! id=$(swarm_own_container_id "$1" "$CHECKOUT_PATH" "$PROJECT" \
+            2>/dev/null); then
+        printf 'not ours'
+        return 0
+    fi
+    if [ -z "$id" ]; then
+        printf 'not found'
+        return 0
+    fi
+    docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null \
+        || printf 'not found'
+}
+
+# Hold the lock descriptors this process inherited until container NAME
+# has started (running, or already stopped), file STOP exists, or
+# process PARENT is gone.  cmd_interactive creates STOP as soon as
+# docker run returns; the parent check covers a launch.sh that was
+# killed.  There is no timeout: a slow start keeps the lock, to protect
+# what the container is about to mount.
+hold_lock_until_running() {
+    local name="$1" parent="$2" stop="$3" state
+    while [ ! -e "$stop" ] && kill -0 "$parent" 2>/dev/null; do
+        state=$(docker inspect -f '{{.State.Status}}' "$name" \
+            2>/dev/null || true)
+        case "$state" in
+            running|exited|dead) return 0 ;;
+        esac
+        sleep 0.1
+    done
+}
+
+# Lifecycle commands call this before they touch the bare repo or the
+# mirrors: stop on state that older releases left in /tmp (named after
+# the directory, as they did), create or check the private runtime
+# directory, take its engagement lock, and record this checkout as its
+# owner.  The lock stays held until the command exits, except that
+# interactive releases it once its container runs and start --dashboard
+# before the dashboard opens; children such as harvest.sh inherit it.
+prepare_runtime() {
+    swarm_refuse_legacy_state "$(swarm_project_id "$PROJECT_RAW")" \
+        || exit 1
+    swarm_runtime_init "$RUNTIME_DIR" || exit 1
+    swarm_lock "$RUNTIME_DIR" || exit 1
+    swarm_runtime_claim "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
+}
+
+# Record the run in the state file, so a standalone dashboard can show
+# its title, swarmfile and agent summary.  The file is JSON that
+# readers parse with jq; nothing sources it.
+write_state_file() {
+    local model_summary config_title
+    model_summary=$(jq -r \
+        '(.prompt // "") as $dp | ($dp | split("/") | .[-1] // "" | rtrimstr(".md")) as $dp_stem |
+        [.agents[] | (.count // 0) as $count | select($count > 0) |
+          "\($count)x \(.model | split("/") | .[-1])" +
+          (if .context == "none" then " ctx:bare"
+           elif .context == "slim" then " ctx:slim"
+           else "" end) +
+          (if .prompt and .prompt != $dp then
+            ":" + (.prompt | split("/") | .[-1] | rtrimstr(".md") |
+              if startswith($dp_stem + "-") then .[$dp_stem | length + 1:] else . end)
+           else "" end)] | join(", ")' \
+        "$CONFIG_FILE")
+    config_title=$(jq -r '.title // empty' "$CONFIG_FILE" 2>/dev/null || true)
+    # prepare_runtime has recorded the owner; keep it.
+    swarm_state_update "$STATE_FILE" \
+        '.title = $title | .config = $config
+         | .num_agents = $num_agents | .model_summary = $model_summary
+         | .config_label = $config_label' \
+        --arg title "${SWARM_TITLE:-${config_title}}" \
+        --arg config "$CONFIG_FILE" \
+        --argjson num_agents "$NUM_AGENTS" \
+        --arg model_summary "$model_summary" \
+        --arg config_label "$(basename "$CONFIG_FILE")"
+}
+
 create_bare_repo() {
     local label="${1:-bare repo}"
     echo "--- Creating ${label} ---"
@@ -140,8 +270,24 @@ create_bare_repo() {
     git clone --bare "$REPO_ROOT" "$BARE_REPO"
     git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
     git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
+    # The container's agent user can have a different UID from the host
+    # user, so the repo stays writable for everyone.  The owner-only
+    # runtime directory around it keeps other host users out.
     git -C "$BARE_REPO" config core.sharedRepository world
     chmod -R a+rwX "$BARE_REPO"
+    begin_engagement
+}
+
+# A new bare repo starts a new engagement: record its id, which every
+# later phase checks against SWARM_ENGAGEMENT_ID.
+begin_engagement() {
+    local id
+    id=$(swarm_engagement_new) || exit 1
+    swarm_state_update "$STATE_FILE" \
+        '.engagement_id = $id | .engagement_started_at = $at' \
+        --arg id "$id" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        || exit 1
+    echo "Engagement: ${id}"
 }
 
 ensure_bare_repo_for_interactive() {
@@ -149,6 +295,7 @@ ensure_bare_repo_for_interactive() {
         create_bare_repo "bare repo for interactive session"
         return
     fi
+    swarm_engagement_join "$STATE_FILE" || exit 1
 
     local bare_head local_head
     bare_head=$(git -C "$BARE_REPO" rev-parse --verify --quiet \
@@ -160,18 +307,19 @@ ensure_bare_repo_for_interactive() {
              "${bare_head:0:7} behind local HEAD" \
              "${local_head:0:7})." >&2
         echo "       Remove it to start from current HEAD:" >&2
-        echo "       rm -rf ${BARE_REPO}" >&2
+        echo "       $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
         exit 1
     fi
 }
 
 mirror_submodules() {
     cd "$REPO_ROOT"
+    mkdir -p "$MIRROR_DIR"
     git submodule foreach --quiet 'echo "$name|$toplevel/.git/modules/$sm_path"' | \
     while IFS='|' read -r name gitdir; do
         local safe_name mirror
         safe_name="${name//\//_}"
-        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
+        mirror="${MIRROR_DIR}/${safe_name}.git"
         rm_docker_dir "$mirror"
         echo "--- Mirroring submodule: ${name} ---"
         git clone --bare "$gitdir" "$mirror"
@@ -179,25 +327,24 @@ mirror_submodules() {
     done
 }
 
-write_mirror_volume_file() {
-    local output_file="$1"
-    cd "$REPO_ROOT"
-    git submodule foreach --quiet 'echo "$name"' 2>/dev/null | \
-    while read -r name; do
-        local safe_name mirror
+# Fill MIRROR_ARGS with one read-only mount per mirrored submodule.
+# Each mount stays a single argument, so a space in a path or in a
+# submodule name does not split it.
+mirror_volume_args() {
+    local names name safe_name mirror
+    names=$(cd "$REPO_ROOT" \
+        && git submodule foreach --quiet 'echo "$name"' 2>/dev/null) || {
+        echo "ERROR: cannot list the submodules of ${REPO_ROOT}." >&2
+        return 1
+    }
+    MIRROR_ARGS=()
+    while IFS= read -r name; do
+        [ -n "$name" ] || continue
         safe_name="${name//\//_}"
-        mirror="/tmp/${PROJECT}-mirror-${safe_name}.git"
+        mirror="${MIRROR_DIR}/${safe_name}.git"
         [ -d "$mirror" ] || continue
-        echo "-v ${mirror}:/mirrors/${name}:ro"
-    done > "$output_file"
-}
-
-read_volume_file() {
-    local input_file="$1"
-    while read -r line; do
-        # shellcheck disable=SC2206
-        [ -n "$line" ] && MIRROR_ARGS+=($line)
-    done < "$input_file"
+        MIRROR_ARGS+=(-v "${mirror}:/mirrors/${name}:ro")
+    done <<< "$names"
 }
 
 available_drivers() {
@@ -218,6 +365,20 @@ if [ ! -f "$CONFIG_FILE" ]; then
     echo "ERROR: Swarmfile ${CONFIG_FILE} not found." >&2
     exit 1
 fi
+# Keep an absolute path: start changes into the repository root before
+# it reads the swarmfile again, and the state file records the path for
+# a dashboard started elsewhere.  Parameter expansion and the "x"
+# sentinel keep trailing newlines in directory names, which dirname and
+# command substitution would drop.
+case "$CONFIG_FILE" in
+    */*) _config_dir="${CONFIG_FILE%/*}" ;;
+    *) _config_dir="." ;;
+esac
+_config_dir=$(CDPATH='' cd -P -- "${_config_dir:-/}" && pwd -P && echo x) \
+    || { echo "ERROR: cannot resolve ${CONFIG_FILE}." >&2; exit 1; }
+_config_dir="${_config_dir%x}"
+_config_dir="${_config_dir%$'\n'}"
+CONFIG_FILE="${_config_dir%/}/${CONFIG_FILE##*/}"
 
 SWARM_PROMPT=$(jq -r '.prompt // empty' "$CONFIG_FILE")
 SWARM_SETUP=$(jq -r '.setup // empty' "$CONFIG_FILE")
@@ -383,7 +544,7 @@ HELP
     done
 
     local profile_file
-    profile_file="/tmp/${PROJECT}-interactive-profile-$$.json"
+    profile_file=$(mktemp)
     select_interactive_profile "$selector" "$selector_index" "$profile_file"
 
     local profile_name profile_label safe_profile short_id branch name
@@ -442,15 +603,14 @@ HELP
         exit 1
     fi
 
+    prepare_runtime
     ensure_bare_repo_for_interactive
     mirror_submodules
     build_image
 
-    local vols_file="/tmp/${PROJECT}-interactive-vols.txt"
-    write_mirror_volume_file "$vols_file"
     MIRROR_ARGS=()
-    read_volume_file "$vols_file"
-    rm -f "$vols_file" "$profile_file"
+    mirror_volume_args
+    rm -f "$profile_file"
 
     local EXTRA_ENV=()
     while IFS= read -r _ae; do
@@ -464,8 +624,24 @@ HELP
         done < <(agent_docker_env "$agent_effort")
     fi
 
-    docker rm -f "$name" 2>/dev/null || true
+    remove_own_container "$name"
 
+    # The session can last hours and only pushes through git, so it runs
+    # without the lock, but the lock has to last until the container
+    # runs: its mounts are made at start, and a concurrent start could
+    # otherwise replace the bare repo or the mirrors first.  A helper
+    # that inherits the lock descriptor holds it until then; this shell
+    # drops its own copy so that docker run, which keeps the terminal
+    # for the whole session, does not inherit it.
+    # The helper gets no stdio, so it never keeps a caller's output pipe
+    # open.  Its stop file lives in the private runtime directory.
+    local helper stop rc=0
+    stop="${RUNTIME_DIR}/.interactive-$$.stop"
+    rm -f "$stop"
+    hold_lock_until_running "$name" "$$" "$stop" \
+        </dev/null >/dev/null 2>&1 &
+    helper=$!
+    swarm_unlock
     echo "--- Starting interactive ${profile_label} (${agent_model}) ---"
     echo "Branch: ${branch}"
     docker run -it \
@@ -475,6 +651,8 @@ HELP
         "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
         "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
+        --label "$CHECKOUT_LABEL" \
+        --label "$PROJECT_LABEL" \
         -e "SWARM_MODEL=${agent_model}" \
         -e "SWARM_EFFORT=${agent_effort}" \
         -e "CLAUDE_MODEL=${agent_model}" \
@@ -494,7 +672,13 @@ HELP
         -e "SWARM_INTERACTIVE_PROFILE=${profile_label}" \
         -e "SWARM_INTERACTIVE_MODE=${mode}" \
         --entrypoint /interactive.sh \
-        "$IMAGE_NAME"
+        "$IMAGE_NAME" || rc=$?
+    # docker run has returned: the container ran or never will.  wait
+    # only reaps this shell's own child, so a reused PID is never hit.
+    : > "$stop"
+    wait "$helper" 2>/dev/null || true
+    rm -f "$stop"
+    return "$rc"
 }
 
 cmd_start() {
@@ -526,6 +710,8 @@ cmd_start() {
         fi
     done <<< "$group_prompts"
 
+    prepare_runtime
+
     # Refuse to overwrite a bare repo that diverges from local HEAD.
     # Distinguish two directions so the message leads with the remediation
     # that actually works.  The `--is-ancestor` check runs in the local
@@ -547,14 +733,14 @@ cmd_start() {
                      "${LOCAL_HEAD:0:7})." >&2
                 echo "       Remove it to start a fresh run from" \
                      "current HEAD:" >&2
-                echo "       rm -rf ${BARE_REPO}" >&2
+                echo "       $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
             else
                 echo "ERROR: ${BARE_REPO} has unharvested agent" \
                      "commits (agent-work ${BARE_HEAD:0:7} vs local" \
                      "HEAD ${LOCAL_HEAD:0:7})." >&2
                 echo "       Run harvest.sh first, or if you've" \
                      "already integrated those commits:" >&2
-                echo "       rm -rf ${BARE_REPO}" >&2
+                echo "       $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
             fi
             exit 1
         fi
@@ -567,7 +753,7 @@ cmd_start() {
 
     # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
-    AGENTS_CFG="/tmp/${PROJECT}-agents.cfg"
+    AGENTS_CFG=$(mktemp)
     jq -r '.tag as $dt | .driver as $dd |
         .agents[] | range(.count // 0) as $i |
         [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' \
@@ -592,18 +778,15 @@ cmd_start() {
 
     build_image
 
-    # Build mirror volume args from discovered submodules.
-    write_mirror_volume_file "/tmp/${PROJECT}-mirror-vols.txt"
-
-    # Read mirror volume mounts (shared across all containers).
+    # Mirror volume mounts, shared across all containers.
     MIRROR_ARGS=()
-    read_volume_file "/tmp/${PROJECT}-mirror-vols.txt"
+    mirror_volume_args
 
     AGENT_IDX=0
     while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt agent_auth_token agent_tag agent_driver; do
         AGENT_IDX=$((AGENT_IDX + 1))
         NAME="${IMAGE_NAME}-${AGENT_IDX}"
-        docker rm -f "$NAME" 2>/dev/null || true
+        remove_own_container "$NAME"
         agent_api_key="$(expand_env_ref "$agent_api_key")"
         agent_auth_token="$(expand_env_ref "$agent_auth_token")"
         agent_tag="$(expand_env_ref "$agent_tag")"
@@ -650,6 +833,8 @@ cmd_start() {
             "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
             "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
+            --label "$CHECKOUT_LABEL" \
+            --label "$PROJECT_LABEL" \
             -e "SWARM_MODEL=${agent_model}" \
             -e "SWARM_EFFORT=${eff}" \
             -e "CLAUDE_MODEL=${agent_model}" \
@@ -676,32 +861,9 @@ cmd_start() {
             "$IMAGE_NAME"
     done < "$AGENTS_CFG"
 
-    rm -f "/tmp/${PROJECT}-mirror-vols.txt" "/tmp/${PROJECT}-agents.cfg"
+    rm -f "$AGENTS_CFG"
 
-    # Write state file so a standalone dashboard can pick up config.
-    local state_model_summary state_config_label
-    state_model_summary=$(jq -r \
-        '(.prompt // "") as $dp | ($dp | split("/") | .[-1] // "" | rtrimstr(".md")) as $dp_stem |
-        [.agents[] | (.count // 0) as $count | select($count > 0) |
-          "\($count)x \(.model | split("/") | .[-1])" +
-          (if .context == "none" then " ctx:bare"
-           elif .context == "slim" then " ctx:slim"
-           else "" end) +
-          (if .prompt and .prompt != $dp then
-            ":" + (.prompt | split("/") | .[-1] | rtrimstr(".md") |
-              if startswith($dp_stem + "-") then .[$dp_stem | length + 1:] else . end)
-           else "" end)] | join(", ")' \
-        "$CONFIG_FILE")
-    state_config_label=$(basename "$CONFIG_FILE")
-    local config_title
-    config_title=$(jq -r '.title // empty' "$CONFIG_FILE" 2>/dev/null || true)
-    cat > "/tmp/${PROJECT}-swarm.env" <<ENVEOF
-SWARM_TITLE="${SWARM_TITLE:-${config_title}}"
-SWARM_CONFIG="${CONFIG_FILE}"
-SWARM_NUM_AGENTS="${NUM_AGENTS}"
-SWARM_MODEL_SUMMARY="${state_model_summary}"
-SWARM_CONFIG_LABEL="${state_config_label}"
-ENVEOF
+    write_state_file
 
     echo ""
     echo "--- ${NUM_AGENTS} agents launched ---"
@@ -713,6 +875,7 @@ ENVEOF
     echo "Stop:"
     echo "  $0 stop"
     echo ""
+    echo "Runtime:   ${RUNTIME_DIR}"
     echo "Bare repo: ${BARE_REPO}"
 }
 
@@ -724,66 +887,67 @@ cmd_stop() {
     # mid-rebase on a busy bare repo.  Override via env:
     #   SWARM_STOP_TIMEOUT=120 ./launch.sh stop
     local stop_timeout="${SWARM_STOP_TIMEOUT:-60}"
+    swarm_engagement_join "$STATE_FILE" || exit 1
     echo "--- Stopping agents (grace ${stop_timeout}s) ---"
     for i in $(seq 1 "$NUM_AGENTS"); do
-        NAME="${IMAGE_NAME}-${i}"
-        docker stop -t "$stop_timeout" "$NAME" 2>/dev/null \
-            && echo "  stopped ${NAME}" \
-            || echo "  ${NAME} not running"
+        stop_own_container "${IMAGE_NAME}-${i}" "$stop_timeout"
     done
     while IFS= read -r NAME; do
         [ -n "$NAME" ] || continue
-        docker stop -t "$stop_timeout" "$NAME" 2>/dev/null \
-            && echo "  stopped ${NAME}" \
-            || echo "  ${NAME} not running"
-    done < <(docker ps -a --format '{{.Names}}' 2>/dev/null \
-        | grep -E "^${IMAGE_NAME}-interactive-" \
+        stop_own_container "$NAME" "$stop_timeout"
+    done < <(swarm_interactive_container_names "$PROJECT" 2>/dev/null \
         | sort || true)
-    NAME="${IMAGE_NAME}-post"
-    docker stop -t "$stop_timeout" "$NAME" 2>/dev/null \
-        && echo "  stopped ${NAME}" \
-        || echo "  ${NAME} not running"
-    rm -f "/tmp/${PROJECT}-swarm.env"
+    stop_own_container "${IMAGE_NAME}-post" "$stop_timeout"
+    # The state file stays: it records which checkout owns the runtime
+    # directory, and later phases read it.
 }
 
 cmd_logs() {
-    local n="${1:-1}"
-    docker logs -f "${IMAGE_NAME}-${n}"
+    local n="${1:-1}" name id
+    name="${IMAGE_NAME}-${n}"
+    id=$(swarm_own_container_id "$name" "$CHECKOUT_PATH" "$PROJECT") \
+        || exit 1
+    if [ -z "$id" ]; then
+        echo "ERROR: no container ${name}." >&2
+        exit 1
+    fi
+    docker logs -f "$id"
 }
 
 cmd_status() {
     for i in $(seq 1 "$NUM_AGENTS"); do
         NAME="${IMAGE_NAME}-${i}"
-        printf "%-30s " "${NAME}:"
-        docker inspect -f '{{.State.Status}}' "$NAME" 2>/dev/null \
-            || echo "not found"
+        printf "%-30s %s\n" "${NAME}:" "$(own_container_state "$NAME")"
     done
 
     while read -r NAME; do
         [ -n "$NAME" ] || continue
-        local env_dump branch profile state
+        local env_dump branch profile state id
+        id=$(swarm_own_container_id "$NAME" "$CHECKOUT_PATH" "$PROJECT" \
+            2>/dev/null) || continue
+        [ -n "$id" ] || continue
         env_dump=$(docker inspect -f \
             '{{range .Config.Env}}{{println .}}{{end}}' \
-            "$NAME" 2>/dev/null || true)
+            "$id" 2>/dev/null || true)
         branch=$(printf '%s' "$env_dump" \
             | grep '^SWARM_INTERACTIVE_BRANCH=' \
             | head -1 | cut -d= -f2- || true)
         profile=$(printf '%s' "$env_dump" \
             | grep '^SWARM_INTERACTIVE_PROFILE=' \
             | head -1 | cut -d= -f2- || true)
-        state=$(docker inspect -f '{{.State.Status}}' "$NAME" 2>/dev/null \
+        state=$(docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null \
             || echo "not found")
         printf "%-30s " "${NAME}:"
         printf "%s" "$state"
         [ -n "$profile" ] && printf "  profile=%s" "$profile"
         [ -n "$branch" ] && printf "  branch=%s" "$branch"
         printf "\n"
-    done < <(docker ps -a --format '{{.Names}}' 2>/dev/null \
-        | grep -E "^${IMAGE_NAME}-interactive-" \
+    done < <(swarm_interactive_container_names "$PROJECT" 2>/dev/null \
         | sort || true)
 }
 
 cmd_wait() {
+    swarm_engagement_join "$STATE_FILE" || exit 1
     echo "--- Waiting for all agents to finish ---"
 
     while true; do
@@ -791,10 +955,15 @@ cmd_wait() {
         local all_done=true running=0 exited=0
         for i in $(seq 1 "$NUM_AGENTS"); do
             local state
-            state=$(docker inspect -f '{{.State.Status}}' "${IMAGE_NAME}-${i}" 2>/dev/null || echo "not found")
+            state=$(own_container_state "${IMAGE_NAME}-${i}")
             case "$state" in
                 running) running=$((running + 1)); all_done=false ;;
                 exited)  exited=$((exited + 1)) ;;
+                "not ours")
+                    echo "" >&2
+                    echo "ERROR: ${IMAGE_NAME}-${i} is not this" \
+                         "checkout's container." >&2
+                    exit 1 ;;
             esac
         done
 
@@ -853,20 +1022,21 @@ cmd_post_process() {
         exit 1
     fi
 
+    prepare_runtime
     if [ ! -d "$BARE_REPO" ]; then
         create_bare_repo "bare repo for post-process"
+    else
+        swarm_engagement_join "$STATE_FILE" || exit 1
     fi
 
     build_image
 
     local NAME="${IMAGE_NAME}-post"
-    docker rm -f "$NAME" 2>/dev/null || true
+    remove_own_container "$NAME"
 
     # Build mirror volume args from existing mirrors.
     local MIRROR_ARGS=()
-    write_mirror_volume_file "/tmp/${PROJECT}-pp-vols.txt"
-    read_volume_file "/tmp/${PROJECT}-pp-vols.txt"
-    rm -f "/tmp/${PROJECT}-pp-vols.txt"
+    mirror_volume_args
 
     # Source the driver to access agent_docker_auth / agent_docker_env.
     # shellcheck source=lib/drivers/claude-code.sh
@@ -893,13 +1063,16 @@ cmd_post_process() {
     fi
 
     echo "--- Starting post-processing (${pp_model}) ---"
-    docker run -d \
+    local pp_id
+    pp_id=$(docker run -d \
         --name "$NAME" \
         -v "${BARE_REPO}:/upstream:rw" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
         "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
         "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
+        --label "$CHECKOUT_LABEL" \
+        --label "$PROJECT_LABEL" \
         -e "SWARM_MODEL=${pp_model}" \
         -e "SWARM_EFFORT=${pp_effort}" \
         -e "CLAUDE_MODEL=${pp_model}" \
@@ -922,7 +1095,7 @@ cmd_post_process() {
         ${price_input:+-e "SWARM_PRICE_INPUT=${price_input}"} \
         ${price_output:+-e "SWARM_PRICE_OUTPUT=${price_output}"} \
         ${price_cached:+-e "SWARM_PRICE_CACHED=${price_cached}"} \
-        "$IMAGE_NAME"
+        "$IMAGE_NAME")
 
     echo "Post-processing agent launched: ${NAME}"
     echo "Waiting for completion..."
@@ -930,7 +1103,8 @@ cmd_post_process() {
     while true; do
         sleep 10
         local state
-        state=$(docker inspect -f '{{.State.Status}}' "$NAME" 2>/dev/null || echo "not found")
+        state=$(docker inspect -f '{{.State.Status}}' "$pp_id" \
+            2>/dev/null || echo "not found")
         if [ "$state" = "running" ]; then
             printf "."
             continue
@@ -945,7 +1119,8 @@ cmd_post_process() {
     # recovery), but we propagate the failure upward so callers (CI workflows,
     # daemons) can refuse to publish partial state.
     local exit_code
-    exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$NAME" 2>/dev/null || echo "1")
+    exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$pp_id" \
+        2>/dev/null || echo "1")
 
     echo ""
     echo "--- Harvesting results ---"
@@ -964,6 +1139,8 @@ case "${1:-start}" in
         parse_start_args "$@"
         cmd_start
         if $OPEN_DASHBOARD; then
+            # The dashboard runs until closed; it must not keep the lock.
+            swarm_unlock
             exec "$SWARM_DIR/dashboard.sh"
         fi
         ;;

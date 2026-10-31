@@ -24,6 +24,70 @@
   prompt injection created were not writable by the agent, so its
   pushes failed. Both are now writable for any UID, as
   `create_bare_repo` makes the real bare repo.
+- **Fix: a space no longer splits a submodule mirror mount.**
+  `launch.sh` wrote the mirror mounts to a text file and read them
+  back with word splitting, so a submodule name containing a space
+  turned one `-v` mount into several Docker arguments. The mounts
+  are now built as an array.
+- **Fix: transient files come from `mktemp`.** The agent list and
+  the interactive profile written by `launch.sh` (both can hold
+  `api_key` values), the `docker cp` copies made by the dashboard,
+  `costs.sh` and `harvest.sh`, and the `progress.sh` checkout used
+  fixed names in `/tmp` that another local user could read or
+  create first.
+- **Runtime (breaking): engine state moves out of `/tmp`.** The bare
+  repo, the submodule mirrors and the dashboard state file now live
+  in a per-project runtime directory,
+  `$XDG_STATE_HOME/swarm-core/<project>` (by default
+  `~/.local/state/swarm-core/<project>`), or in `SWARM_RUNTIME_DIR`
+  when set. `launch.sh` creates it with mode 700 and refuses one that
+  is a symlink, belongs to another user, has group or other
+  permission bits, or on macOS has an ACL entry that allows access
+  (it is not created below an inheritable one). The bare repo inside
+  keeps its open modes, so the container's `agent` user can push
+  whatever its UID. State left in `/tmp` by older releases is not
+  reused: while `/tmp/<project>-upstream.git` exists and belongs to
+  the user, `start`, `post-process`, `interactive` and `harvest.sh`
+  stop and print the commands to fetch its branches and remove it.
+- **Runtime (breaking): the state file is JSON.** `state.json`
+  (`swarm-core.state/v1`, mode 600) replaces the `swarm.env` shell
+  file. The dashboard reads it with jq instead of sourcing it, so a
+  quote in a title no longer breaks the file and `$(...)` in it never
+  runs. The swarmfile path is recorded as an absolute path.
+- **Feature (breaking): one checkout per project id, and
+  `SWARM_PROJECT`.** The state file records the checkout that owns a
+  runtime directory, and containers carry their project id and the
+  checkout that created them in `swarm-core.project` and
+  `swarm-core.checkout` labels. Every `launch.sh` command, `harvest.sh`,
+  `progress.sh`, `costs.sh` and the dashboard refuse to act when another
+  checkout owns the runtime directory or one of the project's
+  containers. Unlabeled containers from older releases count as
+  someone else's; "Upgrading from `/tmp` state" in USAGE.md says how
+  to stop them, fetch their work and remove them. Removing or
+  stopping a container checks its labels again and acts on its ID. Two
+  checkouts with the same directory name used to share a bare repo, an
+  image and containers; the second one now gets an error and can set
+  `SWARM_PROJECT` to its own id. `launch.sh stop` no longer deletes
+  the state file.
+- **Feature: engagement ids.** Creating the bare repo starts an
+  engagement whose id goes into the state file: `SWARM_ENGAGEMENT_ID`
+  when set, otherwise a generated `<UTC time>-<random hex>` id, which
+  `launch.sh` prints. `post-process`, `interactive`, `stop`, `wait`,
+  `harvest.sh` and the dashboard refuse to act when
+  `SWARM_ENGAGEMENT_ID` names a different engagement than the recorded
+  one.
+- **Feature (breaking): engagement lock.** `start`, `post-process`,
+  `interactive`/`chat`/`shell` and `harvest.sh` take
+  `engagement.lock` in the runtime directory with `flock -n` and fail
+  at once when another operation holds it, so two runs can no longer
+  replace the bare repo or the mirrors at the same time. A caller that
+  holds the lock passes its descriptor in `SWARM_LOCK_FD`, which the
+  engine checks against the lock file. `flock` is now required (on
+  macOS: `brew install flock`).
+- **Fix: project ids are ASCII in every locale.** Under a UTF-8 locale
+  the sanitizer kept letters such as `é` in the id, which Docker
+  rejects in image and container names; they now become separators
+  like other characters.
 
 ## 0.22.0 — 2026-06-08
 
