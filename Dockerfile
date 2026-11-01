@@ -32,9 +32,9 @@ RUN if echo ",$SWARM_AGENTS," | grep -q ",claude-code,"; then \
     fi
 ENV PATH="/home/agent/.local/bin:${PATH}"
 
-# --- Node.js (shared by Gemini CLI and Codex CLI) ---
+# --- Node.js (shared by Gemini CLI, Codex CLI, and Pi) ---
 USER root
-RUN if echo ",$SWARM_AGENTS," | grep -qE ",(gemini-cli|codex-cli),"; then \
+RUN if echo ",$SWARM_AGENTS," | grep -qE ",(gemini-cli|codex-cli|pi),"; then \
         curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
         && apt-get install -y --no-install-recommends nodejs \
         && rm -rf /var/lib/apt/lists/*; \
@@ -51,6 +51,17 @@ RUN if echo ",$SWARM_AGENTS," | grep -q ",codex-cli,"; then \
         npm install -g "@openai/codex${CODEX_CLI_VERSION:+@$CODEX_CLI_VERSION}" \
         && mkdir -p /home/agent/.codex \
         && chown agent:agent /home/agent/.codex; \
+    fi
+
+# --- Pi ---
+ARG PI_VERSION=
+RUN if echo ",$SWARM_AGENTS," | grep -q ",pi,"; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends fd-find ripgrep \
+        && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+        && rm -rf /var/lib/apt/lists/* \
+        && npm install -g --ignore-scripts \
+            "@earendil-works/pi-coding-agent${PI_VERSION:+@$PI_VERSION}"; \
     fi
 USER agent
 
