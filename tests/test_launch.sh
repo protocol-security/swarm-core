@@ -1614,6 +1614,38 @@ source "$_EXTRACTED"
 assert_eq "function defined" "function" \
     "$(type -t compute_swarm_agents)"
 
+cat > "$TMPDIR/csa_fake.json" <<'EOF'
+{ "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "fake", "driver": "fake" }] }
+EOF
+assert_eq "absent post-process adds no implicit driver" "fake" \
+    "$(compute_swarm_agents "$TMPDIR/csa_fake.json")"
+
+cat > "$TMPDIR/csa_pp_null.json" <<'EOF'
+{ "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "fake", "driver": "fake" }],
+  "post_process": null }
+EOF
+assert_eq "null post-process adds no implicit driver" "fake" \
+    "$(compute_swarm_agents "$TMPDIR/csa_pp_null.json")"
+
+cat > "$TMPDIR/csa_unused_top.json" <<'EOF'
+{ "prompt": "p.md",
+  "driver": "codex-cli",
+  "agents": [{ "count": 1, "model": "fake", "driver": "fake" }] }
+EOF
+assert_eq "absent post-process skips unused top-level driver" "fake" \
+    "$(compute_swarm_agents "$TMPDIR/csa_unused_top.json")"
+
+cat > "$TMPDIR/csa_pp_default.json" <<'EOF'
+{ "prompt": "p.md",
+  "agents": [{ "count": 1, "model": "fake", "driver": "fake" }],
+  "post_process": { "prompt": "r.md" } }
+EOF
+assert_eq "configured post-process keeps default driver" \
+    "fake,claude-code" \
+    "$(compute_swarm_agents "$TMPDIR/csa_pp_default.json")"
+
 cat > "$TMPDIR/csa_default.json" <<'EOF'
 { "prompt": "p.md",
   "agents": [{ "count": 2, "model": "claude-opus-4-6" }] }
