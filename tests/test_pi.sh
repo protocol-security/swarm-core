@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/drivers/pi.sh
 source "$ROOT/lib/drivers/pi.sh"
 unset PI_CHATGPT_AUTH PI_AUTH_DIR
+unset PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES
 
 PASS=0
 FAIL=0
