@@ -17,6 +17,20 @@ _pi_provider() {
     esac
 }
 
+_pi_builtin_model() {
+    local pi_bin
+    pi_bin="$(readlink -f "$(command -v pi)")" || return 1
+    (
+        cd "$(dirname "$pi_bin")" || exit 1
+        node --input-type=module - "$1" "$2" <<'JS'
+import { getBuiltinModel } from "@earendil-works/pi-ai/providers/all";
+const model = getBuiltinModel(process.argv[2], process.argv[3]);
+if (!model) process.exit(1);
+process.stdout.write(JSON.stringify(model));
+JS
+    )
+}
+
 # Keep the shared subscription store limited to Codex credentials.
 _pi_has_codex_auth() {
     [ -f "$1" ] && jq -e '
@@ -180,12 +194,22 @@ agent_settings() {
             if [ "$provider" = anthropic ] && [ -z "${PI_API_KIND:-}" ]; then
                 api_kind="anthropic-messages"
             fi
-            local known_model=false
+            local known_model=false catalog_model=null api_override=false
             if pi --list-models "$provider $model_id" 2>/dev/null |
                     awk -v provider="$provider" -v model="$model_id" \
                     '$1 == provider && $2 == model { found = 1 }
                      END { exit !found }'; then
                 known_model=true
+            fi
+            if [ -n "${PI_API_KIND:-}" ]; then
+                api_override=true
+                if [ "$known_model" = true ]; then
+                    if ! catalog_model=$(_pi_builtin_model "$provider" "$model_id"); then
+                        echo "ERROR: unable to read Pi catalog metadata for" \
+                            "$provider/$model_id." >&2
+                        exit 1
+                    fi
+                fi
             fi
             jq -n \
                 --arg provider "$provider" \
@@ -193,6 +217,8 @@ agent_settings() {
                 --arg model "$model_id" \
                 --arg api "$api_kind" \
                 --argjson known "$known_model" \
+                --argjson api_override "$api_override" \
+                --argjson catalog "$catalog_model" \
                 --argjson ctx "${PI_CONTEXT_WINDOW:-128000}" \
                 --argjson max "${PI_MAX_TOKENS:-8192}" \
                 --arg api_key "${PI_API_KEY:-}" \
@@ -201,11 +227,18 @@ agent_settings() {
                         ($provider): ({
                             baseUrl: $url,
                             api: $api
-                        } + (if $known then {
+                        } + (if $known then (if $api_override then {
+                            models: [($catalog | del(.provider, .baseUrl) |
+                                .api = $api)],
                             modelOverrides: {
                                 ($model): {contextWindow: $ctx, maxTokens: $max}
                             }
                         } else {
+                            modelOverrides: {
+                                ($model): {contextWindow: $ctx, maxTokens: $max}
+                            }
+                        } end)
+                        else {
                             models: [{
                                 id: $model,
                                 name: $model,
