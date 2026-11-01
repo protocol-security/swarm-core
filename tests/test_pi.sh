@@ -202,6 +202,40 @@ assert_eq "known model keeps catalog definition" true \
         .providers.openai.modelOverrides["gpt-5.4"].contextWindow == 128000 and
         (.providers.openai.modelOverrides["gpt-5.4"].cost == null)' \
         "$PI_CODING_AGENT_DIR/models.json" >/dev/null && echo true)"
+node() {
+    cat >/dev/null
+    cat <<'JSON'
+{
+  "id": "gpt-5.4",
+  "name": "GPT-5.4",
+  "api": "openai-responses",
+  "provider": "openai",
+  "reasoning": true,
+  "input": ["text", "image"],
+  "cost": {
+    "input": 2.5,
+    "output": 15,
+    "cacheRead": 0.25,
+    "cacheWrite": 2.5
+  },
+  "contextWindow": 1050000,
+  "maxTokens": 128000
+}
+JSON
+}
+PI_API_KEY='!not-a-shell-command' PI_BASE_URL=https://example.test \
+    PI_API_KIND=openai-completions SWARM_MODEL=openai/gpt-5.4 \
+    agent_settings "$WORK/workspace"
+unset -f node
+assert_eq "explicit API overrides catalog model API" openai-completions \
+    "$(jq -r '.providers.openai.models[0].api' \
+        "$PI_CODING_AGENT_DIR/models.json")"
+assert_eq "API override preserves catalog metadata" true \
+    "$(jq -e '.providers.openai.models[0] |
+        .name == "GPT-5.4" and .reasoning and .input == ["text", "image"] and
+        .cost.input == 2.5 and .contextWindow == 1050000 and
+        .maxTokens == 128000 and .provider == null and .baseUrl == null' \
+        "$PI_CODING_AGENT_DIR/models.json" >/dev/null && echo true)"
 PI_API_KEY='!not-a-shell-command' PI_BASE_URL=https://example.test \
     SWARM_MODEL=openai/custom-model agent_settings "$WORK/workspace"
 assert_eq "custom model keeps zero-cost metadata" \
