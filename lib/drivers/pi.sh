@@ -90,7 +90,7 @@ _pi_invoke() {
         # Fresh sessions, four tools, and no automatic project code loading.
         # Docker, not Pi's project-trust setting, is the isolation boundary.
         args+=(--print --mode json --no-session --no-approve
-               --tools "read,write,edit,bash" -- "$prompt_text")
+               --tools "read,write,edit,bash" -- $'\n'"$prompt_text")
         _run_reaped "$logfile" pi "${args[@]}"
     else
         # Keep the native UI and its project-trust prompt.
