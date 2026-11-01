@@ -332,7 +332,12 @@ agent_docker_env() {
 agent_docker_auth() {
     local api_key="$1" auth_token="$2" auth_mode="$3" base_url="$4"
     local oauth="${ANTHROPIC_OAUTH_TOKEN:-${CLAUDE_CODE_OAUTH_TOKEN:-}}"
-    local label=""
+    local label="" _pv
+    for _pv in PI_API_KIND PI_CONTEXT_WINDOW PI_MAX_TOKENS; do
+        if [ -n "${!_pv:-}" ]; then
+            printf -- '-e\n%s=%s\n' "$_pv" "${!_pv}"
+        fi
+    done
     if [ -n "$base_url" ]; then
         printf -- '-e\nPI_BASE_URL=%s\n' "$base_url"
     fi
