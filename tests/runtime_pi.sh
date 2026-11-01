@@ -82,6 +82,7 @@ jq -n --arg network "$NETWORK" --arg api "http://${API}:8080" \
     post_process: {prompt: "prompts/post.md", model: "claude-sonnet-4-6",
         effort: "off", api_key: "pi-fixture-key", base_url: $api}
 }' > swarm.json
+export SWARM_CONFIG="$WORK/swarm.json"
 git add .
 git commit -qm 'Seed Pi E2E fixture'
 SEED=$(git rev-parse HEAD)
