@@ -103,6 +103,35 @@
   SIGPIPE and the pipeline failed, so a check that should pass
   failed. On a loaded Ubuntu host the pattern failed 22 times in
   20,000 runs. The tests now pass the text with a here-string.
+- **Fix: the bare repo and mirrors copy the checkout's objects.** A
+  local `git clone --bare` hardlinks object files, so the
+  `chmod -R a+rwX` that lets the container's agent write to the bare
+  repo also made the checkout's own object files writable for every
+  user, and the mirrors did the same to the submodules' objects under
+  `.git/modules`. Both clones now copy the objects
+  (`--no-hardlinks --dissociate`), including any the checkout borrows
+  through alternates. Where earlier clones shared objects through
+  hardlinks or alternates, the bare repo and mirrors now need their
+  own space for them. Earlier local clones used hardlinks where they
+  could and copied otherwise, for example across filesystems, so a
+  bare repo or mirror that an earlier release made may still share
+  objects, and interactive and post-process sessions reuse it: stop
+  its containers, harvest, and remove the bare repo and mirrors as
+  "Cleanup" in USAGE.md shows, so that the next start copies the
+  objects. Then, in the checkout, restore the read-only modes and
+  check the objects:
+
+  ```bash
+  find "$(git rev-parse --git-common-dir)" -path '*/objects/*' \
+      -type f -perm -0002 -exec chmod a-w {} +
+  git fsck --full
+  git submodule foreach --recursive 'git fsck --full'
+  ```
+
+  "Cleanup" removes both the bare repo and mirrors from a container,
+  as `launch.sh` does, so that files an agent wrote with another UID
+  do not stop it. The runtime directory and state file are removed
+  only after that succeeds.
 
 ## 0.22.0 — 2026-06-08
 

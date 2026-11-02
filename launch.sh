@@ -271,7 +271,11 @@ create_bare_repo() {
     local label="${1:-bare repo}"
     echo "--- Creating ${label} ---"
     rm_docker_dir "$BARE_REPO"
-    git clone --bare "$REPO_ROOT" "$BARE_REPO"
+    # A local clone hardlinks object files by default, and the chmod
+    # below would then make the checkout's own objects writable for
+    # every user.  Copy them instead, with any objects the checkout
+    # borrows through alternates.
+    git clone --bare --no-hardlinks --dissociate "$REPO_ROOT" "$BARE_REPO"
     git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
     git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
     # The container's agent user can have a different UID from the host
@@ -326,7 +330,9 @@ mirror_submodules() {
         mirror="${MIRROR_DIR}/${safe_name}.git"
         rm_docker_dir "$mirror"
         echo "--- Mirroring submodule: ${name} ---"
-        git clone --bare "$gitdir" "$mirror"
+        # Copy objects, as create_bare_repo does, so the chmod below
+        # cannot reach the checkout's .git/modules through hardlinks.
+        git clone --bare --no-hardlinks --dissociate "$gitdir" "$mirror"
         chmod -R a+rwX "$mirror"
     done
 }

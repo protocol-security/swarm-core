@@ -975,9 +975,14 @@ those files, so the bare repo goes through Docker first, the way
 ```bash
 docker rm -f $(docker ps -aq \
     --filter "label=swarm-core.project=<project>") 2>/dev/null
-docker run --rm -v "<runtime dir>:/runtime" alpine rm -rf /runtime/upstream.git
+docker run --rm -v "<runtime dir>:/runtime" alpine \
+    rm -rf /runtime/upstream.git /runtime/mirrors &&
 rm -rf "<runtime dir>"
 ```
+
+The bare repo and mirrors are removed before the runtime directory
+and its state file. This needs a running Docker daemon and the
+`alpine` image, which Docker pulls if it is missing.
 
 ## Verify image
 
