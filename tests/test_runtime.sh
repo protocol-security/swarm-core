@@ -41,7 +41,7 @@ assert_eq() {
 
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grep -qF -- "$needle" <<< "$haystack"; then
         echo "  PASS: ${label}"
         PASS=$((PASS + 1))
     else
@@ -699,10 +699,10 @@ for _loc in en_US.UTF-8 C.UTF-8; do
     done
 done
 assert_eq "generated id has a time and a random part" "true" \
-    "$(env -u SWARM_ENGAGEMENT_ID bash -c \
+    "$(engagement_id=$(env -u SWARM_ENGAGEMENT_ID bash -c \
         'source "$1"; swarm_engagement_new' _ \
-        "$TESTS_DIR/../lib/project.sh" \
-        | grep -qE '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$' \
+        "$TESTS_DIR/../lib/project.sh") &&
+        grep -qE '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$' <<< "$engagement_id" \
         && echo true || echo false)"
 assert_eq "SWARM_ENGAGEMENT_ID names the new engagement" "eng-1" \
     "$(SWARM_ENGAGEMENT_ID=eng-1 swarm_engagement_new)"
