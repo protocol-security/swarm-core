@@ -77,7 +77,7 @@ check() {
 
 check_contains() {
     local label="$1" haystack="$2" needle="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grep -qF -- "$needle" <<< "$haystack"; then
         echo "    PASS: ${label}"
         PASS=$((PASS + 1))
     else
@@ -181,9 +181,10 @@ start_container() {
 
 wait_for_session() {
     local name="$1" timeout="${2:-30}"
-    local i
+    local i logs
     for i in $(seq 1 "$timeout"); do
-        if docker logs "$name" 2>&1 | grep -q "session start at="; then
+        if logs=$(docker logs "$name" 2>&1) &&
+            grep -q "session start at=" <<< "$logs"; then
             return 0
         fi
         sleep 1

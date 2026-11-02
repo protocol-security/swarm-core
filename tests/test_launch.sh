@@ -2311,7 +2311,7 @@ assert_eq "state records the absolute swarmfile path" \
 assert_eq "state records the title" "start test" \
     "$(jq -r .title "$_st_rt/state.json" 2>/dev/null)"
 assert_eq "start prints the runtime directory" "true" \
-    "$(printf '%s\n' "$_st_out" | grep -qF "Runtime:   ${_st_rt}" \
+    "$(grep -qF "Runtime:   ${_st_rt}" <<< "$_st_out" \
         && echo true || echo false)"
 # With CDPATH set, cd prints where it went, which must not end up in
 # the resolved swarmfile path.
@@ -2407,7 +2407,7 @@ _id_rc=0
 _id_out=$(run_launch "$_id_b") || _id_rc=$?
 assert_eq "second checkout is refused" "1" "$_id_rc"
 assert_eq "the refusal names SWARM_PROJECT" "true" \
-    "$(printf '%s\n' "$_id_out" | grep -q SWARM_PROJECT \
+    "$(grep -q SWARM_PROJECT <<< "$_id_out" \
         && echo true || echo false)"
 _id_rc=0
 run_launch "$_id_b" SWARM_PROJECT=start-repo-b >/dev/null || _id_rc=$?
@@ -2495,7 +2495,8 @@ assert_eq "logs refuses another project's container" "1" "$_id_rc"
 assert_eq "logs reads nothing from it" "0" \
     "$(grep -c '^logs ' "$_id_log" || true)"
 assert_eq "status marks it as not ours" "true" \
-    "$(run_named status | grep -q 'start-repo-agent-1: *not ours' \
+    "$(status_output=$(run_named status) &&
+        grep -q 'start-repo-agent-1: *not ours' <<< "$status_output" \
         && echo true || echo false)"
 assert_eq "status reads nothing from it" "0" \
     "$(grep -c '^inspect ' "$_id_log" || true)"
@@ -2507,8 +2508,9 @@ echo "=== 50. Engagement id ==="
 # start records the engagement of the new bare repo; later phases
 # refuse a different SWARM_ENGAGEMENT_ID.
 assert_eq "start records a generated engagement id" "true" \
-    "$(jq -r .engagement_id "$_st_rt/state.json" 2>/dev/null \
-        | grep -qE '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$' \
+    "$(engagement_id=$(jq -r .engagement_id "$_st_rt/state.json" \
+        2>/dev/null) &&
+        grep -qE '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$' <<< "$engagement_id" \
         && echo true || echo false)"
 _eng_rt="$TMPDIR/eng-runtime"
 run_eng() {
@@ -2635,7 +2637,7 @@ assert_eq "the lock is held until the container runs" "0" \
 assert_eq "the lock is free once the container runs" "1" \
     "$(grep -c 'lock free during session' "$_lk_log" || true)"
 assert_eq "the session's output reaches the terminal" "true" \
-    "$(printf '%s\n' "$_lk_out" | grep -q 'SESSION OUTPUT' \
+    "$(grep -q 'SESSION OUTPUT' <<< "$_lk_out" \
         && echo true || echo false)"
 assert_eq "interactive returns the container's exit status" "4" "$_lk_rc"
 # A container that never starts: docker run fails, launch.sh exits, and

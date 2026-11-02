@@ -31,7 +31,7 @@ assert_eq() {
 
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
-    if echo "$haystack" | grep -qF "$needle"; then
+    if grep -qF "$needle" <<< "$haystack"; then
         echo "  PASS: ${label}"
         PASS=$((PASS + 1))
     else
@@ -248,7 +248,7 @@ RAW=$(run_filter_raw 1 '{"type":"assistant","session_id":"s","message":{"id":"m"
 
 # Yellow open (\033[33m) should appear before the timestamp.
 _esc=$(printf '\033')
-if printf '%s' "$RAW" | grep -q "${_esc}\[33m"; then
+if grep -q "${_esc}\[33m" <<< "$RAW"; then
     echo "  PASS: has yellow ANSI open"
     PASS=$((PASS + 1))
 else
@@ -257,7 +257,7 @@ else
 fi
 
 # Reset (\033[0m) should appear after the tool content.
-if printf '%s' "$RAW" | grep -q "${_esc}\[0m"; then
+if grep -q "${_esc}\[0m" <<< "$RAW"; then
     echo "  PASS: has ANSI reset"
     PASS=$((PASS + 1))
 else

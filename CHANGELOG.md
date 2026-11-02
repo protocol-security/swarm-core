@@ -97,6 +97,12 @@
   the sanitizer kept letters such as `é` in the id, which Docker
   rejects in image and container names; they now become separators
   like other characters.
+- **Fix: test checks that failed now and then under load.** Tests
+  ran `echo "$x" | grep -q ...` under `pipefail`. When `grep -q`
+  matched and exited before the writer finished, the writer got
+  SIGPIPE and the pipeline failed, so a check that should pass
+  failed. On a loaded Ubuntu host the pattern failed 22 times in
+  20,000 runs. The tests now pass the text with a here-string.
 
 ## 0.22.0 — 2026-06-08
 
