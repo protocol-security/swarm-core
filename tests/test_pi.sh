@@ -301,6 +301,15 @@ assert_eq "missing chatgpt store never falls back" \
     $'-e\nPI_CHATGPT_AUTH=1\n-e\nSWARM_AUTH_MODE=' \
     "$(PI_AUTH_DIR='' agent_docker_auth '' '' chatgpt '' 2>/dev/null)"
 cp "$PI_AUTH_DIR/auth.json" "$WORK/auth-before.json"
+: > "$PI_AUTH_DIR/auth.json"
+(
+    sleep 0.05
+    cp "$WORK/auth-before.json" "$PI_AUTH_DIR/auth.json"
+) &
+auth_writer=$!
+assert_eq "transient credential refresh accepted" yes \
+    "$(_pi_has_codex_auth "$PI_AUTH_DIR/auth.json" && echo yes || echo no)"
+wait "$auth_writer"
 for invalid in '{}' 'not-json' \
         '{"openai-codex":{"type":"api_key","key":"test"}}' \
         '{"openai-codex":{"type":"oauth","access":"test"}}'; do
