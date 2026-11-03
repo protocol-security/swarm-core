@@ -294,9 +294,13 @@ agent_detect_fatal() {
     local logfile="$1" exit_code="${2:-0}" last
     last=$(jq -Rn '
         reduce (inputs | fromjson? | select(type == "object") |
-            select(.type == "message_end" and
-                   .message.role == "assistant")) as $e
-            (null; $e.message)
+            select((.type == "message_end" and
+                    .message.role == "assistant") or
+                   (.type == "compaction_end" and .reason == "overflow" and
+                    .willRetry == false and
+                    (.errorMessage // "") != ""))) as $e
+            (null; if $e.type == "message_end" then $e.message
+                   else {stopReason: "error", errorMessage: $e.errorMessage} end)
     ' "$logfile" 2>/dev/null || true)
     local error
     error=$(printf '%s\n' "$last" | jq -r '
