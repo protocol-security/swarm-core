@@ -271,33 +271,75 @@ write_state_file() {
 }
 
 create_bare_repo() {
-    local label="${1:-bare repo}"
+    local label="${1:-bare repo}" base new="${BARE_REPO}.new"
     echo "--- Creating ${label} ---"
+    # The engagement starts from the commit the checkout has now.
+    base=$(git -C "$REPO_ROOT" rev-parse --verify --quiet 'HEAD^{commit}') \
+        || { echo "ERROR: ${REPO_ROOT} has no commit to start from." >&2
+             exit 1; }
     rm_docker_dir "$BARE_REPO"
+    rm_docker_dir "$new"
+    if [ -e "$BARE_REPO" ] || [ -e "$new" ]; then
+        echo "ERROR: cannot remove the old ${BARE_REPO}." >&2
+        exit 1
+    fi
     # A local clone hardlinks object files by default, and the chmod
     # below would then make the checkout's own objects writable for
     # every user.  Copy them instead, with any objects the checkout
     # borrows through alternates.
-    git clone --bare --no-hardlinks --dissociate "$REPO_ROOT" "$BARE_REPO"
-    git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
-    git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
+    git clone --bare --no-hardlinks --dissociate "$REPO_ROOT" "$new"
+    # Later commands join any bare repo they find, so the clone gets its
+    # name only once it is ready and the engagement is recorded.  A
+    # failure leaves at most the .new directory, which nothing joins.
+    if ! prepare_bare_repo "$new" "$base" \
+            || ! begin_engagement "$base" \
+            || ! mv "$new" "$BARE_REPO"; then
+        echo "ERROR: cannot prepare ${BARE_REPO}." >&2
+        rm_docker_dir "$new"
+        exit 1
+    fi
+}
+
+# Set up the fresh clone DIR for an engagement that starts at BASE.
+# Returns 1 at the first failure.
+prepare_bare_repo() {
+    local dir="$1" base="$2" ref refs
+    # The clone copies every local branch.  Branches that harvest or
+    # the preservation checks treat as agent work start empty, so an
+    # old local agent-work, interactive or parked branch is never
+    # taken for work of this engagement.
+    refs=$(git -C "$dir" for-each-ref --format='%(refname)' \
+        refs/heads/swarm/ refs/heads/agent-parked/ refs/swarm-runs/) \
+        || return 1
+    # Ref names cannot contain whitespace or glob characters, so word
+    # splitting yields one name per word.
+    for ref in $refs; do
+        git -C "$dir" update-ref -d "$ref" || return 1
+    done
+    git -C "$dir" update-ref refs/heads/agent-work "$base" || return 1
+    git -C "$dir" update-ref refs/swarm/base "$base" || return 1
+    git -C "$dir" symbolic-ref HEAD refs/heads/agent-work || return 1
     # The container's agent user can have a different UID from the host
     # user, so the repo stays writable for everyone.  The owner-only
     # runtime directory around it keeps other host users out.
-    git -C "$BARE_REPO" config core.sharedRepository world
-    chmod -R a+rwX "$BARE_REPO"
-    begin_engagement
+    git -C "$dir" config core.sharedRepository world || return 1
+    chmod -R a+rwX "$dir" || return 1
 }
 
 # A new bare repo starts a new engagement: record its id, which every
-# later phase checks against SWARM_ENGAGEMENT_ID.
+# later phase checks against SWARM_ENGAGEMENT_ID, and the commit it
+# starts from (BASE).  Agents can write to the bare repo, including its
+# refs/swarm/base, so the state file keeps the copy that later checks
+# of the agents' branches can trust.  Returns 1 if either fails.
 begin_engagement() {
-    local id
-    id=$(swarm_engagement_new) || exit 1
+    local base="$1" id
+    id=$(swarm_engagement_new) || return 1
     swarm_state_update "$STATE_FILE" \
-        '.engagement_id = $id | .engagement_started_at = $at' \
+        '.engagement_id = $id | .engagement_started_at = $at
+         | .base_commit = $base' \
         --arg id "$id" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        || exit 1
+        --arg base "$base" \
+        || return 1
     echo "Engagement: ${id}"
 }
 

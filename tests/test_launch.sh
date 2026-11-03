@@ -1353,7 +1353,8 @@ _hl_sub_pack=${_hl_packs[0]}
 _hl_src_mode=$(_hl_mode "$_hl_src_pack")
 _hl_sub_mode=$(_hl_mode "$_hl_sub_pack")
 
-for _hl_fn in create_bare_repo begin_engagement mirror_submodules; do
+for _hl_fn in create_bare_repo prepare_bare_repo begin_engagement \
+        mirror_submodules; do
     awk -v fn="$_hl_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' "$_hl_launch"
@@ -2814,6 +2815,124 @@ assert_eq "start --dashboard unlocks before exec" "1" \
         || true)"
 
 # ============================================================
+echo ""
+echo "=== 52. A new bare repo records its base and drops old agent refs ==="
+
+# The checkout has a stale local agent-work and branches in the
+# namespaces harvest and the preservation checks read.  None of them may
+# reach the new bare repo; agent-work and refs/swarm/base start at HEAD,
+# and the state file records HEAD as the base.
+_br_dir="$TMPDIR/base-refs"
+_br_src="$_br_dir/src"
+mkdir -p "$_br_dir"
+git init -q "$_br_src"
+_br_git() {
+    git -C "$_br_src" -c user.name=t -c user.email=t@t \
+        -c commit.gpgsign=false "$@"
+}
+_br_git commit -q --allow-empty -m one
+_br_old=$(git -C "$_br_src" rev-parse HEAD)
+_br_git commit -q --allow-empty -m two
+_br_head=$(git -C "$_br_src" rev-parse HEAD)
+for _br_ref in refs/heads/agent-work refs/heads/swarm/abc/interactive-x \
+        refs/heads/agent-parked/1-20260101T000000Z refs/swarm-runs/r1 \
+        refs/heads/feature; do
+    git -C "$_br_src" update-ref "$_br_ref" "$_br_old"
+done
+awk '$0 ~ /^(create_bare_repo|prepare_bare_repo|begin_engagement)\(\)[[:space:]]*\{/ { p = 1 }
+     p { print }
+     p && /^\}[[:space:]]*$/ { p = 0 }' "$_LAUNCH_SH" > "$_br_dir/funcs.sh"
+_br_run() {
+    (
+        # shellcheck source=/dev/null
+        source "$_br_dir/funcs.sh"
+        # The extracted functions call this stub.
+        # shellcheck disable=SC2329
+        rm_docker_dir() { rm -rf "$1"; }
+        REPO_ROOT="$1"
+        BARE_REPO="$_br_dir/bare-$2.git"
+        STATE_FILE="$_br_dir/state-$2.json"
+        create_bare_repo
+    ) >/dev/null 2>&1
+}
+_br_rc=0
+_br_run "$_br_src" 1 || _br_rc=$?
+_br_bare="$_br_dir/bare-1.git"
+assert_eq "bare repo is created" "0" "$_br_rc"
+assert_eq "agent-work starts at HEAD, not the old local branch" \
+    "$_br_head" "$(git -C "$_br_bare" rev-parse agent-work 2>/dev/null)"
+assert_eq "refs/swarm/base is HEAD" "$_br_head" \
+    "$(git -C "$_br_bare" rev-parse refs/swarm/base 2>/dev/null)"
+assert_eq "the state file records HEAD as the base" "$_br_head" \
+    "$(jq -r .base_commit "$_br_dir/state-1.json" 2>/dev/null)"
+assert_eq "old interactive, parked and run refs are not copied" "" \
+    "$(git -C "$_br_bare" for-each-ref --format='%(refname)' \
+        refs/heads/swarm/ refs/heads/agent-parked/ refs/swarm-runs/)"
+assert_eq "other branches are copied as before" "$_br_old" \
+    "$(git -C "$_br_bare" rev-parse feature 2>/dev/null)"
+assert_eq "the bare repo's HEAD is agent-work" "refs/heads/agent-work" \
+    "$(git -C "$_br_bare" symbolic-ref HEAD 2>/dev/null)"
+
+# A failure while the clone is prepared must not leave a bare repo that
+# later commands would join with old agent branches in it, even when
+# removing the clone fails too: rm_docker_dir is a no-op here.  FAIL
+# names the step that fails.
+_br_fail() {
+    local n="$1" fail="$2"
+    (
+        # shellcheck source=/dev/null
+        source "$_br_dir/funcs.sh"
+        # The extracted functions call these stubs.
+        # shellcheck disable=SC2329
+        rm_docker_dir() { :; }
+        # shellcheck disable=SC2329
+        git() {
+            case "$fail $*" in
+                "list "*" for-each-ref "*) return 128 ;;
+                "delete "*" update-ref -d "*) return 128 ;;
+            esac
+            command git "$@"
+        }
+        # shellcheck disable=SC2329
+        swarm_state_update() {
+            [ "$fail" != state ]
+        }
+        REPO_ROOT="$_br_src"
+        BARE_REPO="$_br_dir/bare-$n.git"
+        STATE_FILE="$_br_dir/state-$n.json"
+        create_bare_repo
+    ) >/dev/null 2>&1
+}
+for _br_case in 3:list 4:delete 5:state; do
+    _br_n="${_br_case%%:*}"
+    _br_step="${_br_case#*:}"
+    _br_rc=0
+    _br_fail "$_br_n" "$_br_step" || _br_rc=$?
+    assert_eq "$_br_step failure stops bare creation" "1" "$_br_rc"
+    assert_eq "$_br_step failure leaves no bare repo to join" "false" \
+        "$([ -e "$_br_dir/bare-$_br_n.git" ] && echo true || echo false)"
+    assert_eq "$_br_step failure records no engagement" "false" \
+        "$([ -e "$_br_dir/state-$_br_n.json" ] && echo true || echo false)"
+done
+
+# An old bare repo that cannot be removed is refused, not cloned into.
+mkdir -p "$_br_dir/bare-6.git"
+touch "$_br_dir/bare-6.git/marker"
+_br_rc=0
+_br_fail 6 none || _br_rc=$?
+assert_eq "an old bare repo that stays is refused" "1" "$_br_rc"
+assert_eq "the old bare repo is left as it was" "true" \
+    "$([ -e "$_br_dir/bare-6.git/marker" ] && echo true || echo false)"
+
+# A checkout without a commit has nothing to start from.
+git init -q "$_br_dir/empty"
+_br_rc=0
+_br_run "$_br_dir/empty" 2 || _br_rc=$?
+assert_eq "a checkout without commits is refused" "1" "$_br_rc"
+assert_eq "no state is written for it" "false" \
+    "$([ -e "$_br_dir/state-2.json" ] && echo true || echo false)"
+
+
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
