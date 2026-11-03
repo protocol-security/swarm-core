@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Feature: recovery snapshots (building block).**
+  `lib/preserve-scan.sh` packs everything Git keeps in a repository
+  location (every ref, reflog entry, stash, operation state, object,
+  and every file of its git dirs) into a bundle and reports work-tree
+  content outside Git's history; `swarm_recovery_import` copies such a
+  bundle into the checkout under `refs/swarm-recovery/<engagement>/
+  <snapshot>/` and checks it, and `swarm_recovery_verify_checkout`
+  re-hashes the checkout's objects. Cleanup uses them in a later
+  change; no command calls them yet.
 - **Fix: open interactive sessions keep the bare repo and the
   mirrors.** `interactive` held the lock in a helper process until the
   container ran, and `start` could still replace the bare repo and the
