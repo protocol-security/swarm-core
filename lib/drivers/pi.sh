@@ -272,6 +272,8 @@ agent_extract_stats() {
             (if $e.type == "message_end"
                     and $e.message.role == "assistant" then
                 {usage: $e.message.usage, turns: 1}
+             elif $e.type == "compaction_end" then
+                {usage: $e.result.usage, turns: 0}
              elif $e.type == "entry_appended"
                     and ($e.entry.type == "usage"
                          or $e.entry.type == "compaction"
