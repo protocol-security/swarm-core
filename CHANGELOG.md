@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.23.0 — 2026-11-03
 
 - **Fix: retry Pi OAuth validation during credential refresh.** Shared
   Codex auth validation retries transient reads while Pi holds its lock,
