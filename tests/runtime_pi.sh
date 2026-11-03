@@ -18,7 +18,8 @@ PROJECT=$(swarm_project_id "$(basename "$WORK")")
 IMAGE="${PROJECT}-agent"
 NETWORK="${PROJECT}-network"
 API="${PROJECT}-api"
-BARE="/tmp/${PROJECT}-upstream.git"
+RT="$(swarm_runtime_dir "$PROJECT")"
+BARE="${RT}/upstream.git"
 VERSION="${PI_TEST_VERSION:-0.86.1}"
 NAMES=("$API" "$IMAGE-1" "$IMAGE-post" "$IMAGE-error"
        "$IMAGE-codex-1" "$IMAGE-codex-2")
@@ -41,8 +42,7 @@ cleanup() {
             "$IMAGE" -rf "$WORK/codex-auth" >/dev/null 2>&1 || true
     fi
     docker image rm "$IMAGE" >/dev/null 2>&1 || true
-    rm -rf "$WORK" "$BARE"
-    rm -f "/tmp/${PROJECT}-swarm.env"
+    rm -rf "$WORK" "$RT"
 }
 trap cleanup EXIT
 
