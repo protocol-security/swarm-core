@@ -146,3 +146,311 @@ swarm_preservation_explain() {
          "repo with:" >&2
     echo "  git --git-dir=${quoted} update-ref -d <ref> <sha>" >&2
 }
+
+# ---- Recovery snapshots -------------------------------------------------
+#
+# Before cleanup deletes a repository location (the bare repo, a
+# mirror, a workspace volume), lib/preserve-scan.sh packs everything Git
+# keeps there into a bundle, and swarm_recovery_import copies that
+# bundle into the checkout under
+#   refs/swarm-recovery/<engagement>/<snapshot>/<source>/
+# so no commit, object or git-dir file of the location has its only
+# copy in what is deleted.  The engine never deletes recovery refs.
+
+SWARM_RECOVERY_NS="refs/swarm-recovery"
+
+# Print a new snapshot id: UTC time and 8 random hex digits.
+swarm_recovery_snapshot_id() {
+    local rand
+    rand=$(od -An -N4 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n') \
+        || return 1
+    [ "${#rand}" -eq 8 ] || return 1
+    printf '%s-%s' "$(date -u +%Y%m%dT%H%M%SZ)" "$rand"
+}
+
+# Git in the checkout for recovery work: no environment redirection,
+# no hooks or fsmonitor, no lazy fetches from promisor remotes.
+swarm_recovery_git() {
+    env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
+        -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+        -u GIT_NAMESPACE -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT \
+        GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 \
+        GIT_GRAFT_FILE=/dev/null \
+        git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+        -c fetch.prune=false -c fetch.pruneTags=false \
+        -c advice.graftFileDeprecated=false "$@"
+}
+
+# Print the device:inode of PATH.  GNU stat takes -c; BSD stat takes
+# -f, and GNU stat -f means something else, so the form is chosen once.
+swarm_dev_ino() {
+    if [ -z "${SWARM_STAT_FORM:-}" ]; then
+        if stat -c '%d:%i' / >/dev/null 2>&1; then
+            SWARM_STAT_FORM=-c
+        else
+            SWARM_STAT_FORM=-f
+        fi
+    fi
+    stat "$SWARM_STAT_FORM" '%d:%i' "$1"
+}
+
+# Succeed when the checkout at ROOT keeps every object in its own
+# store, so objects imported there survive the deletion of TARGETS
+# (directories cleanup is about to delete; may be empty).  Refuses a
+# shallow or partial clone, alternates, symlinks in the object store,
+# an object store inside RUNTIME or a target, and a target that shares
+# a directory or pack file with the object store (bind mounts).
+swarm_checkout_storage_ok() {
+    local root="$1" runtime="$2"
+    shift 2
+    local common objects canon t tcanon
+    common=$(swarm_recovery_git -C "$root" rev-parse --git-common-dir \
+        2>/dev/null) || {
+        echo "ERROR: cannot read the git dir of ${root}." >&2
+        return 1
+    }
+    case "$common" in
+        /*) ;;
+        *) common="$root/$common" ;;
+    esac
+    objects="$common/objects"
+    if [ "$(swarm_recovery_git -C "$root" rev-parse \
+            --is-shallow-repository 2>/dev/null)" != false ]; then
+        echo "ERROR: ${root} is a shallow clone; recovery needs full" \
+             "history (git fetch --unshallow)." >&2
+        return 1
+    fi
+    local names name val partial=""
+    partial=$(swarm_recovery_git -C "$root" config --get \
+        extensions.partialClone 2>/dev/null) || partial=""
+    names=$(swarm_recovery_git -C "$root" config --name-only \
+        --get-regexp '^remote\..*\.promisor$' 2>/dev/null) || names=""
+    for name in $names; do
+        val=$(swarm_recovery_git -C "$root" config --type=bool --get \
+            "$name" 2>/dev/null) || val=true
+        [ "$val" = false ] || partial=yes
+    done
+    if [ -n "$partial" ]; then
+        echo "ERROR: ${root} is a partial clone; recovery needs every" \
+             "object locally." >&2
+        return 1
+    fi
+    if [ -s "$objects/info/alternates" ]; then
+        echo "ERROR: ${root} borrows objects (${objects}/info/alternates)." \
+             "Run git repack -a -d there, then remove that file." >&2
+        return 1
+    fi
+    # Recovery refs live in the same git dir; they must not be stored
+    # through a link into what cleanup deletes either.
+    local links
+    links=$(find "$objects" "$common/refs" -type l -print) || {
+        echo "ERROR: cannot list ${objects} and ${common}/refs." >&2
+        return 1
+    }
+    if [ -n "$links" ] || [ -L "$objects" ] || [ -L "$common" ] \
+            || [ -L "$common/refs" ] || [ -L "$common/packed-refs" ] \
+            || [ -e "$common/reftable" ]; then
+        echo "ERROR: the object store or refs of ${root} contain" \
+             "symlinks (or use reftable); make them plain directories" \
+             "first." >&2
+        return 1
+    fi
+    canon=$(cd -P "$objects" 2>/dev/null && pwd -P) || {
+        echo "ERROR: cannot resolve ${objects}." >&2
+        return 1
+    }
+    for t in "$runtime" "$@"; do
+        [ -e "$t" ] || continue
+        tcanon=$(cd -P "$t" 2>/dev/null && pwd -P) || {
+            echo "ERROR: cannot resolve ${t}." >&2
+            return 1
+        }
+        case "$canon/" in
+            "$tcanon"/*)
+                echo "ERROR: the object store of ${root} is inside ${t}." >&2
+                return 1 ;;
+        esac
+        case "$tcanon/" in
+            "$canon"/*)
+                echo "ERROR: ${t} is inside the object store of ${root}." >&2
+                return 1 ;;
+        esac
+    done
+    [ "$#" -gt 0 ] || return 0
+    # The same directory or pack file seen through a bind mount has the
+    # same device and inode under both paths.
+    local tmp p rc=0
+    tmp=$(mktemp -d) || return 1
+    {
+        find "$objects" "$common/refs" -type d -print || rc=1
+        for p in "$objects/pack" "$objects/info"; do
+            [ ! -d "$p" ] || find "$p" -type f -print || rc=1
+        done
+        [ ! -f "$common/packed-refs" ] || printf '%s\n' "$common/packed-refs"
+    } > "$tmp/mine.paths"
+    for t in "$@"; do
+        [ -d "$t" ] || continue
+        find "$t" \( -type d -o -path '*/objects/pack/*' \
+            -o -path '*/objects/info/*' \) -print >> "$tmp/theirs.paths" \
+            || rc=1
+    done
+    : >> "$tmp/theirs.paths"
+    for p in mine theirs; do
+        while IFS= read -r t; do
+            swarm_dev_ino "$t" || rc=1
+        done < "$tmp/$p.paths" > "$tmp/$p.ids" || rc=1
+        sort -u "$tmp/$p.ids" -o "$tmp/$p.ids" || rc=1
+    done
+    if [ "$rc" -ne 0 ]; then
+        rm -rf "$tmp"
+        echo "ERROR: cannot list the object store of ${root} or what" \
+             "cleanup deletes." >&2
+        return 1
+    fi
+    comm -12 "$tmp/mine.ids" "$tmp/theirs.ids" > "$tmp/both" || rc=1
+    if [ "$rc" -ne 0 ] || [ -s "$tmp/both" ]; then
+        rm -rf "$tmp"
+        echo "ERROR: the object store of ${root} shares files with what" \
+             "cleanup deletes (a bind mount?)." >&2
+        return 1
+    fi
+    rm -rf "$tmp"
+}
+
+# Copy the scan output in DIR (from lib/preserve-scan.sh) into the
+# checkout at ROOT under PREFIX/ and verify it: every ref of the bundle
+# exists under PREFIX/ with the same object, and every object of the
+# inventory, and everything the new refs reach, is in the checkout.
+# PREFIX must hold no refs yet.  Fails without changing anything else.
+swarm_recovery_import() {
+    local root="$1" dir="$2" prefix="$3" heads got
+    case "$prefix" in
+        "$SWARM_RECOVERY_NS"/*) ;;
+        *) echo "ERROR: not a recovery prefix: ${prefix}" >&2; return 1 ;;
+    esac
+    if ! got=$(swarm_recovery_git -C "$root" for-each-ref \
+            --format='%(refname)' "$prefix/" 2>/dev/null); then
+        echo "ERROR: cannot read the refs of ${root}." >&2
+        return 1
+    fi
+    if [ -n "$got" ]; then
+        echo "ERROR: ${prefix} already holds refs in ${root}." >&2
+        return 1
+    fi
+    if ! swarm_recovery_git -C "$root" bundle verify "$dir/bundle" \
+            >/dev/null 2>&1; then
+        echo "ERROR: the bundle in ${dir} does not verify." >&2
+        return 1
+    fi
+    heads=$(swarm_recovery_git -C "$root" bundle list-heads "$dir/bundle" \
+        2>/dev/null) || {
+        echo "ERROR: cannot list the bundle in ${dir}." >&2
+        return 1
+    }
+    if ! swarm_recovery_git -C "$root" fetch --quiet --no-tags --no-prune \
+            --no-write-fetch-head --no-recurse-submodules --no-auto-gc \
+            "$dir/bundle" "refs/v/*:${prefix}/*" >/dev/null 2>&1; then
+        echo "ERROR: cannot import the bundle in ${dir} into ${root}." >&2
+        return 1
+    fi
+    got=$(swarm_recovery_git -C "$root" for-each-ref \
+        --format='%(objectname) %(refname)' "$prefix/" 2>/dev/null \
+        | sed "s|^\([0-9a-f]*\) ${prefix}/|\1 refs/v/|" | sort) || got=""
+    if [ "$got" != "$(printf '%s\n' "$heads" | sort)" ]; then
+        echo "ERROR: the refs imported into ${prefix} do not match the" \
+             "bundle." >&2
+        return 1
+    fi
+    # Every object of the inventory must be in the checkout.  The
+    # output goes to a file first, so no early exit hides a failure.
+    local tmp
+    tmp=$(mktemp -d) || return 1
+    if [ ! -f "$dir/objects" ] \
+            || ! swarm_recovery_git -C "$root" cat-file --batch-check \
+                < "$dir/objects" > "$tmp/check" 2>/dev/null \
+            || [ "$(wc -l < "$tmp/check")" -ne "$(wc -l < "$dir/objects")" ] \
+            || grep ' missing$' "$tmp/check" > "$tmp/missing"; then
+        rm -rf "$tmp"
+        echo "ERROR: objects of the inventory are missing in ${root}." >&2
+        return 1
+    fi
+    if ! swarm_recovery_git -C "$root" for-each-ref --format='%(objectname)' \
+            "$prefix/" > "$tmp/tips" 2>/dev/null \
+            || ! swarm_recovery_git -C "$root" rev-list --objects \
+                --no-object-names --missing=error --stdin \
+                < "$tmp/tips" > "$tmp/reach" 2>/dev/null; then
+        rm -rf "$tmp"
+        echo "ERROR: history under ${prefix} is incomplete in ${root}." >&2
+        return 1
+    fi
+    # Every inventoried object must hang off the new refs.
+    if ! sort -u "$tmp/reach" > "$tmp/want" \
+            || ! comm -23 "$dir/objects" "$tmp/want" > "$tmp/outside"; then
+        rm -rf "$tmp"
+        return 1
+    fi
+    if [ -s "$tmp/outside" ]; then
+        rm -rf "$tmp"
+        echo "ERROR: objects of the inventory are not under ${prefix}." >&2
+        return 1
+    fi
+    # Presence is checked here; content is checked once for all imports
+    # by swarm_recovery_verify_checkout, before anything is deleted.
+    rm -rf "$tmp"
+}
+
+# Succeed when every object in the checkout at ROOT has the content its
+# name says.  Fetch skips objects the checkout already has, and Git does
+# not re-hash objects it reads, so an object stored under the wrong name
+# (or two objects with swapped contents) would pass every presence
+# check.  git fsck --full re-hashes every loose and packed object.
+# Cleanup runs this once after its imports and before it deletes
+# anything.  It reads the whole object store, so it takes a while on a
+# large repository.
+swarm_recovery_verify_checkout() {
+    local root="$1" err
+    err=$(mktemp) || return 1
+    if ! swarm_recovery_git -C "$root" fsck --full --no-dangling \
+            --no-progress >/dev/null 2>"$err"; then
+        echo "ERROR: git fsck found problems in ${root}; recovery refs" \
+             "there cannot be trusted:" >&2
+        sed 's/^/  /' "$err" | head -20 >&2
+        rm -f "$err"
+        return 1
+    fi
+    rm -f "$err"
+}
+
+# Scan the host directory PATH (a bare repo or a mirror: MODE gitdir)
+# into the empty directory OUT.  Returns the scanner's status.
+swarm_scan_host() {
+    local path="$1" out="$2"
+    bash "$(dirname "${BASH_SOURCE[0]}")/preserve-scan.sh" gitdir "$path" - \
+        "$out"
+}
+
+# Scan workspace volume VOL with image IMAGE (context CONTEXT) into the
+# empty directory OUT: the scanner runs in a throwaway container with
+# the volume read-only and no network, as root so it can read every
+# file, and streams its results back as a tar archive.
+swarm_scan_volume() {
+    local vol="$1" image="$2" context="$3" out="$4" rc=0
+    docker run --rm -i --pull never --network none --user 0 \
+        --entrypoint bash \
+        --mount "type=volume,src=${vol},dst=/workspace,readonly,volume-nocopy" \
+        "$image" -c '
+            cat > /tmp/scan.sh || exit 3
+            mkdir /tmp/out || exit 3
+            bash /tmp/scan.sh worktree /workspace "$1" /tmp/out >&2 || exit $?
+            cd /tmp/out || exit 3
+            set -- report
+            [ ! -f bundle ] || set -- "$@" bundle
+            [ ! -f objects ] || set -- "$@" objects
+            tar -cf - "$@" || exit 3
+        ' scan "$context" \
+        < "$(dirname "${BASH_SOURCE[0]}")/preserve-scan.sh" \
+        > "$out/scan.tar" || rc=$?
+    [ "$rc" -eq 0 ] || return 3
+    tar -C "$out" -xf "$out/scan.tar" 2>/dev/null || return 3
+    rm -f "$out/scan.tar"
+}
