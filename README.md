@@ -23,7 +23,7 @@ Based on the agent-team pattern from
 - bash (5.0+), git, jq, bc
 - flock (util-linux on Linux; `brew install flock` on macOS)
 - tput (ncurses) — used by the dashboard
-- An Anthropic API key, OAuth token, or compatible endpoint
+- Credentials for the selected [agent/provider](USAGE.md#auth-modes)
 
 For development: `shellcheck` for linting.
 
@@ -126,10 +126,10 @@ Place a `swarm.json` in your repo root:
 }
 ```
 
-Groups without `api_key` use `ANTHROPIC_API_KEY` or
-`CLAUDE_CODE_OAUTH_TOKEN` from the environment. A named group
-with omitted `count` or `count: 0` is useful as an
-interactive-only profile.
+Credentials are driver-specific. Claude Code groups without `api_key`
+use `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` from the environment;
+see [Auth modes](USAGE.md#auth-modes) for other drivers. A named group
+with omitted `count` or `count: 0` is an interactive-only profile.
 
 **Per-group fields:** `name`, `model`, `count`, `effort`, `context`,
 `prompt`, `auth`, `api_key`, `auth_token`, `base_url`, `tag`,
@@ -156,6 +156,11 @@ Each driver implements a fixed role interface:
 | `agent_activity_jq` | jq filter for activity display |
 
 Built-in drivers: `claude-code` (default), `gemini-cli`,
-`codex-cli`, `fake` (test double).  See
+`codex-cli`, `pi` ([Pi](https://pi.dev)), `fake` (test double).  See
 [USAGE.md](USAGE.md#writing-a-new-driver) for the full interface
 and guide to writing a new driver.
+
+For Pi, set `"driver": "pi"` and use an Anthropic model ID or a Pi
+`provider/model` ID. Codex subscriptions use `openai-codex/<model>`,
+`"auth": "chatgpt"`, and a dedicated `PI_AUTH_DIR` with Pi OAuth login.
+See [Pi setup and authentication](USAGE.md#pi).
