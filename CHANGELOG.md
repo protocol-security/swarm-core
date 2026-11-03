@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Fix: the harness keeps commits that no push shipped.** Each
+  loop iteration reset the workspace to `origin/agent-work`, so
+  commits left from a session whose push and park both failed, or
+  from a restart before the push, stayed only in the reflog. The loop
+  now fetches with `--prune` and checks HEAD against origin's
+  `agent-work`, `swarm/*` and `agent-parked/*`; commits on none of
+  them go through the session-end push first, and if they are still
+  unshipped the harness exits without resetting. After a scratch
+  worktree push, the branch moves to the pushed commits, since the
+  originals were shipped as copies, but only when the tree is clean
+  and `git cherry` finds every local commit on origin. The scratch
+  push also stopped reporting success when it could not list the
+  commits to transplant.
 - **Fix: a new bare repo starts from the checkout's HEAD.** The
   clone copied every local branch, so an old local `agent-work`,
   `swarm/*` or `agent-parked/*` branch in the checkout reached the new
