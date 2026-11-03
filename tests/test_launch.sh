@@ -2109,9 +2109,9 @@ CMD_INTERACTIVE_BODY=$(awk '
     p && /^\}[[:space:]]*$/ { exit }
 ' "$LAUNCH_FILE")
 
-assert_eq "interactive uses docker run -it" "1" \
+assert_eq "interactive execs docker run -it" "1" \
     "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
-        | grep -cF 'docker run -it')"
+        | grep -cF 'exec docker run -it')"
 assert_eq "interactive uses dedicated entrypoint" "1" \
     "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
         | grep -cF -- '--entrypoint /interactive.sh')"
@@ -2414,9 +2414,24 @@ _st_bin="$TMPDIR/start-bin"
 _st_repo="$TMPDIR/start-repo"
 _st_rt="$TMPDIR/start-runtime"
 mkdir -p "$_st_bin" "$_st_repo/sub/configs"
-# Like the real CLI, inspecting a missing container fails.
-printf '#!/bin/bash\n[ "$1 $2" = "container inspect" ] && exit 1\nexit 0\n' \
-    > "$_st_bin/docker"
+# Like the real CLI, inspecting a missing container fails, info and
+# context show answer, and the alpine rm -rf that rm_docker_dir runs
+# removes its last argument.
+cat > "$_st_bin/docker" <<'EOF'
+#!/bin/bash
+if [ "$1 $2" = "container inspect" ]; then
+    echo "Error: No such container: ${*: -1}" >&2
+    exit 1
+fi
+[ "$1" = info ] && echo d1
+[ "$1 $2" = "context show" ] && echo default
+case " $* " in
+    " run --rm "*" alpine rm -rf "*)
+        for _a in "$@"; do _last="$_a"; done
+        rm -rf "$_last" ;;
+esac
+exit 0
+EOF
 chmod +x "$_st_bin/docker"
 git init -q "$_st_repo"
 echo "Prompt." > "$_st_repo/prompt.md"
@@ -2706,20 +2721,24 @@ cat > "$_lk_bin/docker" <<EOF
 #!/bin/bash
 echo "\$*" >> "$_lk_log"
 [ "\$1 \$2" = "container inspect" ] && exit 1
-# The interactive container reports "created" until the session marks
-# itself running.  The session checks the lock before that and again
-# while it runs, prints a line, and exits with FAKE_EXIT.  With
-# FAKE_NEVER_RUNS the container never starts.
-if [ "\$1" = inspect ]; then
-    if [ -e "$_lk_rt.running" ]; then echo running; else echo created; fi
-    exit 0
-fi
+# docker run -it checks that the session record for its --name names
+# its own pid (exec keeps launch.sh's) and logs its arguments, checks
+# the lock while the session runs, prints a line and exits with
+# FAKE_EXIT.  With FAKE_NEVER_RUNS the container never starts.
+[ "\$1" = info ] && { echo d1; exit 0; }
+[ "\$1 \$2" = "context show" ] && { echo default; exit 0; }
 if [ "\$1 \$2" = "run -it" ]; then
-    if flock -n 6 6>>"$_lk_rt/engagement.lock"; then
-        echo "lock free before the container runs" >> "$_lk_log"
+    _name=""
+    _prev=""
+    for _a in "\$@"; do
+        [ "\$_prev" = --name ] && _name="\$_a"
+        _prev="\$_a"
+    done
+    if grep -qx "pid=\$\$" "$_lk_rt/interactive-\$_name.pending" 2>/dev/null
+    then
+        echo "record names the session" >> "$_lk_log"
     fi
     [ -n "\${FAKE_NEVER_RUNS:-}" ] && exit 3
-    : > "$_lk_rt.running"
     for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         if flock -n 6 6>>"$_lk_rt/engagement.lock"; then
             echo "lock free during session" >> "$_lk_log"
@@ -2728,7 +2747,6 @@ if [ "\$1 \$2" = "run -it" ]; then
         sleep 0.1
     done
     echo "SESSION OUTPUT"
-    rm -f "$_lk_rt.running"
     exit "\${FAKE_EXIT:-0}"
 fi
 exit 0
@@ -2757,23 +2775,45 @@ _lk_rc=0
 assert_eq "start with the holder's SWARM_LOCK_FD runs" "0" "$_lk_rc"
 exec 8>&-
 
-# An interactive session keeps the lock until its container runs (its
-# mounts are then in place) and gives it up for the rest of the
-# session; docker run keeps the terminal, so output and exit status
-# come straight from the container.
+# An interactive session records itself under the lock, gives the lock
+# up and execs docker run, which keeps the terminal and the exit status.
 : > "$_lk_log"
 _lk_rc=0
 _lk_out=$(FAKE_EXIT=4 run_lock interactive --agent-index 1) || _lk_rc=$?
-assert_eq "the lock is held until the container runs" "0" \
-    "$(grep -c 'lock free before the container runs' "$_lk_log" || true)"
+assert_eq "the session is recorded before docker run" "1" \
+    "$(grep -c 'record names the session' "$_lk_log" || true)"
 assert_eq "the lock is free once the container runs" "1" \
     "$(grep -c 'lock free during session' "$_lk_log" || true)"
 assert_eq "the session's output reaches the terminal" "true" \
     "$(grep -q 'SESSION OUTPUT' <<< "$_lk_out" \
         && echo true || echo false)"
 assert_eq "interactive returns the container's exit status" "4" "$_lk_rc"
-# A container that never starts: docker run fails, launch.sh exits, and
-# the helper lets the lock go once it sees that.
+# docker_args reach docker run unchanged, run-only options included,
+# and a --name among them does not replace the recorded name: the fake
+# takes the last --name, as Docker does, and checks its record.
+_lk_cfg="$_st_repo/sub/configs/docker-args.json"
+jq '. + {docker_args: ["--detach-keys=ctrl-x", "--label", "-itd",
+    "--name", "custom-session"]}' \
+    "$_st_repo/sub/configs/swarm.json" > "$_lk_cfg"
+: > "$_lk_log"
+(cd "$_st_repo" && PATH="$_lk_bin:$PATH" SWARM_RUNTIME_DIR="$_lk_rt" \
+    SWARM_CONFIG=sub/configs/docker-args.json SWARM_SKIP_DEP_CHECK=1 \
+    "$BASH" "$_LAUNCH_SH" interactive --agent-index 1 >/dev/null 2>&1) \
+    || true
+assert_eq "docker_args reach docker run unchanged" "1" \
+    "$(grep '^run -it ' "$_lk_log" \
+        | grep -c -- ' --detach-keys=ctrl-x --label -itd --name custom' \
+        || true)"
+assert_eq "the container gets the recorded name" "1" \
+    "$(grep -c 'record names the session' "$_lk_log" || true)"
+assert_eq "the session label follows docker_args too" "1" \
+    "$(grep '^run -it ' "$_lk_log" \
+        | grep -c -- ' --name custom-session --name [^ ]* --label swarm-core.session=' \
+        || true)"
+rm -f "$_lk_cfg"
+
+# A container that never starts: docker run fails, and the lock is
+# already free.
 : > "$_lk_log"
 _lk_rc=0
 FAKE_NEVER_RUNS=1 run_lock interactive --agent-index 1 >/dev/null \
@@ -2932,6 +2972,331 @@ assert_eq "a checkout without commits is refused" "1" "$_br_rc"
 assert_eq "no state is written for it" "false" \
     "$([ -e "$_br_dir/state-2.json" ] && echo true || echo false)"
 
+
+# ============================================================
+echo ""
+echo "=== 53. Open interactive sessions keep the bare repo and the mirrors ==="
+
+# The session record names a process and its start time.  It is live
+# while that process runs; a record whose process is gone, or whose
+# pid now belongs to a newer process, is removed.
+_pd_dir="$TMPDIR/pending"
+mkdir -p "$_pd_dir"
+# The caller's Docker selectors would steer the stub below; the cases
+# that set them come last.
+unset DOCKER_CONTEXT DOCKER_HOST
+# Docker's answers once a session's process is gone.  Two contexts: A
+# (daemon PD_DAEMON) and B (daemon d2, where no session container
+# exists).  The current context is in a file, as docker context use
+# keeps it; DOCKER_CONTEXT overrides it.  With PD_SWITCH set, docker
+# info switches the current context to B, as another terminal could.
+# PD_STATE is the state of the container with the session's label on
+# A, "gone" for none, "error" for a failed listing.  A lookup by name
+# finds nothing, as after a rename of the detached container.
+PD_STATE=gone
+PD_DAEMON=d1
+PD_SWITCH=""
+_pd_ctx="$TMPDIR/pending-context"
+echo A > "$_pd_ctx"
+# shellcheck disable=SC2329
+docker() {
+    local ctx
+    ctx="${DOCKER_CONTEXT:-$(cat "$_pd_ctx")}"
+    if [ "$1 $2" = "context show" ]; then
+        cat "$_pd_ctx"
+        return 0
+    fi
+    if [ "$1" = info ]; then
+        [ -z "$PD_SWITCH" ] || echo B > "$_pd_ctx"
+        if [ "$ctx" = A ]; then echo "$PD_DAEMON"; else echo d2; fi
+        return 0
+    fi
+    if [ "$1" != ps ]; then
+        echo "Error: No such container: ${*: -1}" >&2
+        return 1
+    fi
+    [ "$ctx" = A ] || return 0
+    case "$PD_STATE" in
+        gone) ;;
+        error) echo "Cannot connect to the Docker daemon" >&2; return 1 ;;
+        *)
+            case "$*" in
+                *" label=swarm-core.session="*) echo "$PD_STATE" ;;
+            esac ;;
+    esac
+}
+_pd_id_a="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+_pd_id_b="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+sleep 60 &
+_pd_live=$!
+sh -c 'exit 0' &
+_pd_dead=$!
+wait "$_pd_dead" 2>/dev/null || true
+swarm_pending_write "$_pd_dir" "$_pd_id_a" "$_pd_live" d1
+swarm_pending_write "$_pd_dir" "$_pd_id_b" "$_pd_dead" d1
+assert_eq "the record names the pid" "pid=$_pd_live" \
+    "$(grep '^pid=' "$_pd_dir/interactive-$_pd_id_a.pending")"
+assert_eq "only the running session is live" "$_pd_id_a" \
+    "$(swarm_pending_live "$_pd_dir")"
+assert_eq "the record of the ended session is removed" "false" \
+    "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+        && echo true || echo false)"
+printf 'pid=%s\nstarted=Thu Jan  1 00:00:00 1970\ndaemon=d1\n' \
+    "$_pd_live" > "$_pd_dir/interactive-$_pd_id_b.pending"
+assert_eq "a pid with another start time is not the session" \
+    "$_pd_id_a" "$(swarm_pending_live "$_pd_dir")"
+assert_eq "its record is removed" "false" \
+    "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+        && echo true || echo false)"
+printf 'pid=x\n' > "$_pd_dir/interactive-$_pd_id_b.pending"
+_pd_rc=0
+swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+assert_eq "a record without a pid fails the check" "1" "$_pd_rc"
+rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+ln -s "$_pd_dir/interactive-$_pd_id_a.pending" \
+    "$_pd_dir/interactive-$_pd_id_b.pending"
+_pd_rc=0
+swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+assert_eq "a symlinked record fails the check" "1" "$_pd_rc"
+rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+_pd_rc=0
+swarm_pending_write "$_pd_dir" "-bad name" "$_pd_live" d1 2>/dev/null \
+    || _pd_rc=$?
+assert_eq "a malformed container name is not recorded" "1" "$_pd_rc"
+printf 'pid=%s\nstarted=\ndaemon=d1\n' "$_pd_live" \
+    > "$_pd_dir/interactive--x.pending"
+_pd_rc=0
+swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+assert_eq "a record whose file name is no container name fails" "1" \
+    "$_pd_rc"
+rm -f "$_pd_dir/interactive--x.pending"
+_pd_rc=0
+swarm_pending_write "$_pd_dir" "$_pd_id_b" "$_pd_live" "" 2>/dev/null \
+    || _pd_rc=$?
+assert_eq "a record without a daemon id is not written" "1" "$_pd_rc"
+
+# The start time is read the same way whatever the caller's time zone
+# and locale, so a live session is not taken for a reused pid.
+TZ=UTC LC_ALL=C swarm_pending_write "$_pd_dir" "$_pd_id_b" "$_pd_live" d1
+assert_eq "a session recorded in UTC is live from another zone" \
+    "$_pd_id_a $_pd_id_b" \
+    "$(TZ=Pacific/Kiritimati LC_TIME=fr_FR.UTF-8 \
+        swarm_pending_live "$_pd_dir" | sort | tr '\n' ' ' | sed 's/ $//')"
+rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+
+# A session can detach and leave the container running, and the
+# container can be renamed: the session is still open after its
+# process ended, found by its label.
+swarm_pending_write "$_pd_dir" "$_pd_id_b" "$_pd_dead" d1
+PD_STATE=running
+assert_eq "a detached session whose container runs stays open" \
+    "$_pd_id_a $_pd_id_b" \
+    "$(swarm_pending_live "$_pd_dir" | sort | tr '\n' ' ' | sed 's/ $//')"
+PD_STATE=error
+_pd_rc=0
+swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+assert_eq "a container state Docker cannot give fails the check" "1" \
+    "$_pd_rc"
+assert_eq "and keeps the record" "true" \
+    "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+        && echo true || echo false)"
+# Container ids mean something only on their daemon: after a switch to
+# another daemon, "no such container" proves nothing.
+PD_STATE=gone
+echo B > "$_pd_ctx"
+_pd_rc=0
+swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+assert_eq "a record from another Docker daemon fails the check" "1" \
+    "$_pd_rc"
+assert_eq "and stays" "true" \
+    "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+        && echo true || echo false)"
+# A switch between reading the daemon id and inspecting the container
+# must not send the inspect to the other daemon.
+echo A > "$_pd_ctx"
+PD_STATE=running
+PD_SWITCH=1
+assert_eq "a context switch during the check keeps the session open" \
+    "$_pd_id_a $_pd_id_b" \
+    "$(swarm_pending_live "$_pd_dir" 2>/dev/null | sort | tr '\n' ' ' \
+        | sed 's/ $//')"
+PD_SWITCH=""
+echo A > "$_pd_ctx"
+assert_eq "the pin does not outlive the check" "unset" \
+    "${DOCKER_CONTEXT-unset}"
+# A created container can still start after its client died.
+PD_STATE=created
+assert_eq "a session whose container is only created stays open" \
+    "$_pd_id_a $_pd_id_b" \
+    "$(swarm_pending_live "$_pd_dir" | sort | tr '\n' ' ' | sed 's/ $//')"
+PD_STATE=exited
+assert_eq "an ended session whose container exited is closed" \
+    "$_pd_id_a" "$(swarm_pending_live "$_pd_dir")"
+assert_eq "its record is removed" "false" \
+    "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+        && echo true || echo false)"
+PD_STATE=gone
+
+# Records that are not exactly "pid=N" and "started=T" fail the check
+# and stay, even with a live pid.
+_pd_bad() {
+    local label="$1" content="$2" rc=0
+    printf '%s' "$content" > "$_pd_dir/interactive-$_pd_id_b.pending"
+    swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || rc=$?
+    assert_eq "$label fails the check" "1" "$rc"
+    assert_eq "$label is kept" "true" \
+        "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+            && echo true || echo false)"
+    rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+}
+_pd_nl=$'\n'
+_pd_ok_tail="started=${_pd_nl}daemon=d1${_pd_nl}"
+_pd_bad "a garbage start time" \
+    "pid=$_pd_live${_pd_nl}started=garbage${_pd_nl}daemon=d1${_pd_nl}"
+_pd_bad "a garbage day" "pid=$_pd_live${_pd_nl}started=Thu Jan garbage\
+ 00:00:00 1970${_pd_nl}daemon=d1${_pd_nl}"
+_pd_bad "a second start time" "pid=$_pd_live${_pd_nl}started=${_pd_nl}\
+started=Thu Jan  1 00:00:00 1970${_pd_nl}daemon=d1${_pd_nl}"
+_pd_bad "an extra line" "pid=$_pd_live${_pd_nl}${_pd_ok_tail}other=1${_pd_nl}"
+_pd_bad "a missing start line" "pid=$_pd_live${_pd_nl}daemon=d1${_pd_nl}"
+_pd_bad "a missing daemon line" "pid=$_pd_live${_pd_nl}started=${_pd_nl}"
+_pd_bad "a garbage daemon id" \
+    "pid=$_pd_live${_pd_nl}started=${_pd_nl}daemon=a b${_pd_nl}"
+_pd_bad "a second pid" "pid=$_pd_live${_pd_nl}pid=1${_pd_nl}${_pd_ok_tail}"
+_pd_bad "trailing blank lines" \
+    "pid=$_pd_live${_pd_nl}${_pd_ok_tail}${_pd_nl}${_pd_nl}"
+_pd_bad "no final newline" "pid=$_pd_live${_pd_nl}started=${_pd_nl}daemon=d1"
+# Root reads any file, so the unreadable case needs another user.
+if [ "$(id -u)" != 0 ]; then
+    printf 'pid=%s\n%s' "$_pd_live" "$_pd_ok_tail" \
+        > "$_pd_dir/interactive-$_pd_id_b.pending"
+    chmod 000 "$_pd_dir/interactive-$_pd_id_b.pending"
+    _pd_rc=0
+    swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+    assert_eq "an unreadable record fails the check" "1" "$_pd_rc"
+    chmod 600 "$_pd_dir/interactive-$_pd_id_b.pending"
+    rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+fi
+
+# A selector the caller set already pins the daemon: DOCKER_CONTEXT is
+# kept, DOCKER_HOST is left alone.  Docker allows "+" in context names.
+# Print the context swarm_docker_pin leaves, or "unset".
+_pd_pinned() {
+    swarm_docker_pin && printf '%s' "${DOCKER_CONTEXT-unset}"
+}
+echo dev+local > "$_pd_ctx"
+assert_eq "a context name with + is pinned" "dev+local" "$(_pd_pinned)"
+echo B > "$_pd_ctx"
+assert_eq "a caller's DOCKER_CONTEXT is kept" "A" \
+    "$(DOCKER_CONTEXT=A _pd_pinned)"
+assert_eq "with DOCKER_HOST no context is pinned" "unset" \
+    "$(DOCKER_HOST=unix:///x _pd_pinned)"
+# With the caller's DOCKER_CONTEXT=A, a context switch of the current
+# context changes nothing either.
+echo A > "$_pd_ctx"
+swarm_pending_write "$_pd_dir" "$_pd_id_b" "$_pd_dead" d1
+PD_STATE=running
+PD_SWITCH=1
+assert_eq "with the caller's DOCKER_CONTEXT a switch keeps it open" \
+    "$_pd_id_a $_pd_id_b" \
+    "$(DOCKER_CONTEXT=A swarm_pending_live "$_pd_dir" 2>/dev/null \
+        | sort | tr '\n' ' ' | sed 's/ $//')"
+PD_SWITCH=""
+PD_STATE=gone
+echo A > "$_pd_ctx"
+rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+
+unset -f docker
+
+# Every place that creates a bare repo checks for open sessions first,
+# and interactive mirrors only when it creates the bare repo.
+assert_eq "each bare repo creation checks for open sessions" "3" \
+    "$(grep -B1 '^ *create_bare_repo "' "$_LAUNCH_SH" \
+        | grep -c 'refuse_while_interactive_pending')"
+assert_eq "cmd_interactive mirrors only through the bare repo step" "0" \
+    "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
+        | grep -c 'mirror_submodules' || true)"
+
+# Every bare repo creation mirrors the submodules.  A joining session
+# adds missing mirrors and leaves existing ones alone.
+assert_eq "each bare repo creation mirrors the submodules" "3" \
+    "$(grep -A3 '^ *create_bare_repo "' "$_LAUNCH_SH" \
+        | grep -c '^ *mirror_submodules$')"
+_mm_dir="$TMPDIR/mirror-missing"
+mkdir -p "$_mm_dir"
+git init -q "$_mm_dir/sub"
+git -C "$_mm_dir/sub" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m sub
+git init -q "$_mm_dir/src"
+git -C "$_mm_dir/src" -c protocol.file.allow=always submodule add -q \
+    "$_mm_dir/sub" lib >/dev/null 2>&1
+git -C "$_mm_dir/src" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q -m add-sub
+awk '$0 ~ /^mirror_submodules\(\)[[:space:]]*\{/ { p = 1 }
+     p { print }
+     p && /^\}[[:space:]]*$/ { exit }' "$_LAUNCH_SH" > "$_mm_dir/funcs.sh"
+_mm_run() {
+    (
+        # shellcheck source=/dev/null
+        source "$_mm_dir/funcs.sh"
+        # The extracted function calls this stub.
+        # shellcheck disable=SC2329
+        rm_docker_dir() { rm -rf "$1"; }
+        REPO_ROOT="$_mm_dir/src"
+        MIRROR_DIR="$_mm_dir/mirrors"
+        mirror_submodules "$@"
+    ) >/dev/null 2>&1
+}
+_mm_run
+assert_eq "the submodule is mirrored" "true" \
+    "$([ -d "$_mm_dir/mirrors/lib.git" ] && echo true || echo false)"
+touch "$_mm_dir/mirrors/lib.git/keep"
+_mm_run missing
+assert_eq "a joining session leaves an existing mirror alone" "true" \
+    "$([ -e "$_mm_dir/mirrors/lib.git/keep" ] && echo true || echo false)"
+rm -rf "$_mm_dir/mirrors/lib.git"
+_mm_run missing
+assert_eq "a joining session adds a missing mirror" "true" \
+    "$(git -C "$_mm_dir/mirrors/lib.git" rev-parse --is-bare-repository \
+        2>/dev/null || echo false)"
+touch "$_mm_dir/mirrors/lib.git/keep"
+_mm_run
+assert_eq "a new engagement replaces the mirrors" "false" \
+    "$([ -e "$_mm_dir/mirrors/lib.git/keep" ] && echo true || echo false)"
+
+# Through launch.sh: with a session open, start leaves the bare repo
+# alone, and another interactive session still joins it.  Once the
+# session ends, start replaces the bare repo as before.
+_pd_rt="$TMPDIR/pending-runtime"
+run_pd() {
+    (cd "$_st_repo" && PATH="$_st_bin:$PATH" SWARM_RUNTIME_DIR="$_pd_rt" \
+        SWARM_CONFIG=sub/configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+        "$BASH" "$_LAUNCH_SH" "$@" 2>&1)
+}
+run_pd start >/dev/null
+touch "$_pd_rt/upstream.git/keep"
+swarm_pending_write "$_pd_rt" "$_pd_id_a" "$_pd_live" d1
+_pd_rc=0
+_pd_out=$(run_pd start) || _pd_rc=$?
+assert_eq "start refuses while a session is open" "1" "$_pd_rc"
+assert_eq "start names the open session" "true" \
+    "$(grep -q "$_pd_id_a" <<< "$_pd_out" \
+        && echo true || echo false)"
+assert_eq "the bare repo stays" "true" \
+    "$([ -e "$_pd_rt/upstream.git/keep" ] && echo true || echo false)"
+_pd_rc=0
+run_pd interactive --agent-index 1 >/dev/null || _pd_rc=$?
+assert_eq "another interactive session joins meanwhile" "0" "$_pd_rc"
+kill "$_pd_live" 2>/dev/null || true
+wait "$_pd_live" 2>/dev/null || true
+_pd_rc=0
+run_pd start >/dev/null || _pd_rc=$?
+assert_eq "after the session ends start goes ahead" "0" "$_pd_rc"
+assert_eq "and replaces the bare repo" "false" \
+    "$([ -e "$_pd_rt/upstream.git/keep" ] && echo true || echo false)"
+assert_eq "the old record is gone" "false" \
+    "$([ -e "$_pd_rt/interactive-$_pd_id_a.pending" ] \
+        && echo true || echo false)"
 
 echo ""
 echo "==============================="

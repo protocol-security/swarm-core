@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Fix: open interactive sessions keep the bare repo and the
+  mirrors.** `interactive` held the lock in a helper process until the
+  container ran, and `start` could still replace the bare repo and the
+  mirrors under a running session. `interactive` now records the
+  session under the lock with its pid, that process's start time and
+  the Docker daemon, releases the lock and execs `docker run`. While
+  that process runs, or the container runs after a detach, `start`
+  fails, and so do `post-process` and `interactive` when they would
+  create the bare repo. A joining session no longer replaces the
+  mirrors; it only adds missing ones. `post-process` now mirrors the
+  submodules when it creates the bare repo, as `start` and
+  `interactive` do.
 - **Fix: the harness keeps commits that no push shipped.** Each
   loop iteration reset the workspace to `origin/agent-work`, so
   commits left from a session whose push and park both failed, or
