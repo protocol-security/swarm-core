@@ -130,6 +130,23 @@ for branch in "${HARVEST_BRANCHES[@]}"; do
         continue
     fi
 
+    # A branch that HEAD already contains has nothing new, so merging
+    # it is a no-op and cannot bring back removed commits.  Skip the
+    # guard for it: once harvest merges an interactive branch,
+    # agent-work no longer descends from HEAD.
+    if git merge-base --is-ancestor "$remote_ref" HEAD; then
+        echo ""
+        echo "0 new commits on ${branch}:"
+        continue
+    else
+        rc=$?
+        if [ "$rc" -ne 1 ]; then
+            echo "ERROR: cannot compare ${remote_ref} with HEAD." >&2
+            git remote remove "$REMOTE_NAME"
+            exit "$rc"
+        fi
+    fi
+
     if ! git merge-base --is-ancestor HEAD "$remote_ref"; then
         echo "" >&2
         echo "ERROR: ${remote_ref} does not descend from HEAD." >&2

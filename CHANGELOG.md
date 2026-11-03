@@ -132,6 +132,15 @@
   as `launch.sh` does, so that files an agent wrote with another UID
   do not stop it. The runtime directory and state file are removed
   only after that succeeds.
+- **Fix: harvest again after merging an interactive branch.**
+  `harvest.sh` refused any branch that did not descend from HEAD, to
+  avoid bringing back commits that a rewrite of upstream history had
+  removed. Once a harvest merged an interactive branch, `agent-work`
+  no longer descended from HEAD, so the next harvest stopped
+  with "does not descend from HEAD" even with nothing new to merge,
+  and told the user to remove the bare repo. A branch that HEAD
+  already contains, including an older interactive branch, is now
+  skipped before that check, since merging it changes nothing.
 
 ## 0.22.0 — 2026-06-08
 
