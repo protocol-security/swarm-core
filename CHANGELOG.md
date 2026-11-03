@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fix: a new bare repo starts from the checkout's HEAD.** The
+  clone copied every local branch, so an old local `agent-work`,
+  `swarm/*` or `agent-parked/*` branch in the checkout reached the new
+  engagement and harvest could take it for new agent work.
+  `create_bare_repo` now deletes the `swarm/*` and `agent-parked/*`
+  branches in the new bare repo, points `agent-work` and
+  `refs/swarm/base` at the checkout's HEAD, and records that commit as
+  `base_commit` in the state file. A checkout without a commit is
+  refused.
 - **Fix: costs.sh, progress.sh and dashboard.sh no longer end with
   status 0 when Bash 3.2 stops them on an unset variable.** macOS's
   `/bin/bash` runs an EXIT trap with status 0 when `set -u` stops a
