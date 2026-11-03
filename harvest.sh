@@ -6,13 +6,14 @@ set -euo pipefail
 
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SWARM_DIR/lib/check-deps.sh"
-check_deps git
+check_deps git jq
 # shellcheck source=lib/project.sh
 source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-PROJECT="$(swarm_project_id "$(basename "$REPO_ROOT")")"
-BARE_REPO="/tmp/${PROJECT}-upstream.git"
+PROJECT="$(swarm_project_resolve "$REPO_ROOT")" || exit 1
+RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
+BARE_REPO="${RUNTIME_DIR}/upstream.git"
 REMOTE_NAME="_agent-harvest"
 DRY_RUN=false
 
@@ -28,8 +29,10 @@ Options:
   --dry        Show what would be merged without actually merging.
   -h, --help   Show this help message.
 
-The bare repo is expected at /tmp/<project>-upstream.git,
-created by launch.sh when starting agents.
+The bare repo lives in the project's runtime directory, which
+launch.sh creates when starting agents: SWARM_RUNTIME_DIR if set,
+else \$XDG_STATE_HOME/swarm-core/<project> (by default
+~/.local/state/swarm-core/<project>).
 HELP
             exit 0
             ;;
@@ -38,22 +41,28 @@ HELP
 done
 
 warn_dirty_interactive_containers() {
-    command -v docker >/dev/null 2>&1 || return 0
-    local image_name="${PROJECT}-agent"
-    local name state dirty tmpf branch
+    [ "$DOCKER_UP" = true ] || return 0
+    local name id state dirty tmpd tmpf branch
 
     while IFS= read -r name; do
         [ -n "$name" ] || continue
-        state=$(docker inspect -f '{{.State.Status}}' "$name" \
+        # Act on the ID of a container this checkout created.
+        id=$(swarm_own_container_id "$name" "$CHECKOUT_PATH" "$PROJECT") \
+            || exit 1
+        [ -n "$id" ] || continue
+        state=$(docker inspect -f '{{.State.Status}}' "$id" \
             2>/dev/null || echo "")
         dirty=""
         if [ "$state" = "running" ]; then
-            dirty=$(docker exec "$name" bash -lc \
+            dirty=$(docker exec "$id" bash -lc \
                 'cd /workspace && [ -n "$(git status --porcelain=v1)" ] && echo true || echo false' \
                 2>/dev/null || true)
         else
-            tmpf="/tmp/.swarm-harvest-${name}.state"
-            docker cp "${name}:/workspace/agent_logs/interactive_state" \
+            # docker cp gives the copy the source file's mode, so it
+            # goes into a private directory.
+            tmpd=$(mktemp -d)
+            tmpf="${tmpd}/interactive_state"
+            docker cp "${id}:/workspace/agent_logs/interactive_state" \
                 "$tmpf" 2>/dev/null || true
             if [ -s "$tmpf" ]; then
                 dirty=$(grep '^dirty=' "$tmpf" \
@@ -61,20 +70,35 @@ warn_dirty_interactive_containers() {
                 branch=$(grep '^branch=' "$tmpf" \
                     | head -1 | cut -d= -f2- || true)
             fi
-            rm -f "$tmpf"
+            rm -rf "$tmpd"
         fi
         if [ "$dirty" = "true" ]; then
             echo "WARNING: ${name} has uncommitted interactive work" >&2
             [ -n "${branch:-}" ] && echo "         branch: ${branch}" >&2
         fi
-    done < <(docker ps -a --format '{{.Names}}' 2>/dev/null \
-        | grep -E "^${image_name}-interactive-" \
+    done < <(swarm_interactive_container_names "$PROJECT" 2>/dev/null \
         | sort || true)
 }
 
+swarm_refuse_legacy_state "$(swarm_project_id "$(basename "$REPO_ROOT")")" \
+    || exit 1
 if [ ! -d "$BARE_REPO" ]; then
     echo "ERROR: ${BARE_REPO} not found." >&2
     exit 1
+fi
+swarm_runtime_check "$RUNTIME_DIR" || exit 1
+swarm_runtime_owner_check "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
+swarm_lock "$RUNTIME_DIR" || exit 1
+swarm_engagement_env_check || exit 1
+swarm_engagement_join "$RUNTIME_DIR/state.json" || exit 1
+CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")"
+# Harvest looks into interactive containers only when Docker answers.
+# Without Docker, or with its daemon down, it touches no container and
+# skips this check; the merge itself needs only git.
+DOCKER_UP=false
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    DOCKER_UP=true
+    swarm_containers_verify "$PROJECT" "$REPO_ROOT" || exit 1
 fi
 
 cd "$REPO_ROOT"
@@ -119,7 +143,7 @@ for branch in "${HARVEST_BRANCHES[@]}"; do
         echo "would re-introduce removed commits." >&2
         echo "" >&2
         echo "Resolve by wiping and recreating the bare repo:" >&2
-        echo "  rm -rf ${BARE_REPO}" >&2
+        echo "  $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
         echo "  ./launch.sh ...   # recreates the bare from current HEAD" >&2
         git remote remove "$REMOTE_NAME"
         exit 1

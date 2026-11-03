@@ -41,8 +41,11 @@ Use your actual submodule path. SSH users can use
 Keep existing checkout/submodule directories and script paths; moving
 or re-adding them is not required.
 
-Docker image/container names and `/tmp` state paths still derive from
-the target repository's sanitized directory name, not this tool's name.
+Docker image/container names and the runtime directory still derive
+from the target repository's sanitized directory name (or
+`SWARM_PROJECT`), not this tool's name. State that older releases left
+in `/tmp` is not reused; see
+[Upgrading from `/tmp` state](#upgrading-from-tmp-state).
 Do not rename or move a target checkout during an active run. Finish
 and harvest the run first: changing its directory name changes resource
 names, and existing bind mounts still refer to their original paths.
@@ -78,6 +81,10 @@ Credentials stay as env vars (not in shell history).
 | `GEMINI_API_KEY` | | Google API key (for Gemini CLI driver). |
 | `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
 | `SWARM_TITLE` | | Dashboard title override. |
+| `SWARM_RUNTIME_DIR` | | See [Runtime directory](#runtime-directory). |
+| `SWARM_PROJECT` | | See [Project identity](#project-identity). |
+| `SWARM_ENGAGEMENT_ID` | | See [Engagements](#engagements). |
+| `SWARM_LOCK_FD` | | See [Engagement lock](#engagement-lock). |
 | `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
 | `SWARM_ACTIVITY_TIMEOUT` | `0` | Seconds of logfile silence before the in-container watchdog SIGTERMs the agent CLI's process group.  `0` disables.  See [Activity watchdog](#activity-watchdog). |
 | `SWARM_ACTIVITY_POLL` | `10` | Watchdog mtime-poll interval, in seconds.  Rarely needs tuning. |
@@ -437,6 +444,10 @@ to render as `Think: <summary>` unchanged.
 ```
 
 Flags combine: `./tests/test.sh --config f.json --no-inject`.
+
+Smoke tests take the project id from the directory name.  When
+another checkout on the Docker host already uses it, set
+`SWARM_PROJECT`: `SWARM_PROJECT=swarm-core-2 ./tests/test.sh`.
 
 The test harness uses its own built-in prompt (counting +
 reasoning) regardless of config. The reasoning step exercises
@@ -800,31 +811,172 @@ synthetic JSONL stream that completes instantly.  This catches
 path errors, missing dependencies, and config issues before any
 real agent run.
 
-Clean up afterwards:
+Clean up afterwards as described in [Cleanup](#cleanup).
+
+## Runtime directory
+
+Each project keeps its host-side state in one directory:
+
+| Path | Content |
+|------|---------|
+| `upstream.git` | Bare repo that containers mount at `/upstream`. |
+| `mirrors/<name>.git` | Submodule mirrors (`/mirrors`, read-only). |
+| `state.json` | State file for a standalone dashboard. |
+| `engagement.lock` | Lock that lifecycle commands hold. |
+
+The state file is JSON (`swarm-core.state/v1`, mode 600) that
+`launch.sh start` replaces in one rename; the dashboard reads it with
+jq and never sources it.
+
+The directory is `$XDG_STATE_HOME/swarm-core/<project>`, which is
+`~/.local/state/swarm-core/<project>` when `XDG_STATE_HOME` is unset
+or relative. Set `SWARM_RUNTIME_DIR` to an absolute path to put it
+elsewhere, and set it the same way for every command of a run
+(`launch.sh`, `harvest.sh`, `dashboard.sh`, `progress.sh`,
+`costs.sh`): each one resolves the directory on its own.
+`launch.sh start` prints the directory it used.
+
+`launch.sh` creates the directory with mode 700 and refuses one that
+is a symlink, belongs to another user, has any group or other
+permission bits, or (on macOS) has an ACL entry that allows access;
+`harvest.sh` and `progress.sh` refuse it too. On macOS it also refuses
+to create the directory below an inheritable ACL entry that allows
+access, since the new directory would inherit it. The
+bare repo inside stays writable for every UID, because the
+container's `agent` user can have a different UID from the host user
+(native Linux); the directory around it keeps other host users out.
+
+### Project identity
+
+The project id names the runtime directory, the image
+(`<project>-agent`) and the containers (`<project>-agent-N`, ...).
+`SWARM_PROJECT` sets it; otherwise it comes from the repository root's
+directory name: lowercased, ASCII letters and digits kept, `.`, `_` and
+`-` kept as separators, any other character turned into `-`, a run of
+separators reduced to its first one, separators at either end dropped,
+and `swarm` when nothing is left (`My.Repo` gives `my.repo`, `My Repo!`
+gives `my-repo`). A `SWARM_PROJECT` value that is not already in that
+form is refused, and the error shows the accepted form.
+
+The state file records which checkout owns the runtime directory.
+Every `launch.sh` command, `harvest.sh`, `progress.sh`, `costs.sh` and
+the dashboard refuse to act when another checkout owns it, so two
+checkouts with the same directory name never share a bare repo, an
+image or containers: give the second one its own `SWARM_PROJECT`. A
+checkout moved to a new path is refused the same way. Harvest from the
+old path first, or remove the runtime directory once nothing in it is
+needed. `launch.sh stop` keeps the state file.
+
+Container names are shared by everything on the Docker host, and the
+runtime directory can live anywhere, so containers carry their project
+id and the checkout that created them in `swarm-core.project` and
+`swarm-core.checkout` labels. Every command refuses to act while one of
+the project's containers belongs to another checkout, or has no labels
+because an older release created it (see
+[Upgrading from `/tmp` state](#upgrading-from-tmp-state)). Removing or
+stopping a container checks its labels again and acts on its ID.
+`harvest.sh` only looks into containers when the Docker daemon answers.
+
+### Engagements
+
+An engagement is one life of the bare repo. It begins when `start`
+creates the bare repo, or when `post-process` or `interactive` creates
+it because none exists, and the state file records its id: the value
+of `SWARM_ENGAGEMENT_ID` (1-64 letters, digits, `.`, `_` or `-`,
+starting with a letter or digit), or a generated
+`<UTC time>-<random hex>` id. `post-process`, `interactive`, `stop`,
+`wait`, `harvest.sh` and the dashboard act on an existing engagement
+only when `SWARM_ENGAGEMENT_ID` is unset or equal to the recorded id,
+so a caller that names its engagement cannot act on another one. An
+empty value counts as set and is refused.
+
+### Engagement lock
+
+`start`, `post-process`, `interactive`, `chat`, `shell` and
+`harvest.sh` take `engagement.lock` in the runtime directory with
+`flock -n` before they change anything, and fail at once while another
+operation holds it. `start` and `post-process` keep it until they exit
+(`harvest.sh` started by them shares it). `interactive` keeps it until
+the session's container runs, so its mounts are in place before
+another command could replace them, and then lets it go for the rest
+of the session; `start --dashboard` lets it go before the dashboard
+opens. `stop`, `status`, `logs`, `progress.sh`, `costs.sh` and the
+dashboard never take it, and containers push through git without it.
+
+A caller that runs several commands as one unit can hold the lock
+itself and pass the descriptor in `SWARM_LOCK_FD`. The engine checks
+that the descriptor is open on that lock file and locks through it:
 
 ```bash
-PROJECT=$(basename $(pwd))
-docker rm -f ${PROJECT}-agent-1 2>/dev/null
-rm -rf /tmp/${PROJECT}-upstream.git
+(
+    exec 9>>"<runtime dir>/engagement.lock"
+    flock -n 9 || exit 1
+    SWARM_LOCK_FD=9 ./launch.sh start || exit $?
+    SWARM_LOCK_FD=9 ./launch.sh wait
+)   # The lock goes when the subshell exits.
+```
+
+`flock` comes with util-linux on Linux; on macOS install it with
+`brew install flock`.
+
+### Upgrading from `/tmp` state
+
+Older releases kept this state in `/tmp/<project>-upstream.git`,
+`/tmp/<project>-mirror-*.git` and `/tmp/<project>-swarm.env`, where
+any local user could write to it. It is never reused. While
+`/tmp/<project>-upstream.git` exists and belongs to you, `start`,
+`post-process`, `interactive`, `chat`, `shell` and `harvest.sh` stop
+and print the commands below.
+
+Containers that an older release started carry no labels, so
+`launch.sh` refuses every command while they exist, `stop` included,
+before it gets to the `/tmp` check (see
+[Project identity](#project-identity)). Their agents push to the old
+bare repo. Stop the containers that the error lists with the grace
+`./launch.sh stop` gives, so the agents can still push their last
+commits:
+
+```bash
+docker stop -t "${SWARM_STOP_TIMEOUT:-60}" <container>...
+```
+
+To keep agent commits from the old bare repo, fetch its branches and
+review them before merging anything:
+
+```bash
+git fetch /tmp/<project>-upstream.git \
+    '+refs/heads/*:refs/remotes/legacy-swarm/*'
+```
+
+Then remove the old containers with `docker rm`, and the old state
+with the commands below. The agents wrote part of the old bare repo as
+the container's user, and on Linux a plain `rm -rf` cannot delete those
+files, so remove the bare repo through Docker. The error about `/tmp`
+lists the exact paths; this form also works in zsh when there are no
+mirrors:
+
+```bash
+docker run --rm -v /tmp:/tmp alpine rm -rf /tmp/<project>-upstream.git
+rm -rf /tmp/<project>-swarm.env
+find -H /tmp -maxdepth 1 -name '<project>-mirror-*.git' -exec rm -rf {} +
 ```
 
 ## Cleanup
 
-After a swarm run, the following artifacts remain on disk:
-
-| Artifact | Path |
-|----------|------|
-| Bare repo | `/tmp/<project>-upstream.git` |
-| Submodule mirrors | `/tmp/<project>-mirror-*.git` |
-| Agent containers | `<project>-agent-N` |
-| State file | `/tmp/<project>-swarm.env` |
-Remove everything for a fresh start:
+After a swarm run, the agent containers (`<project>-agent-N`,
+`<project>-agent-post`, `<project>-agent-interactive-*`) and the
+[runtime directory](#runtime-directory) remain. Harvest first, then
+remove both for a fresh start. The agents write to the bare repo as
+the container's user, and on Linux a plain `rm -rf` cannot delete
+those files, so the bare repo goes through Docker first, the way
+`launch.sh` removes an old one. Use the directory that
+`launch.sh start` printed on its `Runtime:` line:
 
 ```bash
-PROJECT=$(basename $(pwd))
-docker rm -f $(docker ps -aq --filter "name=${PROJECT}-agent-") 2>/dev/null
-rm -rf /tmp/${PROJECT}-upstream.git /tmp/${PROJECT}-mirror-*.git
-rm -f  /tmp/${PROJECT}-swarm.env
+docker rm -f $(docker ps -aq \
+    --filter "label=swarm-core.project=<project>") 2>/dev/null
+docker run --rm -v "<runtime dir>:/runtime" alpine rm -rf /runtime/upstream.git
+rm -rf "<runtime dir>"
 ```
 
 ## Verify image
@@ -832,7 +984,7 @@ rm -f  /tmp/${PROJECT}-swarm.env
 ```bash
 docker run --rm --entrypoint bash \
     -e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" \
-    $(basename $(pwd))-agent \
+    <project>-agent \
     -c 'claude --dangerously-skip-permissions \
         -p "What model are you? Reply with model id only." \
         --model claude-opus-4-6 2>&1'
