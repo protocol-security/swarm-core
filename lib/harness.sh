@@ -155,7 +155,11 @@ _scratch_worktree_push() {
     git fetch --no-recurse-submodules origin agent-work 2>&1 \
         | hlog_pipe || true
 
-    _shas=$(git rev-list --reverse origin/agent-work..HEAD 2>/dev/null)
+    if ! _shas=$(git rev-list --reverse origin/agent-work..HEAD 2>/dev/null)
+    then
+        hlog_err "scratch push: cannot list the unpushed commits"
+        return 1
+    fi
     if [ -z "$_shas" ]; then
         hlog "scratch push: no unpushed commits (already in sync)"
         return 0
@@ -282,6 +286,23 @@ _scratch_worktree_push() {
 # Returns 0 on success or no-op (nothing to push, or pushed
 # cleanly), 1 if there were unpushed commits and every push
 # path failed.
+# Succeed when resetting the branch to origin/agent-work after a
+# scratch transplant loses nothing: `git status` shows no change and
+# `git cherry` finds an equivalent on origin/agent-work for every
+# local commit.  Any failure counts as "not settled".
+_transplant_settled() {
+    local _st _ch
+    _st=$(git status --porcelain 2>/dev/null) || return 1
+    [ -z "$_st" ] || return 1
+    _ch=$(git cherry origin/agent-work HEAD 2>/dev/null) || return 1
+    # A pattern match, not a pipe into grep: under pipefail an early
+    # grep exit can fail printf with SIGPIPE.
+    case $'\n'"$_ch" in
+        *$'\n+'*) return 1 ;;
+    esac
+    return 0
+}
+
 _session_end_push() {
     git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
     AFTER=$(git rev-parse origin/agent-work)
@@ -412,16 +433,35 @@ _session_end_push() {
     # turns the 0.20.4 "100% data loss on push failure" state
     # into "push succeeds via transplant" for every failure
     # pattern we've observed in production.
+    local _transplanted=false
     if [ "$_push_ok" != true ]; then
         hlog "rebase path exhausted, trying scratch worktree fallback"
         if _scratch_worktree_push; then
             _push_ok=true
+            _transplanted=true
         fi
     fi
 
     if [ "$_push_ok" = true ]; then
         git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
         AFTER=$(git rev-parse origin/agent-work)
+        # The scratch push shipped copies of the local commits; the
+        # originals are still on this branch and on no origin ref.
+        # Move the branch to what was pushed, so the workspace does
+        # not look like it holds unshipped work, but only when that
+        # loses nothing: the tree is clean (the pre-push stash took
+        # every edit) and origin has an equivalent of every original
+        # commit.  Otherwise the branch stays, and the loop top stops
+        # the harness with the commits in /workspace.
+        if [ "$_transplanted" = true ]; then
+            if _transplant_settled; then
+                git reset -q --hard origin/agent-work 2>&1 \
+                    | hlog_pipe || true
+            else
+                hlog_err "scratch push: keeping the local branch;" \
+                    "the tree is dirty or a commit has no copy on origin"
+            fi
+        fi
         return 0
     fi
 
@@ -677,9 +717,45 @@ rm -f "$RETRY_FILE"
 trap '_on_signal TERM' TERM
 trap '_on_signal INT' INT
 
+# Print a commit of HEAD that no origin ref holds (agent-work, swarm/*
+# or agent-parked/*, as last fetched), or nothing when every commit is
+# on one.  A missing origin/agent-work or a failing rev-list prints
+# "unknown", so the caller treats it as unshipped.
+_unshipped_commit() {
+    local out
+    if ! git rev-parse -q --verify refs/remotes/origin/agent-work \
+            >/dev/null 2>&1; then
+        echo unknown
+        return 0
+    fi
+    if ! out=$(git rev-list -n 1 HEAD --not refs/remotes/origin/agent-work \
+            --remotes='origin/swarm/*' --remotes='origin/agent-parked/*' \
+            2>/dev/null); then
+        echo unknown
+        return 0
+    fi
+    printf '%s' "$out"
+}
+
 while true; do
     # Reset to latest. Do not re-init submodules; setup changes would be lost.
-    git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
+    git fetch --prune --no-recurse-submodules origin 2>&1 | hlog_pipe
+    # Commits on no origin ref (an earlier push and its park both
+    # failed, or the container restarted before it could push) exist
+    # only on this branch, and the reset below would leave them in the
+    # reflog alone.  Ship them first; if that fails, stop and keep
+    # them on the branch, where cleanup finds them.
+    if [ -n "$(_unshipped_commit)" ]; then
+        hlog "unshipped commits from an earlier session, pushing them"
+        _session_end_push || true
+        git fetch --prune --no-recurse-submodules origin 2>&1 \
+            | hlog_pipe || true
+        if [ -n "$(_unshipped_commit)" ]; then
+            hlog_err "commits remain on no origin ref; keeping them" \
+                "in /workspace and exiting"
+            exit 1
+        fi
+    fi
     git reset --hard origin/agent-work 2>&1 | hlog_pipe
 
     BEFORE=$(git rev-parse origin/agent-work)
