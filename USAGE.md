@@ -1088,11 +1088,23 @@ look like new agent work.
 `harvest.sh` take `engagement.lock` in the runtime directory with
 `flock -n` before they change anything, and fail at once while another
 operation holds it. `start` and `post-process` keep it until they exit
-(`harvest.sh` started by them shares it). `interactive` keeps it until
-the session's container runs, so its mounts are in place before
-another command could replace them, and then lets it go for the rest
-of the session; `start --dashboard` lets it go before the dashboard
-opens. `stop`, `status`, `logs`, `progress.sh`, `costs.sh` and the
+(`harvest.sh` started by them shares it). `interactive` keeps it while
+it records the session in `interactive-<container name>.pending` in the
+runtime directory (its pid, that process's start time and the Docker
+daemon), then lets it go and execs `docker run`, which keeps the pid.
+Docker mounts the bare repo and the mirrors when the container starts,
+so while that process runs, or the container runs after a detach
+or was created and may still start (found by its `swarm-core.session`
+label, which a rename keeps),
+`start`, and `post-process` or `interactive` when they would create
+the bare repo, fail instead of replacing them. Every command that
+creates the bare repo mirrors the submodules; a session that joins an
+existing bare repo keeps the mirrors already there and only adds
+missing ones. Once the session's process has ended, a check from
+another Docker daemon (another Docker context or `DOCKER_HOST`) fails
+instead of guessing, and each check and launch pins one Docker context
+for all its Docker commands. `start --dashboard` lets the lock go before
+the dashboard opens. `stop`, `status`, `logs`, `progress.sh`, `costs.sh` and the
 dashboard never take it, and containers push through git without it.
 
 A caller that runs several commands as one unit can hold the lock

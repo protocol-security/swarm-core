@@ -397,6 +397,9 @@ swarm_runtime_verify() {
 # checkout that created it in these labels.
 SWARM_PROJECT_LABEL="swarm-core.project"
 SWARM_CHECKOUT_LABEL="swarm-core.checkout"
+# An interactive session's container carries its record's name here:
+# a running container can be renamed, but not relabeled.
+SWARM_SESSION_LABEL="swarm-core.session"
 
 # docker ps format and jq definitions for the project's containers.  A
 # container is the project's when its project label is the id,
@@ -690,4 +693,206 @@ swarm_unlock() {
     esac
     eval "exec ${fd}>&-"
     unset SWARM_LOCK_FD
+}
+
+# An interactive session runs for hours without the lock.  launch.sh
+# records it under the lock in DIR/interactive-<container name>.pending
+# with its own pid, that process's start time and the Docker daemon,
+# releases the lock and execs `docker run`, which keeps the pid and
+# makes the container and its mounts.  While that process lives, or the
+# container runs after a detach, the bare repo and the mirrors the
+# container mounts must stay as they are.
+
+# Print the start time of process PID, or nothing when ps cannot tell.
+# The format follows the locale and the time zone, so both are fixed:
+# the reader may run with other settings than the session.
+swarm_proc_started() {
+    LC_ALL=C TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null \
+        | sed 's/^ *//; s/ *$//' || true
+}
+
+# Pin the Docker daemon for the rest of the calling shell: each docker
+# command resolves the current context again, and another terminal can
+# switch it (docker context use) between two commands.  DOCKER_HOST or
+# DOCKER_CONTEXT already pin it; otherwise export DOCKER_CONTEXT as the
+# current context.  Callers that must not leak it declare
+# DOCKER_CONTEXT local first.
+swarm_docker_pin() {
+    local ctx
+    if [ -n "${DOCKER_HOST:-}" ] || [ -n "${DOCKER_CONTEXT:-}" ]; then
+        return 0
+    fi
+    ctx=$(docker context show 2>/dev/null) || return 1
+    # Docker allows letters, digits and "_.+-" in context names.
+    case "$ctx" in
+        ''|*[!"$SWARM_ALNUM"._+-]*) return 1 ;;
+    esac
+    DOCKER_CONTEXT="$ctx"
+    export DOCKER_CONTEXT
+}
+
+# Print the id of the Docker daemon the CLI talks to.  A container id
+# means something only on its daemon.
+swarm_docker_daemon_id() {
+    local id
+    id=$(docker info -f '{{.ID}}' 2>/dev/null) || return 1
+    case "$id" in
+        ''|*[!"$SWARM_ALNUM":-]*) return 1 ;;
+    esac
+    printf '%s' "$id"
+}
+
+# Succeed when NAME is a container name Docker accepts.
+swarm_container_name_valid() {
+    case "$1" in
+        ["$SWARM_ALNUM"]*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *[!"$SWARM_ALNUM"._-]*) return 1 ;;
+    esac
+}
+
+# Record that the session in process PID runs container NAME on the
+# daemon with id DAEMON.
+swarm_pending_write() {
+    local dir="$1" name="$2" pid="$3" daemon="$4" file
+    if ! swarm_container_name_valid "$name"; then
+        echo "ERROR: unexpected container name: ${name}" >&2
+        return 1
+    fi
+    case "$daemon" in
+        ''|*[!"$SWARM_ALNUM":-]*)
+            echo "ERROR: unexpected Docker daemon id: ${daemon}" >&2
+            return 1 ;;
+    esac
+    file="$dir/interactive-${name}.pending"
+    {
+        printf 'pid=%s\n' "$pid"
+        printf 'started=%s\n' "$(swarm_proc_started "$pid")"
+        printf 'daemon=%s\n' "$daemon"
+    } > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+# Succeed when no container of session NAME runs or can still start:
+# Docker lists none with its session label, or only exited or dead
+# ones.  A created container counts as running, since the daemon can
+# finish starting it after the client is gone.  Returns 1 while one
+# runs, and 2 when Docker cannot tell.
+swarm_container_settled() {
+    local name="$1" states state
+    states=$(docker ps -a \
+        --filter "label=${SWARM_SESSION_LABEL}=${name}" \
+        --format '{{.State}}' 2>/dev/null) || return 2
+    for state in $states; do
+        case "$state" in
+            exited|dead) ;;
+            created|running|paused|restarting|removing) return 1 ;;
+            *) return 2 ;;
+        esac
+    done
+    return 0
+}
+
+# Print the container names of the sessions in DIR that are open, one
+# per line, and remove the records of the others.  A session is open
+# while its process runs (a process whose start time ps cannot read
+# counts as running), and after that while its container runs: a
+# session can detach and leave it running.  The container is found by
+# its session label, which a rename does not change.  A record must be exactly
+# "pid=N\nstarted=T\ndaemon=D\n" (T empty or a C-locale ps start time,
+# D the daemon that made the container); anything else, a record that
+# cannot be read or removed, a record from another daemon, or a
+# container state Docker cannot give, fails the check.
+swarm_pending_live() {
+    local dir="$1" f name content rest l1 l2 l3 pid started daemon now rc
+    local current=""
+    # The daemon id and the container states below must come from one
+    # daemon; the pin ends with this function.
+    local DOCKER_CONTEXT="${DOCKER_CONTEXT:-}"
+    for f in "$dir"/interactive-*.pending; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        name="${f##*/interactive-}"
+        name="${name%.pending}"
+        # The x keeps trailing newlines from command substitution.
+        if ! swarm_container_name_valid "$name"; then
+            echo "ERROR: ${f} does not name a container." >&2
+            return 1
+        fi
+        if [ -L "$f" ] || [ ! -f "$f" ] \
+                || ! content=$(cat "$f" 2>/dev/null && echo x); then
+            echo "ERROR: cannot read ${f}." >&2
+            return 1
+        fi
+        content="${content%x}"
+        pid=""
+        started=""
+        daemon=""
+        case "$content" in
+            pid=*$'\n'started=*$'\n'daemon=*$'\n')
+                l1="${content%%$'\n'*}"
+                rest="${content#*$'\n'}"
+                l2="${rest%%$'\n'*}"
+                rest="${rest#*$'\n'}"
+                l3="${rest%$'\n'}"
+                pid="${l1#pid=}"
+                started="${l2#started=}"
+                daemon="${l3#daemon=}"
+                if [ "$started" = "$l2" ] || [ "$daemon" = "$l3" ]; then
+                    pid=""
+                fi
+                case "$daemon" in
+                    ''|*[!"$SWARM_ALNUM":-]*) pid="" ;;
+                esac ;;
+        esac
+        case "$pid" in
+            ''|*[!0123456789]*)
+                echo "ERROR: ${f} is not a session record." >&2
+                return 1 ;;
+        esac
+        case "$started" in
+            ''|[A-Z][a-z][a-z]' '[A-Z][a-z][a-z]' '[' '0123][0-9]' '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]' '[0-9][0-9][0-9][0-9])
+                ;;
+            *)
+                echo "ERROR: ${f} is not a session record." >&2
+                return 1 ;;
+        esac
+        if kill -0 "$pid" 2>/dev/null; then
+            now=$(swarm_proc_started "$pid")
+            if [ -z "$started" ] || [ -z "$now" ] \
+                    || [ "$now" = "$started" ]; then
+                printf '%s\n' "$name"
+                continue
+            fi
+        fi
+        # The process is gone: only the daemon that made the container
+        # can say whether it still runs.
+        if [ -z "$current" ]; then
+            if ! swarm_docker_pin \
+                    || ! current=$(swarm_docker_daemon_id); then
+                echo "ERROR: cannot read the Docker daemon id." >&2
+                return 1
+            fi
+        fi
+        if [ "$daemon" != "$current" ]; then
+            echo "ERROR: ${f} belongs to another Docker daemon" \
+                 "(${daemon}); switch back to it to check the session." >&2
+            return 1
+        fi
+        rc=0
+        swarm_container_settled "$name" || rc=$?
+        case "$rc" in
+            0) ;;
+            1)
+                printf '%s\n' "$name"
+                continue ;;
+            *)
+                echo "ERROR: cannot read the state of container ${name}." >&2
+                return 1 ;;
+        esac
+        rm -f "$f" || {
+            echo "ERROR: cannot remove ${f}." >&2
+            return 1
+        }
+    done
 }
