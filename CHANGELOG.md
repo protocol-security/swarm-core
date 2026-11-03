@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fix: a new bare repo starts from the checkout's HEAD.** The
+  clone copied every local branch, so an old local `agent-work`,
+  `swarm/*` or `agent-parked/*` branch in the checkout reached the new
+  engagement and harvest could take it for new agent work.
+  `create_bare_repo` now deletes the `swarm/*` and `agent-parked/*`
+  branches in the new bare repo, points `agent-work` and
+  `refs/swarm/base` at the checkout's HEAD, and records that commit as
+  `base_commit` in the state file. A checkout without a commit is
+  refused.
 - **Fix: a signal that ends costs.sh, progress.sh or dashboard.sh no
   longer prints "stopped before the end of its run" on Bash 4.1 and
   later.** Bash runs the EXIT trap with status 0 when a signal ends a

@@ -1071,6 +1071,12 @@ only when `SWARM_ENGAGEMENT_ID` is unset or equal to the recorded id,
 so a caller that names its engagement cannot act on another one. An
 empty value counts as set and is refused.
 
+A new bare repo starts from the commit the checkout has: `agent-work`
+and `refs/swarm/base` point at it, the state file records it as
+`base_commit`, and the checkout's own `swarm/*` and `agent-parked/*`
+branches are not copied, so branches from an earlier engagement never
+look like new agent work.
+
 ### Engagement lock
 
 `start`, `post-process`, `interactive`, `chat`, `shell` and
