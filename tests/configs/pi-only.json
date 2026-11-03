@@ -1,0 +1,13 @@
+{
+  "prompt": "unused",
+  "driver": "pi",
+  "pi_version": "0.86.1",
+  "agents": [
+    {
+      "count": 1,
+      "model": "anthropic/claude-sonnet-4-6",
+      "auth": "oauth",
+      "effort": "low"
+    }
+  ]
+}
