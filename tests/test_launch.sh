@@ -1310,6 +1310,106 @@ rm -rf "$_wr_repo" "$_wr_bare"
 
 # ============================================================
 echo ""
+echo "=== 35b. Bare repo and mirrors copy the checkout's objects ==="
+
+# A local clone hardlinks object files unless told otherwise, and the
+# chmod -R a+rwX in create_bare_repo and mirror_submodules would then
+# make the checkout's own object files writable for every user.  Run
+# the live functions from launch.sh on a checkout with packed and loose
+# objects, a submodule, and objects borrowed through alternates, and
+# check that nothing is shared, changed or still borrowed.
+_hl_links() {
+    stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1" 2>/dev/null
+}
+_hl_mode() {
+    stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
+}
+_hl_launch="$TESTS_DIR/../launch.sh"
+_hl_dir="$TMPDIR/hl"
+_hl_git() {
+    git -c user.name=test -c user.email=test@test \
+        -c commit.gpgsign=false -c protocol.file.allow=always "$@"
+}
+mkdir -p "$_hl_dir"
+_hl_git -C "$_hl_dir" init -q base
+_hl_git -C "$_hl_dir/base" commit --allow-empty -m base -q
+_hl_base_head=$(git -C "$_hl_dir/base" rev-parse HEAD)
+_hl_git -C "$_hl_dir" init -q sub
+_hl_git -C "$_hl_dir/sub" commit --allow-empty -m sub -q
+# src borrows base's objects through alternates.
+_hl_git -C "$_hl_dir" clone -q --shared base src
+_hl_git -C "$_hl_dir/src" submodule add -q "$_hl_dir/sub" sub 2>/dev/null
+_hl_git -C "$_hl_dir/src" commit -m src -q
+git -C "$_hl_dir/src" gc -q
+git -C "$_hl_dir/src/.git/modules/sub" gc -q
+_hl_git -C "$_hl_dir/src" commit --allow-empty -m loose -q
+_hl_loose=$(git -C "$_hl_dir/src" rev-parse HEAD)
+_hl_loose="$_hl_dir/src/.git/objects/${_hl_loose:0:2}/${_hl_loose:2}"
+_hl_loose_mode=$(_hl_mode "$_hl_loose")
+_hl_packs=("$_hl_dir"/src/.git/objects/pack/*.pack)
+_hl_src_pack=${_hl_packs[0]}
+_hl_packs=("$_hl_dir"/src/.git/modules/sub/objects/pack/*.pack)
+_hl_sub_pack=${_hl_packs[0]}
+_hl_src_mode=$(_hl_mode "$_hl_src_pack")
+_hl_sub_mode=$(_hl_mode "$_hl_sub_pack")
+
+for _hl_fn in create_bare_repo begin_engagement mirror_submodules; do
+    awk -v fn="$_hl_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
+         p { print }
+         p && /^\}[[:space:]]*$/ { exit }' "$_hl_launch"
+done > "$TMPDIR/hl_funcs.sh"
+_hl_runtime="$_hl_dir/runtime"
+mkdir -m 700 "$_hl_runtime"
+_hl_mirror="$_hl_runtime/mirrors/sub.git"
+(
+    # shellcheck source=/dev/null
+    source "$TMPDIR/hl_funcs.sh"
+    # The extracted functions call this stub.
+    # shellcheck disable=SC2329
+    rm_docker_dir() { rm -rf "$1"; }
+    REPO_ROOT="$_hl_dir/src"
+    BARE_REPO="$_hl_dir/bare.git"
+    MIRROR_DIR="$_hl_runtime/mirrors"
+    STATE_FILE="$_hl_runtime/state.json"
+    create_bare_repo
+    mirror_submodules
+) >/dev/null 2>&1 || true
+
+assert_eq "bare repo has the checkout's HEAD on agent-work" \
+    "$(git -C "$_hl_dir/src" rev-parse HEAD)" \
+    "$(git -C "$_hl_dir/bare.git" rev-parse agent-work 2>/dev/null)"
+assert_eq "mirror has the submodule's commit" \
+    "$(git -C "$_hl_dir/sub" rev-parse HEAD)" \
+    "$(git -C "$_hl_mirror" rev-parse HEAD 2>/dev/null)"
+assert_eq "checkout pack is not shared with the bare repo" "1" \
+    "$(_hl_links "$_hl_src_pack")"
+assert_eq "checkout pack keeps its mode" "$_hl_src_mode" \
+    "$(_hl_mode "$_hl_src_pack")"
+assert_eq "submodule pack is not shared with its mirror" "1" \
+    "$(_hl_links "$_hl_sub_pack")"
+assert_eq "submodule pack keeps its mode" "$_hl_sub_mode" \
+    "$(_hl_mode "$_hl_sub_pack")"
+assert_eq "checkout loose object is not shared with the bare repo" "1" \
+    "$(_hl_links "$_hl_loose")"
+assert_eq "checkout loose object keeps its mode" "$_hl_loose_mode" \
+    "$(_hl_mode "$_hl_loose")"
+_hl_alt=no
+[ -e "$_hl_dir/bare.git/objects/info/alternates" ] && _hl_alt=yes
+assert_eq "bare repo does not borrow objects" "no" "$_hl_alt"
+mv "$_hl_dir/base" "$_hl_dir/base.moved"
+_hl_kept=no
+git -C "$_hl_dir/bare.git" cat-file -e "${_hl_base_head}^{commit}" \
+    2>/dev/null && _hl_kept=yes
+assert_eq "bare repo keeps the borrowed objects" "yes" "$_hl_kept"
+assert_eq "every bare clone in launch.sh copies objects" \
+    "$(grep -c 'git clone --bare ' "$_hl_launch")" \
+    "$(grep -c 'git clone --bare --no-hardlinks --dissociate ' \
+        "$_hl_launch")"
+
+rm -rf "$_hl_dir"
+
+# ============================================================
+echo ""
 echo "=== 36. signing_key resolution ==="
 
 # Mirrors the signing-key resolution block in launch.sh.
