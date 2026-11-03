@@ -207,22 +207,21 @@ own_container_state() {
         || printf 'not found'
 }
 
-# Hold the lock descriptors this process inherited until container NAME
-# has started (running, or already stopped), file STOP exists, or
-# process PARENT is gone.  cmd_interactive creates STOP as soon as
-# docker run returns; the parent check covers a launch.sh that was
-# killed.  There is no timeout: a slow start keeps the lock, to protect
-# what the container is about to mount.
-hold_lock_until_running() {
-    local name="$1" parent="$2" stop="$3" state
-    while [ ! -e "$stop" ] && kill -0 "$parent" 2>/dev/null; do
-        state=$(docker inspect -f '{{.State.Status}}' "$name" \
-            2>/dev/null || true)
-        case "$state" in
-            running|exited|dead) return 0 ;;
-        esac
-        sleep 0.1
-    done
+# Stop when an interactive session may still be about to start its
+# container: Docker makes the mounts at start, so the bare repo and the
+# mirrors must stay as they are while such a session lives.
+refuse_while_interactive_pending() {
+    local live
+    live=$(swarm_pending_live "$RUNTIME_DIR") || exit 1
+    [ -n "$live" ] || return 0
+    echo "ERROR: interactive sessions of this checkout are open" \
+         "(containers below); the bare repo and the mirrors stay" \
+         "until they end:" >&2
+    printf '%s\n' "$live" | sed 's/^/  /' >&2
+    echo "A container that was created but never ran also counts; once" \
+         "you are sure it will not start, remove it with" \
+         "docker rm <name>." >&2
+    exit 1
 }
 
 # Lifecycle commands call this before they touch the bare repo or the
@@ -230,8 +229,9 @@ hold_lock_until_running() {
 # the directory, as they did), create or check the private runtime
 # directory, take its engagement lock, and record this checkout as its
 # owner.  The lock stays held until the command exits, except that
-# interactive releases it once its container runs and start --dashboard
-# before the dashboard opens; children such as harvest.sh inherit it.
+# interactive releases it once its session is recorded, before docker
+# run, and start --dashboard before the dashboard opens; children such
+# as harvest.sh inherit it.
 prepare_runtime() {
     swarm_refuse_legacy_state "$(swarm_project_id "$PROJECT_RAW")" \
         || exit 1
@@ -343,9 +343,14 @@ begin_engagement() {
     echo "Engagement: ${id}"
 }
 
+# A session that creates the bare repo mirrors the submodules too; one
+# that joins keeps the mirrors the engagement has, which other sessions
+# may be about to mount, and only adds the ones that are missing.
 ensure_bare_repo_for_interactive() {
     if [ ! -d "$BARE_REPO" ]; then
+        refuse_while_interactive_pending
         create_bare_repo "bare repo for interactive session"
+        mirror_submodules
         return
     fi
     swarm_engagement_join "$STATE_FILE" || exit 1
@@ -363,9 +368,14 @@ ensure_bare_repo_for_interactive() {
         echo "       $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
         exit 1
     fi
+    mirror_submodules missing
 }
 
+# Mirror every submodule into MIRROR_DIR, replacing old mirrors.  With
+# "missing", only create the mirrors that do not exist yet and leave the
+# others, which a session may be about to mount.
 mirror_submodules() {
+    local only_missing="${1:-}"
     cd "$REPO_ROOT"
     mkdir -p "$MIRROR_DIR"
     git submodule foreach --quiet 'echo "$name|$toplevel/.git/modules/$sm_path"' | \
@@ -373,6 +383,9 @@ mirror_submodules() {
         local safe_name mirror
         safe_name="${name//\//_}"
         mirror="${MIRROR_DIR}/${safe_name}.git"
+        if [ "$only_missing" = missing ] && [ -d "$mirror" ]; then
+            continue
+        fi
         rm_docker_dir "$mirror"
         echo "--- Mirroring submodule: ${name} ---"
         # Copy objects, as create_bare_repo does, so the chmod below
@@ -660,7 +673,6 @@ HELP
 
     prepare_runtime
     ensure_bare_repo_for_interactive
-    mirror_submodules
     build_image
 
     MIRROR_ARGS=()
@@ -687,29 +699,35 @@ HELP
     remove_own_container "$name"
 
     # The session can last hours and only pushes through git, so it runs
-    # without the lock, but the lock has to last until the container
-    # runs: its mounts are made at start, and a concurrent start could
-    # otherwise replace the bare repo or the mirrors first.  A helper
-    # that inherits the lock descriptor holds it until then; this shell
-    # drops its own copy so that docker run, which keeps the terminal
-    # for the whole session, does not inherit it.
-    # The helper gets no stdio, so it never keeps a caller's output pipe
-    # open.  Its stop file lives in the private runtime directory.
-    local helper stop rc=0
-    stop="${RUNTIME_DIR}/.interactive-$$.stop"
-    rm -f "$stop"
-    hold_lock_until_running "$name" "$$" "$stop" \
-        </dev/null >/dev/null 2>&1 &
-    helper=$!
+    # without the lock.  It is recorded under the lock with this
+    # process's pid; then the lock goes and exec keeps that pid for
+    # docker run, which makes the container and its mounts.  Until this
+    # process ends, or its container after a detach, start and
+    # post-process leave the bare repo and the mirrors alone
+    # (refuse_while_interactive_pending).  One Docker context serves
+    # the daemon id and docker run, even if another terminal switches
+    # it meanwhile.
+    local daemon
+    if ! swarm_docker_pin || ! daemon=$(swarm_docker_daemon_id); then
+        echo "ERROR: cannot read the Docker daemon id." >&2
+        exit 1
+    fi
+    if ! swarm_pending_write "$RUNTIME_DIR" "$name" "$$" "$daemon"; then
+        echo "ERROR: cannot record the interactive session." >&2
+        exit 1
+    fi
     swarm_unlock
     echo "--- Starting interactive ${profile_label} (${agent_model}) ---"
     echo "Branch: ${branch}"
-    docker run -it \
-        --name "$name" \
+    # --name and the session label come after docker_args: the last
+    # one wins, and the record must find the container Docker makes.
+    exec docker run -it \
         -v "${BARE_REPO}:/upstream:rw" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
         "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
         "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+        --name "$name" \
+        --label "${SWARM_SESSION_LABEL}=${name}" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
         --label "$CHECKOUT_LABEL" \
         --label "$PROJECT_LABEL" \
@@ -732,13 +750,7 @@ HELP
         -e "SWARM_INTERACTIVE_PROFILE=${profile_label}" \
         -e "SWARM_INTERACTIVE_MODE=${mode}" \
         --entrypoint /interactive.sh \
-        "$IMAGE_NAME" || rc=$?
-    # docker run has returned: the container ran or never will.  wait
-    # only reaps this shell's own child, so a reused PID is never hit.
-    : > "$stop"
-    wait "$helper" 2>/dev/null || true
-    rm -f "$stop"
-    return "$rc"
+        "$IMAGE_NAME"
 }
 
 cmd_start() {
@@ -806,6 +818,7 @@ cmd_start() {
         fi
     fi
 
+    refuse_while_interactive_pending
     create_bare_repo "bare repo"
 
     # Mirror each submodule so containers can init without network.
@@ -1089,7 +1102,9 @@ cmd_post_process() {
 
     prepare_runtime
     if [ ! -d "$BARE_REPO" ]; then
+        refuse_while_interactive_pending
         create_bare_repo "bare repo for post-process"
+        mirror_submodules
     else
         swarm_engagement_join "$STATE_FILE" || exit 1
     fi
