@@ -241,7 +241,7 @@ assert_eq "preview line exists" \
     "$([ -n "$preview_line" ] && echo true || echo false)"
 assert_eq "preview pipe ends with || true" \
     "true" \
-    "$(printf '%s' "$preview_line" | grep -qE '\|\|[[:space:]]*true[[:space:]]*$' \
+    "$(grep -qE '\|\|[[:space:]]*true[[:space:]]*$' <<< "$preview_line" \
         && echo true || echo false)"
 
 # ============================================================
@@ -289,13 +289,13 @@ fi
 
 assert_eq "harvest.sh --dry exits 0 on oversized log" "0" "$rc"
 assert_eq "shows 100 new commits header" "true" \
-    "$(printf '%s\n' "$output" | grep -q '^100 new commits on agent-work:' \
+    "$(grep -q '^100 new commits on agent-work:' <<< "$output" \
         && echo true || echo false)"
 assert_eq "shows overflow tail" "true" \
-    "$(printf '%s\n' "$output" | grep -qE '\.\.\. and 80 more' \
+    "$(grep -qE '\.\.\. and 80 more' <<< "$output" \
         && echo true || echo false)"
 assert_eq "shows dry-run notice" "true" \
-    "$(printf '%s\n' "$output" | grep -q 'dry run' \
+    "$(grep -q 'dry run' <<< "$output" \
         && echo true || echo false)"
 
 # ============================================================
@@ -336,8 +336,7 @@ else
 fi
 assert_eq "interactive dry-run exits 0" "0" "$int_rc"
 assert_eq "interactive branch header shown" "true" \
-    "$(printf '%s\n' "$int_output" \
-        | grep -q "^1 new commits on ${INTERACTIVE_BRANCH}:" \
+    "$(grep -q "^1 new commits on ${INTERACTIVE_BRANCH}:" <<< "$int_output" \
         && echo true || echo false)"
 
 if int_merge_output=$(bash "$HARVEST_SH" 2>&1); then
@@ -347,8 +346,8 @@ else
 fi
 assert_eq "interactive merge exits 0" "0" "$int_merge_rc"
 assert_eq "interactive merge names branch" "true" \
-    "$(printf '%s\n' "$int_merge_output" \
-        | grep -q -- "--- Merging ${INTERACTIVE_BRANCH} ---" \
+    "$(grep -q -- "--- Merging ${INTERACTIVE_BRANCH} ---" \
+        <<< "$int_merge_output" \
         && echo true || echo false)"
 assert_eq "interactive file merged" "true" \
     "$([ -f human.txt ] && echo true || echo false)"
@@ -403,8 +402,7 @@ _dirty_out=$(PATH="$_fake_bin:$PATH" TMPDIR="$_shared_tmp" \
 _cp_entry=$(head -1 "$_cp_log" 2>/dev/null || true)
 _cp_dest="${_cp_entry%%|*}"
 assert_eq "dirty interactive container is reported" "true" \
-    "$(printf '%s\n' "$_dirty_out" \
-        | grep -q 'has uncommitted interactive work' \
+    "$(grep -q 'has uncommitted interactive work' <<< "$_dirty_out" \
         && echo true || echo false)"
 assert_eq "copy lands in an owner-only directory" "drwx------" \
     "${_cp_entry##*|}"
@@ -518,12 +516,10 @@ HEAD_AFTER=$(git rev-parse HEAD)
 assert_eq "guard exits non-zero on divergent bare" "true" \
     "$([ "$guard_rc" -ne 0 ] && echo true || echo false)"
 assert_eq "guard prints the diagnostic line" "true" \
-    "$(printf '%s\n' "$guard_output" \
-        | grep -q 'does not descend from HEAD' \
+    "$(grep -q 'does not descend from HEAD' <<< "$guard_output" \
         && echo true || echo false)"
 assert_eq "guard names short HEAD in diagnostic" "true" \
-    "$(printf '%s\n' "$guard_output" \
-        | grep -qE "HEAD:[[:space:]]+${HEAD_BEFORE:0:7}" \
+    "$(grep -qE "HEAD:[[:space:]]+${HEAD_BEFORE:0:7}" <<< "$guard_output" \
         && echo true || echo false)"
 guard_hint=$(printf '%s\n' "$guard_output" | grep '^  docker run ' || true)
 guard_hint="${guard_hint#  docker run }"
@@ -555,8 +551,7 @@ set -e
 
 assert_eq "fast-forward harvest still exits 0" "0" "$ff_rc"
 assert_eq "fast-forward shows new commit header" "true" \
-    "$(printf '%s\n' "$ff_output" \
-        | grep -q '^1 new commits on agent-work:' \
+    "$(grep -q '^1 new commits on agent-work:' <<< "$ff_output" \
         && echo true || echo false)"
 
 # ============================================================
@@ -632,8 +627,7 @@ legacy_rc=0
 legacy_output=$(bash "$HARVEST_SH" --dry 2>&1) || legacy_rc=$?
 assert_eq "legacy state stops harvest" "1" "$legacy_rc"
 assert_eq "legacy message names the old path" "true" \
-    "$(printf '%s\n' "$legacy_output" \
-        | grep -qF "git fetch ${LEGACY_BARE}" \
+    "$(grep -qF "git fetch ${LEGACY_BARE}" <<< "$legacy_output" \
         && echo true || echo false)"
 assert_eq "legacy state is left in place" "true" \
     "$([ -d "$LEGACY_BARE" ] && echo true || echo false)"
@@ -652,7 +646,7 @@ open_rc=0
 open_output=$(bash "$HARVEST_SH" --dry 2>&1) || open_rc=$?
 assert_eq "group/world readable runtime stops harvest" "1" "$open_rc"
 assert_eq "message names the mode fix" "true" \
-    "$(printf '%s\n' "$open_output" | grep -qF 'chmod 700' \
+    "$(grep -qF 'chmod 700' <<< "$open_output" \
         && echo true || echo false)"
 chmod 700 "$SWARM_RUNTIME_DIR"
 
@@ -669,7 +663,7 @@ owner_rc=0
 owner_output=$(bash "$HARVEST_SH" --dry 2>&1) || owner_rc=$?
 assert_eq "another checkout's runtime stops harvest" "1" "$owner_rc"
 assert_eq "message names SWARM_PROJECT" "true" \
-    "$(printf '%s\n' "$owner_output" | grep -q SWARM_PROJECT \
+    "$(grep -q SWARM_PROJECT <<< "$owner_output" \
         && echo true || echo false)"
 rm -f "$SWARM_RUNTIME_DIR/state.json"
 
@@ -692,8 +686,7 @@ for _tool in harvest.sh progress.sh; do
         || nojq_rc=$?
     assert_eq "${_tool} without jq fails" "1" "$nojq_rc"
     assert_eq "${_tool} names jq as missing" "true" \
-        "$(printf '%s\n' "$nojq_out" \
-            | grep -q 'Missing required tools: jq' \
+        "$(grep -q 'Missing required tools: jq' <<< "$nojq_out" \
             && echo true || echo false)"
 done
 
@@ -716,7 +709,7 @@ for _fake_owner in /elsewhere/proj ""; do
         "1" "$ctr_rc"
     assert_eq "message names the container (${_fake_owner:-nobody})" \
         "true" \
-        "$(printf '%s\n' "$ctr_out" | grep -qF "$_ctr_name" \
+        "$(grep -qF "$_ctr_name" <<< "$ctr_out" \
             && echo true || echo false)"
 done
 
@@ -754,10 +747,10 @@ progress_rc=0
 progress_out=$(bash "$REPO_ROOT/progress.sh" 2>&1) || progress_rc=$?
 assert_eq "progress runs with the daemon down" "0" "$progress_rc"
 assert_eq "progress shows the history" "true" \
-    "$(printf '%s\n' "$progress_out" | grep -qF '=== Recent commits ===' \
+    "$(grep -qF '=== Recent commits ===' <<< "$progress_out" \
         && echo true || echo false)"
 assert_eq "progress reports Docker as unavailable" "true" \
-    "$(printf '%s\n' "$progress_out" | grep -qF '(docker not available)' \
+    "$(grep -qF '(docker not available)' <<< "$progress_out" \
         && echo true || echo false)"
 
 # ============================================================
