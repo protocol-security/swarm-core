@@ -237,6 +237,11 @@ session-end push pipeline only runs at the bottom of each
 loop iteration and never gets to run on a mid-session
 SIGTERM.
 
+Commits that no push shipped, because the push and the park both
+failed or the container restarted first, are not reset away: at the
+top of the next iteration the harness pushes them, and when that
+fails it exits and leaves them on the workspace branch.
+
 For larger swarms where 45+ agents race the same push lock,
 raise the grace:
 

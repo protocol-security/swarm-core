@@ -460,13 +460,14 @@ assert_eq "every fatal exit 1 is preceded by _session_end_push" \
     "yes" "$PREORDER_OK"
 
 # Call-site accounting:
-#   1 definition + 1 inline (happy path) + 3 fatal-exit blocks
-#   + 1 emergency-shutdown trap == 6 occurrences total.
+#   1 definition + 1 loop top (commits left from an earlier session)
+#   + 1 inline (happy path) + 3 fatal-exit blocks
+#   + 1 emergency-shutdown trap == 7 occurrences total.
 # Pinning the total is a tripwire against an accidental extra
 # reference; each individual site is also asserted above and
 # (for the trap) in §7 below.
-assert_eq "_session_end_push referenced exactly 6 times" \
-    "6" \
+assert_eq "_session_end_push referenced exactly 7 times" \
+    "7" \
     "$(grep -cE '_session_end_push' "$HARNESS_FILE")"
 
 # ============================================================
@@ -526,6 +527,242 @@ assert_contains "_on_signal exits with TERM code 143" \
     'exit_code=143' "$ON_SIGNAL_BODY"
 assert_contains "_on_signal exits with INT code 130" \
     'exit_code=130' "$ON_SIGNAL_BODY"
+
+# ============================================================
+echo ""
+echo "=== 8. Loop top keeps commits that are on no origin ref ==="
+
+# Run the real loop top (fetch, unshipped check, reset) against a
+# real origin, with _session_end_push stubbed: "fail" ships nothing,
+# "park" pushes HEAD to agent-parked/ as the real park path does.
+awk '/^_unshipped_commit\(\) \{/,/^\}$/' "$HARNESS_FILE" \
+    > "$TMPDIR/loop_top.sh"
+awk '
+    /^while true; do$/                          { print "loop_top() {"; p = 1; next }
+    p                                           { print }
+    p && /^    git reset --hard origin\/agent-work/ { print "}"; exit }
+' "$HARNESS_FILE" >> "$TMPDIR/loop_top.sh"
+
+_lt_git() {
+    git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"
+}
+# Prepare origin and a clone at origin/agent-work; print the clone.
+_lt_setup() {
+    local d="$TMPDIR/lt-$1"
+    git init -q --bare "$d/origin.git"
+    git init -q "$d/seed"
+    _lt_git -C "$d/seed" commit -q --allow-empty -m base
+    git -C "$d/seed" push -q "$d/origin.git" HEAD:refs/heads/agent-work
+    git clone -q -b agent-work "$d/origin.git" "$d/ws" 2>/dev/null
+    : > "$d/pushes"
+    echo "$d/ws"
+}
+# Run loop_top in WS with push mode MODE; print "rc pushes".
+_lt_run() {
+    local ws="$1" mode="$2"
+    (
+        cd "$ws" || exit 99
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$TMPDIR/loop_top.sh"
+        # Stubs for the harness helpers the loop top calls.
+        # shellcheck disable=SC2329
+        hlog() { :; }
+        # shellcheck disable=SC2329
+        hlog_err() { :; }
+        # shellcheck disable=SC2329
+        hlog_pipe() { cat >/dev/null; }
+        # shellcheck disable=SC2329
+        _session_end_push() {
+            echo push >> "$ws/../pushes"
+            [ "$mode" = park ] || return 1
+            git push -q origin HEAD:refs/heads/agent-parked/1-x
+        }
+        loop_top
+    ) >/dev/null 2>&1
+    echo "$? $(wc -l < "$ws/../pushes" | tr -d ' ')"
+}
+
+# Nothing local: no push, reset to origin.
+_lt_ws=$(_lt_setup clean)
+assert_eq "clean workspace: loop goes on without a push" "0 0" \
+    "$(_lt_run "$_lt_ws" fail)"
+
+# A local commit and a push that fails: stop, keep the commit on HEAD.
+_lt_ws=$(_lt_setup stuck)
+_lt_git -C "$_lt_ws" commit -q --allow-empty -m local
+_lt_tip=$(git -C "$_lt_ws" rev-parse HEAD)
+assert_eq "unshipped commit and failed push: exit 1 after one push" \
+    "1 1" "$(_lt_run "$_lt_ws" fail)"
+assert_eq "the commit stays on HEAD, no reset" "$_lt_tip" \
+    "$(git -C "$_lt_ws" rev-parse HEAD)"
+
+# A local commit that the push parks: go on and reset to agent-work.
+_lt_ws=$(_lt_setup parked)
+_lt_git -C "$_lt_ws" commit -q --allow-empty -m local
+_lt_tip=$(git -C "$_lt_ws" rev-parse HEAD)
+assert_eq "unshipped commit parked by the push: loop goes on" "0 1" \
+    "$(_lt_run "$_lt_ws" park)"
+assert_eq "after parking, HEAD is reset to origin/agent-work" \
+    "$(git -C "$_lt_ws" rev-parse origin/agent-work)" \
+    "$(git -C "$_lt_ws" rev-parse HEAD)"
+assert_eq "the parked branch on origin holds the commit" "$_lt_tip" \
+    "$(git -C "$_lt_ws/../origin.git" rev-parse refs/heads/agent-parked/1-x)"
+
+# A commit already on origin's swarm/* counts as shipped.
+_lt_ws=$(_lt_setup swarm)
+_lt_git -C "$_lt_ws" commit -q --allow-empty -m local
+git -C "$_lt_ws" push -q origin HEAD:refs/heads/swarm/a/interactive-b
+assert_eq "commit on origin swarm/*: no push" "0 0" \
+    "$(_lt_run "$_lt_ws" fail)"
+
+# A commit only on another origin branch is not one of the refs the
+# preservation checks read, so it still counts as unshipped.
+_lt_ws=$(_lt_setup other)
+_lt_git -C "$_lt_ws" commit -q --allow-empty -m local
+git -C "$_lt_ws" push -q origin HEAD:refs/heads/agent-workx
+assert_eq "commit only on another origin branch: unshipped" "1 1" \
+    "$(_lt_run "$_lt_ws" fail)"
+
+# A deleted origin branch no longer protects the commit (fetch --prune).
+_lt_ws=$(_lt_setup pruned)
+_lt_git -C "$_lt_ws" commit -q --allow-empty -m local
+git -C "$_lt_ws" push -q origin HEAD:refs/heads/agent-parked/old
+git -C "$_lt_ws" fetch -q origin
+git -C "$_lt_ws/../origin.git" update-ref -d refs/heads/agent-parked/old
+assert_eq "commit on a deleted origin branch: unshipped" "1 1" \
+    "$(_lt_run "$_lt_ws" fail)"
+
+# Without origin/agent-work the check cannot decide: fail closed.
+_lt_ws=$(_lt_setup noaw)
+git -C "$_lt_ws/../origin.git" branch -q keep agent-work
+git -C "$_lt_ws/../origin.git" symbolic-ref HEAD refs/heads/keep
+git -C "$_lt_ws/../origin.git" update-ref -d refs/heads/agent-work
+assert_eq "no origin/agent-work: treated as unshipped" "1 1" \
+    "$(_lt_run "$_lt_ws" fail)"
+
+# A scratch transplant pushes copies of the local commits.  The branch
+# then moves to what was pushed, but only when nothing is lost.  Run
+# the real functions with the rebase path failing, so the scratch
+# worktree fallback runs.  STUB adds one more failing git command.
+for _tp_fn in _scratch_worktree_push _transplant_settled _session_end_push
+do
+    awk -v fn="$_tp_fn" '$0 ~ "^" fn "\\(\\) \\{" { p = 1 }
+        p { print }
+        p && /^\}$/ { exit }' "$HARNESS_FILE"
+done > "$TMPDIR/transplant.sh"
+_tp_run() {
+    local ws="$1" stub="$2"
+    (
+        cd "$ws" || exit 99
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$TMPDIR/transplant.sh"
+        # The scratch path names its worktree after the agent.
+        # shellcheck disable=SC2034
+        AGENT_ID=1
+        # Stubs for the harness helpers and the retry backoff.
+        # shellcheck disable=SC2329
+        hlog() { :; }
+        # shellcheck disable=SC2329
+        hlog_err() { :; }
+        # shellcheck disable=SC2329
+        hlog_pipe() { cat >/dev/null; }
+        # shellcheck disable=SC2329
+        sleep() { :; }
+        # shellcheck disable=SC2329
+        git() {
+            case " $* " in
+                *" pull "*) return 1 ;;
+                *" $stub "*) return 1 ;;
+            esac
+            command git -c user.name=t -c user.email=t@t \
+                -c commit.gpgsign=false "$@"
+        }
+        _session_end_push
+    ) >/dev/null 2>&1
+}
+# Prepare a workspace with one local commit that changes a file, while
+# origin moved on, so the transplanted copy is a different commit.
+_tp_setup() {
+    local ws seed
+    ws=$(_lt_setup "tp-$1")
+    seed="$ws/../seed"
+    echo change > "$ws/a.txt"
+    git -C "$ws" add a.txt
+    _lt_git -C "$ws" commit -q -m local
+    echo other > "$seed/b.txt"
+    git -C "$seed" add b.txt
+    _lt_git -C "$seed" commit -q -m other
+    git -C "$seed" push -q "$ws/../origin.git" HEAD:refs/heads/agent-work
+    echo "$ws"
+}
+
+# The check reads `git cherry` output: any "+" line, wherever it is,
+# means a commit has no copy on origin.  A long output must not hide it.
+_ts_check() {
+    (
+        set -euo pipefail
+        # shellcheck source=/dev/null
+        source "$TMPDIR/transplant.sh"
+        # shellcheck disable=SC2329
+        git() {
+            case "$1" in
+                status) return 0 ;;
+                cherry) printf '%s' "$_ts_out"; return "$_ts_rc" ;;
+            esac
+        }
+        _transplant_settled
+    ) && echo settled || echo kept
+}
+_ts_rc=0
+_ts_out="- aaa"$'\n'"- bbb"
+assert_eq "every commit has a copy: settled" "settled" "$(_ts_check)"
+_ts_out="+ aaa"$'\n'"$(printf -- '- x\n%.0s' $(seq 1 10000))"
+assert_eq "first commit unmatched before a long list: kept" "kept" \
+    "$(_ts_check)"
+_ts_out="- aaa"$'\n'"+ bbb"
+assert_eq "last commit unmatched: kept" "kept" "$(_ts_check)"
+_ts_out=""
+_ts_rc=1
+assert_eq "git cherry fails: kept" "kept" "$(_ts_check)"
+
+_tp_ws=$(_tp_setup clean)
+_tp_rc=0
+_tp_run "$_tp_ws" none-such || _tp_rc=$?
+assert_eq "transplant with a clean tree succeeds" "0" "$_tp_rc"
+assert_eq "transplant with a clean tree resets to the pushed tip" \
+    "$(git -C "$_tp_ws/../origin.git" rev-parse agent-work)" \
+    "$(git -C "$_tp_ws" rev-parse HEAD)"
+assert_eq "the pushed tip carries the change" "change" \
+    "$(git -C "$_tp_ws/../origin.git" show agent-work:a.txt 2>/dev/null)"
+assert_eq "the pushed tip also keeps origin's commit" "other" \
+    "$(git -C "$_tp_ws/../origin.git" show agent-work:b.txt 2>/dev/null)"
+
+# The stash fails, so an untracked file stays in the tree: no reset.
+_tp_ws=$(_tp_setup dirty)
+_tp_tip=$(git -C "$_tp_ws" rev-parse HEAD)
+echo wip > "$_tp_ws/untracked.txt"
+_tp_run "$_tp_ws" "stash push" || true
+assert_eq "dirty tree after a failed stash: branch kept" "$_tp_tip" \
+    "$(git -C "$_tp_ws" rev-parse HEAD)"
+assert_eq "dirty tree after a failed stash: the file stays" "wip" \
+    "$(cat "$_tp_ws/untracked.txt" 2>/dev/null)"
+assert_eq "dirty tree after a failed stash: the copy is still pushed" \
+    "change" \
+    "$(git -C "$_tp_ws/../origin.git" show agent-work:a.txt 2>/dev/null)"
+
+# Listing the commits to transplant fails: report failure, keep all.
+_tp_ws=$(_tp_setup enum)
+_tp_tip=$(git -C "$_tp_ws" rev-parse HEAD)
+_tp_origin=$(git -C "$_tp_ws/../origin.git" rev-parse agent-work)
+_tp_rc=0
+_tp_run "$_tp_ws" "rev-list --reverse" || _tp_rc=$?
+assert_eq "failed commit listing: the push reports failure" "1" "$_tp_rc"
+assert_eq "failed commit listing: branch kept" "$_tp_tip" \
+    "$(git -C "$_tp_ws" rev-parse HEAD)"
+assert_eq "failed commit listing: origin unchanged" "$_tp_origin" \
+    "$(git -C "$_tp_ws/../origin.git" rev-parse agent-work)"
 
 # ============================================================
 echo ""
