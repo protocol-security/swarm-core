@@ -34,19 +34,25 @@ check_deps git jq docker bc
 source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-PROJECT="$(swarm_project_id "$(basename "$REPO_ROOT")")"
-IMAGE_NAME="${PROJECT}-agent"
+PROJECT="$(swarm_project_resolve "$REPO_ROOT")" || exit 1
+RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
+# Report only on containers of this checkout.
+swarm_runtime_verify "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
+swarm_containers_verify "$PROJECT" "$REPO_ROOT" || exit 1
 JSON_MODE=false
 
 if [ "${1:-}" = "--json" ]; then
     JSON_MODE=true
 fi
 
+COSTS_TMPDIR=$(mktemp -d)
+trap 'rm -rf "$COSTS_TMPDIR"' EXIT
+
 read_agent_stats() {
-    local name=$1 agent_id=$2
+    local name=$1 agent_id=$2 id=$3
     local stats_file="agent_logs/stats_agent_${agent_id}.tsv"
-    local tmpf="/tmp/.swarm-stats-${name}.tsv"
-    docker cp "${name}:/workspace/${stats_file}" "$tmpf" 2>/dev/null || true
+    local tmpf="${COSTS_TMPDIR}/stats-${name}.tsv"
+    docker cp "${id}:/workspace/${stats_file}" "$tmpf" 2>/dev/null || true
     if [ ! -s "$tmpf" ]; then
         rm -f "$tmpf"
         echo "0 0 0 0 0 0 0"
@@ -84,8 +90,9 @@ format_duration() {
     fi
 }
 
-containers=$(docker ps -a --filter "name=${IMAGE_NAME}-" \
-    --format '{{.Names}}' 2>/dev/null | sort -V || true)
+# "name id" lines of this checkout's containers; reads go by ID.
+containers=$(swarm_own_containers "$PROJECT" "$REPO_ROOT" 2>/dev/null \
+    | sort -V || true)
 
 if [ -z "$containers" ]; then
     echo "No swarm containers found." >&2
@@ -109,11 +116,13 @@ fi
 
 first_json=true
 
-for cname in $containers; do
+while read -r cname cid; do
+    [ -n "$cname" ] || continue
     agent_id="${cname##*-}"
-    state=$(docker inspect -f '{{.State.Status}}' "$cname" 2>/dev/null || echo "?")
+    state=$(docker inspect -f '{{.State.Status}}' "$cid" 2>/dev/null \
+        || echo "?")
     env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
-        "$cname" 2>/dev/null || true)
+        "$cid" 2>/dev/null || true)
     model=$(printf '%s' "$env_dump" | grep '^CLAUDE_MODEL=' | head -1 | cut -d= -f2- || true)
     model="${model:-unknown}"
     effort=$(printf '%s' "$env_dump" | grep '^CLAUDE_CODE_EFFORT_LEVEL=' | head -1 | cut -d= -f2- || true)
@@ -124,7 +133,7 @@ for cname in $containers; do
         short="${short} [${eff_tag}]"
     fi
 
-    stats=$(read_agent_stats "$cname" "$agent_id")
+    stats=$(read_agent_stats "$cname" "$agent_id" "$cid")
     a_cost=$(echo "$stats" | awk '{print $1}')
     a_in=$(echo "$stats" | awk '{print $2}')
     a_out=$(echo "$stats" | awk '{print $3}')
@@ -160,7 +169,7 @@ for cname in $containers; do
             "$(format_tokens "$a_in")" "$(format_tokens "$a_out")" \
             "$(format_tokens "$a_cache")" "$a_turns" "$(format_duration "$dur_s")"
     fi
-done
+done < <(printf '%s\n' "$containers")
 
 json_agents="${json_agents}]"
 

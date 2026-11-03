@@ -48,8 +48,48 @@ source "$SWARM_DIR/lib/project.sh"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT_RAW="$(basename "$REPO_ROOT")"
-PROJECT="$(swarm_project_id "$PROJECT_RAW")"
-BARE_REPO="/tmp/${PROJECT}-upstream.git"
+PROJECT="$(swarm_project_resolve "$REPO_ROOT")" || exit 1
+RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
+BARE_REPO="${RUNTIME_DIR}/upstream.git"
+
+# Read nothing from the runtime directory unless only the current user
+# can reach it: the bare repo inside is writable for every UID.
+runtime_ok() {
+    swarm_runtime_check "$RUNTIME_DIR" 2>/dev/null
+}
+
+# The runtime directory and the containers shown have to belong to this
+# checkout.  Another checkout can create them while the dashboard runs,
+# so this runs at startup, before every refresh and before an action
+# that stops containers.
+# It also refreshes OWN_CONTAINERS, the "name id" lines of this
+# checkout's containers: Docker calls below go through own_ref and use
+# the ID, since another checkout or project can hold a name.
+NL=$'\n'
+OWN_CONTAINERS=""
+identity_ok() {
+    local own
+    swarm_runtime_verify "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" \
+        && swarm_engagement_env_check \
+        && swarm_engagement_join "$RUNTIME_DIR/state.json" \
+        && swarm_containers_verify "$PROJECT" "$REPO_ROOT" \
+        && own=$(swarm_own_containers "$PROJECT" "$REPO_ROOT") \
+        && OWN_CONTAINERS="${NL}${own}${NL}"
+}
+
+# Print the ID of this checkout's container NAME, or nothing.
+own_ref() {
+    local rest
+    rest="${OWN_CONTAINERS#*"${NL}${1} "}"
+    if [ "$rest" = "$OWN_CONTAINERS" ]; then
+        return 0
+    fi
+    printf '%s' "${rest%%"$NL"*}"
+}
+
+identity_ok || exit 1
+CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")"
+
 IMAGE_NAME="${PROJECT}-agent"
 START_TIME=$(date +%s)
 
@@ -62,13 +102,53 @@ DEFAULT_TITLE="${PROJECT_RAW}"
 # Save user's explicit env var so it takes priority over state file.
 USER_TITLE="${SWARM_TITLE:-}"
 
-# Source state file written by launch.sh (fills in env vars
-# that a standalone dashboard would otherwise lack).
-STATE_FILE="/tmp/${PROJECT}-swarm.env"
-if [ -f "$STATE_FILE" ]; then
-    # shellcheck disable=SC1090
-    source "$STATE_FILE"
-fi
+# Load the state file written by launch.sh start into the variables a
+# standalone dashboard would otherwise lack.  The file is JSON read with
+# jq, never sourced, and only from a runtime directory that no other
+# user can write to.
+STATE_FILE="${RUNTIME_DIR}/state.json"
+# Print "y<value>x" when the state object has KEY (and it is not null),
+# "n" otherwise.  The "x" keeps a trailing newline of the value; with a
+# third argument, CR and LF become spaces (for values shown on screen).
+state_value() {
+    printf '%s' "$1" | jq -j --arg k "$2" --arg clean "${3:-}" '
+        if has($k) and .[$k] != null
+        then "y" + (.[$k] | tostring
+                   | if $clean == "" then . else gsub("[\r\n]"; " ") end)
+             + "x"
+        else "n" end'
+}
+
+load_state() {
+    local state title config agents summary label
+    if [ ! -f "$STATE_FILE" ] || ! runtime_ok; then
+        return 1
+    fi
+    state=$(swarm_state_read "$STATE_FILE") || return 1
+    # One jq call per field keeps each value whole, and nothing is
+    # assigned until every field has been read.  A field the state does
+    # not have (it may record only the owner, before any start) leaves
+    # its variable alone; the swarmfile path is kept exactly.
+    title=$(state_value "$state" title clean) || return 1
+    config=$(state_value "$state" config) || return 1
+    agents=$(state_value "$state" num_agents) || return 1
+    summary=$(state_value "$state" model_summary clean) || return 1
+    label=$(state_value "$state" config_label clean) || return 1
+    case "$title" in y*) title="${title#y}"; SWARM_TITLE="${title%x}" ;; esac
+    case "$config" in
+        y*) config="${config#y}"; SWARM_CONFIG="${config%x}" ;;
+    esac
+    case "$agents" in
+        y*) agents="${agents#y}"; SWARM_NUM_AGENTS="${agents%x}" ;;
+    esac
+    case "$summary" in
+        y*) summary="${summary#y}"; SWARM_MODEL_SUMMARY="${summary%x}" ;;
+    esac
+    case "$label" in
+        y*) label="${label#y}"; SWARM_CONFIG_LABEL="${label%x}" ;;
+    esac
+}
+load_state || true
 
 DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
 
@@ -100,9 +180,8 @@ if [ -n "$CONFIG_FILE" ]; then
 else
     NUM_AGENTS="${SWARM_NUM_AGENTS:-}"
     if [ -z "$NUM_AGENTS" ]; then
-        NUM_AGENTS=$(docker ps -a --filter "name=${IMAGE_NAME}-" \
-            --format '{{.Names}}' 2>/dev/null \
-            | grep -c "^${IMAGE_NAME}-[0-9]" 2>/dev/null || true)
+        NUM_AGENTS=$(swarm_project_container_names "$PROJECT" 2>/dev/null \
+            | grep -c -- '-agent-[0-9][0-9]*$' || true)
         NUM_AGENTS="${NUM_AGENTS:-0}"
         [ "$NUM_AGENTS" -eq 0 ] && NUM_AGENTS=3
     fi
@@ -160,9 +239,13 @@ handle_resize() {
 trap handle_resize SIGWINCH
 handle_resize
 
+# Private scratch directory for files copied out of containers.
+DASH_TMPDIR=$(mktemp -d)
+
 cleanup() {
     tput rmcup 2>/dev/null || true
     tput cnorm 2>/dev/null || true
+    rm -rf "$DASH_TMPDIR"
 }
 trap cleanup EXIT
 
@@ -253,8 +336,11 @@ normalize_docker_state() {
 }
 
 container_state() {
-    local name="$1" raw
-    raw=$(docker inspect -f '{{.State.Status}}' "$name" 2>/dev/null || true)
+    local id raw=""
+    id=$(own_ref "$1")
+    if [ -n "$id" ]; then
+        raw=$(docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || true)
+    fi
     normalize_docker_state "$raw"
 }
 
@@ -292,8 +378,9 @@ truncate_str() {
 read_agent_stats() {
     local name=$1 agent_id=$2
     local stats_file="agent_logs/stats_agent_${agent_id}.tsv"
-    local tmpf="/tmp/.swarm-stats-${name}.tsv"
-    docker cp "${name}:/workspace/${stats_file}" "$tmpf" 2>/dev/null || true
+    local tmpf="${DASH_TMPDIR}/stats-${name}.tsv"
+    docker cp "$(own_ref "$name"):/workspace/${stats_file}" "$tmpf" \
+        2>/dev/null || true
     if [ ! -s "$tmpf" ]; then
         rm -f "$tmpf"
         echo "0 0 0 0 0 0 0"
@@ -311,8 +398,9 @@ read_agent_stats() {
 read_idle_state() {
     local name=$1 agent_id=$2
     local idle_file="agent_logs/idle_agent_${agent_id}"
-    local tmpf="/tmp/.swarm-idle-${name}"
-    docker cp "${name}:/workspace/${idle_file}" "$tmpf" 2>/dev/null || true
+    local tmpf="${DASH_TMPDIR}/idle-${name}"
+    docker cp "$(own_ref "$name"):/workspace/${idle_file}" "$tmpf" \
+        2>/dev/null || true
     if [ -s "$tmpf" ]; then
         cat "$tmpf"
         rm -f "$tmpf"
@@ -325,8 +413,9 @@ read_idle_state() {
 read_retry_state() {
     local name=$1 agent_id=$2
     local retry_file="agent_logs/retry_agent_${agent_id}"
-    local tmpf="/tmp/.swarm-retry-${name}"
-    docker cp "${name}:/workspace/${retry_file}" "$tmpf" 2>/dev/null || true
+    local tmpf="${DASH_TMPDIR}/retry-${name}"
+    docker cp "$(own_ref "$name"):/workspace/${retry_file}" "$tmpf" \
+        2>/dev/null || true
     if [ -s "$tmpf" ]; then
         cat "$tmpf"
         rm -f "$tmpf"
@@ -357,15 +446,25 @@ post_process_container_running() {
 }
 
 interactive_container_names() {
-    docker ps -a --format '{{.Names}}' 2>/dev/null \
-        | grep -E "^${IMAGE_NAME}-interactive-" \
+    swarm_interactive_container_names "$PROJECT" 2>/dev/null \
         | sort || true
+}
+
+# Stop this checkout's container NAME by ID after checking its label
+# again; another checkout's container under that name is left alone.
+stop_own_container() {
+    local name="$1" id
+    id=$(swarm_own_container_id "$name" "$CHECKOUT_PATH" "$PROJECT") \
+        || return 0
+    if [ -n "$id" ] && docker stop "$id" >/dev/null 2>&1; then
+        echo "  stopped ${name}"
+    fi
 }
 
 read_interactive_state_value() {
     local name="$1" key="$2"
-    local tmpf="/tmp/.swarm-interactive-${name}.state"
-    docker cp "${name}:/workspace/agent_logs/interactive_state" \
+    local tmpf="${DASH_TMPDIR}/interactive-${name}.state"
+    docker cp "$(own_ref "$name"):/workspace/agent_logs/interactive_state" \
         "$tmpf" 2>/dev/null || true
     if [ ! -s "$tmpf" ]; then
         rm -f "$tmpf"
@@ -381,7 +480,7 @@ interactive_branch_status() {
     local dirty=""
 
     if [ "$state" = "running" ]; then
-        dirty=$(docker exec "$name" bash -lc \
+        dirty=$(docker exec "$(own_ref "$name")" bash -lc \
             'cd /workspace && [ -n "$(git status --porcelain=v1)" ] && echo dirty || echo clean' \
             2>/dev/null || true)
     else
@@ -390,7 +489,8 @@ interactive_branch_status() {
     fi
     [ "$dirty" = "dirty" ] && { printf 'dirty'; return; }
 
-    if [ -n "$branch" ] && git -C "$BARE_REPO" rev-parse --verify \
+    if [ -n "$branch" ] && runtime_ok \
+            && git -C "$BARE_REPO" rev-parse --verify \
             --quiet "refs/heads/${branch}" >/dev/null 2>&1; then
         local tip
         tip=$(git -C "$BARE_REPO" rev-parse "refs/heads/${branch}")
@@ -445,9 +545,7 @@ emit_header() {
 
 draw() {
     # Re-read state file so display updates on every refresh.
-    if [ -f "$STATE_FILE" ]; then
-        # shellcheck disable=SC1090
-        source "$STATE_FILE"
+    if load_state; then
         DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
         NUM_AGENTS="${SWARM_NUM_AGENTS:-$NUM_AGENTS}"
         MODEL_SUMMARY="${SWARM_MODEL_SUMMARY:-$MODEL_SUMMARY}"
@@ -526,7 +624,7 @@ draw() {
         if [ "$state" != "not found" ]; then
             local env_dump
             env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
-                "$name" 2>/dev/null || true)
+                "$(own_ref "$name")" 2>/dev/null || true)
             model=$(printf '%s' "$env_dump" | grep '^SWARM_MODEL=' | head -1 | cut -d= -f2- || true)
             model="${model:-unknown}"
             effort=$(printf '%s' "$env_dump" | grep '^SWARM_EFFORT=' | head -1 | cut -d= -f2- || true)
@@ -618,7 +716,7 @@ draw() {
         int_state=$(container_state "$int_name")
         int_env_dump=$(docker inspect -f \
             '{{range .Config.Env}}{{println .}}{{end}}' \
-            "$int_name" 2>/dev/null || true)
+            "$(own_ref "$int_name")" 2>/dev/null || true)
         int_model=$(printf '%s' "$int_env_dump" | grep '^SWARM_MODEL=' \
             | head -1 | cut -d= -f2- || true)
         int_effort=$(printf '%s' "$int_env_dump" | grep '^SWARM_EFFORT=' \
@@ -661,7 +759,7 @@ draw() {
         local pp_model pp_effort pp_auth_mode pp_tag pp_driver
         local pp_env_dump
         pp_env_dump=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
-            "$pp_name" 2>/dev/null || true)
+            "$(own_ref "$pp_name")" 2>/dev/null || true)
         pp_model=$(printf '%s' "$pp_env_dump" | grep '^SWARM_MODEL=' | head -1 | cut -d= -f2- || true)
         pp_model="${pp_model:-unknown}"
         pp_effort=$(printf '%s' "$pp_env_dump" | grep '^SWARM_EFFORT=' | head -1 | cut -d= -f2- || true)
@@ -741,7 +839,7 @@ draw() {
     echo ""
 
     # Recent commits.
-    if [ -d "$BARE_REPO" ]; then
+    if [ -d "$BARE_REPO" ] && runtime_ok; then
         local commit_count
         commit_count=$(git -C "$BARE_REPO" rev-list --count refs/heads/agent-work 2>/dev/null || echo 0)
         printf " ${BOLD}Recent commits${RESET} ${DIM}(%s total):${RESET}\n" "$commit_count"
@@ -749,6 +847,10 @@ draw() {
         while IFS= read -r line; do
             printf "   ${DIM}%s${RESET}\n" "$line"
         done
+    elif [ -d "$BARE_REPO" ]; then
+        # shellcheck disable=SC2059
+        printf " ${DIM}(runtime directory is not private: %s)${RESET}\n" \
+            "$RUNTIME_DIR"
     else
         # shellcheck disable=SC2059
         printf " ${DIM}(bare repo not found -- are agents running?)${RESET}\n"
@@ -786,6 +888,11 @@ draw() {
 enter_alt_screen
 
 while true; do
+    if ! identity_ok 2>"$DASH_TMPDIR/identity.err"; then
+        leave_alt_screen
+        cat "$DASH_TMPDIR/identity.err" >&2
+        exit 1
+    fi
     draw || true
 
     if read -rsn1 -t 3 key 2>/dev/null; then
@@ -796,8 +903,12 @@ while true; do
             [1-9])
                 leave_alt_screen
                 echo "--- Logs for ${IMAGE_NAME}-${key} (Ctrl-C to return) ---"
-                docker logs -f "${IMAGE_NAME}-${key}" 2>&1 || true
-                if ! docker inspect -f '{{.State.Running}}' "${IMAGE_NAME}-${key}" 2>/dev/null | grep -q true; then
+                _ref=$(own_ref "${IMAGE_NAME}-${key}")
+                if [ -n "$_ref" ]; then
+                    docker logs -f "$_ref" 2>&1 || true
+                fi
+                if ! docker inspect -f '{{.State.Running}}' "${_ref:-none}" \
+                        2>/dev/null | grep -q true; then
                     echo ""
                     read -rp "Press Enter to return to dashboard..." _
                 fi
@@ -812,21 +923,16 @@ while true; do
                 ;;
             s|S)
                 leave_alt_screen
+                identity_ok || exit 1
                 echo "--- Stopping all agents ---"
                 for i in $(seq 1 "$NUM_AGENTS"); do
-                    if docker stop "${IMAGE_NAME}-${i}" 2>/dev/null; then
-                        echo "  stopped ${IMAGE_NAME}-${i}"
-                    fi
+                    stop_own_container "${IMAGE_NAME}-${i}"
                 done
                 while IFS= read -r int_name; do
                     [ -n "$int_name" ] || continue
-                    if docker stop "$int_name" 2>/dev/null; then
-                        echo "  stopped ${int_name}"
-                    fi
+                    stop_own_container "$int_name"
                 done < <(interactive_container_names)
-                if docker stop "${IMAGE_NAME}-post" 2>/dev/null; then
-                    echo "  stopped ${IMAGE_NAME}-post"
-                fi
+                stop_own_container "${IMAGE_NAME}-post"
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
                 enter_alt_screen
@@ -867,9 +973,10 @@ while true; do
                         continue
                         ;;
                 esac
+                identity_ok || exit 1
                 echo "--- Stopping agents ---"
                 for i in $(seq 1 "$NUM_AGENTS"); do
-                    docker stop "${IMAGE_NAME}-${i}" 2>/dev/null || true
+                    stop_own_container "${IMAGE_NAME}-${i}" >/dev/null
                 done
                 echo "--- Starting post-processing ---"
                 SWARM_CONFIG="$CONFIG_FILE" \
@@ -886,9 +993,10 @@ while true; do
                 _pp_name="${IMAGE_NAME}-post"
                 if post_process_container_exists; then
                     echo "--- Logs for ${_pp_name} (Ctrl-C to return) ---"
-                    docker logs -f "$_pp_name" 2>&1 || true
+                    _ref=$(own_ref "$_pp_name")
+                    docker logs -f "$_ref" 2>&1 || true
                     if ! docker inspect -f '{{.State.Running}}' \
-                            "$_pp_name" 2>/dev/null | grep -q true; then
+                            "$_ref" 2>/dev/null | grep -q true; then
                         echo ""
                         read -rp "Press Enter to return to dashboard..." _
                     fi

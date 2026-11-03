@@ -12,18 +12,32 @@ FAIL=0
 TMPDIR=$(mktemp -d)
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HARVEST_SH="$REPO_ROOT/harvest.sh"
-HARVEST_BARE=""
-GUARD_BARE=""
-INTERACTIVE_BARE=""
-TAG_BARE=""
+LEGACY_BARE=""
 cleanup() {
     rm -rf "$TMPDIR"
-    [ -n "${HARVEST_BARE:-}" ] && rm -rf "$HARVEST_BARE"
-    [ -n "${GUARD_BARE:-}" ]   && rm -rf "$GUARD_BARE"
-    [ -n "${INTERACTIVE_BARE:-}" ] && rm -rf "$INTERACTIVE_BARE"
-    [ -n "${TAG_BARE:-}" ] && rm -rf "$TAG_BARE"
+    if [ -n "$LEGACY_BARE" ]; then
+        rm -rf "$LEGACY_BARE"
+    fi
 }
 trap cleanup EXIT
+
+# Keep the host's Docker out of these tests: this docker answers like a
+# client whose daemon is down and logs what it was asked.  Sections that
+# need containers put their own fake in front of it.
+_down_bin="$TMPDIR/docker-down"
+_down_log="$TMPDIR/docker-down.log"
+mkdir -p "$_down_bin"
+printf '#!/bin/bash\necho "$*" >> "%s"\nexit 1\n' "$_down_log" \
+    > "$_down_bin/docker"
+chmod +x "$_down_bin/docker"
+PATH="$_down_bin:$PATH"
+
+# Point harvest.sh at a private runtime directory below TMPDIR.
+use_runtime() {
+    SWARM_RUNTIME_DIR="$TMPDIR/runtime-$1"
+    export SWARM_RUNTIME_DIR
+    mkdir -m 700 "$SWARM_RUNTIME_DIR"
+}
 
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
@@ -236,7 +250,8 @@ echo "=== 7. Behavioural: harvest.sh --dry survives >20 commits ==="
 
 HARVEST_PROJECT="swarmtest-harvest-sigpipe-$$"
 HARVEST_WORK="$TMPDIR/$HARVEST_PROJECT"
-HARVEST_BARE="/tmp/${HARVEST_PROJECT}-upstream.git"
+use_runtime sigpipe
+HARVEST_BARE="$SWARM_RUNTIME_DIR/upstream.git"
 
 rm -rf "$HARVEST_BARE" "$HARVEST_WORK"
 mkdir -p "$HARVEST_WORK"
@@ -289,7 +304,8 @@ echo "=== 7.5 Behavioural: harvest.sh sees interactive branches ==="
 
 INTERACTIVE_PROJECT="swarmtest-harvest-interactive-$$"
 INTERACTIVE_WORK="$TMPDIR/$INTERACTIVE_PROJECT"
-INTERACTIVE_BARE="/tmp/${INTERACTIVE_PROJECT}-upstream.git"
+use_runtime interactive
+INTERACTIVE_BARE="$SWARM_RUNTIME_DIR/upstream.git"
 INTERACTIVE_AGENT="$TMPDIR/harvest-interactive-agent"
 INTERACTIVE_BRANCH="swarm/test/interactive-hunter-a1b2"
 
@@ -336,6 +352,67 @@ assert_eq "interactive merge names branch" "true" \
         && echo true || echo false)"
 assert_eq "interactive file merged" "true" \
     "$([ -f human.txt ] && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 7.6 Behavioural: interactive state copy stays private ==="
+
+# docker cp gives the copy the mode of the source file, so a 0644
+# interactive_state stays readable by other users unless the copy
+# lands in a private directory of its own.  The fake docker reports
+# one stopped interactive container and logs where the copy went.
+# TMPDIR points at a world-writable directory like /tmp; GNU mktemp
+# honours it, macOS mktemp uses the per-user temp directory instead.
+_fake_bin="$TMPDIR/fake-docker"
+_cp_log="$TMPDIR/docker-cp.log"
+_shared_tmp="$TMPDIR/shared-tmp"
+mkdir -p "$_fake_bin" "$_shared_tmp"
+chmod 1777 "$_shared_tmp"
+_ctr_name="${INTERACTIVE_PROJECT}-agent-interactive-hunter-a1b2"
+_ctr_owner=$(cd -P "$INTERACTIVE_WORK" && pwd -P)
+cat > "$_fake_bin/docker" <<EOF
+#!/bin/bash
+case "\$1" in
+    ps)
+        # Owner listing and name listing, both JSON.
+        case "\$*" in
+            *)
+                printf '{"name":"%s","project":"%s","owner":"%s"}\n' \
+                    "$_ctr_name" "\${FAKE_PROJECT-$INTERACTIVE_PROJECT}" \
+                    "\${FAKE_OWNER-$_ctr_owner}" ;;
+        esac ;;
+    container)
+        printf '{"id":"cid-1","labels":{"swarm-core.checkout":"%s",%s}}\n' \
+            "\${FAKE_OWNER-$_ctr_owner}" \
+            "\"swarm-core.project\":\"$INTERACTIVE_PROJECT\"" ;;
+    info) exit 0 ;;
+    inspect) echo "exited" ;;
+    cp)
+        printf 'dirty=true\nbranch=${INTERACTIVE_BRANCH}\n' > "\$3"
+        chmod 644 "\$3"
+        printf '%s|%s\n' "\$3" \
+            "\$(ls -ld "\$(dirname "\$3")" | cut -c1-10)" >> "$_cp_log"
+        ;;
+esac
+EOF
+chmod +x "$_fake_bin/docker"
+
+cd "$INTERACTIVE_WORK"
+_dirty_out=$(PATH="$_fake_bin:$PATH" TMPDIR="$_shared_tmp" \
+    bash "$HARVEST_SH" --dry 2>&1 || true)
+_cp_entry=$(head -1 "$_cp_log" 2>/dev/null || true)
+_cp_dest="${_cp_entry%%|*}"
+assert_eq "dirty interactive container is reported" "true" \
+    "$(printf '%s\n' "$_dirty_out" \
+        | grep -q 'has uncommitted interactive work' \
+        && echo true || echo false)"
+assert_eq "copy lands in an owner-only directory" "drwx------" \
+    "${_cp_entry##*|}"
+assert_eq "copy is removed after the check" "false" \
+    "$([ -n "$_cp_dest" ] && [ -e "$_cp_dest" ] && echo true || echo false)"
+assert_eq "copy directory is removed after the check" "false" \
+    "$([ -n "$_cp_dest" ] && [ -e "$(dirname "$_cp_dest")" ] \
+        && echo true || echo false)"
 
 # ============================================================
 echo ""
@@ -400,7 +477,9 @@ echo "=== 9. Behavioural: harvest.sh refuses divergent bare ==="
 
 GUARD_PROJECT="swarmtest-harvest-guard-$$"
 GUARD_WORK="$TMPDIR/$GUARD_PROJECT"
-GUARD_BARE="/tmp/${GUARD_PROJECT}-upstream.git"
+# Shell metacharacters in the path check the quoting of the rm hint.
+use_runtime 'guard $HOME "q"'
+GUARD_BARE="$SWARM_RUNTIME_DIR/upstream.git"
 GUARD_AGENT="$TMPDIR/harvest-guard-agent"
 
 rm -rf "$GUARD_WORK" "$GUARD_BARE" "$GUARD_AGENT"
@@ -446,10 +525,12 @@ assert_eq "guard names short HEAD in diagnostic" "true" \
     "$(printf '%s\n' "$guard_output" \
         | grep -qE "HEAD:[[:space:]]+${HEAD_BEFORE:0:7}" \
         && echo true || echo false)"
-assert_eq "guard names the bare path in remediation" "true" \
-    "$(printf '%s\n' "$guard_output" \
-        | grep -qF "rm -rf ${GUARD_BARE}" \
-        && echo true || echo false)"
+guard_hint=$(printf '%s\n' "$guard_output" | grep '^  docker run ' || true)
+guard_hint="${guard_hint#  docker run }"
+eval "set -- $guard_hint"
+assert_eq "guard names the bare path in remediation" \
+    "$(dirname "$GUARD_BARE"):/runtime /runtime/upstream.git" \
+    "${3:-} ${7:-}"
 assert_eq "no merge commit produced" "$HEAD_BEFORE" "$HEAD_AFTER"
 assert_eq "_agent-harvest remote cleaned up after failure" "" \
     "$(git remote | grep -E '^_agent-harvest$' || true)"
@@ -489,7 +570,8 @@ echo "=== 10. Restore tag created before harvest ==="
 
 TAG_PROJECT="swarmtest-harvest-tag-$$"
 TAG_WORK="$TMPDIR/$TAG_PROJECT"
-TAG_BARE="/tmp/${TAG_PROJECT}-upstream.git"
+use_runtime tag
+TAG_BARE="$SWARM_RUNTIME_DIR/upstream.git"
 TAG_AGENT="$TMPDIR/harvest-tag-agent"
 
 rm -rf "$TAG_WORK" "$TAG_BARE" "$TAG_AGENT"
@@ -530,6 +612,187 @@ assert_eq "restore tag points at pre-merge HEAD" "$TAG_HEAD_BEFORE" \
 bash "$HARVEST_SH" >/dev/null 2>&1 || true
 assert_eq "noop harvest adds no restore tag" "1" \
     "$(git tag --list 'swarm-harvest-*' | grep -c . || true)"
+
+# ============================================================
+echo ""
+echo "=== 11. Behavioural: harvest.sh refuses legacy /tmp state ==="
+
+LEGACY_PROJECT="swarmtest-harvest-legacy-$$"
+LEGACY_WORK="$TMPDIR/$LEGACY_PROJECT"
+LEGACY_BARE="/tmp/${LEGACY_PROJECT}-upstream.git"
+use_runtime legacy
+git init -q "$LEGACY_WORK"
+git -C "$LEGACY_WORK" -c user.name=test -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m "init"
+git clone -q --bare "$LEGACY_WORK" "$SWARM_RUNTIME_DIR/upstream.git"
+mkdir -p "$LEGACY_BARE"
+
+cd "$LEGACY_WORK"
+legacy_rc=0
+legacy_output=$(bash "$HARVEST_SH" --dry 2>&1) || legacy_rc=$?
+assert_eq "legacy state stops harvest" "1" "$legacy_rc"
+assert_eq "legacy message names the old path" "true" \
+    "$(printf '%s\n' "$legacy_output" \
+        | grep -qF "git fetch ${LEGACY_BARE}" \
+        && echo true || echo false)"
+assert_eq "legacy state is left in place" "true" \
+    "$([ -d "$LEGACY_BARE" ] && echo true || echo false)"
+rm -rf "$LEGACY_BARE"
+
+legacy_rc=0
+bash "$HARVEST_SH" --dry >/dev/null 2>&1 || legacy_rc=$?
+assert_eq "harvest runs once the old state is gone" "0" "$legacy_rc"
+
+# ============================================================
+echo ""
+echo "=== 12. Behavioural: harvest.sh refuses an open runtime dir ==="
+
+chmod 755 "$SWARM_RUNTIME_DIR"
+open_rc=0
+open_output=$(bash "$HARVEST_SH" --dry 2>&1) || open_rc=$?
+assert_eq "group/world readable runtime stops harvest" "1" "$open_rc"
+assert_eq "message names the mode fix" "true" \
+    "$(printf '%s\n' "$open_output" | grep -qF 'chmod 700' \
+        && echo true || echo false)"
+chmod 700 "$SWARM_RUNTIME_DIR"
+
+# ============================================================
+echo ""
+echo "=== 13. Behavioural: harvest.sh refuses another checkout's runtime ==="
+
+# The runtime directory from section 11 now names another checkout.
+jq -n --arg root "$TMPDIR/elsewhere/${LEGACY_PROJECT}" \
+    '{schema: "swarm-core.state/v1", repo_root: $root}' \
+    > "$SWARM_RUNTIME_DIR/state.json"
+cd "$LEGACY_WORK"
+owner_rc=0
+owner_output=$(bash "$HARVEST_SH" --dry 2>&1) || owner_rc=$?
+assert_eq "another checkout's runtime stops harvest" "1" "$owner_rc"
+assert_eq "message names SWARM_PROJECT" "true" \
+    "$(printf '%s\n' "$owner_output" | grep -q SWARM_PROJECT \
+        && echo true || echo false)"
+rm -f "$SWARM_RUNTIME_DIR/state.json"
+
+# ============================================================
+echo ""
+echo "=== 15. harvest.sh and progress.sh need jq ==="
+
+# They read the JSON state file.  Run them with a PATH that has git
+# and dirname but no jq.
+_nojq_bin="$TMPDIR/nojq-bin"
+mkdir -p "$_nojq_bin"
+ln -s "$(command -v git)" "$_nojq_bin/git"
+ln -s "$(command -v dirname)" "$_nojq_bin/dirname"
+ln -s "$(command -v docker 2>/dev/null || command -v true)" \
+    "$_nojq_bin/docker"
+cd "$LEGACY_WORK"
+for _tool in harvest.sh progress.sh; do
+    nojq_rc=0
+    nojq_out=$(PATH="$_nojq_bin" /bin/bash "$REPO_ROOT/$_tool" 2>&1) \
+        || nojq_rc=$?
+    assert_eq "${_tool} without jq fails" "1" "$nojq_rc"
+    assert_eq "${_tool} names jq as missing" "true" \
+        "$(printf '%s\n' "$nojq_out" \
+            | grep -q 'Missing required tools: jq' \
+            && echo true || echo false)"
+done
+
+# ============================================================
+echo ""
+echo "=== 16. Behavioural: harvest.sh refuses foreign containers ==="
+
+# harvest.sh runs docker exec and docker cp in interactive containers,
+# so a container named for this project id has to be this checkout's.
+cd "$INTERACTIVE_WORK"
+for _fake_owner in /elsewhere/proj ""; do
+    ctr_rc=0
+    _fake_project="$INTERACTIVE_PROJECT"
+    [ -n "$_fake_owner" ] || _fake_project=""
+    ctr_out=$(PATH="$_fake_bin:$PATH" FAKE_OWNER="$_fake_owner" \
+        FAKE_PROJECT="$_fake_project" \
+        SWARM_RUNTIME_DIR="$TMPDIR/runtime-interactive" \
+        bash "$HARVEST_SH" --dry 2>&1) || ctr_rc=$?
+    assert_eq "container owned by '${_fake_owner:-nobody}' stops harvest" \
+        "1" "$ctr_rc"
+    assert_eq "message names the container (${_fake_owner:-nobody})" \
+        "true" \
+        "$(printf '%s\n' "$ctr_out" | grep -qF "$_ctr_name" \
+            && echo true || echo false)"
+done
+
+# ============================================================
+echo ""
+echo "=== 17. Behavioural: harvest.sh with the Docker daemon down ==="
+
+# The merge needs only git.  With Docker installed but its daemon down,
+# harvest skips every container operation instead of failing.
+DOWN_WORK="$TMPDIR/swarmtest-harvest-down-$$"
+git init -q "$DOWN_WORK"
+git -C "$DOWN_WORK" -c user.name=test -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m "init"
+use_runtime down
+git clone -q --bare "$DOWN_WORK" "$SWARM_RUNTIME_DIR/upstream.git"
+git -C "$SWARM_RUNTIME_DIR/upstream.git" branch agent-work HEAD
+cd "$DOWN_WORK"
+: > "$_down_log"
+down_rc=0
+bash "$HARVEST_SH" --dry >/dev/null 2>&1 || down_rc=$?
+assert_eq "harvest runs with the daemon down" "0" "$down_rc"
+# check_deps asks for the version; harvest itself only asks whether the
+# daemon is up.
+assert_eq "no container operation is attempted" "" \
+    "$(grep -vE '^(--version|info)( |$)' "$_down_log" || true)"
+
+# ============================================================
+echo ""
+echo "=== 18. Behavioural: progress.sh with the Docker daemon down ==="
+
+# progress.sh shows the commit history with git alone and reports the
+# containers as unavailable.
+cd "$DOWN_WORK"
+progress_rc=0
+progress_out=$(bash "$REPO_ROOT/progress.sh" 2>&1) || progress_rc=$?
+assert_eq "progress runs with the daemon down" "0" "$progress_rc"
+assert_eq "progress shows the history" "true" \
+    "$(printf '%s\n' "$progress_out" | grep -qF '=== Recent commits ===' \
+        && echo true || echo false)"
+assert_eq "progress reports Docker as unavailable" "true" \
+    "$(printf '%s\n' "$progress_out" | grep -qF '(docker not available)' \
+        && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 19. Behavioural: harvest.sh checks the engagement ==="
+
+jq -n '{schema: "swarm-core.state/v1", engagement_id: "eng-1"}' \
+    > "$SWARM_RUNTIME_DIR/state.json"
+cd "$DOWN_WORK"
+eng_rc=0
+SWARM_ENGAGEMENT_ID=eng-2 bash "$HARVEST_SH" --dry >/dev/null 2>&1 \
+    || eng_rc=$?
+assert_eq "harvest refuses another engagement" "1" "$eng_rc"
+eng_rc=0
+SWARM_ENGAGEMENT_ID=eng-1 bash "$HARVEST_SH" --dry >/dev/null 2>&1 \
+    || eng_rc=$?
+assert_eq "harvest joins the recorded engagement" "0" "$eng_rc"
+rm -f "$SWARM_RUNTIME_DIR/state.json"
+
+# ============================================================
+echo ""
+echo "=== 20. Behavioural: harvest.sh takes the engagement lock ==="
+
+cd "$DOWN_WORK"
+exec 8>>"$SWARM_RUNTIME_DIR/engagement.lock"
+flock -n 8
+lock_rc=0
+"$BASH" "$HARVEST_SH" --dry >/dev/null 2>&1 8>&- || lock_rc=$?
+assert_eq "harvest fails while another operation holds the lock" "1" \
+    "$lock_rc"
+lock_rc=0
+SWARM_LOCK_FD=8 "$BASH" "$HARVEST_SH" --dry >/dev/null 2>&1 || lock_rc=$?
+assert_eq "harvest runs under the caller's lock (SWARM_LOCK_FD)" "0" \
+    "$lock_rc"
+exec 8>&-
 
 # ============================================================
 echo ""

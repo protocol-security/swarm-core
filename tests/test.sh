@@ -1,8 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+# _test_env.sh unsets SWARM_PROJECT for the test files.  The runs below
+# start real containers, so keep the caller's: it is how a checkout
+# runs when another one owns the project's containers.
+_caller_project="${SWARM_PROJECT:-}"
 # shellcheck source=_test_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
+if [ -n "$_caller_project" ]; then
+    export SWARM_PROJECT="$_caller_project"
+fi
 
 # Smoke test: launch agents with a counting prompt, verify results.
 # Each agent N writes test-results/agent-N.txt with N*100..N*100+99.
@@ -25,8 +32,7 @@ SWARM_DIR="$(cd "$TESTS_DIR/.." && pwd)"
 # shellcheck source=../lib/project.sh
 source "$SWARM_DIR/lib/project.sh"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-PROJECT="$(swarm_project_id "$(basename "$REPO_ROOT")")"
-BARE_REPO="/tmp/${PROJECT}-upstream.git"
+PROJECT="$(swarm_project_resolve "$REPO_ROOT")" || exit 1
 REVIEW_DIR="/tmp/${PROJECT}-test-review"
 INJECT_DIR="/tmp/${PROJECT}-test-inject"
 TIMEOUT="${TIMEOUT:-600}"
@@ -400,6 +406,9 @@ Environment:
   CLAUDE_CODE_OAUTH_TOKEN  Required for --oauth tests.
   TIMEOUT                  Seconds to wait for agents (default: 600).
   SWARM_MODEL              Override default model (default: claude-opus-4-6).
+  SWARM_PROJECT            Project id for the smoke tests when another
+                           checkout owns the default one (unit tests
+                           ignore it).
 HELP
 }
 
@@ -643,6 +652,13 @@ else
         "$CONFIG_FILE" > "$TEMP_CONFIG"
 fi
 
+# Give this run its own runtime directory, so cleanup removes only what
+# the run created and never a directory the caller pointed
+# SWARM_RUNTIME_DIR at.
+TEST_RUNTIME_DIR=$(mktemp -d)
+export SWARM_RUNTIME_DIR="$TEST_RUNTIME_DIR"
+BARE_REPO="$(swarm_runtime_dir "$PROJECT")/upstream.git"
+
 cleanup() {
     echo ""
     echo "--- Cleaning up ---"
@@ -651,7 +667,7 @@ cleanup() {
         "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
     rm -f "$TEMP_CONFIG" "$_AUTO_CONFIG"
     rm -rf "$REVIEW_DIR" "$INJECT_DIR"
-    rm_docker_dir "/tmp/${PROJECT}-upstream.git"
+    rm_docker_dir "$TEST_RUNTIME_DIR"
     rm -f "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$SETUP_FILE" \
         "$REPO_ROOT/$ALT_PROMPT_FILE"
 }
