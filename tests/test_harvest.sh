@@ -411,6 +411,139 @@ assert_eq "copy is removed after the check" "false" \
 assert_eq "copy directory is removed after the check" "false" \
     "$([ -n "$_cp_dest" ] && [ -e "$(dirname "$_cp_dest")" ] \
         && echo true || echo false)"
+# ============================================================
+echo ""
+echo "=== 7.7 Behavioural: harvest again after merging both ==="
+
+# The first harvest fast-forwards to agent-work and merges the
+# interactive branch with a merge commit, so agent-work no longer
+# descends from HEAD.  Both branches are already in HEAD, so
+# a second harvest has nothing to merge and must not trip the
+# divergence guard.
+
+AGAIN_PROJECT="swarmtest-harvest-again-$$"
+AGAIN_WORK="$TMPDIR/$AGAIN_PROJECT"
+use_runtime again
+AGAIN_BARE="$SWARM_RUNTIME_DIR/upstream.git"
+AGAIN_AGENT="$TMPDIR/harvest-again-agent"
+AGAIN_BRANCH="swarm/test/interactive-again-c3d4"
+
+rm -rf "$AGAIN_WORK" "$AGAIN_BARE" "$AGAIN_AGENT"
+mkdir -p "$AGAIN_WORK"
+git init -q "$AGAIN_WORK"
+cd "$AGAIN_WORK"
+git config user.name test
+git config user.email t@t
+git config commit.gpgsign false
+git commit -q --allow-empty -m "init"
+git clone -q --bare "$AGAIN_WORK" "$AGAIN_BARE"
+git -C "$AGAIN_BARE" branch agent-work HEAD 2>/dev/null || true
+
+git clone -q "$AGAIN_BARE" "$AGAIN_AGENT"
+cd "$AGAIN_AGENT"
+git checkout -q agent-work
+echo "agent work" > agent.txt
+git add agent.txt
+git -c user.name=agent -c user.email=a@a -c commit.gpgsign=false \
+    commit -q -m "Agent commit"
+git push -q origin agent-work
+git checkout -q -b "$AGAIN_BRANCH" HEAD~1
+echo "human work" > human.txt
+git add human.txt
+git -c user.name=operator -c user.email=o@o -c commit.gpgsign=false \
+    commit -q -m "Human guided commit"
+git push -q origin "HEAD:refs/heads/${AGAIN_BRANCH}"
+rm -rf "$AGAIN_AGENT"
+
+cd "$AGAIN_WORK"
+if again_first=$(bash "$HARVEST_SH" 2>&1); then
+    again_first_rc=0
+else
+    again_first_rc=$?
+fi
+assert_eq "first harvest exits 0" "0" "$again_first_rc"
+assert_eq "first harvest merges the interactive branch" "true" \
+    "$(grep -q -- "--- Merging ${AGAIN_BRANCH} ---" <<< "$again_first" \
+        && echo true || echo false)"
+assert_eq "first harvest merged both files" "true" \
+    "$([ -f agent.txt ] && [ -f human.txt ] && echo true || echo false)"
+assert_eq "agent-work no longer descends from HEAD" "false" \
+    "$(git merge-base --is-ancestor HEAD \
+        "$(git -C "$AGAIN_BARE" rev-parse agent-work)" \
+        && echo true || echo false)"
+
+again_head=$(git rev-parse HEAD)
+again_tags=$(git tag | wc -l | tr -d ' ')
+if again_second=$(bash "$HARVEST_SH" 2>&1); then
+    again_second_rc=0
+else
+    again_second_rc=$?
+fi
+assert_eq "second harvest exits 0" "0" "$again_second_rc"
+assert_eq "second harvest has nothing to merge" "true" \
+    "$(grep -q '^Nothing new to merge\.$' <<< "$again_second" \
+        && echo true || echo false)"
+assert_eq "second harvest shows no guard error" "false" \
+    "$(grep -q 'does not descend from HEAD' <<< "$again_second" \
+        && echo true || echo false)"
+assert_eq "second harvest leaves HEAD alone" "$again_head" \
+    "$(git rev-parse HEAD)"
+assert_eq "second harvest adds no tag" "$again_tags" \
+    "$(git tag | wc -l | tr -d ' ')"
+assert_eq "second harvest removes its remote" "" \
+    "$(git remote | grep -E '^_agent-harvest$' || true)"
+
+if again_dry=$(bash "$HARVEST_SH" --dry 2>&1); then
+    again_dry_rc=0
+else
+    again_dry_rc=$?
+fi
+assert_eq "dry run after merge exits 0" "0" "$again_dry_rc"
+assert_eq "dry run lists no new commits" "true" \
+    "$(grep -q "^0 new commits on ${AGAIN_BRANCH}:" <<< "$again_dry" \
+        && echo true || echo false)"
+
+# An interactive branch that HEAD has moved past is skipped, and
+# new agent work is still merged in the same harvest.
+OLD_WORK="$TMPDIR/swarmtest-harvest-older-$$"
+use_runtime older
+OLD_BARE="$SWARM_RUNTIME_DIR/upstream.git"
+OLD_AGENT="$TMPDIR/harvest-older-agent"
+OLD_BRANCH="swarm/test/interactive-older-e5f6"
+
+rm -rf "$OLD_WORK" "$OLD_BARE" "$OLD_AGENT"
+git init -q "$OLD_WORK"
+cd "$OLD_WORK"
+git config user.name test
+git config user.email t@t
+git config commit.gpgsign false
+git commit -q --allow-empty -m "init"
+git branch "$OLD_BRANCH"
+git commit -q --allow-empty -m "local"
+git clone -q --bare "$OLD_WORK" "$OLD_BARE"
+git -C "$OLD_BARE" branch agent-work HEAD 2>/dev/null || true
+
+git clone -q "$OLD_BARE" "$OLD_AGENT"
+cd "$OLD_AGENT"
+git checkout -q agent-work
+git -c user.name=agent -c user.email=a@a -c commit.gpgsign=false \
+    commit -q --allow-empty -m "Agent commit after local"
+git push -q origin agent-work
+rm -rf "$OLD_AGENT"
+
+cd "$OLD_WORK"
+git branch -D -q "$OLD_BRANCH"
+if older_output=$(bash "$HARVEST_SH" 2>&1); then
+    older_rc=0
+else
+    older_rc=$?
+fi
+assert_eq "older interactive branch: harvest exits 0" "0" "$older_rc"
+assert_eq "older interactive branch: 0 new commits" "true" \
+    "$(grep -q "^0 new commits on ${OLD_BRANCH}:" <<< "$older_output" \
+        && echo true || echo false)"
+assert_eq "older interactive branch: agent work merged" \
+    "Agent commit after local" "$(git log -1 --format=%s)"
 
 # ============================================================
 echo ""
