@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Fix: retry Pi OAuth validation during credential refresh.** Shared
+  Codex auth validation retries transient reads while Pi holds its lock,
+  preventing concurrent starts from rejecting a valid store.
+
 - **Feature: configurable Pi request timeout and in-session retry.**
   The `pi` driver now writes `httpIdleTimeoutMs` from
   `PI_HTTP_IDLE_TIMEOUT_MS` (default 300000, `0` disables) and enables

@@ -294,6 +294,24 @@ done
 for flag in readonly ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN PI_API_KEY; do
     assert_eq "chatgpt excludes $flag" no "$(has "$flag" "$WORK/chatgpt-flags")"
 done
+cp "$PI_AUTH_DIR/auth.json" "$WORK/auth-before.json"
+: > "$PI_AUTH_DIR/auth.json.lock"
+agent_docker_auth '' '' chatgpt '' > "$WORK/chatgpt-locked-flags"
+assert_eq "valid subscription store passes while locked" yes \
+    "$(has "type=bind,source=$codex_auth_path,target=/home/agent/.pi/agent" \
+        "$WORK/chatgpt-locked-flags")"
+printf '{' > "$PI_AUTH_DIR/auth.json"
+(
+    sleep 0.2
+    cp "$WORK/auth-before.json" "$PI_AUTH_DIR/auth.json"
+    rm "$PI_AUTH_DIR/auth.json.lock"
+) &
+refresh_pid=$!
+agent_docker_auth '' '' chatgpt '' > "$WORK/chatgpt-refresh-flags"
+wait "$refresh_pid"
+assert_eq "in-progress subscription refresh is retried" yes \
+    "$(has "type=bind,source=$codex_auth_path,target=/home/agent/.pi/agent" \
+        "$WORK/chatgpt-refresh-flags")"
 assert_eq "explicit key overrides chatgpt" \
     $'-e\nPI_API_KEY=group-key\n-e\nSWARM_AUTH_MODE=key' \
     "$(agent_docker_auth group-key '' chatgpt '')"
