@@ -33,14 +33,23 @@ JS
 
 # Keep the shared subscription store limited to Codex credentials.
 _pi_has_codex_auth() {
-    [ -f "$1" ] && jq -e '
-        keys == ["openai-codex"] and
-        (."openai-codex" |
-            .type == "oauth" and
-            (.access | type == "string" and length > 0) and
-            (.refresh | type == "string" and length > 0) and
-            (.expires | type == "number"))
-    ' "$1" >/dev/null 2>&1
+    local auth_file="$1" attempt
+    for attempt in {1..5}; do
+        if [ -f "$auth_file" ] && jq -e '
+            keys == ["openai-codex"] and
+            (."openai-codex" |
+                .type == "oauth" and
+                (.access | type == "string" and length > 0) and
+                (.refresh | type == "string" and length > 0) and
+                (.expires | type == "number"))
+        ' "$auth_file" >/dev/null 2>&1; then
+            return 0
+        fi
+        if [ "$attempt" -lt 5 ]; then
+            sleep 0.05
+        fi
+    done
+    return 1
 }
 
 _pi_validate_chatgpt() {
