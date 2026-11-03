@@ -154,28 +154,40 @@ emit_row() {
 SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=true; SHOW_DRIVER=false
 wide_line=$(emit_row "1" "claude-opus-4-6 (h)" "" "oauth" "" "running" \
     '$21.06' "6k/34k" "5.6M" "86" "15.7" "23m 27s" "explore")
-assert_eq "wide has Auth"   "true" "$(echo "$wide_line" | grep -q 'oauth' && echo true || echo false)"
-assert_eq "wide has Cache"  "true" "$(echo "$wide_line" | grep -q '5.6M' && echo true || echo false)"
-assert_eq "wide has Turns"  "true" "$(echo "$wide_line" | grep -q '86' && echo true || echo false)"
-assert_eq "wide has Tok/s"  "true" "$(echo "$wide_line" | grep -q '15.7' && echo true || echo false)"
-assert_eq "wide has Tag"    "true" "$(echo "$wide_line" | grep -q 'explore' && echo true || echo false)"
+assert_eq "wide has Auth" "true" \
+    "$(grep -q 'oauth' <<< "$wide_line" && echo true || echo false)"
+assert_eq "wide has Cache" "true" \
+    "$(grep -q '5.6M' <<< "$wide_line" && echo true || echo false)"
+assert_eq "wide has Turns" "true" \
+    "$(grep -q '86' <<< "$wide_line" && echo true || echo false)"
+assert_eq "wide has Tok/s" "true" \
+    "$(grep -q '15.7' <<< "$wide_line" && echo true || echo false)"
+assert_eq "wide has Tag" "true" \
+    "$(grep -q 'explore' <<< "$wide_line" && echo true || echo false)"
 
 # Narrow: minimal columns (no Auth, Cache, Turns, Tok/s, Tag, Driver).
 SHOW_INOUT=false; SHOW_AUTH=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false; SHOW_DRIVER=false
 narrow_line=$(emit_row "1" "claude-opus-4-6 (h)" "" "oauth" "" "running" \
     '$21.06' "6k/34k" "5.6M" "86" "15.7" "23m 27s" "explore")
-assert_eq "narrow no Auth"  "false" "$(echo "$narrow_line" | grep -q 'oauth' && echo true || echo false)"
-assert_eq "narrow no Cache" "false" "$(echo "$narrow_line" | grep -q '5.6M' && echo true || echo false)"
-assert_eq "narrow no Tag"   "false" "$(echo "$narrow_line" | grep -q 'explore' && echo true || echo false)"
-assert_eq "narrow has Cost"  "true" "$(echo "$narrow_line" | grep -q '21.06' && echo true || echo false)"
-assert_eq "narrow has Time"  "true" "$(echo "$narrow_line" | grep -q '23m' && echo true || echo false)"
+assert_eq "narrow no Auth" "false" \
+    "$(grep -q 'oauth' <<< "$narrow_line" && echo true || echo false)"
+assert_eq "narrow no Cache" "false" \
+    "$(grep -q '5.6M' <<< "$narrow_line" && echo true || echo false)"
+assert_eq "narrow no Tag" "false" \
+    "$(grep -q 'explore' <<< "$narrow_line" && echo true || echo false)"
+assert_eq "narrow has Cost" "true" \
+    "$(grep -q '21.06' <<< "$narrow_line" && echo true || echo false)"
+assert_eq "narrow has Time" "true" \
+    "$(grep -q '23m' <<< "$narrow_line" && echo true || echo false)"
 
 # Tag hidden when terminal is narrow but other optional columns shown.
 SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=false; SHOW_DRIVER=false
 mid_line=$(emit_row "1" "claude-opus-4-6 (h)" "" "oauth" "" "running" \
     '$21.06' "6k/34k" "5.6M" "86" "15.7" "23m 27s" "explore")
-assert_eq "mid has Auth"   "true"  "$(echo "$mid_line" | grep -q 'oauth' && echo true || echo false)"
-assert_eq "mid no Tag"     "false" "$(echo "$mid_line" | grep -q 'explore' && echo true || echo false)"
+assert_eq "mid has Auth" "true" \
+    "$(grep -q 'oauth' <<< "$mid_line" && echo true || echo false)"
+assert_eq "mid no Tag" "false" \
+    "$(grep -q 'explore' <<< "$mid_line" && echo true || echo false)"
 
 # Status column alignment across different model widths.
 SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=true; SHOW_DRIVER=false
@@ -205,8 +217,10 @@ assert_eq "empty tag ok" "true" "$([ -n "$empty_tag_line" ] && echo true || echo
 SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=false; SHOW_DRIVER=false
 idle_line=$(emit_row "2" "claude-opus-4-6 (h)" "" "key" "" "idle 1/3" \
     '$0.05' "1k/500" "50k" "3" "12.0" "30s" "")
-assert_eq "idle in status"  "true" "$(echo "$idle_line" | grep -q 'idle 1/3' && echo true || echo false)"
-assert_eq "idle has cost"   "true" "$(echo "$idle_line" | grep -q '0.05' && echo true || echo false)"
+assert_eq "idle in status" "true" \
+    "$(grep -q 'idle 1/3' <<< "$idle_line" && echo true || echo false)"
+assert_eq "idle has cost" "true" \
+    "$(grep -q '0.05' <<< "$idle_line" && echo true || echo false)"
 
 # Status column now 14 chars: idle states with larger counts fit.
 _s="idle 2/3";         assert_eq "idle 2/3 fits"         "true" "$([ ${#_s} -le 14 ] && echo true || echo false)"
@@ -229,25 +243,31 @@ assert_eq "idle cost aligns with running" "$cost_pos_run" "$cost_pos_idle"
 SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=true; SHOW_TPS=true; SHOW_CACHE=true; SHOW_TAG=false; SHOW_DRIVER=false
 wide_idle_line=$(emit_row "2" "claude-opus-4-6 (h)" "" "key" "" "idle 10/999" \
     '$0.05' "1k/500" "50k" "3" "12.0" "30s" "")
-assert_eq "wide idle in status" "true" "$(echo "$wide_idle_line" | grep -q 'idle 10/999' && echo true || echo false)"
-assert_eq "wide idle has cost"  "true" "$(echo "$wide_idle_line" | grep -q '0.05' && echo true || echo false)"
+assert_eq "wide idle in status" "true" \
+    "$(grep -q 'idle 10/999' <<< "$wide_idle_line" && echo true || echo false)"
+assert_eq "wide idle has cost" "true" \
+    "$(grep -q '0.05' <<< "$wide_idle_line" && echo true || echo false)"
 
 # In/Out column handles large values (13-char width).
 large_inout_line=$(emit_row "1" "claude-opus-4-6 (h)" "" "key" "" "exited" \
     '$199.28' "171.6M/952k" "72.3M" "4398" "27.6" "10h 00m" "")
-assert_eq "large inout present" "true" "$(echo "$large_inout_line" | grep -q '171.6M/952k' && echo true || echo false)"
+assert_eq "large inout present" "true" \
+    "$(grep -q '171.6M/952k' <<< "$large_inout_line" \
+        && echo true || echo false)"
 
 # Driver column visible when SHOW_DRIVER=true.
 SHOW_INOUT=true; SHOW_AUTH=true; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false; SHOW_DRIVER=true
 drv_line=$(emit_row "1" "claude-opus-4-6 (h)" "claude" "oauth" "" "running" \
     '$0' "0/0" "0" "0" "--" "0s" "")
-assert_eq "driver col visible" "true" "$(echo "$drv_line" | grep -q 'claude' && echo true || echo false)"
+assert_eq "driver col visible" "true" \
+    "$(grep -q 'claude' <<< "$drv_line" && echo true || echo false)"
 
 # Driver column hidden when SHOW_DRIVER=false.
 SHOW_DRIVER=false
 no_drv_line=$(emit_row "1" "claude-opus-4-6 (h)" "gemini" "key" "" "running" \
     '$0' "0/0" "0" "0" "--" "0s" "")
-assert_eq "driver col hidden" "false" "$(echo "$no_drv_line" | grep -q 'gemini' && echo true || echo false)"
+assert_eq "driver col hidden" "false" \
+    "$(grep -q 'gemini' <<< "$no_drv_line" && echo true || echo false)"
 
 # Driver column aligns across rows.
 SHOW_DRIVER=true; SHOW_AUTH=true; SHOW_INOUT=false; SHOW_TURNS=false; SHOW_TPS=false; SHOW_CACHE=false; SHOW_TAG=false
@@ -456,11 +476,11 @@ pending_line=$(emit_row "P" "$(format_model "$pp_model" "$pp_effort")" \
     "$(short_driver "$pp_driver")" "$pp_auth" "" "configured" \
     "" "" "" "" "" "" "$pp_tag")
 assert_eq "pending row has P id" "true" \
-    "$(echo "$pending_line" | grep -q '^  P' && echo true || echo false)"
+    "$(grep -q '^  P' <<< "$pending_line" && echo true || echo false)"
 assert_eq "pending row says configured" "true" \
-    "$(echo "$pending_line" | grep -q 'configured' && echo true || echo false)"
+    "$(grep -q 'configured' <<< "$pending_line" && echo true || echo false)"
 assert_eq "pending row uses inherited tag" "true" \
-    "$(echo "$pending_line" | grep -q 'scan' && echo true || echo false)"
+    "$(grep -q 'scan' <<< "$pending_line" && echo true || echo false)"
 
 cat > "$TMPDIR/configured_agents.json" <<'EOF'
 {

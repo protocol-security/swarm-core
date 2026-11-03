@@ -33,7 +33,7 @@ assert_eq() {
 
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grep -qF -- "$needle" <<< "$haystack"; then
         echo "  PASS: ${label}"
         PASS=$((PASS + 1))
     else
@@ -58,7 +58,7 @@ echo "=== 1. Structural: LC_NUMERIC=C pinned near script top ==="
 for f in dashboard.sh costs.sh lib/harness.sh; do
     path="$REPO_ROOT/$f"
     head_lines=$(head -20 "$path")
-    if printf '%s\n' "$head_lines" | grep -qE '^export LC_NUMERIC=C$'; then
+    if grep -qE '^export LC_NUMERIC=C$' <<< "$head_lines"; then
         echo "  PASS: $f exports LC_NUMERIC=C in first 20 lines"
         PASS=$((PASS + 1))
     else
@@ -90,7 +90,7 @@ COMMA_LOCALE=""
 for candidate in de_DE.UTF-8 de_DE.utf8 fr_FR.UTF-8 fr_FR.utf8 \
         sv_SE.UTF-8 nl_NL.UTF-8 it_IT.UTF-8; do
     out=$(probe_locale "$candidate" 2>&1) || true
-    if printf '%s' "$out" | grep -qF 'invalid number'; then
+    if grep -qF 'invalid number' <<< "$out"; then
         COMMA_LOCALE=$candidate
         break
     fi
@@ -102,7 +102,7 @@ if [ -z "$COMMA_LOCALE" ] && command -v localedef >/dev/null; then
             >/dev/null 2>&1; then
         export LOCPATH="$TMPDIR/locale"
         out=$(probe_locale de_DE.UTF-8 2>&1) || true
-        if printf '%s' "$out" | grep -qF 'invalid number'; then
+        if grep -qF 'invalid number' <<< "$out"; then
             COMMA_LOCALE="de_DE.UTF-8"
         fi
     fi
@@ -201,7 +201,7 @@ else
     # banker's rounding or round-half-up -- accept either).
     assert_eq "format_tokens k-branch is integer + 'k'" \
         "true" \
-        "$(printf '%s' "$out" | grep -qE '^(1|2)k$' \
+        "$(grep -qE '^(1|2)k$' <<< "$out" \
             && echo true || echo false)"
     # format_cost 12.3456 -> $12.35 (literal dollar sign).
     # shellcheck disable=SC2016
