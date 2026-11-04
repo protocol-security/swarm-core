@@ -31,6 +31,10 @@ Commands:
   retire [--post-process]
                        Remove stopped containers whose files all live
                        in their workspace volumes.
+  cleanup [--discard-uncommitted]
+                       Delete the engagement (containers, workspace
+                       volumes, bare repo, mirrors) after copying what
+                       Git keeps there into the checkout.
 
 Start options:
   --dashboard          Open the TUI dashboard after launch.
@@ -63,6 +67,20 @@ source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq docker
 # shellcheck source=lib/project.sh
 source "$SWARM_DIR/lib/project.sh"
+
+# retire and cleanup read and write Git data: none of the caller's GIT_*
+# variables may point them at another repository or inject settings
+# (only the choice of config files stays).  Before the repository is
+# looked up below.
+case "${1:-}" in
+    retire|cleanup)
+        for _v in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do
+            case "$_v" in
+                GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM) ;;
+                *) unset "$_v" ;;
+            esac
+        done ;;
+esac
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT_RAW="$(basename "$REPO_ROOT")"
@@ -240,6 +258,7 @@ prepare_runtime() {
         || exit 1
     swarm_runtime_init "$RUNTIME_DIR" || exit 1
     swarm_lock "$RUNTIME_DIR" || exit 1
+    swarm_cleanup_pending_check "$STATE_FILE" || exit 1
     swarm_runtime_claim "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
 }
 
@@ -436,12 +455,24 @@ case "${1:-}" in
         cmd_retire "$@" || rc=$?
         exit "$rc"
         ;;
+    cleanup)
+        shift
+        # shellcheck source=lib/preserve.sh
+        source "$SWARM_DIR/lib/preserve.sh"
+        # shellcheck source=lib/retire.sh
+        source "$SWARM_DIR/lib/retire.sh"
+        # shellcheck source=lib/cleanup.sh
+        source "$SWARM_DIR/lib/cleanup.sh"
+        rc=0
+        cmd_cleanup "$@" || rc=$?
+        exit "$rc"
+        ;;
 esac
 
 # Temporary files this run makes, removed when it exits, however it
 # does: Bash runs the EXIT trap on exit, under set -e, and when HUP,
-# INT or TERM end the script (retire, above, makes none and sets its
-# own traps).
+# INT or TERM end the script (retire and cleanup, above, make none and
+# set their own traps).
 SWARM_TMP_FILES=()
 swarm_tmp_cleanup() {
     if [ "${#SWARM_TMP_FILES[@]}" -gt 0 ]; then
@@ -1015,6 +1046,7 @@ cmd_stop() {
     # mid-rebase on a busy bare repo.  Override via env:
     #   SWARM_STOP_TIMEOUT=120 ./launch.sh stop
     local stop_timeout="${SWARM_STOP_TIMEOUT:-60}"
+    swarm_cleanup_pending_check "$STATE_FILE" || exit 1
     swarm_engagement_join "$STATE_FILE" || exit 1
     echo "--- Stopping agents (grace ${stop_timeout}s) ---"
     for i in $(seq 1 "$NUM_AGENTS"); do

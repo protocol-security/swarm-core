@@ -1017,6 +1017,167 @@ rm -rf "$RT/upstream.git"
 mkdir -p "$RT/upstream.git"
 assert_eq "an unrelated deletion target is fine" "0" \
     "$(storage "$RT/upstream.git")"
+# Targets are compared with the git dir as well as its object store,
+# whether or not this host has them (a volume's Mountpoint may be a path
+# in Docker's own machine); a link on the way is followed.
+assert_eq "a target inside the git dir, outside objects/, is refused" "1" \
+    "$(storage "$ST/.git/hooks")"
+assert_eq "a target that does not exist, inside the git dir, is refused" \
+    "1" "$(storage "$ST/.git/volumes/x/_data")"
+assert_eq "a target around the git dir is refused" "1" "$(storage "$ST")"
+assert_eq "a target elsewhere that this host lacks is fine" "0" \
+    "$(storage "/nonexistent-$$/var/lib/docker/volumes/x/_data")"
+ln -s "$ST/.git" "$TMPDIR/gitalias"
+assert_eq "a missing target behind a link into the git dir is refused" "1" \
+    "$(storage "$TMPDIR/gitalias/volumes/x/_data")"
+rm "$TMPDIR/gitalias"
+# A linked worktree's own git dir, moved away from the common one: the
+# targets are compared with it too.
+WTP="$TMPDIR/wt-admin"
+mkdir -p "$WTP"
+git -C "$ST" worktree add -q "$TMPDIR/storage-wt" -b storage-wt
+_wtgd=$(git -C "$TMPDIR/storage-wt" rev-parse --absolute-git-dir)
+mv "$_wtgd" "$WTP/gd"
+printf 'gitdir: %s\n' "$WTP/gd" > "$TMPDIR/storage-wt/.git"
+(cd -P "$ST/.git" && pwd -P) > "$WTP/gd/commondir"
+printf '%s\n' "$TMPDIR/storage-wt/.git" > "$WTP/gd/gitdir"
+storage_wt() {
+    local rc=0
+    swarm_checkout_storage_ok "$TMPDIR/storage-wt" "$RT" "$@" \
+        2>/dev/null || rc=$?
+    printf '%s' "$rc"
+}
+assert_eq "a linked worktree is fine" "0" "$(storage_wt)"
+assert_eq "its own git dir as a target is refused" "1" \
+    "$(storage_wt "$WTP/gd")"
+assert_eq "a target inside that git dir is refused" "1" \
+    "$(storage_wt "$WTP/gd/logs")"
+assert_eq "a target around that git dir is refused" "1" \
+    "$(storage_wt "$WTP")"
+assert_eq "a target that does not exist, inside that git dir, is refused" \
+    "1" "$(storage_wt "$WTP/gd/volumes/x/_data")"
+assert_eq "and the worktree still works" "storage-wt" \
+    "$(git -C "$TMPDIR/storage-wt" symbolic-ref --short HEAD)"
+# The same git dir bind-mounted at a target (in a user and mount
+# namespace of its own) has another path but the same inodes.
+if [ -r /proc/self/mountinfo ] && unshare -rm true 2>/dev/null; then
+    mkdir "$RT/target-wt"
+    rc=0
+    unshare -rm "$BASH" -c '
+        mount --bind "$1" "$2" || exit 9
+        # shellcheck source=../lib/preserve.sh
+        source "$3/lib/preserve.sh"
+        swarm_checkout_storage_ok "$4" "$5" "$2"' sh \
+        "$WTP/gd" "$RT/target-wt" "$REPO_ROOT" "$TMPDIR/storage-wt" "$RT" \
+        > "$TMPDIR/bind.out" 2>&1 || rc=$?
+    assert_eq "that git dir bind-mounted at a target is refused" "1" "$rc"
+    assert_eq "as sharing files with it" "1" \
+        "$(grep -c 'shares files with what cleanup deletes' \
+            "$TMPDIR/bind.out" || true)"
+    rmdir "$RT/target-wt"
+else
+    echo "  SKIP: no bind mount here (unshare -rm)"
+fi
+
+echo ""
+echo "=== 13. Files mode keeps what is left of a repository ==="
+
+# What a deletion left of a repository: no history to walk, so every
+# file is kept as a blob; files under objects/ whatever their size.
+FM="$TMPDIR/remnant"
+mkdir -p "$FM/objects/pack" "$FM/objects/ab"
+head -c 5000 /dev/urandom > "$FM/objects/pack/pack-1.pack"
+head -c 3000 /dev/urandom > "$FM/objects/ab/cdef"
+head -c 4000 /dev/urandom > "$FM/rescue.patch"
+echo small > "$FM/config"
+ln -s ../config "$FM/link"
+out=$(scan files "$FM" sha1 SWARM_SCAN_FILE_LIMIT=1000)
+assert_eq "files mode succeeds" "no" \
+    "$([ -e "$out/.rc" ] && echo yes || echo no)"
+assert_eq "a large file outside objects/ is uncommitted" "1" \
+    "$(has_line "$out" 'uncommitted large-file rescue.patch 4000')"
+assert_eq "nothing else is reported" "1" "$(grep -c . "$out/report" || true)"
+dst=$(imported "$out")
+fl="$TMPDIR/fm.files"
+git -C "$dst" cat-file blob refs/r/0/files | tr '\0' '\n' > "$fl"
+for f in config link objects/ab/cdef objects/pack/pack-1.pack; do
+    assert_eq "files mode keeps ${f}" "1" \
+        "$(awk -v f="$f" '$4 == f' "$fl" | grep -c . || true)"
+done
+k=$(awk '$4 == "objects/pack/pack-1.pack" { print $1 }' "$fl")
+assert_eq "a pack over the limit is kept byte for byte" \
+    "$(git hash-object --no-filters "$FM/objects/pack/pack-1.pack")" \
+    "$(git -C "$dst" rev-parse "refs/r/0/f/$k")"
+k=$(awk '$4 == "link" { print $1 }' "$fl")
+assert_eq "a link is kept as its target" "../config" \
+    "$(git -C "$dst" cat-file blob "refs/r/0/f/$k")"
+assert_eq "the inventory of objects is empty" "0" \
+    "$(grep -c . "$out/objects" || true)"
+out=$(scan files "$FM" sha256)
+dst=$(mktemp -d "$TMPDIR/dst.XXXXXX")
+git init -q --object-format=sha256 "$dst"
+git -C "$dst" fetch -q --no-tags "$out/bundle" 'refs/v/*:refs/r/*'
+assert_eq "a sha256 bundle goes into a sha256 repository" "1" \
+    "$(git -C "$dst" for-each-ref refs/r/0/files | grep -c . || true)"
+out=$(scan files "$FM" "")
+assert_eq "files mode needs the object format" "rc=3" "$(cat "$out/.rc")"
+mkfifo "$FM/fifo"
+out=$(scan files "$FM" sha1)
+assert_eq "a special file fails the scan" "rc=3" "$(cat "$out/.rc")"
+# A read of one of the scan's own lists that fails stops the scan
+# (status 3) instead of ending the loop as the end of the list would: a
+# find or a cat first on PATH leaves a directory where the file list,
+# or the list of files to keep, was (EISDIR).
+RBD="$TMPDIR/rb-remnant"
+mkdir -p "$RBD/objects"
+echo one > "$RBD/a"
+echo two > "$RBD/objects/b"
+_rb="$TMPDIR/rb-bin"
+mkdir -p "$_rb"
+cat > "$_rb/find" <<'EOF'
+#!/bin/bash
+PATH="$RB_PATH" find "$@"
+rc=$?
+if [ -n "${RB_FIND:-}" ] && [ -f "$RB_FIND" ]; then
+    rm -f "$RB_FIND" && mkdir "$RB_FIND"
+fi
+exit "$rc"
+EOF
+cat > "$_rb/cat" <<'EOF'
+#!/bin/bash
+if [ -n "${RB_CAT_SRC:-}" ] && [ "${1:-}" = "$RB_CAT_SRC" ]; then
+    PATH="$RB_PATH" cat "$1" || exit
+    rm -f "$RB_CAT" && mkdir "$RB_CAT"
+    exit 0
+fi
+PATH="$RB_PATH" exec cat "$@"
+EOF
+chmod +x "$_rb/find" "$_rb/cat"
+# Scan $RBD in files mode with the read of list WHICH (find, cat or
+# none) failing; print the status.
+rb_scan() {
+    local rc=0 out
+    out=$(mktemp -d "$TMPDIR/rb.XXXXXX")
+    case "$1" in
+        none) set -- ;;
+        find) set -- RB_FIND="$out/.flist0" ;;
+        cat) set -- RB_CAT_SRC="$out/.fnl" RB_CAT="$out/.fkeep" ;;
+    esac
+    env RB_PATH="$PATH" PATH="$_rb:$PATH" "$@" \
+        bash "$SCAN" files "$RBD" sha1 "$out" > "$TMPDIR/rb.log" 2>&1 \
+        || rc=$?
+    printf '%s' "$rc"
+}
+assert_eq "with its lists read in full, the scan works" "0" \
+    "$(rb_scan none)"
+assert_eq "a read of the file list that fails stops the scan" "3" \
+    "$(rb_scan find)"
+assert_eq "saying so" "1" \
+    "$(grep -c 'cannot read a list' "$TMPDIR/rb.log" || true)"
+assert_eq "so does one of the list of files to keep" "3" \
+    "$(rb_scan cat)"
+assert_eq "saying so" "1" \
+    "$(grep -c 'cannot read a list' "$TMPDIR/rb.log" || true)"
 
 echo ""
 echo "==============================="

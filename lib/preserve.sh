@@ -194,12 +194,37 @@ swarm_dev_ino() {
     stat "$SWARM_STAT_FORM" '%d:%i' "$1"
 }
 
+# Print absolute PATH with the longest leading part of it that can be
+# entered resolved (cd -P), and the rest as it is: PATH need not exist
+# on this host, but a link on the way to it is still followed.  Fails
+# on a relative path.
+swarm_path_resolve() {
+    local p="$1" head rest="" resolved
+    case "$p" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    while [ "$p" != / ] && [ "${p%/}" != "$p" ]; do
+        p="${p%/}"
+    done
+    head="$p"
+    while ! resolved=$(cd -P "$head" 2>/dev/null && pwd -P); do
+        rest="/${head##*/}${rest}"
+        head="${head%/*}"
+        [ -n "$head" ] || head=/
+    done
+    [ "$resolved" != / ] || resolved=""
+    [ -n "${resolved}${rest}" ] || rest=/
+    printf '%s%s\n' "$resolved" "$rest"
+}
+
 # Succeed when the checkout at ROOT keeps every object in its own
 # store, so objects imported there survive the deletion of TARGETS
 # (directories cleanup is about to delete; may be empty).  Refuses a
 # shallow or partial clone, alternates, symlinks in the object store,
 # an object store inside RUNTIME or a target, and a target that shares
-# a directory or pack file with the object store (bind mounts).
+# a directory with the git dir or the checkout's own git dir, or a pack
+# file with the object store (bind mounts).
 swarm_checkout_storage_ok() {
     local root="$1" runtime="$2"
     shift 2
@@ -255,34 +280,57 @@ swarm_checkout_storage_ok() {
              "first." >&2
         return 1
     fi
-    canon=$(cd -P "$objects" 2>/dev/null && pwd -P) || {
-        echo "ERROR: cannot resolve ${objects}." >&2
+    local ccanon gcanon x
+    if ! canon=$(cd -P "$objects" 2>/dev/null && pwd -P) \
+            || ! ccanon=$(cd -P "$common" 2>/dev/null && pwd -P); then
+        echo "ERROR: cannot resolve ${common}." >&2
         return 1
-    }
+    fi
+    # The checkout's own git dir as well (a linked worktree's lives apart
+    # from the common one).
+    if ! gcanon=$(swarm_recovery_git -C "$root" rev-parse \
+            --absolute-git-dir 2>/dev/null) \
+            || ! gcanon=$(cd -P "$gcanon" 2>/dev/null && pwd -P); then
+        echo "ERROR: cannot resolve the git dir of ${root}." >&2
+        return 1
+    fi
+    # Every target, whether or not this host has it (a volume's
+    # Mountpoint can be a path in Docker's own machine), may not be
+    # the git dir or its object store, nor lie inside or around either.
     for t in "$runtime" "$@"; do
-        [ -e "$t" ] || continue
-        tcanon=$(cd -P "$t" 2>/dev/null && pwd -P) || {
+        tcanon=$(swarm_path_resolve "$t") || {
             echo "ERROR: cannot resolve ${t}." >&2
             return 1
         }
-        case "$canon/" in
-            "$tcanon"/*)
-                echo "ERROR: the object store of ${root} is inside ${t}." >&2
-                return 1 ;;
-        esac
-        case "$tcanon/" in
-            "$canon"/*)
-                echo "ERROR: ${t} is inside the object store of ${root}." >&2
-                return 1 ;;
-        esac
+        for x in "$ccanon" "$canon" "$gcanon"; do
+            case "$x/" in
+                "$tcanon"/*)
+                    echo "ERROR: the git dir of ${root} is at or inside" \
+                         "${t}." >&2
+                    return 1 ;;
+            esac
+            case "$tcanon/" in
+                "$x"/*)
+                    echo "ERROR: ${t} is inside the git dir of ${root}." >&2
+                    return 1 ;;
+            esac
+        done
     done
     [ "$#" -gt 0 ] || return 0
     # The same directory or pack file seen through a bind mount has the
-    # same device and inode under both paths.
+    # same device and inode under both paths.  Every directory of the
+    # checkout's own git dir counts (it is the common one, or a linked
+    # worktree's, which lives apart); of the common one, those of the
+    # object store and the refs.
     local tmp p rc=0
     tmp=$(mktemp -d) || return 1
     {
-        find "$objects" "$common/refs" -type d -print || rc=1
+        if [ "$gcanon" = "$ccanon" ]; then
+            find "$gcanon" -type d -print || rc=1
+        else
+            find "$objects" "$common/refs" "$gcanon" -type d -print \
+                || rc=1
+        fi
         for p in "$objects/pack" "$objects/info"; do
             [ ! -d "$p" ] || find "$p" -type f -print || rc=1
         done
@@ -303,14 +351,14 @@ swarm_checkout_storage_ok() {
     done
     if [ "$rc" -ne 0 ]; then
         rm -rf "$tmp"
-        echo "ERROR: cannot list the object store of ${root} or what" \
+        echo "ERROR: cannot list the git dir of ${root} or what" \
              "cleanup deletes." >&2
         return 1
     fi
     comm -12 "$tmp/mine.ids" "$tmp/theirs.ids" > "$tmp/both" || rc=1
     if [ "$rc" -ne 0 ] || [ -s "$tmp/both" ]; then
         rm -rf "$tmp"
-        echo "ERROR: the object store of ${root} shares files with what" \
+        echo "ERROR: the git dir of ${root} shares files with what" \
              "cleanup deletes (a bind mount?)." >&2
         return 1
     fi
@@ -454,7 +502,7 @@ swarm_docker_own_group() {
 }
 
 # More docker run arguments for swarm_scan_volume (retire's helper
-# label); empty by default.
+# label; cleanup's name and label); empty by default.
 SWARM_SCAN_DOCKER_ARGS=()
 
 # Scan workspace volume VOL with image IMAGE (context CONTEXT) into the
