@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **Feature: `launch.sh cleanup [--discard-uncommitted]`.** Deletes this
+  checkout's engagement (containers, through retire's checks; workspace
+  volumes; the bare repo; the mirrors; leftovers of an earlier cleanup)
+  after copying everything Git keeps in each location into the checkout
+  as recovery refs (`refs/swarm-recovery/e<hex>/<snapshot>/s<n>/`,
+  `<hex>` being the engagement id in hex, with a `sources` blob naming
+  each) and verifying them with `git fsck --full`. It refuses while the
+  bare repo holds agent work the checkout lacks, while a session is open
+  or starting, when a location holds work outside Git's history (unless
+  `--discard-uncommitted`, which drops exactly what it lists), when
+  the checkout cannot keep the copies by itself, or when something is
+  mounted where it would delete. A checkpoint in the state file lets a
+  run that stopped half way be finished by the next; every run checks
+  everything again and checks the recovery refs earlier runs wrote, and
+  start, post-process, interactive, stop and harvest.sh refuse
+  meanwhile. Files the containers wrote are deleted through a throwaway
+  engine-image container as root, only once a token shows it sees the
+  same directory. The scanner gains a `files` mode for what a deletion
+  left of a repository. retire and cleanup ignore the caller's `GIT_*`
+  variables (except the choice of config files).
 - **Fix: launch.sh leaves no temporary files behind.** The profile file
   of `interactive` and the agents' list of `start` were removed only
   when the command got that far; any earlier exit, a failure or Ctrl-C

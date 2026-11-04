@@ -750,8 +750,9 @@ Usage: $0 retire [--post-process]
 
 Remove this checkout's stopped engine containers (or only the
 post-process container) after checking that nothing lives only in
-them.  Their workspace volumes stay.  Run costs.sh first if you need
-the containers' stats.
+them.  Their workspace volumes stay (./launch.sh cleanup deletes them
+after its own checks).  Run costs.sh first if you need the containers'
+stats.
 HELP
                 return 0 ;;
             *) echo "ERROR: unknown retire option: $1" >&2; return 1 ;;
@@ -762,6 +763,9 @@ HELP
         return 1
     fi
     swarm_lock "$RUNTIME_DIR" || return 1
+    # Checked before the lock too, but another checkout of this project
+    # id could have claimed the runtime and started in between.
+    swarm_runtime_verify "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || return 1
     swarm_engagement_join "$STATE_FILE" || return 1
     retire_require_daemon || return 1
     retire_sweep_snapshots || return 1
@@ -826,7 +830,8 @@ EOF
             failed=1
         fi
     done 3< "$checked" < /dev/null
-    echo "Workspace volumes stay, with the files of the removed containers."
+    echo "Workspace volumes stay, with the files of the removed containers;" \
+         "./launch.sh cleanup deletes them after its checks."
     return "$failed"
 }
 

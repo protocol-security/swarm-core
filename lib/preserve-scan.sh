@@ -8,11 +8,16 @@
 # Usage: preserve-scan.sh worktree ROOT CONTEXT OUT
 #        preserve-scan.sh gitdir ROOT - OUT
 #        preserve-scan.sh userconfig - - OUT
+#        preserve-scan.sh files ROOT FORMAT OUT
 #
 # worktree: ROOT is a checkout (a workspace) whose repository is
 #   ROOT/.git; CONTEXT (full, slim or none) says which deletions under
 #   .claude the engine made itself.
 # gitdir: ROOT is a repository directory (a bare repo or a mirror).
+# files: ROOT is what is left of one that a deletion got part of the way
+#   through: every file is stored as a blob, those under objects/
+#   whatever their size; FORMAT (sha1 or sha256) is the object format of
+#   the repository the bundle is for.
 # userconfig: run as a container's user, with its HOME and
 #   XDG_CONFIG_HOME, in a snapshot of that container: reports the global
 #   and system git config settings that keep repository data outside a
@@ -69,11 +74,28 @@ fail() {
 }
 
 case "$MODE" in
-    worktree|gitdir|userconfig) ;;
+    worktree|gitdir|userconfig|files) ;;
     *) fail "unknown mode: ${MODE}" ;;
 esac
 [ "$MODE" = userconfig ] || [ -d "$ROOT" ] || fail "not a directory: ${ROOT}"
 [ -d "$OUT" ] || fail "not a directory: ${OUT}"
+
+# The shell's read ends a loop at a read error just as at the end of
+# its list, so a scan could miss what the rest of a list holds.  This
+# read stops the scan instead; an error is all the builtin writes to
+# standard error here.  (In canon_nm, which runs in a subshell, the
+# failure reaches its callers as a path that does not resolve, which
+# they report as a block.)
+# shellcheck disable=SC2329,SC2162  # called by every loop below, and
+# every caller passes its own options (-r among them)
+read() {
+    local __rc=0
+    builtin read "$@" 2> "$OUT/.read-err" || __rc=$?
+    if [ -s "$OUT/.read-err" ]; then
+        fail "cannot read a list: $(cat "$OUT/.read-err")"
+    fi
+    return "$__rc"
+}
 # Print the resolved form of directory $1.  Command substitution would
 # drop trailing newlines and turn "repo<LF>" into "repo", so the x keeps
 # them; a path with a newline anywhere fails (the scan's lists are
@@ -235,6 +257,118 @@ canon_nm() {
     fi
     canon "$1"
 }
+
+# ---- Files and bundle (gitdir, worktree and files modes) ----------------
+
+# Write to OUT/.fkeep, NUL-separated, every path under directory TOP
+# that is not a directory, except those listed in file EXEMPT (one per
+# line).  Paths are read NUL-separated, so any byte in a name survives;
+# a path with a newline in it is never exempt (exempt names are hex).
+list_files() {
+    local top="$1" exempt="$2" f
+    : > "$OUT/.flist"
+    : > "$OUT/.fnl"
+    find "$top" ! -type d -print0 2>"$ERR" > "$OUT/.flist0" \
+        || fail "cannot list ${top}"
+    [ ! -s "$ERR" ] || fail "cannot list ${top}: $(cat "$ERR")"
+    while IFS= read -r -d '' f; do
+        case "$f" in
+            *$'\n'*) printf '%s\0' "$f" >> "$OUT/.fnl" ;;
+            *) printf '%s\n' "$f" >> "$OUT/.flist" ;;
+        esac
+    done < "$OUT/.flist0"
+    sort "$OUT/.flist" -o "$OUT/.flist"
+    comm -23 "$OUT/.flist" "$exempt" | tr '\n' '\0' > "$OUT/.fkeep"
+    cat "$OUT/.fnl" >> "$OUT/.fkeep"
+}
+
+# Store every path of OUT/.fkeep (under TOP) in SCRATCH: a symlink as
+# its target string, a regular file as its bytes, each as a blob
+# referenced by refs/v/0/f/<k>, with the list "<k> <mode> <size> <path>"
+# (NUL-terminated, paths relative to TOP) as refs/v/0/files.  A file
+# over the size limits is reported as uncommitted instead, unless its
+# path relative to TOP starts with ALWAYS/ (files mode keeps objects/
+# whatever its size); such files do not count toward the total.  Any
+# other kind of file fails the scan.
+store_files() {
+    local top="$1" always="$2" f rel target blob size mode files keep
+    local k=0 total=0
+    : > "$OUT/.files"
+    : > "$OUT/.fupd"
+    while IFS= read -r -d '' f; do
+        rel="${f#"$top"/}"
+        if [ -L "$f" ]; then
+            # readlink -n prints the target as is; the x keeps a
+            # trailing newline of the target from command substitution.
+            target=$(readlink -n "$f" && printf x) \
+                || fail "cannot read ${f}"
+            target="${target%x}"
+            k=$((k + 1))
+            blob=$(printf '%s' "$target" \
+                | git --git-dir="$SCRATCH" hash-object -w --stdin) \
+                || fail "cannot store ${f}"
+            printf 'update refs/v/0/f/%s %s\n' "$k" "$blob" >> "$OUT/.fupd"
+            printf '%s 120000 0 %s\0' "$k" "$rel" >> "$OUT/.files"
+            continue
+        fi
+        [ -f "$f" ] || fail "special file: ${f}"
+        size=$(fsize "$f") || fail "cannot read ${f}"
+        keep=no
+        if [ -n "$always" ]; then
+            case "$rel" in
+                "$always"/*) keep=yes ;;
+            esac
+        fi
+        if [ "$keep" = no ]; then
+            if [ "$size" -gt "$FILE_LIMIT" ] \
+                    || [ $((total + size)) -gt "$TOTAL_LIMIT" ]; then
+                report "uncommitted large-file ${f#"$ROOT"/} ${size}"
+                continue
+            fi
+            total=$((total + size))
+        fi
+        k=$((k + 1))
+        blob=$(git --git-dir="$SCRATCH" hash-object -w --no-filters --stdin \
+            < "$f") || fail "cannot store ${f}"
+        mode=100644
+        [ ! -x "$f" ] || mode=100755
+        printf 'update refs/v/0/f/%s %s\n' "$k" "$blob" >> "$OUT/.fupd"
+        printf '%s %s %s %s\0' "$k" "$mode" "$size" "$rel" >> "$OUT/.files"
+    done < "$OUT/.fkeep"
+    git --git-dir="$SCRATCH" update-ref --stdin < "$OUT/.fupd" 2>"$ERR" \
+        || fail "cannot record the files of ${top}: $(cat "$ERR")"
+    files=$(git --git-dir="$SCRATCH" hash-object -w --stdin \
+        < "$OUT/.files") || fail "cannot write the file list of ${top}"
+    git --git-dir="$SCRATCH" update-ref refs/v/0/files "$files"
+}
+
+make_bundle() {
+    git --git-dir="$SCRATCH" -c safe.directory='*' bundle create \
+        "$OUT/bundle" --all >/dev/null 2>"$ERR" \
+        || fail "cannot create the bundle: $(cat "$ERR")"
+}
+
+# ---- files mode -----------------------------------------------------------
+
+# A remnant that is no longer a git dir (a deletion got part of the
+# way): every file under ROOT is stored, with no history to inventory.
+# Files under objects/ are stored whatever their size: they may hold
+# history no earlier snapshot has.  CONTEXT is the object format of the
+# repository the bundle goes into (sha1 or sha256).
+if [ "$MODE" = files ]; then
+    case "$CONTEXT" in
+        sha1|sha256) ;;
+        *) fail "files mode needs the object format, sha1 or sha256" ;;
+    esac
+    git init -q --bare --object-format="$CONTEXT" "$SCRATCH" \
+        || fail "cannot create ${SCRATCH}"
+    : > "$OUT/objects"
+    : > "$OUT/.exempt"
+    list_files "$ROOT" "$OUT/.exempt"
+    store_files "$ROOT" objects
+    make_bundle
+    exit 0
+fi
 
 # ---- userconfig mode ----------------------------------------------------
 
@@ -1010,66 +1144,10 @@ while IFS= read -r d; do
 done < "$GITDIRS"
 sort -u "$EXEMPT" -o "$EXEMPT"
 
-# Paths are read NUL-separated, so any byte in a name survives.  A path
-# with a newline in it is never exempt (exempt names are hex).
-: > "$OUT/.flist"
-: > "$OUT/.fnl"
-find "$TOP" ! -type d -print0 2>"$ERR" > "$OUT/.flist0" \
-    || fail "cannot list ${TOP}"
-[ ! -s "$ERR" ] || fail "cannot list ${TOP}: $(cat "$ERR")"
-while IFS= read -r -d '' f; do
-    case "$f" in
-        *$'\n'*) printf '%s\0' "$f" >> "$OUT/.fnl" ;;
-        *) printf '%s\n' "$f" >> "$OUT/.flist" ;;
-    esac
-done < "$OUT/.flist0"
-sort "$OUT/.flist" -o "$OUT/.flist"
-comm -23 "$OUT/.flist" "$EXEMPT" | tr '\n' '\0' > "$OUT/.fkeep"
-cat "$OUT/.fnl" >> "$OUT/.fkeep"
-: > "$OUT/.files"
-: > "$OUT/.fupd"
-k=0
-total=0
-while IFS= read -r -d '' f; do
-    rel="${f#"$TOP"/}"
-    if [ -L "$f" ]; then
-        # readlink -n prints the target as is; the x keeps a trailing
-        # newline of the target from command substitution.
-        target=$(readlink -n "$f" && printf x) || fail "cannot read ${f}"
-        target="${target%x}"
-        k=$((k + 1))
-        blob=$(printf '%s' "$target" \
-            | git --git-dir="$SCRATCH" hash-object -w --stdin) \
-            || fail "cannot store ${f}"
-        printf 'update refs/v/0/f/%s %s\n' "$k" "$blob" >> "$OUT/.fupd"
-        printf '%s 120000 0 %s\0' "$k" "$rel" >> "$OUT/.files"
-        continue
-    fi
-    [ -f "$f" ] || fail "special file in a git dir: ${f}"
-    size=$(fsize "$f") || fail "cannot read ${f}"
-    if [ "$size" -gt "$FILE_LIMIT" ] \
-            || [ $((total + size)) -gt "$TOTAL_LIMIT" ]; then
-        report "uncommitted large-file ${f#"$ROOT"/} ${size}"
-        continue
-    fi
-    total=$((total + size))
-    k=$((k + 1))
-    blob=$(git --git-dir="$SCRATCH" hash-object -w --no-filters --stdin \
-        < "$f") || fail "cannot store ${f}"
-    mode=100644
-    [ ! -x "$f" ] || mode=100755
-    printf 'update refs/v/0/f/%s %s\n' "$k" "$blob" >> "$OUT/.fupd"
-    printf '%s %s %s %s\0' "$k" "$mode" "$size" "$rel" >> "$OUT/.files"
-done < "$OUT/.fkeep"
-git --git-dir="$SCRATCH" update-ref --stdin < "$OUT/.fupd" 2>"$ERR" \
-    || fail "cannot record the files of ${TOP}: $(cat "$ERR")"
-files=$(git --git-dir="$SCRATCH" hash-object -w --stdin < "$OUT/.files") \
-    || fail "cannot write the file list of ${TOP}"
-git --git-dir="$SCRATCH" update-ref refs/v/0/files "$files"
+list_files "$TOP" "$EXEMPT"
+store_files "$TOP" ""
 
 # ---- Bundle -------------------------------------------------------------
 
-git --git-dir="$SCRATCH" -c safe.directory='*' bundle create \
-    "$OUT/bundle" --all >/dev/null 2>"$ERR" \
-    || fail "cannot create the bundle: $(cat "$ERR")"
+make_bundle
 exit 0

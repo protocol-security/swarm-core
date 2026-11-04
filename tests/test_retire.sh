@@ -1334,6 +1334,43 @@ flock -n 8
 assert_eq "a held lock is refused" "1" "$(retire 8>&-)"
 assert_eq "nothing removed then" "0" "$(removed)"
 exec 8>&-
+# Another checkout of the project id claims the runtime between
+# retire's first checks and its lock (a flock first on PATH writes that
+# claim once, then locks): retire checks again under the lock and
+# removes nothing.
+mkdir -p "$TMPDIR/bin-flock" "$TMPDIR/other"
+cat > "$TMPDIR/bin-flock/flock" <<'EOF'
+#!/bin/bash
+if [ -n "${FLOCK_CLAIM:-}" ] && [ ! -e "$SWARM_RUNTIME_DIR/claimed" ]; then
+    : > "$SWARM_RUNTIME_DIR/claimed"
+    st="$SWARM_RUNTIME_DIR/state.json"
+    jq -c --arg r "$FLOCK_CLAIM" '.repo_root = $r' "$st" > "$st.new"
+    chmod 600 "$st.new"
+    mv "$st.new" "$st"
+fi
+self=$(cd "$(dirname "$0")" && pwd)
+IFS=:
+for d in $PATH; do
+    if [ "$d" != "$self" ] && [ -x "$d/flock" ]; then
+        exec "$d/flock" "$@"
+    fi
+done
+exit 127
+EOF
+chmod +x "$TMPDIR/bin-flock/flock"
+reset_fake
+add proj-agent-1
+cp "$RT/state.json" "$TMPDIR/state.keep"
+swarm_state_update "$RT/state.json" 'del(.repo_root)'
+SHIM_DIR="$TMPDIR/bin-flock"
+assert_eq "a runtime another checkout claims before the lock: refused" "1" \
+    "$(FLOCK_CLAIM="$(cd -P "$TMPDIR/other" && pwd -P)" retire)"
+SHIM_DIR=""
+assert_eq "for that reason" "1" \
+    "$(grep -c 'belongs to another checkout' "$TMPDIR/out" || true)"
+assert_eq "nothing removed then" "0" "$(removed)"
+cp "$TMPDIR/state.keep" "$RT/state.json"
+rm -f "$RT/claimed"
 
 echo ""
 echo "==============================="

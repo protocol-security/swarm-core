@@ -18,8 +18,8 @@ fi
 #
 # Options:
 #   --unit          Run unit tests only (no Docker or API key needed).
-#   --runtime       Runtime tests: emergency push and retire (Docker
-#                   only, no API key).
+#   --runtime       Runtime tests: emergency push, retire and cleanup
+#                   (Docker only, no API key).
 #   --all           Unit + runtime, then full integration matrix.
 #   --oauth         Integration test using OAuth token (needs Docker +
 #                   CLAUDE_CODE_OAUTH_TOKEN).
@@ -74,8 +74,9 @@ run_all_tests() {
     # actually fires; this phase does.  Skips cleanly when Docker
     # is unavailable so --all stays useful on hosts without it.
     # Also runs the real Pi CLI against a local test API, without keys,
-    # and launch.sh retire on real containers, whose snapshots and
-    # docker diff test_retire.sh only imitates.
+    # launch.sh retire on real containers, whose snapshots and docker
+    # diff test_retire.sh only imitates, and launch.sh cleanup on files
+    # a container wrote as its own user.
     echo "=== Phase 1.5: Docker runtime tests ==="
     echo ""
     if ! command -v docker >/dev/null 2>&1; then
@@ -87,7 +88,7 @@ run_all_tests() {
     else
         local rt_test rt_start rt_elapsed rt_rc
         for rt_test in runtime_signal_trap.sh runtime_pi.sh \
-                runtime_retire.sh; do
+                runtime_retire.sh runtime_cleanup.sh; do
             rt_rc=0
             rt_start=$(date +%s)
             "$TESTS_DIR/$rt_test" || rt_rc=$?
@@ -402,7 +403,8 @@ Options:
   --runtime         Runtime tests (need Docker, no API key): drives
                     SIGTERM / SIGINT / fatal-exit paths under a real
                     container with a synthetic test-committer driver,
-                    then launch.sh retire on real stopped containers.
+                    then launch.sh retire on real stopped containers and
+                    launch.sh cleanup on what containers wrote.
   --all             Unit + runtime, then full integration matrix.
   --oauth           Integration test using CLAUDE_CODE_OAUTH_TOKEN
                     (needs Docker + OAuth token).
@@ -461,6 +463,7 @@ if $RUN_RUNTIME; then
     rt_rc=0
     "$TESTS_DIR/runtime_signal_trap.sh" || rt_rc=1
     "$TESTS_DIR/runtime_retire.sh" || rt_rc=1
+    "$TESTS_DIR/runtime_cleanup.sh" || rt_rc=1
     exit "$rt_rc"
 fi
 
