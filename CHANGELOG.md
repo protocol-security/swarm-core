@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fix: launch.sh leaves no temporary files behind.** The profile file
+  of `interactive` and the agents' list of `start` were removed only
+  when the command got that far; any earlier exit, a failure or Ctrl-C
+  left them, on macOS in the user's temporary directory whatever
+  `TMPDIR` said. They are now made in `TMPDIR` (or `/tmp`) and removed
+  when `launch.sh` exits, however it does.
 - **Feature: `launch.sh retire [--post-process]`.** Removes this
   checkout's stopped engine containers (or only the post-process one) by
   ID, without `-f`, after checking every selected container first:
