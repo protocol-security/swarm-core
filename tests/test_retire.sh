@@ -1143,41 +1143,6 @@ assert_eq "before the snapshot" "rm -f made|rmi proj-agent-retire" \
         | sed 's/:.*//; s/-[0-9]*$//' | uniq | tr '\n' '|' | sed 's/|$//')"
 assert_eq "and no engine container" "0" "$(removed)"
 rm -f "$F/term-on-scan" "$F/leave-helpers" "$F/made"
-# Whether a job started here under job control can be stopped by
-# SIGINT: not when this run started with SIGINT ignored (a background
-# job of a script), since the ignore is inherited and cannot be undone.
-# Bash 3.2 does not report such an ignore through trap -p, so try it,
-# in a subshell: job control switched on in the test's own shell would
-# stay with it on Bash 3.2.
-sigint_works() {
-    local pid tries=0
-    set -m
-    sleep 30 &
-    pid=$!
-    set +m
-    # Signal it once it runs sleep: before its exec, the shell's own
-    # handling of SIGINT still applies and the signal can be lost.
-    while [ "$tries" -lt 40 ]; do
-        case "$(ps -o comm= -p "$pid" 2>/dev/null)" in
-            *sleep) break ;;
-        esac
-        sleep 0.05
-        tries=$((tries + 1))
-    done
-    kill -INT "$pid" 2>/dev/null
-    tries=0
-    while kill -0 "$pid" 2>/dev/null && [ "$tries" -lt 20 ]; do
-        sleep 0.05
-        tries=$((tries + 1))
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-        kill -TERM "$pid" 2>/dev/null
-        wait "$pid" 2>/dev/null
-        return 1
-    fi
-    wait "$pid" 2>/dev/null
-    return 0
-}
 # A Ctrl-C while the daemon commits: retire waits for the commit, then
 # removes the snapshot, so none is left once the daemon is done.
 if ! (sigint_works); then

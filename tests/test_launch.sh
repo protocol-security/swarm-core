@@ -3298,6 +3298,124 @@ assert_eq "the old record is gone" "false" \
     "$([ -e "$_pd_rt/interactive-$_pd_id_a.pending" ] \
         && echo true || echo false)"
 
+# ============================================================
+echo ""
+echo "=== 54. No temporary file outlives launch.sh ==="
+
+# interactive stopped by an agent index that does not exist, start
+# stopped by a driver that does not exist once it wrote the agents'
+# list, and interactive stopped by a Ctrl-C while the image builds:
+# every file mktemp made for them is gone when they exit.  A mktemp
+# first on PATH logs what the real one makes, NUL-terminated.
+_tf_bin="$TMPDIR/tf-bin"
+_tf_sig="$TMPDIR/tf-sig"
+_tf_log="$TMPDIR/tf-mktemp.log"
+_tf_rt="$TMPDIR/tf-runtime"
+mkdir -p "$_tf_bin" "$_tf_sig"
+cat > "$_tf_bin/mktemp" <<'EOF'
+#!/bin/bash
+out=$(PATH="$TF_PATH" mktemp "$@") || exit $?
+printf '%s\0' "$out" >> "$TF_LOG"
+printf '%s\n' "$out"
+EOF
+# docker build runs until a signal ends it, as a long build would;
+# every other call goes to the start tests' docker.
+cat > "$_tf_sig/docker" <<'EOF'
+#!/bin/bash
+[ "$1" != build ] || exec sleep 30
+exec "$TF_DOCKER" "$@"
+EOF
+chmod +x "$_tf_bin/mktemp" "$_tf_sig/docker"
+run_tf() {
+    local orig="$PATH"
+    : > "$_tf_log"
+    (cd "$_st_repo" && TF_PATH="$orig" TF_LOG="$_tf_log" \
+        PATH="$_tf_bin:$_st_bin:$orig" SWARM_RUNTIME_DIR="$_tf_rt" \
+        SWARM_SKIP_DEP_CHECK=1 "$@" 2>&1)
+}
+# Print how many of the files mktemp made (the log) are still there.
+tf_left() {
+    local f n=0
+    while IFS= read -r -d '' f; do
+        [ ! -e "$f" ] || n=$((n + 1))
+    done < "$_tf_log"
+    printf '%s' "$n"
+}
+# Remove what is left of them.
+tf_drop() {
+    local f
+    while IFS= read -r -d '' f; do
+        rm -f -- "$f"
+    done < "$_tf_log"
+}
+_tf_rc=0
+run_tf env SWARM_CONFIG=sub/configs/swarm.json \
+    bash "$_LAUNCH_SH" interactive --agent-index 9 >/dev/null || _tf_rc=$?
+assert_eq "interactive with an unknown agent index fails" "1" "$_tf_rc"
+assert_eq "it made a temporary file" "true" \
+    "$([ -s "$_tf_log" ] && echo true || echo false)"
+assert_eq "which is gone" "0" "$(tf_left)"
+tf_drop
+# A relative TMPDIR is made absolute first (a run may change directory
+# before it exits), whatever CDPATH says.
+mkdir -p "$_st_repo/sub/tf-rel"
+_tf_rc=0
+run_tf env SWARM_CONFIG=sub/configs/swarm.json TMPDIR=sub/tf-rel CDPATH=. \
+    bash "$_LAUNCH_SH" interactive --agent-index 9 >/dev/null || _tf_rc=$?
+assert_eq "so does a run with a relative TMPDIR" "1" "$_tf_rc"
+_tf_first=""
+IFS= read -r -d '' _tf_first < "$_tf_log" || true
+assert_eq "whose file had an absolute path in it" \
+    "$(cd -P "$_st_repo/sub/tf-rel" && pwd -P)" "${_tf_first%/swarm-profile.*}"
+assert_eq "and is gone" "0" "$(tf_left)"
+tf_drop
+rmdir "$_st_repo/sub/tf-rel"
+jq '.agents[0].driver = "no-such-driver"' \
+    "$_st_repo/sub/configs/swarm.json" > "$_st_repo/sub/configs/tf.json"
+_tf_rc=0
+_tf_out=$(run_tf env SWARM_CONFIG=sub/configs/tf.json \
+    bash "$_LAUNCH_SH" start) || _tf_rc=$?
+assert_eq "start with an unknown driver fails" "1" "$_tf_rc"
+assert_eq "once it wrote the agents' list" "true" \
+    "$(grep -q 'unknown driver' <<< "$_tf_out" && echo true || echo false)"
+assert_eq "every temporary file it made is gone" "0" "$(tf_left)"
+tf_drop
+rm -f "$_st_repo/sub/configs/tf.json"
+# A Ctrl-C at the terminal while the image builds: SIGINT to the
+# process group of launch.sh, run in one of its own with /bin/bash
+# (Bash 3.2 on macOS), once docker build runs.
+if ! (sigint_works); then
+    echo "  SKIP: a Ctrl-C while the image builds (SIGINT is ignored here)"
+else
+    _tf_rc=0
+    _tf_orig="$PATH"
+    : > "$_tf_log"
+    set -m
+    (cd "$_st_repo" && TF_PATH="$_tf_orig" TF_LOG="$_tf_log" \
+        TF_DOCKER="$_st_bin/docker" \
+        PATH="$_tf_sig:$_tf_bin:$_st_bin:$_tf_orig" \
+        SWARM_RUNTIME_DIR="$_tf_rt" SWARM_SKIP_DEP_CHECK=1 \
+        SWARM_CONFIG=sub/configs/swarm.json \
+        exec /bin/bash "$_LAUNCH_SH" interactive --agent-index 1 \
+        > "$TMPDIR/tf-int.out" 2>&1) &
+    _tf_pid=$!
+    set +m
+    _tf_tries=0
+    while [ "$_tf_tries" -lt 200 ] \
+            && ! pgrep -g "$_tf_pid" -x sleep >/dev/null 2>&1; do
+        sleep 0.05
+        _tf_tries=$((_tf_tries + 1))
+    done
+    kill -INT -- "-$_tf_pid" 2>/dev/null
+    wait "$_tf_pid" || _tf_rc=$?
+    assert_eq "a Ctrl-C while the image builds stops interactive" "130" \
+        "$_tf_rc"
+    assert_eq "after it made its temporary file" "true" \
+        "$([ -s "$_tf_log" ] && echo true || echo false)"
+    assert_eq "which is gone" "0" "$(tf_left)"
+    tf_drop
+fi
+
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"

@@ -438,6 +438,38 @@ case "${1:-}" in
         ;;
 esac
 
+# Temporary files this run makes, removed when it exits, however it
+# does: Bash runs the EXIT trap on exit, under set -e, and when HUP,
+# INT or TERM end the script (retire, above, makes none and sets its
+# own traps).
+SWARM_TMP_FILES=()
+swarm_tmp_cleanup() {
+    if [ "${#SWARM_TMP_FILES[@]}" -gt 0 ]; then
+        rm -f "${SWARM_TMP_FILES[@]}"
+    fi
+}
+trap swarm_tmp_cleanup EXIT
+
+# Make a temporary file swarm-NAME.XXXXXX in TMPDIR, removed when this
+# run exits, and set the variable VAR to its absolute path (the run
+# may change directory before it exits).
+swarm_tmp_file() {
+    local _dir="${TMPDIR:-/tmp}" _tmp
+    case "$_dir" in
+        /*) ;;
+        *)
+            # As for the swarmfile's directory: CDPATH cleared, links
+            # resolved, trailing newlines kept.
+            _dir=$(CDPATH='' cd -P -- "$_dir" && pwd -P && echo x) \
+                || return 1
+            _dir="${_dir%x}"
+            _dir="${_dir%$'\n'}" ;;
+    esac
+    _tmp=$(mktemp "${_dir%/}/swarm-$2.XXXXXX") || return 1
+    SWARM_TMP_FILES+=("$_tmp")
+    printf -v "$1" '%s' "$_tmp"
+}
+
 CONFIG_FILE="${SWARM_CONFIG:-}"
 if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
     CONFIG_FILE="$REPO_ROOT/swarm.json"
@@ -630,7 +662,7 @@ HELP
     done
 
     local profile_file
-    profile_file=$(mktemp)
+    swarm_tmp_file profile_file profile || exit 1
     select_interactive_profile "$selector" "$selector_index" "$profile_file"
 
     local profile_name profile_label safe_profile short_id branch name
@@ -844,7 +876,7 @@ cmd_start() {
 
     # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
-    AGENTS_CFG=$(mktemp)
+    swarm_tmp_file AGENTS_CFG agents || exit 1
     jq -r '.tag as $dt | .driver as $dd |
         .agents[] | range(.count // 0) as $i |
         [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' \
