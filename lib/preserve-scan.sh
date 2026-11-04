@@ -7,11 +7,16 @@
 #
 # Usage: preserve-scan.sh worktree ROOT CONTEXT OUT
 #        preserve-scan.sh gitdir ROOT - OUT
+#        preserve-scan.sh userconfig - - OUT
 #
 # worktree: ROOT is a checkout (a workspace) whose repository is
 #   ROOT/.git; CONTEXT (full, slim or none) says which deletions under
 #   .claude the engine made itself.
 # gitdir: ROOT is a repository directory (a bare repo or a mirror).
+# userconfig: run as a container's user, with its HOME and
+#   XDG_CONFIG_HOME, in a snapshot of that container: reports the global
+#   and system git config settings that keep repository data outside a
+#   workspace, and config files that lie on a mount the snapshot lacks.
 # OUT is an empty directory.  On success the scan writes:
 #   OUT/report     one line per finding (see below)
 #   OUT/bundle     a bundle whose refs are refs/v/<n>/t/<k> (one per
@@ -24,6 +29,14 @@
 #   block <what> <detail>          content the bundle cannot carry
 #   uncommitted <what> <detail>    content outside Git's history that
 #                                  only an explicit discard may drop
+#   layer-link <path>              where a symlink in the volume leads
+#                                  out of it (worktree mode, resolved):
+#                                  in the image or in the container's
+#                                  own layer
+#   layer-via <path>               a symlink outside the volume that a
+#                                  link in it passes
+#   layer-path <path>              any path outside the volume such a
+#                                  link visits
 # Exit status: 0 when the report and bundle are complete, 3 when the
 # scan cannot tell (message on stderr).  Compatible with Bash 3.2.
 
@@ -56,10 +69,10 @@ fail() {
 }
 
 case "$MODE" in
-    worktree|gitdir) ;;
+    worktree|gitdir|userconfig) ;;
     *) fail "unknown mode: ${MODE}" ;;
 esac
-[ -d "$ROOT" ] || fail "not a directory: ${ROOT}"
+[ "$MODE" = userconfig ] || [ -d "$ROOT" ] || fail "not a directory: ${ROOT}"
 [ -d "$OUT" ] || fail "not a directory: ${OUT}"
 # Print the resolved form of directory $1.  Command substitution would
 # drop trailing newlines and turn "repo<LF>" into "repo", so the x keeps
@@ -76,8 +89,71 @@ canon() {
     printf '%s' "$r"
 }
 
+# Print path $1 on one line, newlines shown as \n.
+oneline() {
+    printf '%s' "$1" | awk 'BEGIN { ORS = "\\n" } { print }' \
+        | sed 's/\\n$//'
+}
+
+
+
+
+# Succeed when file $1 holds a NUL byte, or cannot be read.  Git stops
+# reading a path at a NUL, while the shell's read drops it and carries
+# on, so the two would disagree on what such a file names.
+has_nul() {
+    local all kept
+    all=$(wc -c 2>/dev/null < "$1" | tr -d ' ') || return 0
+    kept=$(tr -d '\000' 2>/dev/null < "$1" | wc -c | tr -d ' ') || return 0
+    [ -n "$all" ] && [ "$all" = "$kept" ] && return 1
+    return 0
+}
+
+# Print where absolute path $1 leads, resolved the way the kernel does:
+# components from the left, a symlink replaced by its target before any
+# later ".." applies, "." dropped; components that do not exist here
+# are kept as text (they may exist only where the link was made).  In
+# worktree mode the scan runs from a snapshot of the stopped container
+# itself (retire commits it), so the links on the way are that
+# container's own.  Every symlink passed is appended to file $2, and
+# every path visited (links or not) to file $3, when given.  Fails (1)
+# after 40 links (a loop), and (2) at a name with a newline, which the
+# line-based lists here cannot hold.
+real_path() {
+    local rest="${1#/}" out="" comp n=0 t via="${2:-/dev/null}"
+    local seen="${3:-/dev/null}"
+    while [ -n "$rest" ]; do
+        comp="${rest%%/*}"
+        if [ "$comp" = "$rest" ]; then rest=""; else rest="${rest#*/}"; fi
+        case "$comp" in
+            ''|.) continue ;;
+            ..) out="${out%/*}"; continue ;;
+            *$'\n'*) return 2 ;;
+        esac
+        # Every path visited, before any later ".." takes it back.
+        printf '%s\n' "${out}/${comp}" >> "$seen"
+        if [ -L "${out}/${comp}" ]; then
+            n=$((n + 1))
+            [ "$n" -le 40 ] || return 1
+            printf '%s\n' "${out}/${comp}" >> "$via"
+            t=$(readlink -n "${out}/${comp}" && printf x) || return 1
+            t="${t%x}"
+            case "$t" in
+                /*) out="" ; t="${t#/}" ;;
+            esac
+            if [ -n "$rest" ]; then rest="${t}/${rest}"; else rest="$t"; fi
+            continue
+        fi
+        out="${out}/${comp}"
+    done
+    printf '%s' "${out:-/}"
+}
+
 # Git records worktree paths resolved; compare against the same form.
-ROOT=$(canon "$ROOT") || fail "cannot resolve ${2:-}, or it holds a newline"
+if [ "$MODE" != userconfig ]; then
+    ROOT=$(canon "$ROOT") \
+        || fail "cannot resolve ${2:-}, or it holds a newline"
+fi
 _entries=$(ls -A "$OUT") || fail "cannot list ${OUT}"
 [ -z "$_entries" ] || fail "output directory is not empty: ${OUT}"
 
@@ -122,6 +198,133 @@ fsize() {
     wc -c < "$1" | tr -d ' '
 }
 
+# canon, for paths the repository's own settings name (core.worktree,
+# commondir, alternates, gitfiles, worktree back-pointers): also fails
+# when resolving the path visits one of the mounts the snapshot lacks
+# ($OUT/.mounts, worktree mode), since there it may lead elsewhere in
+# the container, and reports the links it passes outside ROOT as
+# layer-via (the container may have made them).
+canon_nm() {
+    local v m
+    : > "$OUT/.cnm"
+    : > "$OUT/.cnv"
+    real_path "$1" "$OUT/.cnv" "$OUT/.cnm" >/dev/null || return 1
+    # Links outside ROOT on the way are the container's to tell about:
+    # report them for retire's comparison with docker diff.
+    while IFS= read -r v; do
+        case "$v" in
+            "$ROOT"|"$ROOT"/*) ;;
+            *) report "layer-via $(oneline "$v")" ;;
+        esac
+    done < "$OUT/.cnv"
+    while IFS= read -r v; do
+        case "$v" in
+            "$ROOT"|"$ROOT"/*) ;;
+            *) report "layer-path $(oneline "$v")" ;;
+        esac
+    done < "$OUT/.cnm"
+    if [ -s "$OUT/.mounts" ]; then
+        while IFS= read -r v; do
+            while IFS= read -r m; do
+                [ -n "$m" ] || continue
+                case "$v" in
+                    "$m"|"$m"/*) return 1 ;;
+                esac
+            done < "$OUT/.mounts"
+        done < "$OUT/.cnm"
+    fi
+    canon "$1"
+}
+
+# ---- userconfig mode ----------------------------------------------------
+
+if [ "$MODE" = userconfig ]; then
+    # The mounts the snapshot lacks: the container's own
+    # (SWARM_SCAN_MOUNTS) and those Docker makes in every container.
+    # /workspace too: this check runs without the volume.  Each mount
+    # counts as configured and as resolved here.
+    printf '%s\n' "${SWARM_SCAN_MOUNTS:-}" /workspace /dev /proc /sys \
+        /etc/hosts /etc/hostname /etc/resolv.conf | grep '^/' \
+        > "$OUT/.um0" || : > "$OUT/.um0"
+    cp "$OUT/.um0" "$OUT/.um"
+    while IFS= read -r m; do
+        mr=$(real_path "$m" && printf x) || fail "cannot resolve mount ${m}"
+        printf '%s\n' "${mr%x}" >> "$OUT/.um"
+    done < "$OUT/.um0"
+    # The files Git reads for its global and system settings, as the
+    # git on this PATH names them: a git built with another prefix
+    # reads its system file elsewhere than /etc/gitconfig.  A git that
+    # cannot name them (older than 2.42, or stopped by a config file it
+    # cannot parse) is refused, with its first message.
+    if ! git var GIT_CONFIG_GLOBAL > "$OUT/.uf" 2>"$OUT/.ue" \
+            || ! git var GIT_CONFIG_SYSTEM >> "$OUT/.uf" 2>>"$OUT/.ue" \
+            || [ -s "$OUT/.ue" ]; then
+        report "block config-paths-unknown $(oneline "$(head -n 1 "$OUT/.ue")")"
+        exit 0
+    fi
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        case "$f" in
+            /*) ;;
+            *) report "block config-path ${f}"; continue ;;
+        esac
+        : > "$OUT/.us"
+        rp_rc=0
+        r=$(real_path "$f" /dev/null "$OUT/.us" && printf x) || rp_rc=$?
+        if [ "$rp_rc" -ne 0 ]; then
+            report "block config-path $(oneline "$f")"
+            continue
+        fi
+        r="${r%x}"
+        printf '%s\n' "$r" >> "$OUT/.us"
+        on_mount=""
+        while IFS= read -r v; do
+            while IFS= read -r m; do
+                case "$v" in
+                    "$m"|"$m"/*) on_mount="$m" ;;
+                esac
+            done < "$OUT/.um"
+        done < "$OUT/.us"
+        if [ -n "$on_mount" ]; then
+            report "block config-on-mount $(oneline "$f") ${on_mount}"
+            continue
+        fi
+        # A missing file is fine only when its nearest existing
+        # directory can be searched (else "missing" may be a permission
+        # error); an existing file must be readable, and git must read
+        # it without a word on stderr.
+        if [ ! -e "$r" ] && [ ! -L "$r" ]; then
+            pdir=$(dirname "$r")
+            while [ ! -e "$pdir" ] && [ "$pdir" != / ]; do
+                pdir=$(dirname "$pdir")
+            done
+            if [ -d "$pdir" ] && [ -x "$pdir" ]; then
+                continue
+            fi
+            report "block config-unreadable $(oneline "$f")"
+            continue
+        fi
+        if [ ! -f "$r" ] || [ ! -r "$r" ]; then
+            report "block config-unreadable $(oneline "$f")"
+            continue
+        fi
+        rc=0
+        git config -f "$r" --name-only --get-regexp \
+            '^(lfs\.storage|core\.worktree|core\.hookspath|include\..*|includeif\..*)$' \
+            > "$OUT/.uk" 2>"$OUT/.ue" || rc=$?
+        if [ -s "$OUT/.ue" ]; then
+            report "block config-unreadable $(oneline "$f")"
+            continue
+        fi
+        case "$rc" in
+            0) report "block config-setting $(oneline "$f") $(tr '\n' ' ' < "$OUT/.uk")" ;;
+            1) ;;
+            *) report "block config-unreadable $(oneline "$f")" ;;
+        esac
+    done < "$OUT/.uf"
+    exit 0
+fi
+
 # ---- Find the git dirs --------------------------------------------------
 
 # A git dir is a directory with HEAD and either an objects/ directory
@@ -153,6 +356,74 @@ list_gitdirs() {
     done < "$OUT/.heads"
 }
 
+# ---- The container's other mounts (worktree mode) -----------------------
+
+# Checked first: an empty volume or one without a repository still
+# must not be hidden or reached by another mount.
+: > "$OUT/.mounts"
+if [ "$MODE" = worktree ]; then
+    # The container's other mounts (SWARM_SCAN_MOUNTS, one destination
+    # per line, from retire), as configured and as resolved here: the
+    # snapshot has neither their contents nor the links inside them, so
+    # any path a link visits at or below one blocks.
+    if [ -n "${SWARM_SCAN_MOUNTS:-}" ]; then
+        printf '%s\n' "$SWARM_SCAN_MOUNTS" | grep '^/' > "$OUT/.mounts-lit" \
+            || : > "$OUT/.mounts-lit"
+        # Each destination as configured and as resolved here, tagged
+        # with the configured one: "<configured><TAB><form>".
+        : > "$OUT/.mounts-forms"
+        while IFS= read -r om; do
+            omr=$(real_path "$om" && printf x) \
+                || fail "cannot resolve mount ${om}"
+            omr="${omr%x}"
+            printf '%s\t%s\n%s\t%s\n' "$om" "$om" "$om" "$omr" \
+                >> "$OUT/.mounts-forms"
+        done < "$OUT/.mounts-lit"
+        while IFS= read -r m; do
+            case "$m" in
+                /*) ;;
+                *) continue ;;
+            esac
+            printf '%s\n' "$m" >> "$OUT/.mounts"
+            # The container made this mount after the others, through
+            # whatever they hold; the snapshot has none of that, so a
+            # destination whose path passes through another mount cannot
+            # be resolved here.
+            : > "$OUT/.mseen"
+            mr=$(real_path "$m" /dev/null "$OUT/.mseen" && printf x) \
+                || fail "cannot resolve mount ${m}"
+            # Any path visited at, or below, another mount (as configured
+            # or as resolved) means the destination goes through it.
+            while IFS= read -r ms; do
+                while IFS="$(printf '\t')" read -r om of; do
+                    [ "$om" != "$m" ] || continue
+                    case "$ms" in
+                        "$of"|"$of"/*)
+                            report "block mount-through-mount $(oneline "$m") $(oneline "$om")" ;;
+                    esac
+                done < "$OUT/.mounts-forms"
+            done < "$OUT/.mseen"
+            mr="${mr%x}"
+            [ "$mr" = "$m" ] || printf '%s\n' "$mr" >> "$OUT/.mounts"
+            # A mount that lands in the volume (through a link on its
+            # path) hides part of it in the container; one that holds the
+            # volume is not this layout either.
+            for mm in "$m" "$mr"; do
+                case "$mm" in
+                    "$ROOT"|"$ROOT"/*)
+                        report "block mount-in-workspace $(oneline "$m")" ;;
+                esac
+                case "$ROOT" in
+                    "$mm"/*)
+                        report "block mount-around-workspace $(oneline "$m")" ;;
+                esac
+            done
+        done <<EOF_MOUNTS
+${SWARM_SCAN_MOUNTS}
+EOF_MOUNTS
+    fi
+fi
+
 # ---- Worktree-mode checks -----------------------------------------------
 
 TOP=""
@@ -164,7 +435,11 @@ if [ "$MODE" = worktree ]; then
         report "empty"
         exit 0
     fi
-    if [ -L "$ROOT/.git" ] || [ ! -e "$ROOT/.git" ]; then
+    if [ -L "$ROOT/.git" ]; then
+        report "block gitlink ${ROOT}/.git is a symlink"
+        exit 0
+    fi
+    if [ ! -e "$ROOT/.git" ]; then
         report "block nogit files without a repository in ${ROOT}"
         exit 0
     fi
@@ -193,11 +468,221 @@ while IFS= read -r d; do
     [ -z "$_lfs" ] || report "block lfs-storage ${d#"$ROOT"/} ${_lfs}"
 done < "$GITDIRS"
 
-# Print path $1 on one line, newlines shown as \n.
-oneline() {
-    printf '%s' "$1" | awk 'BEGIN { ORS = "\\n" } { print }' \
-        | sed 's/\\n$//'
-}
+# In worktree mode the location is a volume whose container is about to
+# go: repository settings that send work-tree files or config to other
+# places in that container (a core.worktree outside ROOT, includes),
+# and symlinks inside a git dir that point outside ROOT, leave data the
+# bundle does not carry.  Each git dir's own config files are read
+# directly.
+if [ "$MODE" = worktree ]; then
+    cp "$GITDIRS" "$OUT/.gitdirs-l"
+    while IFS= read -r d; do
+        rel="${d#"$ROOT"/}"
+        # A git dir's common dir (objects, refs) must be in the volume.
+        if [ -f "$d/commondir" ] && has_nul "$d/commondir"; then
+            report "block commondir ${rel} (unreadable or NUL byte)"
+        elif [ -f "$d/commondir" ]; then
+            cd_v=$(cat "$d/commondir")
+            case "$cd_v" in
+                /*) ;;
+                *) cd_v="$d/$cd_v" ;;
+            esac
+            cd_c=$(canon_nm "$cd_v") || cd_c=""
+            case "$cd_c" in
+                "$ROOT"/*)
+                    # Only a common dir this scan inspects as a git dir
+                    # of its own (a linked worktree's repository) is
+                    # accepted; any other layout keeps objects and config
+                    # the checks above do not see.
+                    if ! grep -qxF "$cd_c" "$OUT/.gitdirs-l"; then
+                        report "block commondir ${rel} $(oneline "$cd_v")"
+                    fi ;;
+                *) report "block commondir ${rel} $(oneline "$cd_v")" ;;
+            esac
+        fi
+        for cf in "$d/config" "$d/config.worktree"; do
+            [ -f "$cf" ] || continue
+            rc=0
+            git config -f "$cf" --name-only --get-regexp \
+                '^(include\..*|includeif\..*)$' > "$OUT/.inc" 2>/dev/null \
+                || rc=$?
+            case "$rc" in
+                0) report "block config-include ${rel}" ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+            # Custom hooks live wherever the setting says, resolved
+            # against a base that depends on the repository layout; the
+            # engine never sets it, so any value blocks.
+            rc=0
+            git config -f "$cf" --get core.hooksPath >/dev/null 2>&1 \
+                || rc=$?
+            case "$rc" in
+                0) report "block core-hookspath ${rel}" ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+            # core.worktree is relative to the git dir; submodule git
+            # dirs set it to their checkout inside ROOT.
+            rc=0
+            wtv=$(git config -f "$cf" --get core.worktree 2>/dev/null \
+                && printf x) || rc=$?
+            # git prints the value and a newline; any other newline is
+            # part of the value.
+            wtv="${wtv%x}"
+            wtv="${wtv%$'\n'}"
+            case "$wtv" in
+                *$'\n'*)
+                    report "block core-worktree ${rel} (newline in path)"
+                    continue ;;
+            esac
+            case "$rc" in
+                0)
+                    case "$wtv" in
+                        /*) ;;
+                        *) wtv="$d/$wtv" ;;
+                    esac
+                    wtc=$(canon_nm "$wtv") || wtc=""
+                    case "$wtc" in
+                        "$ROOT"|"$ROOT"/*) ;;
+                        *) report "block core-worktree ${rel} ${wtv}" ;;
+                    esac ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+        done
+    done < "$GITDIRS"
+    # Every symlink anywhere in the volume (checkout, git dirs, object
+    # pools named by alternates) is resolved to where it really leads.
+    # Links to directories inside ROOT are fine: their contents are in
+    # ROOT and this walk visits them where they are.  A link that leads
+    # out of ROOT is reported as "layer-link <path>": whether that path
+    # holds the container's own data only the container can tell
+    # (retire compares it with docker diff).  A loop blocks.
+    find "$ROOT" -type l -print0 2>"$ERR" > "$OUT/.links" \
+        || fail "cannot list ${ROOT}"
+    [ ! -s "$ERR" ] || fail "cannot list ${ROOT}: $(cat "$ERR")"
+    while IFS= read -r -d '' l; do
+        : > "$OUT/.via"
+        : > "$OUT/.seen"
+        # The x keeps a trailing newline of the path.
+        rp_rc=0
+        lt=$(real_path "$l" "$OUT/.via" "$OUT/.seen" && printf x) || rp_rc=$?
+        case "$rp_rc" in
+            0) ;;
+            2)
+                report "block newline-path $(oneline "${l#"$ROOT"/}")"
+                continue ;;
+            *)
+                # Resolution stopped (a loop, or a link it cannot read).
+                # If it had reached a mount the snapshot lacks, say so.
+                hit=""
+                while IFS= read -r v; do
+                    while IFS= read -r m; do
+                        [ -n "$m" ] || continue
+                        case "$v" in
+                            "$m"|"$m"/*) hit="$m" ;;
+                        esac
+                    done < "$OUT/.mounts"
+                done < "$OUT/.seen"
+                if [ -n "$hit" ]; then
+                    report "block mount-crossing $(oneline "${l#"$ROOT"/}") $(oneline "$hit")"
+                else
+                    report "block link-loop $(oneline "${l#"$ROOT"/}")"
+                fi
+                continue ;;
+        esac
+        lt="${lt%x}"
+        out_of_root=""
+        while IFS= read -r v; do
+            case "$v" in
+                "$ROOT"|"$ROOT"/*) ;;
+                *) out_of_root=yes ;;
+            esac
+        done < "$OUT/.seen"
+        case "$lt" in
+            *$'\n'*)
+                report "block newline-path $(oneline "${l#"$ROOT"/}")"
+                continue ;;
+        esac
+        case "$lt" in
+            "$ROOT"|"$ROOT"/*) ;;
+            *)
+                # A directory outside ROOT can hold further links that
+                # lead anywhere; only a file (or a path that does not
+                # exist here) is compared with the container's changes.
+                if [ -d "$lt" ]; then
+                    report "block outside-dir-link $(oneline "${l#"$ROOT"/}")"
+                    continue
+                fi
+                report "layer-link $(oneline "$lt")" ;;
+        esac
+        # The chain's steps outside ROOT, also when it ends inside it:
+        # links passed (layer-via, compared with the container's
+        # changes) and every path visited (layer-path, compared with its
+        # other mounts, whose contents the snapshot lacks).
+        [ -n "$out_of_root" ] || continue
+        while IFS= read -r v; do
+            case "$v" in
+                "$ROOT"|"$ROOT"/*) ;;
+                *) report "layer-via $(oneline "$v")" ;;
+            esac
+        done < "$OUT/.via"
+        while IFS= read -r v; do
+            case "$v" in
+                "$ROOT"|"$ROOT"/*) ;;
+                *)
+                    report "layer-path $(oneline "$v")"
+                    while IFS= read -r m; do
+                        [ -n "$m" ] || continue
+                        case "$v" in
+                            "$m"|"$m"/*)
+                                report "block mount-crossing $(oneline "${l#"$ROOT"/}") $(oneline "$m")" ;;
+                        esac
+                    done < "$OUT/.mounts" ;;
+            esac
+        done < "$OUT/.seen"
+    done < "$OUT/.links"
+
+    # Object stores that borrow from elsewhere: every alternates entry,
+    # followed through the alternates of the stores it names, must stay
+    # inside ROOT.
+    : > "$OUT/.alt-seen"
+    while IFS= read -r d; do
+        [ -d "$d/objects" ] && printf '%s\n' "$d/objects"
+    done < "$GITDIRS" > "$OUT/.alt-queue"
+    while [ -s "$OUT/.alt-queue" ]; do
+        od=$(head -1 "$OUT/.alt-queue")
+        tail -n +2 "$OUT/.alt-queue" > "$OUT/.alt-q2"
+        mv "$OUT/.alt-q2" "$OUT/.alt-queue"
+        grep -qxF "$od" "$OUT/.alt-seen" && continue
+        printf '%s\n' "$od" >> "$OUT/.alt-seen"
+        [ -f "$od/info/alternates" ] || continue
+        if has_nul "$od/info/alternates"; then
+            report "block alternates $(oneline "${od#"$ROOT"/}") (unreadable or NUL byte)"
+            continue
+        fi
+        # The last entry counts even without a final newline.
+        while IFS= read -r alt || [ -n "$alt" ]; do
+            case "$alt" in
+                ''|'#'*) continue ;;
+                '"'*)
+                    # Git decodes a quoted entry (C-style escapes); this
+                    # scan does not, so it cannot tell where it points.
+                    report "block alternates $(oneline "${od#"$ROOT"/}") $(oneline "$alt")"
+                    continue ;;
+                /*) ;;
+                *) alt="$od/$alt" ;;
+            esac
+            ac=$(canon_nm "$alt") || ac=""
+            case "$ac" in
+                "$ROOT"/*) printf '%s\n' "$ac" >> "$OUT/.alt-queue" ;;
+                *) report "block alternates $(oneline "${od#"$ROOT"/}") $(oneline "$alt")" ;;
+            esac
+        done < "$od/info/alternates"
+    done
+fi
+
 
 # Engine files and the deletions the context mode makes: in the
 # workspace's own checkout ($2 = "."), where the engine writes those
@@ -274,12 +759,16 @@ if [ "$MODE" = worktree ]; then
                 continue ;;
         esac
         if [ -f "$e" ] && [ ! -L "$e" ]; then
+            if has_nul "$e"; then
+                report "block embedded $(oneline "$rel") (unreadable or NUL byte in .git)"
+                continue
+            fi
             target=$(sed -n 's/^gitdir: //p' "$e")
             case "$target" in
                 /*) ;;
                 *) target="$wt/$target" ;;
             esac
-            target=$(canon "$target") || target=""
+            target=$(canon_nm "$target") || target=""
             case "$target" in
                 "$TOP"/worktrees/*)
                     # A linked worktree's own admin dir (one level below
@@ -297,6 +786,10 @@ if [ "$MODE" = worktree ]; then
                                 # checkout; a copied worktree dir points
                                 # at another one and is not checked
                                 # there.
+                                if has_nul "$target/gitdir"; then
+                                    report "block mismatched-worktree $(oneline "$rel")"
+                                    continue
+                                fi
                                 bp=$(cat "$target/gitdir")
                                 case "$bp" in
                                     /*) ;;
@@ -349,6 +842,10 @@ if [ "$MODE" = worktree ]; then
     # outside it (a container's /tmp) their files are not in the volume.
     while IFS= read -r d; do
         [ -f "$d/gitdir" ] || continue
+        if has_nul "$d/gitdir"; then
+            report "block missing-worktree $(oneline "${d#"$ROOT"/}") (unreadable or NUL byte)"
+            continue
+        fi
         wtgit=$(cat "$d/gitdir")
         # The back-pointer is relative to this admin dir when the
         # worktree was added with --relative-paths.
@@ -357,7 +854,7 @@ if [ "$MODE" = worktree ]; then
             *) wtgit="$d/$wtgit" ;;
         esac
         wt="${wtgit%/.git}"
-        if ! wt=$(canon "$wt"); then
+        if ! wt=$(canon_nm "$wt"); then
             report "block missing-worktree ${wtgit%/.git}"
             continue
         fi
@@ -406,6 +903,7 @@ while IFS= read -r d; do
     if [ -d "$d/objects" ]; then
         store="$d"
     else
+        has_nul "$d/commondir" && fail "cannot read ${d}/commondir"
         common=$(cat "$d/commondir")
         case "$common" in
             /*) store="$common" ;;

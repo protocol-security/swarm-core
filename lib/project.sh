@@ -400,6 +400,22 @@ SWARM_CHECKOUT_LABEL="swarm-core.checkout"
 # An interactive session's container carries its record's name here:
 # a running container can be renamed, but not relabeled.
 SWARM_SESSION_LABEL="swarm-core.session"
+# Containers and workspace volumes carry the engagement they belong to.
+# A workspace volume also names its container, the kind of work in it
+# (agent: numbered agents and post-process; interactive: a human
+# session), the context mode of that container, and a random nonce that
+# proves this engine made it.  The scripts that source this file use
+# them.
+# shellcheck disable=SC2034
+SWARM_ENGAGEMENT_LABEL="swarm-core.engagement"
+# shellcheck disable=SC2034
+SWARM_CONTAINER_LABEL="swarm-core.container"
+# shellcheck disable=SC2034
+SWARM_KIND_LABEL="swarm-core.kind"
+# shellcheck disable=SC2034
+SWARM_CONTEXT_LABEL="swarm-core.context"
+# shellcheck disable=SC2034
+SWARM_NONCE_LABEL="swarm-core.nonce"
 
 # docker ps format and jq definitions for the project's containers.  A
 # container is the project's when its project label is the id,

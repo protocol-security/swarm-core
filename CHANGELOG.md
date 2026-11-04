@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **Feature: `launch.sh retire [--post-process]`.** Removes this
+  checkout's stopped engine containers (or only the post-process one) by
+  ID, without `-f`, after checking every selected container first:
+  exited or created, no restart policy or auto-remove, exactly one mount
+  at `/workspace` that is its own workspace volume and nothing mounted
+  or on tmpfs below it, no open interactive session, no git config in
+  the container that keeps repository data elsewhere (the global and
+  system files its git names with `git var`, so Git 2.42 or later in the
+  image), no repository data outside the volume (worktrees, links,
+  alternates, config), no symlink in the volume to data the container
+  wrote (compared with `docker diff` and with the original image; a name
+  `docker diff` cannot report exactly, not being UTF-8, refuses), and no
+  Git repository anywhere outside the volume, made by the container or
+  shipped by its image, changed or not (`docker diff` cannot show every
+  change). The checks run in a `docker commit` snapshot of the
+  container. A container that changed since its check is left. Workspace
+  volumes stay. It needs no swarmfile, takes the engagement lock and
+  checks the engagement's Docker daemon. Until containers get workspace
+  volumes, it refuses every container. `tests/runtime_retire.sh` (in
+  `tests/test.sh --runtime` and `--all`) runs it on real stopped
+  containers.
 - **Feature: recovery snapshots (building block).**
   `lib/preserve-scan.sh` packs everything Git keeps in a repository
   location (every ref, reflog entry, stash, operation state, object,

@@ -28,6 +28,9 @@ Commands:
   chat PROFILE         Alias for interactive PROFILE.
   shell PROFILE        Start an interactive shell from a named
                        agent profile.
+  retire [--post-process]
+                       Remove stopped containers whose files all live
+                       in their workspace volumes.
 
 Start options:
   --dashboard          Open the TUI dashboard after launch.
@@ -419,6 +422,21 @@ available_drivers() {
     find "$SWARM_DIR/lib/drivers" -type f -name '*.sh' \
         -exec basename {} .sh \; | tr '\n' ' '
 }
+
+# retire needs no swarmfile: it acts on what the runtime directory and
+# Docker already hold.
+case "${1:-}" in
+    retire)
+        shift
+        # shellcheck source=lib/preserve.sh
+        source "$SWARM_DIR/lib/preserve.sh"
+        # shellcheck source=lib/retire.sh
+        source "$SWARM_DIR/lib/retire.sh"
+        rc=0
+        cmd_retire "$@" || rc=$?
+        exit "$rc"
+        ;;
+esac
 
 CONFIG_FILE="${SWARM_CONFIG:-}"
 if [ -z "$CONFIG_FILE" ] && [ -f "$REPO_ROOT/swarm.json" ]; then
