@@ -345,6 +345,7 @@ swarm_state_update() {
 # another checkout.  Callers run swarm_runtime_check first.
 swarm_runtime_owner_check() {
     local dir="$1" root="$2" project="$3" file canonical state owner
+    local recorded
     file="$dir/state.json"
     if [ ! -e "$file" ] && [ ! -L "$file" ]; then
         return 0
@@ -363,9 +364,20 @@ swarm_runtime_owner_check() {
         echo "  owner:    ${owner}" >&2
         echo "  this one: ${canonical}" >&2
         echo "Give this checkout its own id with SWARM_PROJECT. If it" \
-             "is the same checkout at a new path, harvest from the old" \
-             "path first, or remove the runtime directory once nothing" \
-             "in it is needed." >&2
+             "is the same checkout at a new path, run harvest.sh and" \
+             "./launch.sh cleanup from the old path." >&2
+        return 1
+    fi
+    # The runtime directory can be named apart from the project id
+    # (SWARM_RUNTIME_DIR), and cleanup finds containers and volumes by
+    # the project: a runtime of another project is not this one's.
+    recorded=$(printf '%s' "$state" | jq -r '.project // empty') \
+        || return 1
+    if [ -n "$recorded" ] && [ "$recorded" != "$project" ]; then
+        echo "ERROR: ${dir} belongs to project id '${recorded}', not" \
+             "'${project}'." >&2
+        echo "Use that project's SWARM_PROJECT with it, or another" \
+             "SWARM_RUNTIME_DIR." >&2
         return 1
     fi
 }
@@ -623,6 +635,24 @@ swarm_engagement_recorded() {
         return 1
     }
     printf '%s' "$state" | jq -r '.engagement_id // empty'
+}
+
+# Fail when state file FILE records a cleanup that has not finished:
+# the engagement is half deleted, and only cleanup may go on.
+swarm_cleanup_pending_check() {
+    local file="$1" state pending
+    if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+        return 0
+    fi
+    if ! state=$(swarm_state_read "$file") \
+            || ! pending=$(printf '%s' "$state" | jq -r 'has("cleanup")'); then
+        echo "ERROR: cannot read ${file}." >&2
+        return 1
+    fi
+    if [ "$pending" = true ]; then
+        echo "ERROR: cleanup in progress: run ./launch.sh cleanup again." >&2
+        return 1
+    fi
 }
 
 # A later phase joins the recorded engagement.  Fail when the caller

@@ -1218,26 +1218,60 @@ that recorded none needs `SWARM_DOCKER_DAEMON=<docker info ID>`).
 
 ## Cleanup
 
-After a swarm run, the agent containers (`<project>-agent-N`,
-`<project>-agent-post`, `<project>-agent-interactive-*`) and the
-[runtime directory](#runtime-directory) remain. Harvest first, then
-remove both for a fresh start. The agents write to the bare repo as
-the container's user, and on Linux a plain `rm -rf` cannot delete
-those files, so the bare repo goes through Docker first, the way
-`launch.sh` removes an old one. Use the directory that
-`launch.sh start` printed on its `Runtime:` line:
+`./launch.sh cleanup` deletes this checkout's engagement: its
+containers, its workspace volumes, the bare repo and the mirrors. It
+loses nothing Git kept there: before it deletes a repository location
+it copies everything Git keeps in it (every ref and reflog entry,
+every object, stashes, unfinished operations, and every file of the
+git dir) into the checkout as recovery refs, and checks them there.
 
 ```bash
-docker rm -f $(docker ps -aq \
-    --filter "label=swarm-core.project=<project>") 2>/dev/null
-docker run --rm -v "<runtime dir>:/runtime" alpine \
-    rm -rf /runtime/upstream.git /runtime/mirrors &&
-rm -rf "<runtime dir>"
+./launch.sh cleanup [--discard-uncommitted]
 ```
 
-The bare repo and mirrors are removed before the runtime directory
-and its state file. This needs a running Docker daemon and the
-`alpine` image, which Docker pulls if it is missing.
+It stops, and deletes nothing, when
+
+- the bare repo holds agent work the checkout does not have yet
+  (`agent-work`, `swarm/*`, `agent-parked/*`): harvest first;
+- a container cannot be retired (see [Retiring
+  containers](#retiring-containers)), or an interactive session is open
+  or starting;
+- a workspace, the bare repo or a mirror holds work outside Git's
+  history (uncommitted or ignored files, files too large to copy):
+  commit or copy it out, or pass `--discard-uncommitted`, which drops
+  exactly what it lists;
+- `mirrors/` holds anything that is not a mirror;
+- the checkout cannot keep the copies by itself (a shallow or partial
+  clone, alternates, an object store inside what cleanup deletes), or
+  `git fsck --full` finds problems in it;
+- the Docker daemon is not the engagement's, or sees other files than
+  this host at the runtime directory's path (a remote daemon);
+- the runtime directory is `/`, your home directory or another user's,
+  holds or lies inside the checkout or its git dir, or has a comma, a
+  quote, a tab or a newline in its path;
+- something is mounted inside the runtime directory, or at a workspace
+  volume's directory on this host (cleanup never deletes through a
+  mount).
+
+The recovery refs are `refs/swarm-recovery/e<hex>/<snapshot>/s<n>/...`,
+`<hex>` being the engagement id in hex;
+`git cat-file blob refs/swarm-recovery/e<hex>/<snapshot>/sources`
+says what each `s<n>` was. The engine never deletes them. To drop them
+once you are sure you do not need them:
+
+```bash
+git for-each-ref --format='%(refname)' refs/swarm-recovery/ \
+    | xargs -n 1 git update-ref -d
+```
+
+Files the agents wrote belong to the container's user; what this user
+cannot delete goes through a throwaway container of the engine image,
+as root. A cleanup that stops half way (an error, Ctrl-C) leaves a
+checkpoint in the state file: start, post-process, interactive, stop
+and harvest.sh refuse until `./launch.sh cleanup` runs again and
+finishes. Each run checks everything again and copies whatever is still
+there; it also checks that the recovery refs earlier runs wrote are
+intact. The engagement lock, the runtime directory and its claim stay.
 
 ## Verify image
 
