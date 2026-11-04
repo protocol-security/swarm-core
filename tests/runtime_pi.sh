@@ -41,6 +41,15 @@ cleanup() {
         docker run --rm --user 0 -v "$WORK:$WORK" --entrypoint rm \
             "$IMAGE" -rf "$WORK/codex-auth" >/dev/null 2>&1 || true
     fi
+    # The agents wrote into the bare repo as the container's user, whose
+    # files this user cannot delete when its UID is not 1000 (native
+    # Linux): remove them as root with the test image, before it goes.
+    # Never through a link: Docker would mount where it leads.
+    if [ -d "$RT" ] && [ ! -L "$RT" ]; then
+        docker run --rm --user 0 -v "$RT:/rt" --entrypoint rm \
+            "$IMAGE" -rf /rt/upstream.git /rt/upstream.git.new /rt/mirrors \
+            >/dev/null 2>&1 || true
+    fi
     docker image rm "$IMAGE" >/dev/null 2>&1 || true
     rm -rf "$WORK" "$RT"
 }
@@ -160,12 +169,15 @@ mkdir -m 700 "$PI_AUTH_DIR"
     printf '%s\n' '{"openai-codex":{"type":"oauth","access":"expired",
       "refresh":"fixture-refresh","expires":0}}' > "$PI_AUTH_DIR/auth.json"
 )
-docker run --rm --user 0 -v "$PI_AUTH_DIR:/auth" \
-    --entrypoint chown "$IMAGE" -R 1000:1000 /auth
+# The driver reads auth.json on this host, so it runs before the files
+# go to the container's user (this user cannot read them then when its
+# UID is not 1000).
 AUTH_ARGS=()
 while IFS= read -r arg; do
     AUTH_ARGS+=("$arg")
 done < <(agent_docker_auth '' '' chatgpt '')
+docker run --rm --user 0 -v "$PI_AUTH_DIR:/auth" \
+    --entrypoint chown "$IMAGE" -R 1000:1000 /auth
 for i in 1 2; do
     docker run -d --network none --name "$IMAGE-codex-$i" \
         -v "$BARE:/upstream:rw" \

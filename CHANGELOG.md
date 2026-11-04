@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fix: `tests/runtime_pi.sh` on Linux hosts whose UID is not 1000.**
+  The test handed its Codex auth fixture to the container's user before
+  the driver read it on the host, so the Codex checks failed, and its
+  cleanup could not remove what the agents wrote into the bare repo. It
+  now reads the fixture first and removes the bare repo as root with
+  its test image.
 - **Feature: `launch.sh cleanup [--discard-uncommitted]`.** Deletes this
   checkout's engagement (containers, through retire's checks; workspace
   volumes; the bare repo; the mirrors; leftovers of an earlier cleanup)
