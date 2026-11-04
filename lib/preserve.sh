@@ -429,20 +429,54 @@ swarm_scan_host() {
         "$out"
 }
 
+# Run docker ARGS in a process group of its own and wait for it.  A
+# Ctrl-C at the terminal then reaches the caller (whose cleanup waits
+# for this job: wait with no operand) but not the docker client, which,
+# stopped mid-request, can leave the daemon to make a container or an
+# image after that cleanup ran.  Its standard input is the caller's,
+# or /dev/null when that is a terminal.
+swarm_docker_own_group() {
+    local rc=0 had_m=false
+    case "$-" in
+        *m*) had_m=true ;;
+    esac
+    set -m
+    if [ -t 0 ]; then
+        docker "$@" < /dev/null &
+    else
+        docker "$@" &
+    fi
+    if [ "$had_m" = false ]; then
+        set +m
+    fi
+    wait "$!" || rc=$?
+    return "$rc"
+}
+
+# More docker run arguments for swarm_scan_volume (retire's helper
+# label); empty by default.
+SWARM_SCAN_DOCKER_ARGS=()
+
 # Scan workspace volume VOL with image IMAGE (context CONTEXT) into the
 # empty directory OUT: the scanner runs in a throwaway container with
 # the volume read-only and no network, as root so it can read every
-# file, and streams its results back as a tar archive.
+# file, and streams its results back as a tar archive.  MOUNTS (optional,
+# one path per line) names the scanned container's other mount points.
 swarm_scan_volume() {
-    local vol="$1" image="$2" context="$3" out="$4" rc=0
-    docker run --rm -i --pull never --network none --user 0 \
+    local vol="$1" image="$2" context="$3" out="$4" mounts="${5:-}" rc=0
+    swarm_docker_own_group run --rm -i --pull never --network none --user 0 \
+        "${SWARM_SCAN_DOCKER_ARGS[@]+"${SWARM_SCAN_DOCKER_ARGS[@]}"}" \
+        -e "SWARM_SCAN_MOUNTS=${mounts}" \
         --entrypoint bash \
         --mount "type=volume,src=${vol},dst=/workspace,readonly,volume-nocopy" \
         "$image" -c '
-            cat > /tmp/scan.sh || exit 3
-            mkdir /tmp/out || exit 3
-            bash /tmp/scan.sh worktree /workspace "$1" /tmp/out >&2 || exit $?
-            cd /tmp/out || exit 3
+            # The image may be a snapshot of a container with its own
+            # files anywhere, so the scratch space is a new directory.
+            d=$(mktemp -d) || exit 3
+            cat > "$d/scan.sh" || exit 3
+            mkdir "$d/out" || exit 3
+            bash "$d/scan.sh" worktree /workspace "$1" "$d/out" >&2 || exit $?
+            cd "$d/out" || exit 3
             set -- report
             [ ! -f bundle ] || set -- "$@" bundle
             [ ! -f objects ] || set -- "$@" objects

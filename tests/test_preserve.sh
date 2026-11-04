@@ -425,6 +425,89 @@ assert_eq "a bare repo under agent_logs blocks" "1" \
     "$(has_line "$out" 'block embedded agent_logs/x.git')"
 rm -rf "$W/cache.git" "$W/agent_logs"
 
+git -C "$W" config include.path /elsewhere
+assert_eq "a config include blocks" "1" \
+    "$(has_line "$(scan worktree "$W" full)" 'block config-include .git')"
+git -C "$W" config --unset include.path
+ln -s /tmp "$W/.git/out-link"
+assert_eq "a git-dir symlink to a directory out of the volume blocks" "1" \
+    "$(has_line "$(scan worktree "$W" full)" 'block outside-dir-link .git/out-link')"
+ln -s ../../home/agent/result "$W/result"
+ln -s "$W/nowhere" "$W/dangling"
+ln -s loop-b "$W/loop-a"
+ln -s loop-a "$W/loop-b"
+out=$(scan worktree "$W" full)
+assert_eq "a relative link out of the volume reports its target" "1" \
+    "$(grep -c "^layer-link $(dirname "$(dirname "$(cd -P "$W" && pwd -P)")")/home/agent/result$" \
+        "$out/report" || true)"
+assert_eq "a dangling link inside the volume is not reported" "0" \
+    "$(grep -cE '^(layer-link|block).*dangling' "$out/report" || true)"
+assert_eq "a link loop blocks" "1" \
+    "$(grep -cE '^block link-loop loop-[ab]$' "$out/report" | awk '{ print ($1 > 0) }')"
+rm "$W/result" "$W/dangling" "$W/loop-a" "$W/loop-b"
+ln -s "$(cd -P "$W" && pwd -P)"$'\n' "$W/nl-target"
+assert_eq "a link whose target ends in a newline blocks" "1" \
+    "$(has_line "$(scan worktree "$W" full)" 'block newline-path nl-target')"
+rm "$W/nl-target"
+git -C "$W" config core.worktree "$(cd -P "$W" && pwd -P)"$'\n'
+assert_eq "a core.worktree ending in a newline blocks" "1" \
+    "$(has_line "$(scan worktree "$W" full)" 'block core-worktree .git (newline in path)')"
+git -C "$W" config --unset core.worktree
+git init -q --bare "$TMPDIR/common-out.git"
+CW="$TMPDIR/commondir-ws"
+git init -q "$CW"
+g -C "$CW" commit -q --allow-empty -m c
+echo "$TMPDIR/common-out.git" > "$CW/.git/commondir"
+assert_eq "a commondir outside the volume blocks" "1" \
+    "$(has_line "$(scan worktree "$CW" full)" 'block commondir .git')"
+rm "$W/.git/out-link"
+git -C "$W" config core.hooksPath ../hooks
+assert_eq "any core.hooksPath blocks" "1" \
+    "$(has_line "$(scan worktree "$W" full)" 'block core-hookspath .git')"
+git -C "$W" config --unset core.hooksPath
+mkdir -p "$W/lfs-in-ws"
+ln -s "$W/lfs-in-ws" "$W/.git/lfs"
+assert_eq "a git-dir symlink to a directory inside the volume is fine" "0" \
+    "$(grep -c 'link.*\.git/lfs' "$(scan worktree "$W" full)/report" || true)"
+rm "$W/.git/lfs"
+rmdir "$W/lfs-in-ws"
+git init -q --bare "$TMPDIR/alt-outside.git"
+printf '%s' "$TMPDIR/alt-outside.git/objects" > "$W/.git/objects/info/alternates"
+assert_eq "alternates outside the volume block (no final newline)" "1" \
+    "$(has_line "$(scan worktree "$W" full)" 'block alternates .git/objects')"
+rm "$W/.git/objects/info/alternates"
+# A NUL byte in a file the scan parses with the shell blocks: Git would
+# stop at it while the shell drops it, so they would read different
+# paths.
+git init -q --bare "$TMPDIR/nul-store.git"
+printf '%s/objects\000/../..%s/.git/objects\n' \
+    "$(cd -P "$TMPDIR/nul-store.git" && pwd -P)" "$(cd -P "$W" && pwd -P)" \
+    > "$W/.git/objects/info/alternates"
+out=$(scan worktree "$W" full)
+assert_eq "alternates with a NUL byte: the scan completes" "" \
+    "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "alternates with a NUL byte block" "1" \
+    "$(has_line "$out" 'block alternates .git/objects (unreadable or NUL byte)')"
+rm -f "$W/.git/objects/info/alternates"
+NW="$TMPDIR/nul-wt-ws"
+git init -q "$NW"
+g -C "$NW" commit -q --allow-empty -m n
+git -C "$NW" worktree add -q --detach "$NW/inside" 2>/dev/null
+_nadm=$(find "$NW/.git/worktrees" -mindepth 1 -maxdepth 1 -type d | head -1)
+printf '%s\000x\n' "$(cd -P "$NW" && pwd -P)/inside/.git" > "$_nadm/gitdir"
+out=$(scan worktree "$NW" full)
+assert_eq "a worktree back-pointer with a NUL byte blocks" "1" \
+    "$(grep -c 'block missing-worktree .*(unreadable or NUL byte)' "$out/report" || true)"
+assert_eq "so does the checkout's gitfile pointing at that admin dir" "1" \
+    "$(grep -cE '^block (embedded|mismatched-worktree) inside' "$out/report" || true)"
+printf '..\000/..\n' > "$_nadm/commondir"
+assert_eq "a commondir with a NUL byte blocks" "1" \
+    "$(grep -c 'block commondir .*(unreadable or NUL byte)' "$(scan worktree "$NW" full)/report" || true)"
+GLK="$TMPDIR/gitlink-ws"
+mkdir -p "$GLK"
+ln -s /tmp "$GLK/.git"
+assert_eq "a .git symlink is a gitlink, not nogit" "1" \
+    "$(has_line "$(scan worktree "$GLK" full)" 'block gitlink')"
 git init -q "$W/inner"
 assert_eq "an embedded repository blocks" "1" \
     "$(has_line "$(scan worktree "$W" full)" 'block embedded inner')"
@@ -460,8 +543,11 @@ assert_eq "its detached commit is kept" "commit" \
 mkdir -p "$TMPDIR/clean-elsewhere"
 echo dirty-again >> "$W/.gitmodules"
 git -C "$W" config core.worktree "$TMPDIR/clean-elsewhere"
+out=$(scan worktree "$W" full)
 assert_eq "core.worktree does not hide dirty files" "1" \
-    "$(has_line "$(scan worktree "$W" full)" 'uncommitted dirty .:  M .gitmodules')"
+    "$(has_line "$out" 'uncommitted dirty .:  M .gitmodules')"
+assert_eq "a core.worktree outside the volume blocks" "1" \
+    "$(has_line "$out" 'block core-worktree .git ')"
 git -C "$W" config --unset core.worktree
 git -C "$W" checkout -q -- .gitmodules
 

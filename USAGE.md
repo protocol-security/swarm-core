@@ -1165,6 +1165,57 @@ rm -rf /tmp/<project>-swarm.env
 find -H /tmp -maxdepth 1 -name '<project>-mirror-*.git' -exec rm -rf {} +
 ```
 
+## Retiring containers
+
+`./launch.sh retire` removes this checkout's stopped engine containers;
+`./launch.sh retire --post-process` removes only `<project>-agent-post`,
+so `post-process` can run again. A container's `/workspace` is a
+Docker volume that stays; what goes is the container's own layer, so
+retire checks every selected container before it removes any, and
+refuses when one
+
+- is running, paused or restarting, or has a restart policy or
+  auto-remove (Docker could start or remove it on its own);
+- has anything but its own workspace volume at `/workspace`, or
+  another mount or a tmpfs below it;
+- belongs to an open interactive session;
+- has global or system git config (the files the container's git
+  names with `git var`, which needs Git 2.42 or later in the image,
+  read as the container's user with its `HOME` and `XDG_CONFIG_HOME`)
+  that sets `lfs.storage`, `core.worktree` or `core.hooksPath`,
+  includes other files, cannot be parsed, or lies on a mount; or has
+  Git environment variables of its own, or a `HOME` that is empty,
+  relative or not normalized;
+- has repository data outside `/workspace`: a worktree registered
+  elsewhere, a `.git` that is a link or a gitfile, repository config
+  that includes files or sets `core.worktree` outside, `core.hooksPath`
+  or `lfs.storage`, alternates outside, or a nested repository;
+- has a symlink in the volume that leads to data the container wrote
+  itself, or to an image file it changed (links into the unchanged
+  image, such as a virtualenv's `python`, are fine);
+- has a Git repository anywhere outside `/workspace`, one it made (a
+  clone in `/tmp`, a bare repository; package caches that keep
+  repositories, such as Go's, count too) or one its image ships,
+  changed or not: `docker diff` goes by metadata, so it cannot show
+  every change to a repository (the engine image ships none).
+
+The checks run in a throwaway container started from a snapshot of the
+stopped container (`docker commit`, removed afterwards, also when
+retire is interrupted; one left by a retire that was killed outright
+is removed by the next), with the volume read-only and no network, so
+links resolve as they did in the container and every repository
+outside the volume is found. For links that lead out of the volume,
+`docker diff` and a comparison with the original image tell whether
+the container wrote what they lead to (a name that is not valid UTF-8
+reaches `docker diff` altered, so such a name refuses too).
+
+The error says what to copy out first. Removal goes by ID, without
+`-f`, and leaves any container that changed since it was checked. Run
+`costs.sh` before retire if you need the containers' stats. retire
+needs no swarmfile; it takes the engagement lock and refuses when
+Docker talks to another daemon than the engagement's (an engagement
+that recorded none needs `SWARM_DOCKER_DAEMON=<docker info ID>`).
+
 ## Cleanup
 
 After a swarm run, the agent containers (`<project>-agent-N`,
