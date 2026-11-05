@@ -52,6 +52,13 @@ PROJECT="$(swarm_project_resolve "$REPO_ROOT")" || exit 1
 RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
 BARE_REPO="${RUNTIME_DIR}/upstream.git"
 
+# Git on the bare repo, which agents write: no transport (a missing
+# object must not make it fetch from a remote the repo names) and no
+# signature check (log.showSignature would run the repo's gpg.program).
+bare_git() {
+    swarm_no_fetch git -c log.showSignature=false -C "$BARE_REPO" "$@"
+}
+
 # Read nothing from the runtime directory unless only the current user
 # can reach it: the bare repo inside is writable for every UID.
 runtime_ok() {
@@ -579,11 +586,11 @@ interactive_branch_status() {
     [ "$dirty" = "dirty" ] && { printf 'dirty'; return; }
 
     if [ -n "$branch" ] && runtime_ok \
-            && git -C "$BARE_REPO" rev-parse --verify \
+            && bare_git rev-parse --verify \
             --quiet "refs/heads/${branch}" >/dev/null 2>&1; then
         local tip
-        tip=$(git -C "$BARE_REPO" rev-parse "refs/heads/${branch}")
-        if git -C "$REPO_ROOT" merge-base --is-ancestor \
+        tip=$(bare_git rev-parse "refs/heads/${branch}")
+        if swarm_no_fetch git -C "$REPO_ROOT" merge-base --is-ancestor \
                 "$tip" HEAD 2>/dev/null; then
             printf 'harvested'
         else
@@ -938,9 +945,9 @@ draw() {
     # Recent commits.
     if [ -d "$BARE_REPO" ] && runtime_ok; then
         local commit_count
-        commit_count=$(git -C "$BARE_REPO" rev-list --count refs/heads/agent-work 2>/dev/null || echo 0)
+        commit_count=$(bare_git rev-list --count refs/heads/agent-work 2>/dev/null || echo 0)
         printf " ${BOLD}Recent commits${RESET} ${DIM}(%s total):${RESET}\n" "$commit_count"
-        git -C "$BARE_REPO" log refs/heads/agent-work --oneline -8 2>/dev/null | \
+        bare_git log refs/heads/agent-work --oneline -8 2>/dev/null | \
         while IFS= read -r line; do
             printf "   ${DIM}%s${RESET}\n" "$line"
         done

@@ -42,8 +42,13 @@
 #                                  link in it passes
 #   layer-path <path>              any path outside the volume such a
 #                                  link visits
-# Exit status: 0 when the report and bundle are complete, 3 when the
-# scan cannot tell (message on stderr).  Compatible with Bash 3.2.
+# Exit status: 0 when the report is complete, and so are the bundle and
+# the object list (except after a block that keeps a worktree scan from
+# reading the work tree: a filter driver, an include, an embedded
+# repository, a git dir or repository whose path holds a newline, a
+# core.worktree outside, a mismatched worktree, a common dir elsewhere;
+# the scan then stops there, with no bundle); 3 when the scan cannot
+# tell (message on stderr).  Compatible with Bash 3.2.
 
 set -euo pipefail
 
@@ -55,6 +60,12 @@ done
 # does not have, so objects could look reached that the bundle lacks.
 export GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null
 export GIT_NO_LAZY_FETCH=1 GIT_TERMINAL_PROMPT=0
+# No transport at all, whatever protocol.* a repository sets: a missing
+# object must not make Git fetch it from a remote that repository names
+# (which, for a local path, runs the remote's uploadpack command).
+# GIT_NO_LAZY_FETCH does that from Git 2.45 on; an empty allow-list
+# does it on any Git.
+export GIT_ALLOW_PROTOCOL=''
 export LC_ALL=C
 
 MODE="${1:-}"
@@ -77,6 +88,13 @@ case "$MODE" in
     worktree|gitdir|userconfig|files) ;;
     *) fail "unknown mode: ${MODE}" ;;
 esac
+# Only each repository's own config applies: the global and system
+# files of whoever runs the scan (in a container, files its agent could
+# write) must not change what Git reports or runs.  userconfig mode
+# reads those files on purpose.
+if [ "$MODE" != userconfig ]; then
+    export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+fi
 [ "$MODE" = userconfig ] || [ -d "$ROOT" ] || fail "not a directory: ${ROOT}"
 [ -d "$OUT" ] || fail "not a directory: ${OUT}"
 
@@ -109,6 +127,27 @@ canon() {
         *$'\n'*) return 1 ;;
     esac
     printf '%s' "$r"
+}
+
+# Print what Git reads from pointer file $1 (a commondir, a gitfile):
+# the whole file with its trailing CR and LF dropped, as Git reads it.
+# Fails when a CR or LF is left inside (Git would keep it and go
+# elsewhere than this scan's line-based lists say) or the file cannot
+# be read.
+read_pointer() {
+    local v
+    v=$(cat "$1" && printf x) || return 1
+    v="${v%x}"
+    while :; do
+        case "$v" in
+            *$'\n'|*$'\r') v="${v%?}" ;;
+            *) break ;;
+        esac
+    done
+    case "$v" in
+        *$'\n'*|*$'\r'*) return 1 ;;
+    esac
+    printf '%s' "$v"
 }
 
 # Print path $1 on one line, newlines shown as \n.
@@ -183,10 +222,14 @@ SCRATCH="$OUT/scratch.git"
 
 # Run git on git dir $1 with the settings every read here needs, and
 # fail the scan on a non-zero exit or on anything it writes to stderr.
+# The excludes and attributes files Git reads by default from the
+# runner's home (~/.config/git) are not the repository's: they are
+# turned off like the rest of the global config.
 g() {
     local dir="$1"
     shift
     if ! git --git-dir="$dir" -c safe.directory='*' \
+            -c core.excludesFile=/dev/null -c core.attributesFile=/dev/null \
             -c core.fsmonitor=false -c core.untrackedCache=false \
             -c advice.graftFileDeprecated=false --no-optional-locks \
             "$@" 2>"$ERR"; then
@@ -200,6 +243,7 @@ gw() {
     local dir="$1"
     shift
     if ! git -C "$dir" -c safe.directory='*' \
+            -c core.excludesFile=/dev/null -c core.attributesFile=/dev/null \
             -c core.fsmonitor=false -c core.untrackedCache=false \
             -c advice.graftFileDeprecated=false --no-optional-locks \
             "$@" 2>"$ERR"; then
@@ -476,11 +520,13 @@ list_gitdirs() {
         [ -d "$d/objects" ] || [ -f "$d/commondir" ] || continue
         # The git dir list is line-based; a git dir whose path holds a
         # newline is reported instead of listed (its name is shown with
-        # the newlines as \n).
+        # the newlines as \n).  Unchecked, it keeps git status from
+        # running (a submodule's status would use its config).
         case "$d" in
             *$'\n'*)
                 report "block newline-path $(printf '%s' "${d#"$ROOT"/}" \
                     | awk 'BEGIN { ORS = "\\n" } { print }')"
+                UNCHECKED_REPO=yes
                 continue ;;
         esac
         printf '%s\n' "$d"
@@ -587,6 +633,9 @@ fi
 # TOP as a find -path pattern: *, ?, [ and \ in it match only themselves.
 TOP_PAT=$(printf '%s' "$TOP" | sed 's/[][*?\\]/\\&/g')
 
+# Set when a git dir or a repository below ROOT cannot be checked (its
+# path holds a newline): git status must not run then.
+UNCHECKED_REPO=""
 GITDIRS="$OUT/.gitdirs"
 list_gitdirs "$TOP" > "$GITDIRS"
 grep -qx "$TOP" "$GITDIRS" || printf '%s\n' "$TOP" >> "$GITDIRS"
@@ -612,8 +661,10 @@ if [ "$MODE" = worktree ]; then
         # A git dir's common dir (objects, refs) must be in the volume.
         if [ -f "$d/commondir" ] && has_nul "$d/commondir"; then
             report "block commondir ${rel} (unreadable or NUL byte)"
+        elif [ -f "$d/commondir" ] \
+                && ! cd_v=$(read_pointer "$d/commondir"); then
+            report "block commondir ${rel} (unreadable, or a line break inside)"
         elif [ -f "$d/commondir" ]; then
-            cd_v=$(cat "$d/commondir")
             case "$cd_v" in
                 /*) ;;
                 *) cd_v="$d/$cd_v" ;;
@@ -639,6 +690,18 @@ if [ "$MODE" = worktree ]; then
                 || rc=$?
             case "$rc" in
                 0) report "block config-include ${rel}" ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+            # A filter driver is a command Git runs on work-tree files
+            # (git status can run a clean filter): it would run inside
+            # this scan.  It blocks rather than being switched off, which
+            # would make every filtered file look modified.
+            rc=0
+            git config -f "$cf" --name-only --get-regexp '^filter\.' \
+                > "$OUT/.flt" 2>/dev/null || rc=$?
+            case "$rc" in
+                0) report "block filter-driver ${rel} $(oneline "$(head -n 1 "$OUT/.flt")")" ;;
                 1) ;;
                 *) fail "cannot parse ${cf}" ;;
             esac
@@ -674,7 +737,12 @@ if [ "$MODE" = worktree ]; then
                         *) wtv="$d/$wtv" ;;
                     esac
                     wtc=$(canon_nm "$wtv") || wtc=""
+                    # A work tree inside the git dir is out of sight of
+                    # the search for repositories below ROOT (it skips
+                    # the git dir), and status would go there.
                     case "$wtc" in
+                        "$TOP"|"$TOP"/*)
+                            report "block gitdir-worktree ${rel} ${wtv}" ;;
                         "$ROOT"|"$ROOT"/*) ;;
                         *) report "block core-worktree ${rel} ${wtv}" ;;
                     esac ;;
@@ -844,9 +912,13 @@ engine_entry() {
 check_checkout() {
     local wt="$1" rel="$2" gd="$3" rec xy path
     # No rename detection: a rename record would hide its new path from
-    # the filters below.
+    # the filters below.  --ignore-submodules=dirty: a submodule counts
+    # when its commit differs from the one recorded, but status does not
+    # look into its work tree (that would run git there, with whatever
+    # git dir and config it names): every submodule checkout is checked
+    # on its own, with its validated git dir (queue_checkout).
     gw "$wt" --git-dir="$gd" --work-tree="$wt" status --porcelain=v1 -z \
-        --no-renames --untracked-files=all --ignore-submodules=none \
+        --no-renames --untracked-files=all --ignore-submodules=dirty \
         > "$OUT/.st"
     while IFS= read -r -d '' rec; do
         xy="${rec:0:2}"
@@ -871,11 +943,37 @@ check_checkout() {
     done < "$OUT/.ls"
 }
 
+# Report every index entry of checkout $1 (shown as $2, git dir $3)
+# whose path Git itself would never write: absolute, with an empty, "."
+# or ".." component, or with a ".git" component (in any case).  Such a
+# path can lead into a git dir, where the search for repositories below
+# ROOT does not look.
+check_index_paths() {
+    local wt="$1" rel="$2" gd="$3" p lc
+    gw "$wt" --git-dir="$gd" --work-tree="$wt" ls-files -z > "$OUT/.lsf"
+    while IFS= read -r -d '' p; do
+        lc=$(printf '%s' "$p" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' \
+            'abcdefghijklmnopqrstuvwxyz')
+        case "/$lc/" in
+            //*|*//*|*/./*|*/../*|*/.git/*)
+                report "block index-in-gitdir ${rel}: $(oneline "$p")" ;;
+        esac
+    done < "$OUT/.lsf"
+}
+
+# Queue checkout $1 (shown as $2, git dir $3) for check_checkout, which
+# runs only once every repository below ROOT has been validated.
+queue_checkout() {
+    printf '%s\0%s\0%s\0' "$1" "$2" "$3" >> "$OUT/.checkouts"
+}
+
 if [ "$MODE" = worktree ]; then
-    check_checkout "$ROOT" "." "$TOP"
+    : > "$OUT/.checkouts"
     # Every other .git below ROOT must be a submodule checkout whose git
     # dir lives in ROOT/.git; anything else is a repository the bundle
-    # does not see.
+    # does not see.  This is checked before git status runs: status
+    # looks into submodules (--ignore-submodules=none) with the config
+    # of whatever git dir their .git names.
     find "$ROOT" -path "$TOP_PAT" -prune -o -name .git -print0 2>"$ERR" \
         > "$OUT/.embedded" || fail "cannot list ${ROOT}"
     [ ! -s "$ERR" ] || fail "cannot list ${ROOT}: $(cat "$ERR")"
@@ -886,6 +984,7 @@ if [ "$MODE" = worktree ]; then
             *$'\n'*)
                 report "block newline-path $(printf '%s' "$rel" \
                     | awk 'BEGIN { ORS = "\\n" } { print }')"
+                UNCHECKED_REPO=yes
                 continue ;;
         esac
         if [ -f "$e" ] && [ ! -L "$e" ]; then
@@ -893,7 +992,18 @@ if [ "$MODE" = worktree ]; then
                 report "block embedded $(oneline "$rel") (unreadable or NUL byte in .git)"
                 continue
             fi
-            target=$(sed -n 's/^gitdir: //p' "$e")
+            # Git reads the whole file and drops only trailing CR and LF:
+            # a line break inside would name another path than the one
+            # checked here.
+            target=$(read_pointer "$e") || target=""
+            case "$target" in
+                "gitdir: "*) target="${target#gitdir: }" ;;
+                *) target="" ;;
+            esac
+            if [ -z "$target" ]; then
+                report "block embedded $(oneline "$rel") (not one gitdir line in .git)"
+                continue
+            fi
             case "$target" in
                 /*) ;;
                 *) target="$wt/$target" ;;
@@ -937,13 +1047,16 @@ if [ "$MODE" = worktree ]; then
                     case "$_rest" in
                         */*)
                             if grep -qxF "$target" "$GITDIRS"; then
-                                check_checkout "$wt" "$rel" "$target"
+                                queue_checkout "$wt" "$rel" "$target"
                                 continue
                             fi ;;
                     esac ;;
                 "$TOP"/*)
-                    check_checkout "$wt" "$rel" "$target"
-                    continue ;;
+                    # Only a git dir this scan checked (in GITDIRS).
+                    if grep -qxF "$target" "$GITDIRS"; then
+                        queue_checkout "$wt" "$rel" "$target"
+                        continue
+                    fi ;;
             esac
         fi
         report "block embedded ${rel}"
@@ -963,7 +1076,8 @@ if [ "$MODE" = worktree ]; then
         case "$rel" in
             *$'\n'*)
                 report "block newline-path $(printf '%s' "$rel" \
-                    | awk 'BEGIN { ORS = "\\n" } { print }')" ;;
+                    | awk 'BEGIN { ORS = "\\n" } { print }')"
+                UNCHECKED_REPO=yes ;;
             *) report "block embedded ${rel}" ;;
         esac
     done < "$OUT/.otherheads"
@@ -989,10 +1103,42 @@ if [ "$MODE" = worktree ]; then
             continue
         fi
         case "$wt" in
-            "$ROOT"/*) check_checkout "$wt" "${wt#"$ROOT"/}" "$d" ;;
+            "$TOP"|"$TOP"/*) report "block gitdir-worktree ${wt#"$ROOT"/}" ;;
+            "$ROOT"/*) queue_checkout "$wt" "${wt#"$ROOT"/}" "$d" ;;
             *) report "block external ${wt}" ;;
         esac
     done < "$GITDIRS"
+    # Only now is the work tree read (git status, ls-files), with the
+    # config of the git dirs checked above, and not at all when one of
+    # those findings would let status run with a config nobody checked:
+    # a filter driver, an include, an embedded repository or a git dir
+    # or repository whose path holds a newline (UNCHECKED_REPO; status
+    # looks into submodules with their own config), a core.worktree
+    # outside or inside a git dir (a submodule's status goes there,
+    # to whatever repositories it holds), a worktree whose admin dir
+    # does not name it back, a common dir elsewhere.  Such a location is
+    # refused anyway; other blocks still let the scan finish its report.
+    # The index names paths too: status refreshes every entry, and for a
+    # gitlink reads the repository at its path.  Git never puts an entry
+    # under the git dir itself (only a hand-written index does), and the
+    # search for repositories below ROOT skips the git dir, so any such
+    # entry, in any checkout's index, blocks.  ls-files reads the index
+    # without refreshing it.
+    check_index_paths "$ROOT" "." "$TOP"
+    while IFS= read -r -d '' wt && IFS= read -r -d '' rel \
+            && IFS= read -r -d '' gd; do
+        check_index_paths "$wt" "$rel" "$gd"
+    done < "$OUT/.checkouts"
+    if [ -n "$UNCHECKED_REPO" ] \
+            || grep -qE '^block (filter-driver|config-include|embedded|core-worktree|gitdir-worktree|index-in-gitdir|mismatched-worktree|commondir) ' \
+            "$REPORT"; then
+        exit 0
+    fi
+    check_checkout "$ROOT" "." "$TOP"
+    while IFS= read -r -d '' wt && IFS= read -r -d '' rel \
+            && IFS= read -r -d '' gd; do
+        check_checkout "$wt" "$rel" "$gd"
+    done < "$OUT/.checkouts"
 fi
 
 # Unfinished operations, in every git dir.
@@ -1034,7 +1180,8 @@ while IFS= read -r d; do
         store="$d"
     else
         has_nul "$d/commondir" && fail "cannot read ${d}/commondir"
-        common=$(cat "$d/commondir")
+        common=$(read_pointer "$d/commondir") \
+            || fail "cannot read ${d}/commondir"
         case "$common" in
             /*) store="$common" ;;
             *) store="$d/$common" ;;

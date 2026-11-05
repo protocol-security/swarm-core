@@ -181,6 +181,13 @@ case "$1" in
         # are mapped back to the snapshot's names.
         case "$*" in
             *swarm-repos*)
+                # $F/flood-search: the search sends far more than any
+                # list (a snapshot's tools are its agent's); a write
+                # that fails stops it, as it stops the docker client.
+                if [ -e "$F/flood-search" ]; then
+                    head -c 3000000 /dev/zero || exit 1
+                    exit 0
+                fi
                 # docker run -i copies standard input into the container,
                 # whether or not the program reads it.
                 for a in "$@"; do
@@ -296,6 +303,12 @@ case "$1" in
         cat > /dev/null
         if [ "$(cat "$F/scan/$vol" 2>/dev/null)" = fail ]; then exit 3; fi
         cp "$F/scan/$vol" "$d/report" 2>/dev/null || : > "$d/report"
+        # $F/scan-extra: the archive carries a member no scan writes.
+        if [ -e "$F/scan-extra" ]; then
+            echo x > "$d/extra"
+            tar -C "$d" -cf - report extra
+            exit 0
+        fi
         tar -C "$d" -cf - report
         exit 0 ;;
     diff)
@@ -982,6 +995,17 @@ git init -q "$F/snaproot/tmp/a
 b"
 refused "a repository whose path holds a newline" \
     "Git repositories outside its workspace"
+# What a helper sends back is bounded (SWARM_HELPER_OUTPUT_LIMIT_MB) and
+# checked: a flooding search and a scan archive with a member no scan
+# writes refuse.
+case_setup
+: > "$F/flood-search"
+SWARM_HELPER_OUTPUT_LIMIT_MB=1 refused "a repository search that floods" \
+    "cannot check proj-agent-1 for Git repositories"
+case_setup
+: > "$F/scan-extra"
+refused "a scan archive with an extra member" \
+    "the scan archive holds an unexpected entry"
 if [ "$(id -u)" != 0 ]; then
     case_setup
     mkdir -p "$F/snaproot/root/locked"

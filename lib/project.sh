@@ -394,6 +394,19 @@ swarm_project_resolve() {
     swarm_project_id "$(basename "$root")"
 }
 
+# Run command ARGS (git, or a function that runs it) with no Git
+# transport allowed: for reads of a repository that agents write (the
+# bare repo, a mirror).  A missing object would otherwise make Git fetch
+# it from a remote that repository names, which for a local path runs
+# the remote's uploadpack command.  GIT_NO_LAZY_FETCH stops that from
+# Git 2.45 on; an empty GIT_ALLOW_PROTOCOL stops every transport on any
+# Git, whatever protocol.* the repository sets (-c protocol.allow=never
+# would not: a repository's protocol.file.allow overrides it).  Never
+# for fetching a bundle, which needs the file transport.
+swarm_no_fetch() {
+    GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL='' "$@"
+}
+
 # Physical path of a checkout, the form recorded as its owner.
 swarm_checkout_path() {
     (cd -P "$1" && pwd -P)
