@@ -767,7 +767,18 @@ HELP
     # id could have claimed the runtime and started in between.
     swarm_runtime_verify "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || return 1
     swarm_engagement_join "$STATE_FILE" || return 1
-    retire_require_daemon || return 1
+    swarm_legacy_refuse "$RUNTIME_DIR" "$STATE_FILE" || return 1
+    local engagement
+    engagement=$(swarm_engagement_recorded "$STATE_FILE") || return 1
+    if [ -z "$engagement" ]; then
+        # Containers without a recorded engagement are an earlier
+        # release's.
+        swarm_unrecorded_refuse "$RUNTIME_DIR" "$PROJECT" "$REPO_ROOT" \
+            "$CHECKOUT_PATH" || return 1
+        echo "No engagement recorded in ${STATE_FILE}; nothing to retire."
+        return 0
+    fi
+    swarm_engagement_daemon_check "$STATE_FILE" || return 1
     retire_sweep_snapshots || return 1
 
     local list sel checked id name
@@ -833,32 +844,4 @@ EOF
     echo "Workspace volumes stay, with the files of the removed containers;" \
          "./launch.sh cleanup deletes them after its checks."
     return "$failed"
-}
-
-# Stop unless Docker talks to the daemon the engagement recorded.  An
-# engagement without a recorded daemon is refused: retire acts on
-# containers by ID and must know they are the engagement's.
-retire_require_daemon() {
-    local recorded current
-    recorded=$(swarm_state_read "$STATE_FILE" 2>/dev/null \
-        | jq -r '.docker_daemon // empty' 2>/dev/null) || recorded=""
-    if [ -z "$recorded" ]; then
-        if [ -z "${SWARM_DOCKER_DAEMON:-}" ]; then
-            echo "ERROR: ${STATE_FILE} records no Docker daemon. Name the" \
-                 "one this engagement runs on:" >&2
-            echo "  SWARM_DOCKER_DAEMON=\$(docker info -f '{{.ID}}')" \
-                 "./launch.sh retire" >&2
-            return 1
-        fi
-        recorded="$SWARM_DOCKER_DAEMON"
-    fi
-    if ! swarm_docker_pin || ! current=$(swarm_docker_daemon_id); then
-        echo "ERROR: cannot read the Docker daemon id." >&2
-        return 1
-    fi
-    if [ "$current" != "$recorded" ]; then
-        echo "ERROR: this engagement runs on Docker daemon ${recorded}," \
-             "but Docker now talks to ${current}." >&2
-        return 1
-    fi
 }

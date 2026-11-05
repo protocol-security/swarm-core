@@ -90,6 +90,18 @@ swarm_runtime_check "$RUNTIME_DIR" || exit 1
 swarm_runtime_owner_check "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
 swarm_lock "$RUNTIME_DIR" || exit 1
 swarm_cleanup_pending_check "$RUNTIME_DIR/state.json" || exit 1
+# An earlier release's engagement is finished with that release; these
+# checks read the state file only, so they hold without Docker too.
+# This engine records the engagement before it makes the bare repo, so
+# a bare repo with none recorded is an earlier release's as well.
+swarm_legacy_refuse "$RUNTIME_DIR" "$RUNTIME_DIR/state.json" || exit 1
+_engaged=$(swarm_engagement_recorded "$RUNTIME_DIR/state.json") || exit 1
+if [ -z "$_engaged" ]; then
+    swarm_legacy_explain "$RUNTIME_DIR" \
+        "a bare repo with no engagement recorded"
+    exit 1
+fi
+swarm_engagement_token_check "$RUNTIME_DIR/state.json" || exit 1
 swarm_engagement_env_check || exit 1
 swarm_engagement_join "$RUNTIME_DIR/state.json" || exit 1
 CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")"
@@ -160,9 +172,11 @@ for branch in "${HARVEST_BRANCHES[@]}"; do
         echo "the bare repo still has the old ancestry. Merging" >&2
         echo "would re-introduce removed commits." >&2
         echo "" >&2
-        echo "Resolve by wiping and recreating the bare repo:" >&2
-        echo "  $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
-        echo "  ./launch.sh ...   # recreates the bare from current HEAD" >&2
+        echo "Take what you need from it by hand (git log ${remote_ref}," >&2
+        echo "cherry-pick), then end the engagement with" >&2
+        echo "  ./launch.sh cleanup --allow-unharvested" >&2
+        echo "which keeps everything in the bare repo as recovery refs," >&2
+        echo "and start again from the current HEAD." >&2
         git remote remove "$REMOTE_NAME"
         exit 1
     fi

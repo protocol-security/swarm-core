@@ -331,43 +331,16 @@ assert_eq "legacy bare repo is refused" "1" \
 _legacy_msg=$(swarm_refuse_legacy_state "$_legacy_project" 2>&1 || true)
 assert_contains "message shows how to fetch the old refs" \
     "git fetch ${LEGACY_BARE}" "$_legacy_msg"
-assert_contains "message stops old containers with the stop grace" \
-    "  docker stop -t ${SWARM_STOP_TIMEOUT:-60} <container>..." \
-    "$_legacy_msg"
+assert_contains "message sends the user to the release that made it" \
+    "with the release that made it" "$_legacy_msg"
+assert_eq "message prints no stop or removal command" "0" \
+    "$(printf '%s\n' "$_legacy_msg" \
+        | grep -cE 'docker (stop|run|rm)|rm -rf' || true)"
 assert_eq "legacy state is left in place" "true" \
     "$([ -d "$LEGACY_BARE" ] && echo true || echo false)"
-
-# Run a printed removal line.  The docker stub runs on this host the
-# command that the alpine container would run.
-run_removal() {
-    bash -c 'docker() {
-        while [ "$#" -gt 0 ] && [ "$1" != alpine ]; do shift; done
-        shift
-        "$@"
-    }
-    eval "$1"' _ "$1"
-}
-
-# The printed removal command lists existing paths, with no glob that
-# zsh would reject when nothing matches.  It goes through Docker, since
-# agents wrote files there as another user.
-_rm_prefix="  docker run --rm -v /tmp:/tmp alpine rm -rf"
-_legacy_rm=$(printf '%s\n' "$_legacy_msg" | grep '^  docker run ' || true)
-assert_eq "removal command names the old bare repo" \
-    "${_rm_prefix} ${LEGACY_BARE}" "$_legacy_rm"
-run_removal "$_legacy_rm"
-assert_eq "printed command removes the old state" "0" \
+rm -rf "$LEGACY_BARE"
+assert_eq "without it nothing is refused" "0" \
     "$(status_of swarm_refuse_legacy_state "$_legacy_project")"
-
-LEGACY_MIRROR="/tmp/${_legacy_project}-mirror-lib.git"
-mkdir -p "$LEGACY_BARE" "$LEGACY_MIRROR"
-_legacy_rm=$(swarm_refuse_legacy_state "$_legacy_project" 2>&1 \
-    | grep '^  docker run ' || true)
-assert_eq "removal command names existing mirrors too" \
-    "${_rm_prefix} ${LEGACY_BARE} ${LEGACY_MIRROR}" "$_legacy_rm"
-run_removal "$_legacy_rm"
-assert_eq "old mirror is removed" "false" \
-    "$([ -e "$LEGACY_MIRROR" ] && echo true || echo false)"
 mkdir -p "$LEGACY_BARE"
 
 # Anyone can create a path in /tmp.  Only a directory the user owns
@@ -381,21 +354,6 @@ rm -f "$LEGACY_BARE"
 assert_eq "file at the legacy path is ignored" "0" \
     "$(status_of swarm_refuse_legacy_state "$_legacy_project")"
 rm -f "$LEGACY_BARE"
-
-# The removal command for a runtime bare repo mounts only the runtime
-# directory, as one argument even with a space in it, and removes only
-# the bare repo there.
-_rm_dir="$TMPDIR/run time"
-_rm_args=$(bash -c 'docker() { printf "<%s>\n" "$@"; }; eval "$1"' _ \
-    "$(swarm_bare_rm_command "$_rm_dir")")
-assert_eq "bare removal mounts the runtime directory only" "<run>
-<--rm>
-<-v>
-<${_rm_dir}:/runtime>
-<alpine>
-<rm>
-<-rf>
-</runtime/upstream.git>" "$_rm_args"
 
 # ============================================================
 echo ""
@@ -553,16 +511,20 @@ assert_contains "another checkout's containers: use SWARM_PROJECT" \
 assert_eq "another checkout's containers: no old-release steps" "0" \
     "$(printf '%s\n' "$_ctr_msg" | grep -c 'older swarm-core' || true)"
 
-# Containers of an older release get the upgrade steps instead: stop
-# with the grace, so their agents can still push to /tmp.
+# Containers of an older release get the upgrade steps instead, with
+# no stop or removal command (stopping one started with --rm removes
+# its files).
 _ctr_msg=$(
     # shellcheck disable=SC2329
     docker() { ctr_listing proj-agent-1 "" "" proj-agent-post "" ""; }
     swarm_containers_verify proj "$_own_a" 2>&1 || true
 )
-assert_contains "old containers: stop them with the grace" \
-    "  docker stop -t ${SWARM_STOP_TIMEOUT:-60} proj-agent-1 proj-agent-post" \
+assert_contains "old containers: named" "proj-agent-1 proj-agent-post" \
     "$_ctr_msg"
+assert_contains "old containers: finish them with that release" \
+    "finish it with that release" "$_ctr_msg"
+assert_eq "old containers: no docker stop advice" "0" \
+    "$(printf '%s\n' "$_ctr_msg" | grep -c 'docker stop' || true)"
 assert_contains "old containers: points to the upgrade steps" \
     "Upgrading from" "$_ctr_msg"
 assert_eq "old containers: no SWARM_PROJECT advice" "0" \

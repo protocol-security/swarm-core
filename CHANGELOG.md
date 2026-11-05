@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **Breaking: workspace volumes, one Docker daemon per engagement, new
+  engagements only on a clean runtime directory.** Each engine container
+  gets a `/workspace` volume of its own (`<container>-ws-<hex>`, labeled
+  with the project, checkout, engagement, engagement token, container,
+  kind, context and a nonce that is read back), so its work outlives it
+  for retire and cleanup. The workspace mount, the engagement labels,
+  `--restart no`, `--rm=false` and the container name come after
+  `docker_args`. The state file records the engagement's Docker daemon
+  and a random token; `post-process` and `interactive` joining it,
+  `stop`, `wait`, `retire` and `cleanup` refuse another daemon, and each
+  command keeps the Docker context it started with. `stop` takes no
+  lock, stops by ID only containers that carry the engagement's token
+  (`--numbered`: the numbered agents only), and fails when one still
+  runs; `wait` checks the token again before it goes on; `SWARM_ENGAGEMENT_TOKEN` binds `stop`,
+  `post-process`, `interactive` and `harvest.sh` to one engagement, and
+  the dashboard's `s` and `p` go through `launch.sh`. `start`, and
+  `post-process` or `interactive` when they would create the engagement,
+  refuse while the runtime directory holds anything of one; nothing is
+  removed by force any more (no `docker rm -f`, no `alpine` helper, no
+  `rm -rf` recipes): end an engagement with `harvest.sh` and
+  `./launch.sh cleanup`, which gains `--allow-unharvested` for work a
+  rewritten upstream left behind and checks the volumes before it
+  retires anything. `post-process` refuses while numbered agents of the
+  engagement run, and while an earlier post-process container is there
+  (`./launch.sh retire --post-process`). Bare repos and mirrors are cloned to `.new` and
+  renamed once ready, and a mistake in the swarmfile or a failed image
+  build stops `start` before the engagement is created. The runtime
+  directory must be a place cleanup can work in. Engagements of earlier
+  releases are not taken over: every command but `status` and `logs`
+  refuses them. Finish such an engagement with the release that
+  started it (check it out, stop the agents, run `harvest.sh`, follow
+  its cleanup steps), then come back.
 - **Fix: `tests/runtime_pi.sh` on Linux hosts whose UID is not 1000.**
   The test handed its Codex auth fixture to the container's user before
   the driver read it on the host, so the Codex checks failed, and its
@@ -51,8 +83,7 @@
   change). The checks run in a `docker commit` snapshot of the
   container. A container that changed since its check is left. Workspace
   volumes stay. It needs no swarmfile, takes the engagement lock and
-  checks the engagement's Docker daemon. Until containers get workspace
-  volumes, it refuses every container. `tests/runtime_retire.sh` (in
+  checks the engagement's Docker daemon. `tests/runtime_retire.sh` (in
   `tests/test.sh --runtime` and `--all`) runs it on real stopped
   containers.
 - **Feature: recovery snapshots (building block).**
