@@ -275,7 +275,8 @@ reads each one's labels again right before it stops it, and stops it
 by ID, so a container of a later engagement is never stopped. It lists
 them again after each pass, so agents a start is still launching are
 stopped too, and fails when they keep appearing, when one of them
-still runs afterwards, or when Docker cannot tell. It refuses an engagement of an earlier release (see
+still runs afterwards, or when Docker cannot tell. It refuses an
+engagement of an earlier release (see
 [Engagements of earlier releases](#engagements-of-earlier-releases)),
 and stops nothing while Docker talks to another daemon than the
 engagement's.
@@ -1246,8 +1247,9 @@ missing ones. Once the session's process has ended, a check from
 another Docker daemon (another Docker context or `DOCKER_HOST`) fails
 instead of guessing, and each check and launch pins one Docker context
 for all its Docker commands. `start --dashboard` lets the lock go before
-the dashboard opens. `stop`, `status`, `logs`, `progress.sh`, `costs.sh` and the
-dashboard never take it, and containers push through git without it.
+the dashboard opens. `stop`, `status`, `logs`, `progress.sh`,
+`costs.sh` and the dashboard never take it, and containers push
+through git without it.
 
 A caller that runs several commands as one unit can hold the lock
 itself and pass the descriptor in `SWARM_LOCK_FD`. The engine checks
