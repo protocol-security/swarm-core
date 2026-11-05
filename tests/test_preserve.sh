@@ -587,8 +587,9 @@ assert_eq "a grafted parent is still kept" "commit" \
     "$(git -C "$(imported "$out")" cat-file -t "$GRAFTED" 2>/dev/null)"
 rm -f "$W/.git/info/grafts"
 
-# A loose file shadowed by a packed copy of the same object is never
-# read by Git, so its bytes are stored as a file.
+# A loose file that is no object, next to a packed copy of the object
+# its name gives: Git reads the packed copy, so the loose file's bytes
+# are stored as a file.
 git -C "$W" repack -q -a -d
 _shadow=$(git -C "$W" rev-parse HEAD)
 _sdir="$W/.git/objects/${_shadow:0:2}"
@@ -634,11 +635,25 @@ cp "$TMPDIR/subsrc/.git/objects/${_ba:0:2}/${_ba:2}" "$TMPDIR/swap.a"
 cp "$TMPDIR/swap.b" "$W/.git/objects/${_ba:0:2}/${_ba:2}"
 cp "$TMPDIR/swap.a" "$W/.git/objects/${_bb:0:2}/${_bb:2}"
 out=$(scan worktree "$W" full)
-assert_eq "loose files with swapped contents are both stored" "2" \
-    "$(git -C "$(imported "$out")" cat-file -p refs/r/0/files | tr '\0' '\n' \
-        | awk -v a="objects/${_ba:0:2}/${_ba:2}" \
-            -v b="objects/${_bb:0:2}/${_bb:2}" '$4 == a || $4 == b' \
-        | wc -l | tr -d ' ')"
+# Which copy Git hands out for these two small blobs: Git 2.56 can give
+# the loose file's content (the other blob), and recording the object
+# then fails on its hash, so the scan stops (nothing is deleted on its
+# word); older Git gives the packed copy, and the scan stores both loose
+# files.
+if [ "$(git -C "$W" cat-file -p "$_ba" 2>/dev/null)" = "swap b" ]; then
+    assert_eq "swapped loose files that Git reads first stop the scan" \
+        "rc=3" "$(cat "$out/.rc" 2>/dev/null)"
+    assert_eq "on a hash mismatch" "yes" \
+        "$(grep -q 'hash mismatch' "$out/.err" 2>/dev/null \
+            && echo yes || echo no)"
+else
+    assert_eq "loose files with swapped contents are both stored" "2" \
+        "$(git -C "$(imported "$out")" cat-file -p refs/r/0/files \
+            | tr '\0' '\n' \
+            | awk -v a="objects/${_ba:0:2}/${_ba:2}" \
+                -v b="objects/${_bb:0:2}/${_bb:2}" '$4 == a || $4 == b' \
+            | wc -l | tr -d ' ')"
+fi
 rm -f "$W/.git/objects/${_ba:0:2}/${_ba:2}" "$W/.git/objects/${_bb:0:2}/${_bb:2}"
 git -C "$W" update-ref -d refs/keep/a
 git -C "$W" update-ref -d refs/keep/b
