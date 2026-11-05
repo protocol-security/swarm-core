@@ -61,6 +61,7 @@ source "$REPO_ROOT/lib/project.sh"
 BASE_IMAGE="swarm-core-runtime-test"
 IMAGE="swarm-core-retire-test"
 ROOT_IMAGE="swarm-core-retire-root-test"
+CHECKOUT_IMAGE="swarm-core-retire-checkout-test"
 PREFIX_IMAGE="swarm-core-retire-prefix-test"
 P="swarm-core-retire-test"
 NAME="${P}-agent-1"
@@ -88,7 +89,8 @@ drop_leftovers() {
 cleanup() {
     drop_case
     drop_leftovers
-    docker rmi "$IMAGE" "$ROOT_IMAGE" "$PREFIX_IMAGE" >/dev/null 2>&1 || true
+    docker rmi "$IMAGE" "$ROOT_IMAGE" "$PREFIX_IMAGE" "$CHECKOUT_IMAGE" \
+        >/dev/null 2>&1 || true
     rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
@@ -116,6 +118,21 @@ docker build --quiet --tag "$BASE_IMAGE" \
 # image whose / is a work tree; and an image whose git, like one built
 # with another prefix, reads /usr/local/etc/gitconfig.  The agent user
 # may write to the repositories.
+# An image that ships one checkout and nothing else.  Its file is dated
+# well before its index, so that Git trusts the stat data it recorded
+# (no racy entry): a change that keeps size and mtime is then found by
+# its ctime alone.
+docker build --quiet --tag "$CHECKOUT_IMAGE" - >/dev/null <<EOF || exit 1
+FROM ${BASE_IMAGE}
+USER root
+RUN git init -q /opt/tool \\
+    && echo 'int main(void) { return 0; }' > /opt/tool/main.c \\
+    && touch -d '2020-01-01 00:00:00' /opt/tool/main.c \\
+    && git -C /opt/tool add main.c \\
+    && git -C /opt/tool -c user.name=t -c user.email=t@t commit -q -m tool \\
+    && chown -R agent:agent /opt/tool
+USER agent
+EOF
 docker build --quiet --tag "$IMAGE" - >/dev/null <<EOF || exit 1
 FROM ${BASE_IMAGE}
 USER root
@@ -422,9 +439,7 @@ two_container_case() {
     make_container "$label" "$BASE_IMAGE" 'echo notes > /tmp/notes' \
         || return
     make_container "$label" "$BASE_IMAGE" '
-        git clone -q --no-hardlinks /workspace /tmp/experiment
-        git -C /tmp/experiment -c user.name=t -c user.email=t@t \
-            commit -q --allow-empty -m unpushed' second || return
+        git clone -q --bare /workspace /tmp/experiment.git' second || return
     out=$(cd "$CHECKOUT" && SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" \
         "$BASH" "$LAUNCH_SH" retire 2>&1) || rc=$?
     check "$label: refused" "$rc" "1"
@@ -435,6 +450,18 @@ two_container_case() {
     if [ "$FAIL" -gt "$failed_before" ]; then
         printf '%s\n' "$out" | tail -8 | sed 's/^/      /'
     fi
+}
+
+# The untracked file of the last case, dropped on purpose: retire
+# --discard-uncommitted lists it and keeps the rest of the clone.
+discard_case() {
+    local label="--discard-uncommitted" rc=0 out
+    out=$(cd "$CHECKOUT" && SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" \
+        "$BASH" "$LAUNCH_SH" retire --discard-uncommitted 2>&1) || rc=$?
+    check "$label: retired" "$rc" "0"
+    check "$label: listing what it drops" \
+        "$(printf '%s\n' "$out" | grep -c 'results.txt')" "1"
+    check "$label: container gone" "$(container_state)" "gone"
 }
 
 # A snapshot an earlier retire left (one killed outright) is removed
@@ -482,16 +509,49 @@ run_case "a system git config outside /etc" "$PREFIX_IMAGE" 'true' \
 run_case "a clone with a new commit in /tmp" "$BASE_IMAGE" '
     git clone -q --no-hardlinks /workspace /tmp/experiment
     git -C /tmp/experiment -c user.name=t -c user.email=t@t \
-        commit -q --allow-empty -m unpushed' "  /tmp/experiment/.git"
-run_case "repositories the image ships, unchanged" "$IMAGE" 'true' \
-    "  /opt/tool/.git"
-run_case "an edit in a repository of the image" "$IMAGE" \
-    'echo "/* edit */" >> /opt/tool/main.c' "  /opt/tool/.git"
-run_case "a same-size edit with its time put back" "$IMAGE" '
+        commit -q --allow-empty -m unpushed' removed
+check "the clone's new commit is kept as a recovery ref" \
+    "$(git -C "$CHECKOUT" log --all --format=%s | grep -c '^unpushed$')" "1"
+check "under a snapshot with its sources ref" \
+    "$(git -C "$CHECKOUT" for-each-ref 'refs/swarm-recovery/*/*/sources' \
+        | wc -l | tr -d ' ')" "1"
+run_case "a checkout below a directory it made, with an internal link" \
+    "$BASE_IMAGE" '
+    mkdir -p /tmp/fixture
+    git init -q /tmp/fixture/repo
+    cd /tmp/fixture/repo
+    echo data > a.txt
+    ln -s a.txt link
+    git add a.txt link
+    git -c user.name=t -c user.email=t@t commit -q -m fixture' removed
+run_case "a checkout with a clean submodule below a directory it made" \
+    "$BASE_IMAGE" '
+    git init -q /tmp/subsrc
+    git -C /tmp/subsrc -c user.name=t -c user.email=t@t commit -q \
+        --allow-empty -m sub
+    mkdir -p /tmp/fixture2
+    git init -q /tmp/fixture2/repo
+    cd /tmp/fixture2/repo
+    git -c protocol.file.allow=always submodule add -q /tmp/subsrc sub
+    git -c user.name=t -c user.email=t@t commit -q -m with-sub' removed
+run_case "a clone with an untracked file in /tmp" "$BASE_IMAGE" '
+    git clone -q --no-hardlinks /workspace /tmp/fixture
+    echo results > /tmp/fixture/results.txt' \
+    "holds work outside Git's history"
+discard_case
+run_case "a checkout the image ships, unchanged" "$CHECKOUT_IMAGE" 'true' \
+    removed
+run_case "an edit in a checkout of the image" "$CHECKOUT_IMAGE" \
+    'echo "/* edit */" >> /opt/tool/main.c' "dirty .:  M main.c"
+run_case "a same-size edit with its time put back" "$CHECKOUT_IMAGE" '
     f=/opt/tool/main.c
     t=$(stat -c %y "$f")
     sed -i "s/main/mian/" "$f"
-    touch -d "$t" "$f"' "  /opt/tool/.git"
+    touch -d "$t" "$f"
+    git -C /opt/tool config core.trustctime false
+    git -C /opt/tool config core.checkStat minimal' "dirty .:  M main.c"
+run_case "repositories the image ships, bare ones among them" "$IMAGE" \
+    'true' "  /srv/repo.git"
 run_case "a new tag in a bare repository of the image" "$IMAGE" \
     'git -C /srv/repo.git tag v1 main' "  /srv/repo.git"
 run_case "a new object in a bare repository of the image" "$IMAGE" \
@@ -502,7 +562,7 @@ run_case "a new object through an objects/ link" "$IMAGE" \
     "  /srv/pool.git"
 run_case "an edit in an image repository whose name is not UTF-8" "$IMAGE" \
     'echo "/* edit */" >> "$(printf "/opt/repo\377")/main.c"' \
-    "$(printf '  /opt/repo\377/.git')"
+    "not valid UTF-8"
 run_case "an edit under a repository rooted at /" "$ROOT_IMAGE" \
     'echo edited >> /opt/x' "  /.git"
 two_container_case

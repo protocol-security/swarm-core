@@ -18,10 +18,9 @@ CLEANUP_DISCARD=false
 CLEANUP_ALLOW_UNHARVESTED=false
 CLEANUP_HELPER_LABEL="swarm-core.cleanup"
 
-# Print STRING as lowercase hex: any engagement id becomes a valid ref
-# component.
+# Print STRING as lowercase hex (swarm_recovery_hex).
 cleanup_hex() {
-    printf '%s' "$1" | od -An -tx1 | tr -d ' \n'
+    swarm_recovery_hex "$1"
 }
 
 # Print the cleanup checkpoint of the state file as JSON (null when
@@ -434,6 +433,17 @@ cleanup_scan() {
     esac
 }
 
+# Retire every container (retire_run), which first keeps the Git
+# checkouts in their layers; --discard-uncommitted goes on to it, to drop
+# what it lists there too.
+cleanup_retire() {
+    if [ "$CLEANUP_DISCARD" = true ]; then
+        retire_run --discard-uncommitted
+    else
+        retire_run
+    fi
+}
+
 # Apply the policy to scan report REPORT of SOURCE: block lines refuse;
 # uncommitted lines refuse unless --discard-uncommitted, which lists
 # them.  Fails when the source may not be deleted.
@@ -731,7 +741,7 @@ HELP
     cleanup_examine "$RETIRE_SCRATCH/first" || return 1
 
     # Every container goes next, through retire's checks.
-    retire_run || {
+    cleanup_retire || {
         echo "Cleanup stops: every container must be retired first." >&2
         return 1
     }
@@ -787,12 +797,15 @@ HELP
     # "s<n> <kind> <path as a JSON string>" per source, for people.
     jq -r '.[] | "\(.id) \(.kind) \(.path | tojson)"' \
         "$RETIRE_SCRATCH/run.json" > "$RETIRE_SCRATCH/map" || return 1
+    # The sources blob first (git fsck checks it too), the ref only once
+    # the checkout is verified: a sources ref marks a verified copy of
+    # every location it lists.
     sources_blob=$(swarm_recovery_git -C "$REPO_ROOT" hash-object -w \
         --stdin < "$RETIRE_SCRATCH/map") || return 1
     sources_ref="${base}/sources"
+    swarm_recovery_verify_checkout "$REPO_ROOT" || return 1
     swarm_recovery_git -C "$REPO_ROOT" update-ref "$sources_ref" \
         "$sources_blob" "" || return 1
-    swarm_recovery_verify_checkout "$REPO_ROOT" || return 1
 
     # The checkpoint, before the first deletion.
     swarm_state_update "$STATE_FILE" '

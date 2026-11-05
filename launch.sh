@@ -28,9 +28,11 @@ Commands:
   chat PROFILE         Alias for interactive PROFILE.
   shell PROFILE        Start an interactive shell from a named
                        agent profile.
-  retire [--post-process]
+  retire [--post-process] [--discard-uncommitted]
                        Remove stopped containers whose files all live
-                       in their workspace volumes.
+                       in their workspace volumes, after copying the
+                       Git checkouts they have outside them into the
+                       checkout.
   cleanup [--discard-uncommitted]
                        Delete the engagement (containers, workspace
                        volumes, bare repo, mirrors) after copying what

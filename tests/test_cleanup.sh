@@ -494,6 +494,11 @@ f="$REPO/.git/objects/${obj:0:2}/${obj:2}"
 chmod u+w "$f"
 printf 'garbage' > "$f"
 refused "a checkout git fsck finds broken" "git fsck found problems"
+# The sources ref comes only after git fsck: a snapshot with one is a
+# verified copy.
+assert_eq "and no sources ref names that snapshot" "0" \
+    "$(git -C "$REPO" for-each-ref 'refs/swarm-recovery/*/*/sources' \
+        | wc -l | tr -d ' ')"
 
 echo ""
 echo "=== 3. Workspace volumes ==="
@@ -730,6 +735,16 @@ in_cleanup() {
     ) > "$TMPDIR/out" 2>&1 || rc=$?
     builtin printf '%s' "$rc"
 }
+
+# cleanup retires the containers through retire, which keeps the Git
+# checkouts in their layers; --discard-uncommitted goes on to it.
+# shellcheck disable=SC2016  # expanded by the eval
+in_cleanup eval 'retire_run() { echo "retire:$*"; }; CLEANUP_DISCARD=true; cleanup_retire' > /dev/null
+assert_eq "cleanup --discard-uncommitted reaches retire" "retire:--discard-uncommitted" \
+    "$(cat "$TMPDIR/out")"
+# shellcheck disable=SC2016  # expanded by the eval
+in_cleanup eval 'retire_run() { echo "retire:$*"; }; CLEANUP_DISCARD=false; cleanup_retire' > /dev/null
+assert_eq "and only with it" "retire:" "$(cat "$TMPDIR/out")"
 
 # Only what lies in the runtime directory (or its mirrors/) is ever
 # renamed or deleted, whatever path the deletion is handed.
