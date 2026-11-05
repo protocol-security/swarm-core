@@ -2946,6 +2946,16 @@ assert_eq "so is the .new" "true" \
 assert_eq "and no bare repo is made next to the .new" "false" \
     "$([ -e "$_br_dir/bare-7.git" ] && echo true || echo false)"
 
+# A new engagement drops what harvests of an earlier one merged.
+printf '%s\n' '{"schema":"swarm-core.state/v1",
+    "harvested":["0123456789abcdef0123456789abcdef01234567"],
+    "harvest_pending":["0123456789abcdef0123456789abcdef01234567"]}' \
+    > "$_br_dir/state-9.json"
+_br_run "$_br_src" 9 || true
+assert_eq "a new engagement drops the record of harvests" "null null" \
+    "$(jq -r '"\(.harvested) \(.harvest_pending)"' \
+        "$_br_dir/state-9.json" 2>/dev/null)"
+
 # A checkout without a commit has nothing to start from.
 git init -q "$_br_dir/empty"
 _br_rc=0

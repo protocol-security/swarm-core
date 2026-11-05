@@ -358,10 +358,13 @@ begin_engagement() {
     local base="$1" daemon="$2" id token
     id=$(swarm_engagement_new) || return 1
     token=$(swarm_random_hex 8) || return 1
+    # What harvests of an earlier engagement merged means nothing for
+    # this one (cleanup drops it too).
     swarm_state_update "$STATE_FILE" \
         '.engagement_id = $id | .engagement_started_at = $at
          | .base_commit = $base | .docker_daemon = $daemon
-         | .engagement_token = $token' \
+         | .engagement_token = $token
+         | del(.harvested, .harvest_pending)' \
         --arg id "$id" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg base "$base" --arg daemon "$daemon" --arg token "$token" \
         || return 1

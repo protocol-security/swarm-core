@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Fetch agent-work from the bare repo, merge into current branch.
-# Usage: ./harvest.sh [--dry]
+# Usage: ./harvest.sh [--dry] [--again]
 
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SWARM_DIR/lib/check-deps.sh"
@@ -16,17 +16,22 @@ RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
 BARE_REPO="${RUNTIME_DIR}/upstream.git"
 REMOTE_NAME="_agent-harvest"
 DRY_RUN=false
+AGAIN=false
 
 for arg in "$@"; do
     case "$arg" in
         -h|--help)
             cat <<HELP
-Usage: $0 [--dry]
+Usage: $0 [--dry] [--again]
 
 Fetch agent-work from the bare repo and merge into the current branch.
 
 Options:
   --dry        Show what would be merged without actually merging.
+  --again      Merge again what an earlier harvest merged, or started
+               merging, and HEAD does not have (after undoing that
+               harvest with git reset --hard <restore tag>, or giving
+               up its merge).
   -h, --help   Show this help message.
 
 The bare repo lives in the project's runtime directory, which
@@ -37,6 +42,7 @@ HELP
             exit 0
             ;;
         --dry)  DRY_RUN=true ;;
+        --again) AGAIN=true ;;
     esac
 done
 
@@ -104,6 +110,28 @@ fi
 swarm_engagement_token_check "$RUNTIME_DIR/state.json" || exit 1
 swarm_engagement_env_check || exit 1
 swarm_engagement_join "$RUNTIME_DIR/state.json" || exit 1
+# The commit the engagement started from, as this host recorded it when
+# it made the bare repo (the bare repo's refs/swarm/base is the agents'
+# to write, so it is not trusted).
+# The state read here (_state) also holds the record of earlier harvests
+# of this engagement (see harvest_list).
+if ! _state=$(swarm_state_read "$RUNTIME_DIR/state.json") \
+        || ! HARVEST_BASE=$(printf '%s' "$_state" \
+            | jq -r '.base_commit // empty'); then
+    echo "ERROR: cannot read ${RUNTIME_DIR}/state.json." >&2
+    exit 1
+fi
+# A SHA-1 or SHA-256 commit id, nothing else.
+case "${#HARVEST_BASE}:${HARVEST_BASE}" in
+    40:*[!0123456789abcdef]*|64:*[!0123456789abcdef]*) HARVEST_BASE="" ;;
+    40:*|64:*) ;;
+    *) HARVEST_BASE="" ;;
+esac
+if [ -z "$HARVEST_BASE" ]; then
+    echo "ERROR: ${RUNTIME_DIR}/state.json records no base commit for" \
+         "engagement ${_engaged}." >&2
+    exit 1
+fi
 CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")"
 # Harvest looks into interactive containers only when Docker answers.
 # Without Docker, or with its daemon down, it touches no container and
@@ -121,7 +149,9 @@ git remote remove "$REMOTE_NAME" 2>/dev/null || true
 
 echo "--- Fetching agent work ---"
 git remote add "$REMOTE_NAME" "$BARE_REPO"
-git fetch --no-recurse-submodules "$REMOTE_NAME" \
+# Branches only: no tag from the bare repo (agents can push tags there)
+# comes into this checkout.
+git fetch --no-recurse-submodules --no-tags "$REMOTE_NAME" \
     '+refs/heads/*:refs/remotes/_agent-harvest/*'
 
 HARVEST_BRANCHES=(agent-work)
@@ -131,16 +161,174 @@ done < <(git -C "$BARE_REPO" for-each-ref \
     --format='%(refname:short)' refs/heads/swarm 2>/dev/null \
     | grep -E '/interactive-' || true)
 
-# Guard against stale-bare poisoning: agent-work must descend from HEAD,
-# otherwise merging it would re-introduce ancestors not in HEAD's history
-# (e.g. commits removed by an upstream force-push that the bare repo did
-# not see).
+# Succeed when commit A is an ancestor of commit B, fail with 1 when it
+# is not; any other answer from git stops harvest.
+harvest_is_ancestor() {
+    local rc=0
+    git merge-base --is-ancestor "$1" "$2" 2>/dev/null || rc=$?
+    case "$rc" in
+        0|1) return "$rc" ;;
+    esac
+    echo "ERROR: cannot compare $1 with $2." >&2
+    git remote remove "$REMOTE_NAME"
+    exit "$rc"
+}
+
+# Explain what cannot be merged, and stop.
+harvest_refuse() {
+    echo "" >&2
+    printf '%s\n' "$@" >&2
+    echo "" >&2
+    echo "Take what you need from the bare repo by hand (git log" >&2
+    echo "${REMOTE_NAME}/<branch>, cherry-pick), then end the engagement" >&2
+    echo "with" >&2
+    echo "  ./launch.sh cleanup --allow-unharvested" >&2
+    echo "which keeps everything in the bare repo as recovery refs," >&2
+    echo "and start again from the current HEAD." >&2
+    git remote remove "$REMOTE_NAME"
+    exit 1
+}
+
+# The record of earlier harvests of this engagement, from the state read
+# above, one commit id per line: FIELD harvested lists the commits HEAD
+# must keep (the tips harvests merged), harvest_pending the tip of a
+# merge a harvest started and did not see through (it stopped on a
+# conflict, or with the harvest).
+harvest_list() {
+    printf '%s' "$_state" | jq -r --arg f "$1" '(.[$f] // [])[]'
+}
+
+# Print the tips of the harvested branches as fetched, one per line.
+harvest_tips() {
+    local branch
+    for branch in "${HARVEST_BRANCHES[@]}"; do
+        git rev-parse -q --verify \
+            "refs/remotes/${REMOTE_NAME}/${branch}^{commit}" || true
+    done
+}
+
+# Write the record (under the lock, as all of harvest): as harvested,
+# the commits of LIST (one per line) that HEAD has, leaving out those
+# another of them has in its history, so that the record never lowers
+# what HEAD must keep; as harvest_pending, the commits of PENDING (a
+# merge about to start, or one left stopped).
+harvest_record() {
+    local list pending="${2:-}" c d keep="" dominated h p IFS=$'\n'
+    list=$(printf '%s\n' "$1" | sort -u) || return 1
+    local contained=""
+    for c in $list; do
+        if harvest_is_ancestor "$c" HEAD; then
+            contained="${contained}${c}"$'\n'
+        fi
+    done
+    for c in $contained; do
+        dominated=false
+        for d in $contained; do
+            [ "$d" != "$c" ] || continue
+            if harvest_is_ancestor "$c" "$d"; then
+                dominated=true
+                break
+            fi
+        done
+        $dominated || keep="${keep}${c}"$'\n'
+    done
+    if ! h=$(printf '%s' "$keep" \
+                | jq -R -s -c 'split("\n") | map(select(length > 0))') \
+            || ! p=$(printf '%s' "$pending" \
+                | jq -R -s -c 'split("\n") | map(select(length > 0))') \
+            || ! swarm_state_update "$RUNTIME_DIR/state.json" \
+                '.harvested = $h | .harvest_pending = $p' \
+                --argjson h "$h" --argjson p "$p"; then
+        echo "ERROR: cannot record what was harvested in" \
+             "${RUNTIME_DIR}/state.json." >&2
+        return 1
+    fi
+}
+
+# Guard against stale-bare poisoning.  The engagement started from
+# HARVEST_BASE: HEAD must still have it (its history was not rewritten
+# past it, by a force-push or a rebase), and the branch must be built on
+# it (it holds this engagement's work).  Then merging it brings only
+# work done since, even once HEAD moved on with an interactive branch
+# merged or commits of its own; it never brings back commits that HEAD
+# dropped from before the base.  What an earlier harvest merged must
+# still be in HEAD too: a history rewritten after it (a rebase that
+# dropped some of that work) refuses, unless --again says to merge it
+# again.
 MERGE_BRANCHES=()
 TOTAL_NEW_COMMITS=0
+if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+    echo "ERROR: a merge is in progress in ${REPO_ROOT}: commit it, or" \
+         "give it up with git merge --abort, then harvest again." >&2
+    git remote remove "$REMOTE_NAME"
+    exit 1
+fi
+if ! HARVESTED=$(harvest_list harvested) \
+        || ! PENDING=$(harvest_list harvest_pending); then
+    echo "ERROR: cannot read what earlier harvests merged." >&2
+    git remote remove "$REMOTE_NAME"
+    exit 1
+fi
+if ! harvest_is_ancestor "$HARVEST_BASE" HEAD; then
+    harvest_refuse \
+        "ERROR: HEAD's history no longer has the commit this" \
+        "engagement started from." \
+        "  base:       ${HARVEST_BASE:0:12}" \
+        "  HEAD:       $(git rev-parse --short HEAD)" \
+        "" \
+        "It was rewritten (a force-push, a rebase) after the engagement" \
+        "started, and the bare repo at ${BARE_REPO} still has the old" \
+        "ancestry: merging its branches would bring back commits HEAD" \
+        "dropped."
+fi
+# What earlier harvests merged must still be in HEAD (a rebase that
+# dropped some of it would otherwise bring it back with the next merge),
+# whichever branches the bare repo has now; a merge an earlier harvest
+# left stopped counts once it was finished, and refuses when it was
+# given up or dropped since (as does one a harvest stopped during).
+# --again merges all of that again, on purpose.
+if ! $AGAIN; then
+    for c in $PENDING; do
+        if ! harvest_is_ancestor "$c" HEAD; then
+            harvest_refuse \
+                "ERROR: HEAD does not have ${c:0:12}, which an earlier" \
+                "harvest started merging: that merge stopped (on a" \
+                "conflict, or with the harvest) and was given up, or it" \
+                "was finished and dropped since.  To merge it again, run" \
+                "./harvest.sh --again."
+        fi
+    done
+    for c in $HARVESTED; do
+        if ! harvest_is_ancestor "$c" HEAD; then
+            harvest_refuse \
+                "ERROR: HEAD no longer has what an earlier harvest merged." \
+                "  merged:     ${c:0:12}" \
+                "  HEAD:       $(git rev-parse --short HEAD)" \
+                "" \
+                "HEAD's history was rewritten after that harvest (a" \
+                "rebase, a reset), so merging again would bring back what" \
+                "was dropped.  If that harvest was undone on purpose (git" \
+                "reset --hard <restore tag>) and its work is wanted again," \
+                "run ./harvest.sh --again."
+        fi
+    done
+fi
 for branch in "${HARVEST_BRANCHES[@]}"; do
-    remote_ref="$REMOTE_NAME/$branch"
-    if ! git show-ref --verify --quiet "refs/remotes/${remote_ref}"; then
+    # Git calls take the full ref name; the merge below takes the short
+    # one (for the usual merge message), which must then name that ref
+    # and not a tag or branch of the same name in this checkout, which
+    # git would take first.
+    remote_ref="refs/remotes/${REMOTE_NAME}/${branch}"
+    if ! git show-ref --verify --quiet "$remote_ref"; then
         continue
+    fi
+    if [ "$(git rev-parse --symbolic-full-name "${REMOTE_NAME}/${branch}" \
+            2>/dev/null)" != "$remote_ref" ]; then
+        echo "ERROR: ${REMOTE_NAME}/${branch} also names a tag or a branch" \
+             "in ${REPO_ROOT} (git show-ref ${REMOTE_NAME}/${branch} lists" \
+             "it); delete or rename it, then harvest again." >&2
+        git remote remove "$REMOTE_NAME"
+        exit 1
     fi
 
     # A branch that HEAD already contains has nothing new, so merging
@@ -154,31 +342,20 @@ for branch in "${HARVEST_BRANCHES[@]}"; do
     else
         rc=$?
         if [ "$rc" -ne 1 ]; then
-            echo "ERROR: cannot compare ${remote_ref} with HEAD." >&2
+            echo "ERROR: cannot compare ${REMOTE_NAME}/${branch} with" \
+                 "HEAD." >&2
             git remote remove "$REMOTE_NAME"
             exit "$rc"
         fi
     fi
 
-    if ! git merge-base --is-ancestor HEAD "$remote_ref"; then
-        echo "" >&2
-        echo "ERROR: ${remote_ref} does not descend from HEAD." >&2
-        echo "  HEAD:       $(git rev-parse --short HEAD)" >&2
-        echo "  ${branch}: $(git rev-parse --short "$remote_ref")" >&2
-        echo "" >&2
-        echo "The bare repo at ${BARE_REPO} holds a branch that" >&2
-        echo "diverged from the current branch. This usually means" >&2
-        echo "upstream history was rewritten (e.g. force-push) but" >&2
-        echo "the bare repo still has the old ancestry. Merging" >&2
-        echo "would re-introduce removed commits." >&2
-        echo "" >&2
-        echo "Take what you need from it by hand (git log ${remote_ref}," >&2
-        echo "cherry-pick), then end the engagement with" >&2
-        echo "  ./launch.sh cleanup --allow-unharvested" >&2
-        echo "which keeps everything in the bare repo as recovery refs," >&2
-        echo "and start again from the current HEAD." >&2
-        git remote remove "$REMOTE_NAME"
-        exit 1
+    if ! harvest_is_ancestor "$HARVEST_BASE" "$remote_ref"; then
+        harvest_refuse \
+            "ERROR: ${REMOTE_NAME}/${branch} is not built on the commit this" \
+            "engagement started from, so it does not hold this" \
+            "engagement's work." \
+            "  base:       ${HARVEST_BASE:0:12}" \
+            "  ${branch}: $(git rev-parse --short "$remote_ref")"
     fi
 
     COMMIT_LOG=$(git log --oneline "$remote_ref" ^HEAD)
@@ -200,9 +377,19 @@ if [ "$DRY_RUN" = true ]; then
     exit 0
 fi
 
+# What HEAD must keep after this harvest: what it had to keep before,
+# the merges left stopped that it finished, and every harvested branch
+# HEAD now has (harvest_record keeps those HEAD has).
+RECORD=$(printf '%s\n%s\n' "$HARVESTED" "$PENDING")
+
 if [ "$TOTAL_NEW_COMMITS" -eq 0 ]; then
     echo ""
     echo "Nothing new to merge."
+    # A merge finished by hand since the last harvest counts from now.
+    if ! harvest_record "${RECORD}"$'\n'"$(harvest_tips)"; then
+        git remote remove "$REMOTE_NAME"
+        exit 1
+    fi
     git remote remove "$REMOTE_NAME"
     exit 0
 fi
@@ -212,19 +399,86 @@ fi
 # and never collides with the harvested branches in refs/heads, so
 # it is safe alongside agent-work.  Skip if HEAD is already tagged.
 if ! git tag --points-at HEAD | grep -q '^swarm-harvest-'; then
-    harvest_tag="swarm-harvest-$(date +%Y-%m-%d-%H%M%S)"
+    # Two harvests in the same second (HEAD moved in between) would
+    # want the same name; the later one gets a suffix.
+    tag_stamp=$(date +%Y-%m-%d-%H%M%S)
+    harvest_tag="swarm-harvest-${tag_stamp}"
+    tag_n=1
+    while git rev-parse -q --verify "refs/tags/${harvest_tag}" >/dev/null
+    do
+        tag_n=$((tag_n + 1))
+        harvest_tag="swarm-harvest-${tag_stamp}-${tag_n}"
+    done
     git tag "$harvest_tag"
     echo "Tagged restore point: ${harvest_tag}"
 fi
 
 echo ""
+pre_merge=$(git rev-parse HEAD)
 for item in "${MERGE_BRANCHES[@]}"; do
     branch="${item%%|*}"
     new_commits="${item##*|}"
     [ "$new_commits" -eq 0 ] && continue
+    # Record the merge before it starts, with what HEAD has from the
+    # merges before it: a harvest that stops before its last record
+    # below (killed, say) leaves no merged work unrecorded.
+    if ! tip=$(git rev-parse --verify -q \
+                "refs/remotes/${REMOTE_NAME}/${branch}^{commit}") \
+            || ! harvest_record "${RECORD}"$'\n'"$(harvest_tips)" "$tip"
+    then
+        echo "ERROR: ${branch} not merged." >&2
+        git remote remove "$REMOTE_NAME"
+        exit 1
+    fi
     echo "--- Merging ${branch} ---"
-    git merge "$REMOTE_NAME/$branch" --no-edit
+    # HEAD may have moved on since the engagement started, so this can be
+    # a real merge, and it can stop on a conflict.  (The remote ref is
+    # the recorded tip: harvest fetched once, under the lock.)  Each
+    # merge is committed, whatever merge options the Git config sets
+    # (--no-commit, --squash).
+    if ! git merge --no-edit --commit --no-squash "$REMOTE_NAME/$branch"
+    then
+        echo "" >&2
+        if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            echo "ERROR: merging ${branch} stopped. Resolve the conflicts" \
+                 "and commit, or give up with git merge --abort; HEAD was" \
+                 "${pre_merge:0:12} before this harvest (git reset --hard" \
+                 "${pre_merge:0:12} undoes it)." >&2
+        else
+            echo "ERROR: git did not start merging ${branch} (see above:" \
+                 "local changes in the way, say), and changed nothing for" \
+                 "it.  Commit or stash those changes, then run harvest.sh" \
+                 "again." >&2
+        fi
+        # What merged before this branch is recorded all the same, and
+        # this branch's merge as left stopped, should one have started.
+        stopped=""
+        if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            stopped="$tip"
+        fi
+        harvest_record "${RECORD}"$'\n'"$(harvest_tips)" "$stopped" \
+            || true
+        git remote remove "$REMOTE_NAME"
+        exit 1
+    fi
+    # Done means committed, with the tip in HEAD.  A merge left
+    # unfinished all the same (a hook, say) stops harvest here, pending.
+    if git rev-parse -q --verify MERGE_HEAD >/dev/null \
+            || ! harvest_is_ancestor "$tip" HEAD; then
+        echo "" >&2
+        echo "ERROR: git left the merge of ${branch} uncommitted. Commit" \
+             "it (git commit) to finish it, or give it up with git merge" \
+             "--abort; after that, harvest refuses until ./harvest.sh" \
+             "--again." >&2
+        harvest_record "${RECORD}"$'\n'"$(harvest_tips)" "$tip" || true
+        git remote remove "$REMOTE_NAME"
+        exit 1
+    fi
 done
+if ! harvest_record "${RECORD}"$'\n'"$(harvest_tips)"; then
+    git remote remove "$REMOTE_NAME"
+    exit 1
+fi
 
 git remote remove "$REMOTE_NAME"
 
