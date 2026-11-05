@@ -34,18 +34,28 @@ PATH="$_down_bin:$PATH"
 
 # Point harvest.sh at a private runtime directory below TMPDIR, with an
 # engagement recorded as this engine records it before it makes the
-# bare repo (record_engagement writes it again).
+# bare repo (record_engagement writes it again).  record_base BARE
+# records BARE's HEAD, the commit it was made from, as the engagement's
+# base, which harvest needs.
+ENGAGEMENT_BASE=""
 use_runtime() {
     SWARM_RUNTIME_DIR="$TMPDIR/runtime-$1"
     export SWARM_RUNTIME_DIR
     mkdir -m 700 "$SWARM_RUNTIME_DIR"
+    ENGAGEMENT_BASE=""
     record_engagement
 }
 record_engagement() {
-    jq -n '{schema: "swarm-core.state/v1", engagement_id: "eng-1",
-           engagement_token: "t1", docker_daemon: "d1"}' \
+    jq -n --arg b "$ENGAGEMENT_BASE" '{schema: "swarm-core.state/v1",
+           engagement_id: "eng-1", engagement_token: "t1",
+           docker_daemon: "d1"}
+        + (if $b == "" then {} else {base_commit: $b} end)' \
         > "$SWARM_RUNTIME_DIR/state.json"
     chmod 600 "$SWARM_RUNTIME_DIR/state.json"
+}
+record_base() {
+    ENGAGEMENT_BASE=$(git -C "$1" rev-parse HEAD)
+    record_engagement
 }
 
 assert_eq() {
@@ -269,6 +279,7 @@ cd "$HARVEST_WORK"
 git -c user.name=test -c user.email=t@t -c commit.gpgsign=false \
     commit -q --allow-empty -m "init"
 git clone -q --bare "$HARVEST_WORK" "$HARVEST_BARE"
+record_base "$HARVEST_BARE"
 git -C "$HARVEST_BARE" branch agent-work HEAD 2>/dev/null || true
 
 # Seed 100 commits with ~1 KiB subject padding so the
@@ -325,6 +336,7 @@ cd "$INTERACTIVE_WORK"
 git -c user.name=test -c user.email=t@t -c commit.gpgsign=false \
     commit -q --allow-empty -m "init"
 git clone -q --bare "$INTERACTIVE_WORK" "$INTERACTIVE_BARE"
+record_base "$INTERACTIVE_BARE"
 git -C "$INTERACTIVE_BARE" branch agent-work HEAD 2>/dev/null || true
 
 git clone -q "$INTERACTIVE_BARE" "$INTERACTIVE_AGENT"
@@ -446,6 +458,7 @@ git config user.email t@t
 git config commit.gpgsign false
 git commit -q --allow-empty -m "init"
 git clone -q --bare "$AGAIN_WORK" "$AGAIN_BARE"
+record_base "$AGAIN_BARE"
 git -C "$AGAIN_BARE" branch agent-work HEAD 2>/dev/null || true
 
 git clone -q "$AGAIN_BARE" "$AGAIN_AGENT"
@@ -530,6 +543,7 @@ git commit -q --allow-empty -m "init"
 git branch "$OLD_BRANCH"
 git commit -q --allow-empty -m "local"
 git clone -q --bare "$OLD_WORK" "$OLD_BARE"
+record_base "$OLD_BARE"
 git -C "$OLD_BARE" branch agent-work HEAD 2>/dev/null || true
 
 git clone -q "$OLD_BARE" "$OLD_AGENT"
@@ -634,6 +648,7 @@ git -c user.name=test -c user.email=t@t -c commit.gpgsign=false \
     commit -q --allow-empty -m C
 
 git clone -q --bare "$GUARD_WORK" "$GUARD_BARE"
+record_base "$GUARD_BARE"
 # Move bare's agent-work back to B (HEAD~1) and have an "agent"
 # commit on top of B.  agent-work then descends from B but not
 # from HEAD (=C), so the guard's --is-ancestor check fails.
@@ -658,10 +673,10 @@ HEAD_AFTER=$(git rev-parse HEAD)
 assert_eq "guard exits non-zero on divergent bare" "true" \
     "$([ "$guard_rc" -ne 0 ] && echo true || echo false)"
 assert_eq "guard prints the diagnostic line" "true" \
-    "$(grep -q 'does not descend from HEAD' <<< "$guard_output" \
+    "$(grep -q 'is not built on the commit this' <<< "$guard_output" \
         && echo true || echo false)"
-assert_eq "guard names short HEAD in diagnostic" "true" \
-    "$(grep -qE "HEAD:[[:space:]]+${HEAD_BEFORE:0:7}" <<< "$guard_output" \
+assert_eq "guard names the engagement's base" "true" \
+    "$(grep -qE "base:[[:space:]]+${HEAD_BEFORE:0:12}" <<< "$guard_output" \
         && echo true || echo false)"
 assert_eq "guard sends the user to cleanup --allow-unharvested" "true" \
     "$(grep -q 'launch.sh cleanup --allow-unharvested' <<< "$guard_output" \
@@ -717,6 +732,7 @@ cd "$TAG_WORK"
 git -c user.name=test -c user.email=t@t -c commit.gpgsign=false \
     commit -q --allow-empty -m "init"
 git clone -q --bare "$TAG_WORK" "$TAG_BARE"
+record_base "$TAG_BARE"
 git -C "$TAG_BARE" branch agent-work HEAD 2>/dev/null || true
 
 git clone -q "$TAG_BARE" "$TAG_AGENT"
@@ -749,6 +765,33 @@ bash "$HARVEST_SH" >/dev/null 2>&1 || true
 assert_eq "noop harvest adds no restore tag" "1" \
     "$(git tag --list 'swarm-harvest-*' | grep -c . || true)"
 
+# Two harvests in the same second, with new work in between, both tag:
+# the later name gets a suffix (a date first on PATH stops the clock).
+TAG_CLOCK="$TMPDIR/tag-clock"
+mkdir -p "$TAG_CLOCK"
+printf '#!/bin/bash\necho 2030-01-01-000000\n' > "$TAG_CLOCK/date"
+chmod +x "$TAG_CLOCK/date"
+tag_twice() {
+    local agent="$TMPDIR/tag-agent-$1"
+    git clone -q "$TAG_BARE" "$agent"
+    git -C "$agent" checkout -q agent-work
+    echo "$1" > "$agent/tag-$1.txt"
+    git -C "$agent" add "tag-$1.txt"
+    git -C "$agent" -c user.name=agent -c user.email=a@a \
+        -c commit.gpgsign=false commit -q -m "Agent commit $1"
+    git -C "$agent" push -q origin agent-work
+    rm -rf "$agent"
+    PATH="$TAG_CLOCK:$PATH" bash "$HARVEST_SH" >/dev/null 2>&1
+}
+tag_rc=0
+tag_twice one || tag_rc=$?
+tag_twice two || tag_rc=$?
+assert_eq "two harvests in one second both succeed" "0" "$tag_rc"
+assert_eq "with two restore tags of that second" \
+    "swarm-harvest-2030-01-01-000000 swarm-harvest-2030-01-01-000000-2" \
+    "$(git tag --list 'swarm-harvest-2030-*' | sort | tr '\n' ' ' \
+        | sed 's/ $//')"
+
 # ============================================================
 echo ""
 echo "=== 11. Behavioural: harvest.sh refuses legacy /tmp state ==="
@@ -761,6 +804,7 @@ git init -q "$LEGACY_WORK"
 git -C "$LEGACY_WORK" -c user.name=test -c user.email=t@t \
     -c commit.gpgsign=false commit -q --allow-empty -m "init"
 git clone -q --bare "$LEGACY_WORK" "$SWARM_RUNTIME_DIR/upstream.git"
+record_base "$SWARM_RUNTIME_DIR/upstream.git"
 mkdir -p "$LEGACY_BARE"
 
 cd "$LEGACY_WORK"
@@ -866,6 +910,7 @@ git -C "$DOWN_WORK" -c user.name=test -c user.email=t@t \
     -c commit.gpgsign=false commit -q --allow-empty -m "init"
 use_runtime down
 git clone -q --bare "$DOWN_WORK" "$SWARM_RUNTIME_DIR/upstream.git"
+record_base "$SWARM_RUNTIME_DIR/upstream.git"
 git -C "$SWARM_RUNTIME_DIR/upstream.git" branch agent-work HEAD
 cd "$DOWN_WORK"
 : > "$_down_log"
@@ -1020,9 +1065,7 @@ done
 echo ""
 echo "=== 19. Behavioural: harvest.sh checks the engagement ==="
 
-jq -n '{schema: "swarm-core.state/v1", engagement_id: "eng-1",
-       engagement_token: "t1", docker_daemon: "d1"}' \
-    > "$SWARM_RUNTIME_DIR/state.json"
+record_engagement
 cd "$DOWN_WORK"
 eng_rc=0
 SWARM_ENGAGEMENT_ID=eng-2 bash "$HARVEST_SH" --dry >/dev/null 2>&1 \
@@ -1074,9 +1117,7 @@ assert_eq "the checkout's refs are as they were" "$refs_before" \
 assert_eq "no harvest remote is left" "" \
     "$(git remote | grep -E '^_agent-harvest$' || true)"
 # A token names the engagement harvest.sh was started for.
-jq -n '{schema: "swarm-core.state/v1", engagement_id: "eng-1",
-       engagement_token: "t1", docker_daemon: "d1"}' \
-    > "$SWARM_RUNTIME_DIR/state.json"
+record_engagement
 tok_rc=0
 tok_out=$(SWARM_ENGAGEMENT_TOKEN=t2 bash "$HARVEST_SH" --dry 2>&1) \
     || tok_rc=$?
@@ -1111,6 +1152,385 @@ for _st in none claim; do
         "$refs_before" "$(git for-each-ref)"
 done
 record_engagement
+
+# ============================================================
+echo ""
+echo "=== 22. Behavioural: harvest.sh merges what is built on the base ==="
+
+# The engagement starts at the checkout's HEAD, recorded as its base.
+# Work built on that base merges even once HEAD moved on: local commits
+# after the start (flow C), an interactive branch merged by an earlier
+# harvest while the agents kept pushing (flow B).  A HEAD whose history
+# no longer has the base (rewritten), a branch not built on it, and a
+# state with no base refuse, and leave HEAD as it was.
+BASE_WORK="$TMPDIR/swarmtest-harvest-base-$$"
+use_runtime base
+BASE_BARE="$SWARM_RUNTIME_DIR/upstream.git"
+BASE_AGENT="$TMPDIR/harvest-base-agent"
+bg() {
+    git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"
+}
+git init -q "$BASE_WORK"
+# harvest.sh merges with plain git, so the checkout names who merges.
+git -C "$BASE_WORK" config user.name test
+git -C "$BASE_WORK" config user.email t@t
+git -C "$BASE_WORK" config commit.gpgsign false
+printf 'one\ntwo\nthree\n' > "$BASE_WORK/f"
+bg -C "$BASE_WORK" add f
+bg -C "$BASE_WORK" commit -qm start
+git clone -q --bare "$BASE_WORK" "$BASE_BARE"
+git -C "$BASE_BARE" branch agent-work HEAD
+record_base "$BASE_BARE"
+git clone -q "$BASE_BARE" "$BASE_AGENT"
+git -C "$BASE_AGENT" checkout -q agent-work
+# An agent commit on agent-work; FILE CONTENT MESSAGE.
+agent_commit() {
+    printf '%s\n' "$2" > "$BASE_AGENT/$1"
+    bg -C "$BASE_AGENT" add "$1"
+    bg -C "$BASE_AGENT" commit -qm "$3"
+    git -C "$BASE_AGENT" push -q origin agent-work
+}
+cd "$BASE_WORK"
+# Flow C: a local commit after the start, then agent work.
+printf 'local\n' > "$BASE_WORK/local.txt"
+bg add local.txt
+bg commit -qm "local after start"
+agent_commit a.txt a "agent one"
+c_rc=0
+bash "$HARVEST_SH" >/dev/null 2>&1 || c_rc=$?
+assert_eq "local commits after the start: harvest merges" "0" "$c_rc"
+assert_eq "the agent's work is in HEAD" "true" \
+    "$([ -f "$BASE_WORK/a.txt" ] && echo true || echo false)"
+assert_eq "and so are the local commits" "true" \
+    "$([ -f "$BASE_WORK/local.txt" ] && echo true || echo false)"
+# Print true when the record of harvests lists commit C.
+recorded() {
+    jq -r --arg c "$1" '(.harvested // []) | index($c) != null' \
+        "$SWARM_RUNTIME_DIR/state.json"
+}
+assert_eq "the merged tip is recorded" "true" \
+    "$(recorded "$(git -C "$BASE_BARE" rev-parse agent-work)")"
+# Flow B: an interactive branch merged by a harvest, then more agent
+# work on agent-work, which does not have that merge.
+git -C "$BASE_AGENT" checkout -q -b swarm/abc/interactive-x-1
+printf 'mine\n' > "$BASE_AGENT/i.txt"
+bg -C "$BASE_AGENT" add i.txt
+bg -C "$BASE_AGENT" commit -qm "interactive work"
+git -C "$BASE_AGENT" push -q origin HEAD:refs/heads/swarm/abc/interactive-x-1
+git -C "$BASE_AGENT" checkout -q agent-work
+bash "$HARVEST_SH" >/dev/null 2>&1
+agent_commit b.txt b "agent two"
+b_rc=0
+bash "$HARVEST_SH" >/dev/null 2>&1 || b_rc=$?
+assert_eq "agents pushing after an interactive merge: harvest merges" \
+    "0" "$b_rc"
+
+assert_eq "the later agent work is in HEAD" "true" \
+    "$([ -f "$BASE_WORK/b.txt" ] && [ -f "$BASE_WORK/i.txt" ] \
+        && echo true || echo false)"
+# A conflict stops the merge with the way out, and HEAD as it was.
+printf 'one\nTWO local\nthree\n' > "$BASE_WORK/f"
+bg commit -qam "local edit of f"
+agent_commit f "one
+TWO agent
+three" "agent edit of f"
+before=$(git rev-parse HEAD)
+x_rc=0
+x_out=$(bash "$HARVEST_SH" 2>&1) || x_rc=$?
+assert_eq "a conflict: harvest stops" "1" "$x_rc"
+assert_eq "saying how to finish or give up" "true" \
+    "$(grep -qF 'Resolve the conflicts and commit, or give up with git merge --abort' \
+        <<< "$x_out" && echo true || echo false)"
+assert_eq "naming where HEAD was" "true" \
+    "$(grep -qF "git reset --hard ${before:0:12}" <<< "$x_out" \
+        && echo true || echo false)"
+assert_eq "no harvest remote is left" "" \
+    "$(git remote | grep -E '^_agent-harvest$' || true)"
+p_rc=0
+p_out=$(bash "$HARVEST_SH" 2>&1) || p_rc=$?
+assert_eq "a merge in progress: the next harvest refuses" "1" "$p_rc"
+assert_eq "saying so" "true" \
+    "$(grep -qF "a merge is in progress" <<< "$p_out" \
+        && echo true || echo false)"
+git merge --abort
+assert_eq "git merge --abort brings HEAD back" "$before" \
+    "$(git rev-parse HEAD)"
+# Given up, that merge is not taken for one HEAD dropped by mistake, nor
+# for nothing: harvest refuses until --again says to merge it again.
+bg -C "$BASE_AGENT" revert --no-edit HEAD >/dev/null
+git -C "$BASE_AGENT" push -q origin agent-work
+p_rc=0
+p_out=$(bash "$HARVEST_SH" 2>&1) || p_rc=$?
+assert_eq "a merge given up: harvest refuses" "1" "$p_rc"
+assert_eq "naming --again" "true" \
+    "$(grep -qF "harvest started merging: that merge stopped" \
+        <<< "$p_out" && grep -qF "./harvest.sh --again" <<< "$p_out" \
+        && echo true || echo false)"
+p_rc=0
+bash "$HARVEST_SH" --again >/dev/null 2>&1 || p_rc=$?
+assert_eq "--again merges it" "0" "$p_rc"
+# A conflict resolved by hand: the next harvest, with nothing new,
+# records it, and a rebase that drops it later refuses.
+agent_commit h.txt "agent h" "agent adds h"
+bash "$HARVEST_SH" >/dev/null 2>&1
+printf 'mine h\n' > h.txt
+bg commit -qam "local edit of h"
+agent_commit h.txt "agent h again" "agent edit of h"
+bash "$HARVEST_SH" >/dev/null 2>&1 || true
+printf 'resolved h\n' > h.txt
+bg add h.txt
+bg commit -qm "resolve h"
+resolved=$(git rev-parse HEAD)
+bash "$HARVEST_SH" >/dev/null 2>&1
+assert_eq "a conflict resolved by hand is recorded" "true" \
+    "$(recorded "$(git -C "$BASE_BARE" rev-parse agent-work)")"
+git reset -q --hard HEAD~1
+k_rc=0
+k_out=$(bash "$HARVEST_SH" 2>&1) || k_rc=$?
+assert_eq "the resolved merge dropped: refused" "1" "$k_rc"
+assert_eq "saying so" "true" \
+    "$(grep -qF "HEAD no longer has what an earlier harvest merged" \
+        <<< "$k_out" && echo true || echo false)"
+git reset -q --hard "$resolved"
+# An interactive branch gone from the bare repo is still kept: dropping
+# its work from HEAD refuses.
+git -C "$BASE_AGENT" checkout -q -b swarm/abc/interactive-y-1
+printf 'gone\n' > "$BASE_AGENT/y.txt"
+bg -C "$BASE_AGENT" add y.txt
+bg -C "$BASE_AGENT" commit -qm "interactive work y"
+git -C "$BASE_AGENT" push -q origin HEAD:refs/heads/swarm/abc/interactive-y-1
+git -C "$BASE_AGENT" checkout -q agent-work
+before_y=$(git rev-parse HEAD)
+bash "$HARVEST_SH" >/dev/null 2>&1
+after_y=$(git rev-parse HEAD)
+git -C "$BASE_BARE" update-ref -d refs/heads/swarm/abc/interactive-y-1
+git reset -q --hard "$before_y"
+y_rc=0
+y_out=$(bash "$HARVEST_SH" 2>&1) || y_rc=$?
+assert_eq "a deleted branch's work dropped from HEAD: refused" "1" "$y_rc"
+assert_eq "saying so" "true" \
+    "$(grep -qF "HEAD no longer has what an earlier harvest merged" \
+        <<< "$y_out" && echo true || echo false)"
+git reset -q --hard "$after_y"
+# agent-work set back in the bare repo does not lower what HEAD must
+# keep: the record stays at the later tip.
+agent_commit z.txt z "agent z"
+bash "$HARVEST_SH" >/dev/null 2>&1
+later=$(git -C "$BASE_BARE" rev-parse agent-work)
+git -C "$BASE_BARE" update-ref refs/heads/agent-work "$later~1"
+bash "$HARVEST_SH" >/dev/null 2>&1
+assert_eq "agent-work set back: the record keeps the later tip" "true" \
+    "$(recorded "$later")"
+assert_eq "and leaves out the earlier one, which the later one has" \
+    "false" "$(recorded "$(git -C "$BASE_BARE" rev-parse agent-work)")"
+git -C "$BASE_BARE" update-ref refs/heads/agent-work "$later"
+git -C "$BASE_AGENT" fetch -q origin
+git -C "$BASE_AGENT" reset -q --hard origin/agent-work
+# A history rewritten after a harvest, dropping some of what it merged
+# (the base is still there): refused, since merging again would bring
+# that back; --again merges it on purpose.
+agent_commit d.txt d "agent four"
+bash "$HARVEST_SH" >/dev/null 2>&1
+git reset -q --hard HEAD~1
+printf 'own\n' > own.txt
+bg add own.txt
+bg commit -qm "own work instead"
+agent_commit e.txt e "agent five"
+before=$(git rev-parse HEAD)
+w_rc=0
+w_out=$(bash "$HARVEST_SH" 2>&1) || w_rc=$?
+assert_eq "HEAD without what a harvest merged: refused" "1" "$w_rc"
+assert_eq "saying so" "true" \
+    "$(grep -qF "HEAD no longer has what an earlier harvest merged" \
+        <<< "$w_out" && echo true || echo false)"
+assert_eq "and naming --again" "true" \
+    "$(grep -qF "./harvest.sh --again" <<< "$w_out" \
+        && echo true || echo false)"
+assert_eq "HEAD is as it was" "$before" "$(git rev-parse HEAD)"
+w_rc=0
+bash "$HARVEST_SH" --again >/dev/null 2>&1 || w_rc=$?
+assert_eq "--again merges it" "0" "$w_rc"
+assert_eq "the dropped work is back, on purpose" "true" \
+    "$([ -f d.txt ] && [ -f e.txt ] && echo true || echo false)"
+# Each merge is recorded before it starts: when that record cannot be
+# written, nothing is merged.
+agent_commit s.txt s "agent six"
+before=$(git rev-parse HEAD)
+cat > "$TMPDIR/mv-fails.sh" <<'EOF'
+mv() {
+    local last
+    for last; do :; done
+    case "$last" in
+        */state.json) return 1 ;;
+    esac
+    command mv "$@"
+}
+EOF
+s_rc=0
+s_out=$(BASH_ENV="$TMPDIR/mv-fails.sh" bash "$HARVEST_SH" 2>&1) || s_rc=$?
+assert_eq "the record cannot be written: harvest stops" "1" "$s_rc"
+assert_eq "saying so" "true" \
+    "$(grep -qF "cannot record what was harvested" <<< "$s_out" \
+        && grep -qF "agent-work not merged" <<< "$s_out" \
+        && echo true || echo false)"
+assert_eq "before merging anything" "$before" "$(git rev-parse HEAD)"
+bash "$HARVEST_SH" >/dev/null 2>&1
+# A harvest killed after a merge, before its last record: that merge
+# was recorded as pending, so dropping it is refused.  git runs the
+# hook below once the merge is done; git's parent is harvest.sh.
+agent_commit k.txt k "agent seven"
+before=$(git rev-parse HEAD)
+mkdir -p "$TMPDIR/kill-hooks"
+cat > "$TMPDIR/kill-hooks/post-merge" <<'EOF'
+#!/bin/sh
+kill -9 "$(ps -o ppid= -p "$PPID" | tr -d ' ')"
+EOF
+chmod +x "$TMPDIR/kill-hooks/post-merge"
+git config core.hooksPath "$TMPDIR/kill-hooks"
+k_rc=0
+bash "$HARVEST_SH" >/dev/null 2>&1 || k_rc=$?
+git config --unset core.hooksPath
+assert_eq "a harvest killed after its merge" "137" "$k_rc"
+assert_eq "the merge is in HEAD" "true" \
+    "$([ -f k.txt ] && echo true || echo false)"
+git reset -q --hard "$before"
+k_rc=0
+k_out=$(bash "$HARVEST_SH" 2>&1) || k_rc=$?
+assert_eq "that merge dropped: refused" "1" "$k_rc"
+assert_eq "naming --again" "true" \
+    "$(grep -qF "harvest started merging: that merge stopped" <<< "$k_out" \
+        && grep -qF "./harvest.sh --again" <<< "$k_out" \
+        && echo true || echo false)"
+k_rc=0
+bash "$HARVEST_SH" --again >/dev/null 2>&1 || k_rc=$?
+assert_eq "--again merges it" "0" "$k_rc"
+assert_eq "and it is back" "true" \
+    "$([ -f k.txt ] && echo true || echo false)"
+# A Git config that leaves merges uncommitted (mergeOptions --no-commit
+# on the branch) does not apply: harvest commits each merge.
+agent_commit m.txt m "agent eight"
+m_branch=$(git branch --show-current)
+git config "branch.${m_branch}.mergeOptions" --no-commit
+m_rc=0
+bash "$HARVEST_SH" >/dev/null 2>&1 || m_rc=$?
+git config --unset "branch.${m_branch}.mergeOptions"
+assert_eq "mergeOptions --no-commit: harvest still commits" "0" "$m_rc"
+assert_eq "with no merge left in progress" "false" \
+    "$(git rev-parse -q --verify MERGE_HEAD >/dev/null \
+        && echo true || echo false)"
+assert_eq "and the merged tip recorded" "true" \
+    "$(recorded "$(git -C "$BASE_BARE" rev-parse agent-work)")"
+# Whatever else leaves a merge uncommitted (here a git that adds
+# --no-commit after harvest's own options), harvest stops there with
+# the merge pending: given up, it is not taken again without --again.
+agent_commit n.txt n "agent nine"
+n_tip=$(git -C "$BASE_BARE" rev-parse agent-work)
+n_git=$(command -v git)
+mkdir -p "$TMPDIR/nocommit-bin"
+cat > "$TMPDIR/nocommit-bin/git" <<EOF
+#!/bin/bash
+if [ "\$1" = merge ] && [ "\${2:-}" != --abort ]; then
+    exec "$n_git" "\$@" --no-commit
+fi
+exec "$n_git" "\$@"
+EOF
+chmod +x "$TMPDIR/nocommit-bin/git"
+n_rc=0
+n_out=$(PATH="$TMPDIR/nocommit-bin:$PATH" bash "$HARVEST_SH" 2>&1) \
+    || n_rc=$?
+assert_eq "a merge left uncommitted: harvest stops" "1" "$n_rc"
+assert_eq "saying so" "true" \
+    "$(grep -qF "git left the merge of agent-work uncommitted" \
+        <<< "$n_out" && echo true || echo false)"
+assert_eq "its tip stays pending" "$n_tip" \
+    "$(jq -r '.harvest_pending | join(" ")' \
+        "$SWARM_RUNTIME_DIR/state.json")"
+git merge --abort
+n_rc=0
+bash "$HARVEST_SH" >/dev/null 2>&1 || n_rc=$?
+assert_eq "that merge given up: refused" "1" "$n_rc"
+n_rc=0
+bash "$HARVEST_SH" --again >/dev/null 2>&1 || n_rc=$?
+assert_eq "--again merges it" "0" "$n_rc"
+assert_eq "and commits it" "true" \
+    "$(git merge-base --is-ancestor "$n_tip" HEAD && echo true || echo false)"
+# A tag in the checkout named like the remote's branch is what git
+# would merge by that name: harvest refuses until it is gone.
+agent_commit t.txt t "agent ten"
+before=$(git rev-parse HEAD)
+git tag "_agent-harvest/agent-work" "$(git -C "$BASE_BARE" rev-parse agent-work~1)"
+t_rc=0
+t_out=$(bash "$HARVEST_SH" 2>&1) || t_rc=$?
+assert_eq "a tag named like the remote branch: refused" "1" "$t_rc"
+assert_eq "saying so" "true" \
+    "$(grep -qF "_agent-harvest/agent-work also names a tag or a branch" \
+        <<< "$t_out" && echo true || echo false)"
+assert_eq "HEAD is as it was" "$before" "$(git rev-parse HEAD)"
+git tag -d "_agent-harvest/agent-work" >/dev/null
+t_rc=0
+bash "$HARVEST_SH" >/dev/null 2>&1 || t_rc=$?
+assert_eq "the tag gone: harvest merges" "0" "$t_rc"
+# Tags in the bare repo (agents can push them) stay there.
+git -C "$BASE_AGENT" tag planted
+git -C "$BASE_AGENT" push -q origin planted
+agent_commit u.txt u "agent eleven"
+bash "$HARVEST_SH" >/dev/null 2>&1
+assert_eq "a tag pushed to the bare repo is not fetched" "false" \
+    "$(git rev-parse -q --verify refs/tags/planted >/dev/null \
+        && echo true || echo false)"
+# A merge git does not start (a local file in the way): no conflict
+# steps and no reset --hard, which would delete local changes.
+agent_commit g.txt "agent g" "agent adds g"
+printf 'mine\n' > g.txt
+l_rc=0
+l_out=$(bash "$HARVEST_SH" 2>&1) || l_rc=$?
+assert_eq "a local file in the way: harvest stops" "1" "$l_rc"
+assert_eq "saying git did not start the merge" "true" \
+    "$(grep -qF "did not start merging agent-work" <<< "$l_out" \
+        && echo true || echo false)"
+assert_eq "without a reset --hard" "0" \
+    "$(grep -c 'reset --hard' <<< "$l_out" || true)"
+assert_eq "the local file is still there" "mine" "$(cat g.txt)"
+rm -f g.txt
+l_rc=0
+bash "$HARVEST_SH" >/dev/null 2>&1 || l_rc=$?
+assert_eq "once it is out of the way, harvest merges" "0" "$l_rc"
+# HEAD rewritten past the base: refused, HEAD untouched.
+agent_commit c.txt c "agent three"
+base_branch=$(git branch --show-current)
+git checkout -q --orphan rewritten
+bg commit -qm "a new history"
+before=$(git rev-parse HEAD)
+r_rc=0
+r_out=$(bash "$HARVEST_SH" 2>&1) || r_rc=$?
+assert_eq "HEAD's history without the base: refused" "1" "$r_rc"
+assert_eq "saying so" "true" \
+    "$(grep -qF "HEAD's history no longer has the commit this" \
+        <<< "$r_out" && echo true || echo false)"
+assert_eq "with no rm -rf" "0" "$(grep -c 'rm -rf' <<< "$r_out" || true)"
+assert_eq "HEAD is as it was" "$before" "$(git rev-parse HEAD)"
+assert_eq "no harvest remote is left" "" \
+    "$(git remote | grep -E '^_agent-harvest$' || true)"
+git checkout -q "$base_branch"
+# A branch that is not built on the base: refused.
+git -C "$BASE_AGENT" checkout -q --orphan other
+bg -C "$BASE_AGENT" commit -qm "unrelated"
+git -C "$BASE_AGENT" push -q -f origin other:agent-work
+o_rc=0
+o_out=$(bash "$HARVEST_SH" 2>&1) || o_rc=$?
+assert_eq "a branch not built on the base: refused" "1" "$o_rc"
+assert_eq "saying so" "true" \
+    "$(grep -qF "is not built on the commit this" <<< "$o_out" \
+        && echo true || echo false)"
+# A state with no base: refused before anything is fetched.
+ENGAGEMENT_BASE=""
+record_engagement
+n_rc=0
+n_out=$(bash "$HARVEST_SH" --dry 2>&1) || n_rc=$?
+assert_eq "no base recorded: refused" "1" "$n_rc"
+assert_eq "saying so" "true" \
+    "$(grep -qF "records no base commit" <<< "$n_out" \
+        && echo true || echo false)"
 
 # ============================================================
 echo ""
