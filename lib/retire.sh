@@ -291,7 +291,7 @@ EOF
     # it before returning.
     local ok=0
     swarm_retire_after_scan "$id" "$name" "$snap" "$info" "$tmp" "$scan_rc" \
-        || ok=$?
+        "$mounts" || ok=$?
     if ! retire_drop_snapshot; then
         echo "WARNING: cannot remove the scan snapshot ${snap} of" \
              "${name}; remove it with docker rmi ${snap}." >&2
@@ -302,10 +302,12 @@ EOF
 }
 
 # The checks on scan output in TMP for container ID (snapshot SNAP,
-# inspect JSON INFO; SCAN_RC is the scan's status).  Fails when the
-# container may not be retired.
+# inspect JSON INFO; SCAN_RC is the scan's status; MOUNTS its other
+# mount points, one per line).  Fails when the container may not be
+# retired.
 swarm_retire_after_scan() {
     local id="$1" name="$2" snap="$3" info="$4" tmp="$5" scan_rc="$6"
+    local mounts="${7:-}"
     if [ "$scan_rc" -ne 0 ]; then
         echo "ERROR: cannot scan the workspace of ${name}:" >&2
         sed 's/^/  /' "$tmp/err" >&2
@@ -333,10 +335,11 @@ swarm_retire_after_scan() {
             echo "ERROR: cannot read the workspace scan of ${name}." >&2
             return 1 ;;
     esac
-    # Repositories the container made or changed outside the volume
-    # (a clone in /tmp, commits in a repository of the image) are in its
-    # layer only.
-    swarm_retire_layer_repos "$id" "$name" "$snap" || return 1
+    # Repositories outside the volume (a clone in /tmp, a test's fixture,
+    # one the image ships) are in its layer only: checkouts are scanned
+    # to be kept as recovery refs, anything else refuses.
+    swarm_retire_layer_repos "$id" "$name" "$snap" "$info" "$mounts" \
+        || return 1
     # Symlinks in the volume that lead out of it: fine when they point
     # into the image (a virtualenv's python), not when the target, or
     # anything below it, is something the container added or changed.
@@ -380,24 +383,58 @@ swarm_retire_diff() {
     esac
 }
 
-# Fail when snapshot SNAP of container ID holds a Git repository
-# outside /workspace (the volume, scanned on its own): a .git entry of
-# any type, or a directory with a HEAD entry next to objects or
-# commondir (a bare repository, or a git dir kept apart from its work
-# tree).  One the container made (a clone in /tmp) holds work only it
-# has.  One the image ships may hold commits, tags, objects or edits
-# the container added, and docker diff cannot be trusted to show them:
-# it goes by metadata, which a write can keep, and an objects/ that is
-# a link puts new objects outside the repository.  So any repository
-# refuses, changed or not.
+# Retire keeps, as recovery refs in the checkout, the Git checkouts a
+# container has in its own layer, outside its workspace volume (a test's
+# fixture in /tmp, a clone made there): docker rm deletes them with the
+# layer.  Each is scanned inside the container's snapshot like a
+# workspace (lib/preserve-scan.sh, context layer: no file there is the
+# engine's), and the results wait in RETIRE_SCRATCH until every selected
+# container passed its checks; retire_run then imports them, verifies
+# the checkout and only then removes the containers.
+#
+# A snapshot is its agent's (the agent has root in its container): its
+# programs can hide or drop the agent's own data from these scans, as
+# the agent could delete it.  What they send back is bounded and checked
+# (swarm_docker_own_group, swarm_scan_extract), and only what the host
+# verified counts as kept.
+
+RETIRE_DISCARD=false
+RETIRE_LAYER_N=0
+
+# Print SWARM_RETIRE_LAYER_LIMIT_MB (default 100) in bytes: the most one
+# container's layer checkouts may take, as bundles, in the checkout.
+retire_layer_limit() {
+    local mb="${SWARM_RETIRE_LAYER_LIMIT_MB:-100}"
+    case "$mb" in
+        ''|*[!0123456789]*|0*)
+            echo "ERROR: SWARM_RETIRE_LAYER_LIMIT_MB must be a whole" \
+                 "number of megabytes from 1, not '${mb}'." >&2
+            return 1 ;;
+    esac
+    printf '%s' "$((mb * 1024 * 1024))"
+}
+
+# Find the Git repositories in snapshot SNAP of container ID outside
+# /workspace (the volume, scanned on its own): a .git entry of any type,
+# or a directory with HEAD next to objects or commondir.  A checkout (a
+# .git directory) is scanned and kept (retire_scan_checkout), with
+# everything below it left to its scan, which checks a submodule's
+# checkout and blocks on any other repository there.  Anything else
+# refuses: a bare repository or a git dir kept apart from its work tree,
+# a .git file or link outside every checkout, a linked worktree's admin
+# dir, a repository at /.  INFO is the container's inspect JSON, MOUNTS
+# its other mount points.
 swarm_retire_layer_repos() {
-    local id="$1" name="$2" snap="$3" tmp rc=0
+    local id="$1" name="$2" snap="$3" info="$4" mounts="$5" tmp rc=0
     tmp=$(retire_tmpdir) || return 1
     swarm_docker_own_group run --rm --pull never --network none --user 0 \
         --label "${RETIRE_HELPER_LABEL}=${PROJECT}" \
         --entrypoint bash "$snap" -c '
             # swarm-repos: every Git repository under $1 (the root of
-            # the snapshot) but outside $1/workspace.
+            # the snapshot) but outside $1/workspace, as "<kind><path>"
+            # records ended by NUL: D, F, L or O for a .git that is a
+            # directory, a file, a link or something else; C or B for a
+            # directory with HEAD and commondir, or with HEAD and objects.
             set -o pipefail
             r="${1%/}"
             e=$(mktemp "${TMPDIR:-/tmp}/swarm-repos.XXXXXX") || exit 3
@@ -407,13 +444,19 @@ swarm_retire_layer_repos() {
                     2>"$e" |
             while IFS= read -r -d "" f; do
                 case "$f" in
-                    */.git) printf "%s\n" "$f" ;;
+                    */.git)
+                        if [ -L "$f" ]; then k=L
+                        elif [ -d "$f" ]; then k=D
+                        elif [ -f "$f" ]; then k=F
+                        else k=O
+                        fi
+                        printf "%s%s\0" "$k" "$f" ;;
                     *)
                         d="${f%/HEAD}"
-                        if [ -e "$d/objects" ] || [ -L "$d/objects" ] \
-                                || [ -e "$d/commondir" ] \
-                                || [ -L "$d/commondir" ]; then
-                            printf "%s\n" "${d:-/}"
+                        if [ -e "$d/commondir" ] || [ -L "$d/commondir" ]; then
+                            printf "C%s\0" "${d:-/}"
+                        elif [ -e "$d/objects" ] || [ -L "$d/objects" ]; then
+                            printf "B%s\0" "${d:-/}"
                         fi ;;
                 esac
             done || s=3
@@ -427,27 +470,271 @@ swarm_retire_layer_repos() {
         || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "ERROR: cannot check ${name} for Git repositories:" \
-             "$(cat "$tmp/err")" >&2
+             "$(head -c 2000 "$tmp/err")" >&2
         rm -rf "$tmp"
         return 1
     fi
-    if ! sort -u "$tmp/repos.raw" > "$tmp/repos"; then
-        echo "ERROR: cannot check ${name} for Git repositories." >&2
-        rm -rf "$tmp"
+    # Every record must be read, and every list written and read in
+    # full: a read that fails ends a loop like the end of its list, and
+    # this function runs where set -e does not stop it, so each pass
+    # counts what it read and wrote.  Paths go on to the scanner as
+    # Docker arguments (JSON), so one that is not valid UTF-8, or that
+    # holds a control character, refuses.
+    local rec kind path total=0 seen=0 good=0 bad="" n
+    total=$(tr -cd '\000' < "$tmp/repos.raw" | wc -c | tr -d ' ') \
+        || total=-1
+    if ! : > "$tmp/found"; then
+        retire_list_failed "$name" "$tmp"
         return 1
     fi
-    if [ -s "$tmp/repos" ]; then
+    while IFS= read -r -d '' rec; do
+        seen=$((seen + 1))
+        kind="${rec:0:1}"
+        path="${rec:1}"
+        case "$kind" in
+            D|F|L|O|C|B) ;;
+            *) bad="${bad}  (an unknown record)"$'\n'; continue ;;
+        esac
+        case "$path" in
+            /*) ;;
+            *) bad="${bad}  (a relative path)"$'\n'; continue ;;
+        esac
+        case "$path" in
+            *[[:cntrl:]]*)
+                bad="${bad}  $(printf '%q' "$path") (a control character)"$'\n'
+                continue ;;
+        esac
+        if ! printf '%s' "$path" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1
+        then
+            bad="${bad}  $(printf '%q' "$path") (not valid UTF-8)"$'\n'
+            continue
+        fi
+        if ! printf '%s\t%s\n' "$path" "$kind" >> "$tmp/found"; then
+            retire_list_failed "$name" "$tmp"
+            return 1
+        fi
+        good=$((good + 1))
+    done < "$tmp/repos.raw"
+    if [ "$seen" != "$total" ] \
+            || [ "$(retire_count_lines "$tmp/found")" != "$good" ] \
+            || ! LC_ALL=C sort "$tmp/found" > "$tmp/sorted" \
+            || [ "$(retire_count_lines "$tmp/sorted")" != "$good" ]; then
+        retire_list_failed "$name" "$tmp"
+        return 1
+    fi
+    # The checkouts, then what is not below one of them.
+    local checkouts=() c covered refused="" nscan=0
+    n=0
+    while IFS="$(printf '\t')" read -r path kind; do
+        n=$((n + 1))
+        if [ "$kind" = D ] && [ "$path" != /.git ]; then
+            checkouts+=("${path%/.git}")
+        fi
+    done < "$tmp/sorted"
+    if [ "$n" != "$good" ] || ! : > "$tmp/scan"; then
+        retire_list_failed "$name" "$tmp"
+        return 1
+    fi
+    n=0
+    while IFS="$(printf '\t')" read -r path kind; do
+        n=$((n + 1))
+        covered=false
+        for c in ${checkouts[@]+"${checkouts[@]}"}; do
+            [ "$kind:$path" != "D:$c/.git" ] || continue
+            case "$path" in
+                "$c"/*) covered=true; break ;;
+            esac
+        done
+        $covered && continue
+        if [ "$kind" = D ] && [ "$path" != /.git ]; then
+            if ! printf '%s\n' "${path%/.git}" >> "$tmp/scan"; then
+                retire_list_failed "$name" "$tmp"
+                return 1
+            fi
+            nscan=$((nscan + 1))
+        else
+            refused="${refused}  ${path}"$'\n'
+        fi
+    done < "$tmp/sorted"
+    if [ "$n" != "$good" ] \
+            || [ "$(retire_count_lines "$tmp/scan")" != "$nscan" ]; then
+        retire_list_failed "$name" "$tmp"
+        return 1
+    fi
+    # One refusal for both kinds, so that each repository it names is
+    # named at once.
+    if [ -n "$bad" ]; then
         echo "ERROR: ${name} has Git repositories outside its workspace" \
-             "volume, in its own layer or in its image; retire cannot" \
-             "tell whether it changed them:" >&2
-        sed 's/^/  /' "$tmp/repos" >&2
+             "volume whose paths retire cannot pass on:" >&2
+        printf '%s' "$bad" >&2
+    fi
+    if [ -n "$refused" ]; then
+        echo "ERROR: ${name} has Git repositories outside its workspace" \
+             "volume that retire cannot keep (a bare repository, a git" \
+             "dir apart from its work tree, a .git file or link, a" \
+             "repository at /):" >&2
+        printf '%s' "$refused" >&2
+    fi
+    if [ -n "$bad" ] || [ -n "$refused" ]; then
         echo "  Push or copy out what they hold (docker cp" \
              "${id}:<path> <dir>); then, if nothing of yours is left in" \
              "them, remove the container yourself (docker rm ${id})." >&2
         rm -rf "$tmp"
         return 1
     fi
+    # Scan every checkout; together their bundles must stay under the
+    # limit.
+    local limit size=0 b
+    limit=$(retire_layer_limit) || { rm -rf "$tmp"; return 1; }
+    if ! : > "$tmp/mine"; then
+        retire_list_failed "$name" "$tmp"
+        return 1
+    fi
+    n=0
+    while IFS= read -r path; do
+        n=$((n + 1))
+        if ! retire_scan_checkout "$id" "$name" "$snap" "$info" "$mounts" \
+                "$path" "$tmp/mine"; then
+            rm -rf "$tmp"
+            return 1
+        fi
+    done < "$tmp/scan"
+    if [ "$n" != "$nscan" ] \
+            || [ "$(retire_count_lines "$tmp/mine")" != "$nscan" ]; then
+        retire_list_failed "$name" "$tmp"
+        return 1
+    fi
+    n=0
+    while IFS="$(printf '\t')" read -r c _ _ path; do
+        n=$((n + 1))
+        b=$(wc -c < "$RETIRE_SCRATCH/layer/$c/bundle" | tr -d ' ') || b=-1
+        if [ "$b" -lt 0 ]; then
+            echo "ERROR: cannot read the scan of ${path} in ${name}." >&2
+            rm -rf "$tmp"
+            return 1
+        fi
+        size=$((size + b))
+    done < "$tmp/mine"
+    if [ "$n" != "$nscan" ]; then
+        retire_list_failed "$name" "$tmp"
+        return 1
+    fi
+    if [ "$size" -gt "$limit" ]; then
+        echo "ERROR: ${name} has $((size / 1024 / 1024)) MB of Git data" \
+             "outside its workspace volume, more than retire keeps" \
+             "(SWARM_RETIRE_LAYER_LIMIT_MB=$((limit / 1024 / 1024))):" >&2
+        cut -f4 "$tmp/mine" | sed 's/^/  /' >&2
+        echo "  Copy out what you need (docker cp ${id}:<path> <dir>) and" \
+             "remove the container yourself (docker rm ${id}), or raise" \
+             "the limit." >&2
+        rm -rf "$tmp"
+        return 1
+    fi
+    cat "$tmp/mine" >> "$RETIRE_SCRATCH/layer.list" || {
+        retire_list_failed "$name" "$tmp"
+        return 1
+    }
     rm -rf "$tmp"
+}
+
+# Say that the lists retire keeps about the Git repositories of
+# container NAME could not be written or read in full, and remove the
+# scratch directory TMP.
+retire_list_failed() {
+    echo "ERROR: cannot keep track of the Git repositories in ${1}" \
+         "(a list could not be written or read in full)." >&2
+    rm -rf "$2"
+}
+
+# Scan checkout PATH in snapshot SNAP of container ID (named NAME; INFO
+# its inspect JSON, MOUNTS its other mount points) into a new directory
+# under RETIRE_SCRATCH/layer, and apply the policy to the report: a
+# block refuses, work outside Git's history refuses unless
+# --discard-uncommitted, and links out of the checkout go through the
+# same checks as the volume's.  On success, append "<n> <id> <name>
+# <path>" (tab-separated) to file MINE.
+retire_scan_checkout() {
+    local id="$1" name="$2" snap="$3" info="$4" mounts="$5" path="$6"
+    local mine="$7" n out rc=0 grc=0
+    RETIRE_LAYER_N=$((RETIRE_LAYER_N + 1))
+    n="$RETIRE_LAYER_N"
+    out="$RETIRE_SCRATCH/layer/$n"
+    mkdir -p "$out" || return 1
+    # The scratch directory is made at /, which no checkout kept here
+    # holds (one at / refuses).
+    swarm_docker_own_group run --rm -i --pull never --network none --user 0 \
+        --label "${RETIRE_HELPER_LABEL}=${PROJECT}" \
+        -e "SWARM_SCAN_MOUNTS=${mounts}"$'\n'"/workspace" \
+        --entrypoint bash "$snap" -c '
+            # swarm-layer-scan: the scanner (on stdin) on checkout $1.
+            d=$(mktemp -d /swarm-layer-scan.XXXXXX) || exit 3
+            cat > "$d/scan.sh" || exit 3
+            mkdir "$d/out" || exit 3
+            bash "$d/scan.sh" worktree "$1" layer "$d/out" >&2 || exit $?
+            cd "$d/out" || exit 3
+            set -- report
+            [ ! -f bundle ] || set -- "$@" bundle
+            [ ! -f objects ] || set -- "$@" objects
+            tar -cf - "$@" || exit 3
+        ' swarm-layer-scan "$path" \
+        < "$(dirname "${BASH_SOURCE[0]}")/preserve-scan.sh" \
+        > "$out/scan.tar" 2>"$out.err" || rc=$?
+    if [ "$rc" -ne 0 ] \
+            || ! swarm_scan_extract "$out/scan.tar" "$out" 2>>"$out.err"; then
+        echo "ERROR: cannot scan the Git checkout ${path} in ${name}:" >&2
+        head -c 2000 "$out.err" | sed 's/^/  /' >&2
+        return 1
+    fi
+    grep -a '^block ' "$out/report" > "$out.block" 2>/dev/null || grc=$?
+    case "$grc" in
+        0)
+            echo "ERROR: ${name} cannot be retired; the Git checkout" \
+                 "${path} in its layer holds what retire cannot keep:" >&2
+            sed 's/^block /  /' "$out.block" >&2
+            echo "  Copy it out (docker cp ${id}:${path} <dir>); then, if" \
+                 "nothing of yours is left in it, remove the container" \
+                 "yourself (docker rm ${id})." >&2
+            return 1 ;;
+        1) ;;
+        *)
+            echo "ERROR: cannot read the scan of ${path} in ${name}." >&2
+            return 1 ;;
+    esac
+    # A checkout's scan names its git dirs and carries a bundle and the
+    # list of its objects; anything less is not a scan to trust.
+    if ! grep -aq '^gitdir ' "$out/report" || [ ! -f "$out/bundle" ] \
+            || [ ! -f "$out/objects" ]; then
+        echo "ERROR: the scan of ${path} in ${name} is incomplete." >&2
+        return 1
+    fi
+    grc=0
+    grep -a '^uncommitted ' "$out/report" > "$out.unc" 2>/dev/null \
+        || grc=$?
+    case "$grc" in
+        0)
+            if [ "$RETIRE_DISCARD" = true ]; then
+                echo "Discarding, from ${name}, in ${path}:" >&2
+                sed 's/^uncommitted /  /' "$out.unc" >&2
+            else
+                echo "ERROR: ${name} cannot be retired; the Git checkout" \
+                     "${path} in its layer holds work outside Git's" \
+                     "history:" >&2
+                sed 's/^uncommitted /  /' "$out.unc" >&2
+                echo "  Commit or copy it out (docker cp ${id}:${path}" \
+                     "<dir>), or run retire with --discard-uncommitted to" \
+                     "drop exactly these." >&2
+                return 1
+            fi ;;
+        1) ;;
+        *)
+            echo "ERROR: cannot read the scan of ${path} in ${name}." >&2
+            return 1 ;;
+    esac
+    # Links out of the checkout: the same rules as for the volume.
+    swarm_retire_layer_links "$id" "$name" "$out/report" "$info" "$snap" \
+        || return 1
+    printf '%s\t%s\t%s\t%s\n' "$n" "$id" "$name" "$path" >> "$mine" \
+        || return 1
 }
 
 # Fail when scan REPORT names, as a layer-link, a path that container
@@ -755,23 +1042,31 @@ retire_run() {
     # locale GNU grep would drop lines holding invalid UTF-8.
     LC_ALL=C
     export LC_ALL
+    RETIRE_DISCARD=false
     while [ $# -gt 0 ]; do
         case "$1" in
             --post-process) only_post=true; shift ;;
+            --discard-uncommitted) RETIRE_DISCARD=true; shift ;;
             -h|--help)
                 cat <<HELP
-Usage: $0 retire [--post-process]
+Usage: $0 retire [--post-process] [--discard-uncommitted]
 
 Remove this checkout's stopped engine containers (or only the
 post-process container) after checking that nothing lives only in
 them.  Their workspace volumes stay (./launch.sh cleanup deletes them
-after its own checks).  Run costs.sh first if you need the containers'
-stats.
+after its own checks).  Git checkouts a container has outside its
+volume (a test's fixture in /tmp, say) are first copied into this
+checkout as recovery refs (refs/swarm-recovery/...), up to
+SWARM_RETIRE_LAYER_LIMIT_MB megabytes per container; work outside
+Git's history in them stops retire, unless --discard-uncommitted
+drops exactly what it lists.  Run costs.sh first if you need the
+containers' stats.
 HELP
                 return 0 ;;
             *) echo "ERROR: unknown retire option: $1" >&2; return 1 ;;
         esac
     done
+    retire_layer_limit > /dev/null || return 1
     if [ ! -f "$STATE_FILE" ]; then
         echo "ERROR: no engagement in ${RUNTIME_DIR}; nothing to retire." >&2
         return 1
@@ -818,6 +1113,8 @@ HELP
     checked=$(retire_tmpdir) || return 1
     checked="$checked/checked"
     : > "$checked"
+    RETIRE_LAYER_N=0
+    : > "$RETIRE_SCRATCH/layer.list" || return 1
     while read -r -u 3 id name; do
         if ! swarm_retire_preflight "$id" "$name" >> "$checked"; then
             echo "Nothing was removed." >&2
@@ -833,6 +1130,15 @@ EOF
         echo "ERROR: not every container was checked. Nothing was" \
              "removed." >&2
         return 1
+    fi
+    # The checkouts found outside the volumes go into the checkout before
+    # any container goes.
+    local kept_prefix=""
+    if [ -s "$RETIRE_SCRATCH/layer.list" ]; then
+        if ! kept_prefix=$(retire_keep_layer_checkouts "$engagement"); then
+            echo "Nothing was removed." >&2
+            return 1
+        fi
     fi
     # Remove by ID, each only if nothing about it changed since.
     local vol started finished now failed=0
@@ -857,5 +1163,63 @@ EOF
     done 3< "$checked" < /dev/null
     echo "Workspace volumes stay, with the files of the removed containers;" \
          "./launch.sh cleanup deletes them after its checks."
+    if [ -n "$kept_prefix" ]; then
+        echo "The Git checkouts they had outside their volumes are kept" \
+             "as recovery refs under ${kept_prefix}/ (git cat-file blob" \
+             "${kept_prefix}/sources lists them)."
+    fi
     return "$failed"
+}
+
+# Import the scans listed in RETIRE_SCRATCH/layer.list into the checkout
+# under a new snapshot of engagement ENGAGEMENT, and print that
+# snapshot's prefix.  In this order: the checkout's storage check, each
+# import (verified on its own), the sources blob (an object only), git
+# fsck --full of the checkout, then the sources ref.  A sources ref
+# therefore marks a verified copy of every checkout it lists; a snapshot
+# without one was stopped before its verification ended (its refs may
+# be partial), and the next retire copies again under a new snapshot.
+retire_keep_layer_checkouts() {
+    local engagement="$1" snap hex base n id name path blob enc rc=0
+    local listed mapped
+    swarm_checkout_storage_ok "$REPO_ROOT" "$RUNTIME_DIR" || return 1
+    snap=$(swarm_recovery_snapshot_id) || return 1
+    hex=$(swarm_recovery_hex "$engagement") || return 1
+    base="${SWARM_RECOVERY_NS}/e${hex}/${snap}"
+    : > "$RETIRE_SCRATCH/layer.map" || return 1
+    while IFS="$(printf '\t')" read -r -u 3 n id name path; do
+        swarm_recovery_import "$REPO_ROOT" "$RETIRE_SCRATCH/layer/$n" \
+            "${base}/l${n}" || { rc=1; break; }
+        # Checked on its own: inside printf's arguments a failure would
+        # leave an empty path in the sources.
+        if ! enc=$(printf '%s' "$path" | jq -R -s .) || [ -z "$enc" ]; then
+            echo "ERROR: cannot record the path of ${path}." >&2
+            rc=1
+            break
+        fi
+        printf 'l%s layer %s %s %s\n' "$n" "$name" "$id" "$enc" \
+            >> "$RETIRE_SCRATCH/layer.map" || { rc=1; break; }
+    done 3< "$RETIRE_SCRATCH/layer.list" < /dev/null
+    [ "$rc" -eq 0 ] || return 1
+    # Every listed checkout must have been imported: both counts read,
+    # and equal.
+    if ! mapped=$(retire_count_lines "$RETIRE_SCRATCH/layer.map") \
+            || ! listed=$(retire_count_lines "$RETIRE_SCRATCH/layer.list") \
+            || [ -z "$mapped" ] || [ "$mapped" != "$listed" ]; then
+        echo "ERROR: not every Git checkout was copied." >&2
+        return 1
+    fi
+    blob=$(swarm_recovery_git -C "$REPO_ROOT" hash-object -w --stdin \
+        < "$RETIRE_SCRATCH/layer.map") || return 1
+    swarm_recovery_verify_checkout "$REPO_ROOT" || return 1
+    swarm_recovery_git -C "$REPO_ROOT" update-ref "${base}/sources" \
+        "$blob" "" || return 1
+    printf '%s' "$base"
+}
+
+# Print the number of lines of FILE, or fail.
+retire_count_lines() {
+    local n
+    n=$(wc -l < "$1") || return 1
+    printf '%s' "$((n + 0))"
 }

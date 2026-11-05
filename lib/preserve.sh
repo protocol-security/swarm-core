@@ -170,6 +170,12 @@ swarm_preservation_explain() {
 
 SWARM_RECOVERY_NS="refs/swarm-recovery"
 
+# Print STRING as lowercase hex: any engagement id becomes a valid ref
+# component.
+swarm_recovery_hex() {
+    printf '%s' "$1" | od -An -tx1 | tr -d ' \n'
+}
+
 # Print a new snapshot id: UTC time and 8 random hex digits.
 swarm_recovery_snapshot_id() {
     local rand

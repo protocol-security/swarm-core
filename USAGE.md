@@ -107,6 +107,7 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_WATCHDOG_GRACE` | `10` | Grace window between watchdog SIGTERM and SIGKILL.  Rarely needs tuning. |
 | `SWARM_STOP_TIMEOUT` | `60` | Seconds `./launch.sh stop` passes to `docker stop -t`, so the harness's SIGTERM trap has time to ship any in-flight local commits via `_session_end_push` before SIGKILL hits.  See [Stopping the swarm](#stopping-the-swarm). |
 | `SWARM_WAIT_POLL` | `10` | Seconds between the checks of `./launch.sh wait`. |
+| `SWARM_RETIRE_LAYER_LIMIT_MB` | `100` | The most, in megabytes, that the Git checkouts a container has outside its workspace volume may take as bundles for retire to keep them. |
 | `SWARM_HELPER_OUTPUT_LIMIT_MB` | `16384` | The most, in megabytes, that a helper container of retire or cleanup may write to any one file on the host (its output, its errors, a scan archive). |
 
 Per-group credentials (`api_key`, `auth_token`, `base_url`)
@@ -1322,11 +1323,25 @@ refuses when one
 - has a symlink in the volume that leads to data the container wrote
   itself, or to an image file it changed (links into the unchanged
   image, such as a virtualenv's `python`, are fine);
-- has a Git repository anywhere outside `/workspace`, one it made (a
-  clone in `/tmp`, a bare repository; package caches that keep
-  repositories, such as Go's, count too) or one its image ships,
-  changed or not: `docker diff` goes by metadata, so it cannot show
-  every change to a repository (the engine image ships none).
+- has a Git repository outside `/workspace` that is not a checkout
+  (a bare repository, a git dir kept apart from its work tree, a
+  `.git` file or link outside every checkout, a repository at `/`), or
+  a checkout there that the scan below refuses.
+
+A checkout outside `/workspace` (a test's fixture in `/tmp`, a clone
+the agent made, one its image ships: `docker diff` goes by metadata, so
+any repository there may hold changes) is kept: retire scans it in the
+snapshot the way cleanup scans a volume, copies everything Git keeps
+there into this checkout as recovery refs, runs `git fsck --full`, and
+only then removes the container. Work outside Git's history in it
+(uncommitted, untracked or ignored files, the agent's `agent_logs`
+included) stops retire, unless `./launch.sh retire
+--discard-uncommitted` (or cleanup's) drops exactly what it lists; so
+does a repository below it that is not a submodule checkout, and a
+link that leads out of it into what the container wrote. A container's
+checkouts may take `SWARM_RETIRE_LAYER_LIMIT_MB` megabytes (default
+100) as bundles; above that, copy out what you need and remove the
+container yourself.
 
 The checks run in a throwaway container started from a snapshot of the
 stopped container (`docker commit`, removed afterwards, also when
@@ -1411,11 +1426,16 @@ so save the containers' logs and stats first if you need them
 it cloned the bare repo or a mirror is copied as it is (every file)
 and deleted too.
 
-The recovery refs are `refs/swarm-recovery/e<hex>/<snapshot>/s<n>/...`,
-`<hex>` being the engagement id in hex;
+The recovery refs are `refs/swarm-recovery/e<hex>/<snapshot>/s<n>/...`
+(cleanup) and `.../l<n>/...` (the checkouts retire keeps), `<hex>`
+being the engagement id in hex;
 `git cat-file blob refs/swarm-recovery/e<hex>/<snapshot>/sources`
-says what each `s<n>` was. The engine never deletes them. To drop them
-once you are sure you do not need them:
+says what each `s<n>` or `l<n>` was. That sources ref is written only
+once every copy of its snapshot is in the checkout and `git fsck`
+passed, so a snapshot with one is a verified copy; one without it was
+stopped before (its refs may be partial), and the next run copies again
+under a new snapshot. The engine never deletes them. To drop them once
+you are sure you do not need them:
 
 ```bash
 git for-each-ref --format='%(refname)' refs/swarm-recovery/ \

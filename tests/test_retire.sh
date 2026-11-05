@@ -203,11 +203,15 @@ case "$1" in
                 done
                 root="$F/snaproot"
                 bash -c "$prog" swarm-repos "$root" > "$d/found" || exit $?
-                while IFS= read -r r; do
+                # "<kind><path>" records ended by NUL, mapped back to
+                # the snapshot's names.
+                while IFS= read -r -d '' r; do
+                    k="${r:0:1}"
+                    r="${r:1}"
                     case "$r" in
-                        "$root") printf '/\n' ;;
-                        "$root"/*) printf '%s\n' "${r#"$root"}" ;;
-                        *) printf 'outside the root: %s\n' "$r" ;;
+                        "$root") printf '%s/\0' "$k" ;;
+                        "$root"/*) printf '%s%s\0' "$k" "${r#"$root"}" ;;
+                        *) printf '%soutside the root: %s\0' "$k" "$r" ;;
                     esac
                 done < "$d/found"
                 exit 0 ;;
@@ -239,6 +243,48 @@ case "$1" in
                         printf '%s\t-\t-\n' "$p"
                     fi
                 done
+                exit 0 ;;
+        esac
+        # The scan of a checkout in the layer: the real scanner in
+        # worktree mode on $F/snaproot<path>, run as the snapshot runs it.
+        # $F/layer-scan-fail: the helper fails.
+        case "$*" in
+            *swarm-layer-scan*)
+                cat > "$d/scan.sh"
+                [ ! -e "$F/layer-scan-fail" ] || exit 3
+                lpath=""
+                prev=""
+                for a in "$@"; do
+                    [ "$prev" != swarm-layer-scan ] || lpath="$a"
+                    prev="$a"
+                done
+                lmounts=""
+                prev=""
+                for a in "$@"; do
+                    if [ "$prev" = -e ]; then
+                        case "$a" in
+                            SWARM_SCAN_MOUNTS=*) lmounts="${a#SWARM_SCAN_MOUNTS=}" ;;
+                        esac
+                    fi
+                    prev="$a"
+                done
+                mkdir "$d/out"
+                printf '%s\n' "$lpath" >> "$F/layer-scans"
+                SWARM_SCAN_MOUNTS="$lmounts" bash "$d/scan.sh" worktree \
+                    "$F/snaproot$lpath" layer "$d/out" >&2 || exit $?
+                # $F/layer-scan-incomplete: a result missing a part.
+                case "$(cat "$F/layer-scan-incomplete" 2>/dev/null)" in
+                    nogitdir) sed -i.bak '/^gitdir /d' "$d/out/report" ;;
+                    nobundle) rm -f "$d/out/bundle" ;;
+                    noobjects) rm -f "$d/out/objects" ;;
+                    empty) echo empty > "$d/out/report"
+                           rm -f "$d/out/bundle" "$d/out/objects" ;;
+                esac
+                rm -f "$d/out/report.bak"
+                (cd "$d/out" && set -- report \
+                    && { [ ! -f bundle ] || set -- "$@" bundle; } \
+                    && { [ ! -f objects ] || set -- "$@" objects; } \
+                    && tar -cf - "$@") || exit 3
                 exit 0 ;;
         esac
         # The git config check: the real scanner in userconfig mode, with
@@ -371,6 +417,11 @@ case "$1" in
     rm)
         [ ! -e "$F/rmfail/$2" ] || exit 1
         echo "$2"
+        # $F/term-on-rm: retire gets SIGTERM once a container is gone.
+        if [ -e "$F/term-on-rm" ]; then
+            rm -f "$F/term-on-rm"
+            kill -TERM "$PPID"
+        fi
         exit 0 ;;
 esac
 exit 0
@@ -428,9 +479,10 @@ reset_fake() {
 retire_own_group() {
     local rc=0 pid
     set -m
-    (cd "$REPO" && PATH="$TMPDIR/bin:$PATH" FAKE_DOCKER="$F" FAKE_CK="$CK" \
+    (cd "$REPO" && PATH="${SHIM_DIR:+$SHIM_DIR:}$TMPDIR/bin:$PATH" \
+        FAKE_DOCKER="$F" FAKE_CK="$CK" \
         SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" SWARM_SKIP_DEP_CHECK=1 \
-        exec "$BASH" "$LAUNCH" retire > "$TMPDIR/out" 2>&1) &
+        exec "$BASH" "$LAUNCH" retire "$@" > "$TMPDIR/out" 2>&1) &
     pid=$!
     set +m
     wait "$pid" || rc=$?
@@ -944,15 +996,19 @@ assert_eq "a snapshot without repositories is fine" "0" "$(retire)"
 assert_eq "the search runs in the snapshot, offline, as root" "1" \
     "$(grep -cF -- "--network none --user 0 --label swarm-core.retire=proj --entrypoint bash sha256:$(printf '%064d' 2) -c" \
         "$F/log" | awk '{ print ($1 > 0) }')"
+# A checkout in the layer (one the container made, one its image ships)
+# is kept as recovery refs before the container goes (section 5).
 case_setup
 git init -q "$F/snaproot/tmp/experiment"
-refused "a clone in the container's /tmp" "  /tmp/experiment/.git"
+assert_eq "a checkout in the container's /tmp: retired" "0" "$(retire)"
+assert_eq "once kept as recovery refs" "1" \
+    "$(grep -c 'The Git checkouts they had outside their volumes are kept' "$TMPDIR/out" || true)"
 case_setup
 git init -q --bare "$F/snaproot/tmp/x.git"
 refused "a bare clone in the container's layer" "  /tmp/x.git"
 case_setup
 git init -q "$F/snaproot/opt/tool"
-refused "a repository the image ships, even unchanged" "  /opt/tool/.git"
+assert_eq "a checkout the image ships: retired" "0" "$(retire)"
 case_setup
 mkdir -p "$F/snaproot/opt/wt"
 printf 'gitdir: /opt/tool/.git/worktrees/wt\n' > "$F/snaproot/opt/wt/.git"
@@ -995,6 +1051,8 @@ git init -q "$F/snaproot/tmp/a
 b"
 refused "a repository whose path holds a newline" \
     "Git repositories outside its workspace"
+assert_eq "named as a path with a control character" "1" \
+    "$(grep -c '(a control character)' "$TMPDIR/out" || true)"
 # What a helper sends back is bounded (SWARM_HELPER_OUTPUT_LIMIT_MB) and
 # checked: a flooding search and a scan archive with a member no scan
 # writes refuse.
@@ -1426,6 +1484,430 @@ assert_eq "for that reason" "1" \
 assert_eq "nothing removed then" "0" "$(removed)"
 cp "$TMPDIR/state.keep" "$RT/state.json"
 rm -f "$RT/claimed"
+
+echo ""
+echo "=== 5. Git checkouts in a container's layer are kept ==="
+g() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
+# The checkout's recovery refs, and its retire snapshots' sources.
+rrefs() {
+    git -C "$REPO" for-each-ref --format='%(refname)' refs/swarm-recovery/
+}
+nsources() {
+    rrefs | grep -c '/sources$' || true
+}
+last_sources() {
+    git -C "$REPO" cat-file blob "$(rrefs | grep '/sources$' | tail -1)"
+}
+clear_rrefs() {
+    rrefs | sed 's/^/delete /' | git -C "$REPO" update-ref --stdin
+}
+# A checkout at $F/snaproot<PATH> with one commit.
+fixture() {
+    local d="$F/snaproot$1"
+    mkdir -p "$d"
+    git init -q "$d"
+    echo one > "$d/a"
+    g -C "$d" add a
+    g -C "$d" commit -qm one
+}
+# Succeed when every object of the repository at DIR is in the checkout.
+all_kept() {
+    git -C "$1" cat-file --batch-all-objects --batch-check='%(objectname)' \
+        | git -C "$REPO" cat-file --batch-check='%(objectname) %(objecttype)' \
+        | grep -q ' missing$' && return 1
+    return 0
+}
+kept_case() {
+    reset_fake
+    add proj-agent-1
+    clear_rrefs
+}
+# A checkout with history of every kind: commits, a branch, a tag, a
+# stash, a commit only its reflog reaches, and a file of its own in .git.
+kept_case
+fixture /tmp/fx
+FX="$F/snaproot/tmp/fx"
+g -C "$FX" checkout -q -b side
+echo two > "$FX/b"
+g -C "$FX" add b
+g -C "$FX" commit -qm side
+g -C "$FX" tag t1
+g -C "$FX" checkout -q -
+echo stashed > "$FX/a"
+g -C "$FX" stash -q
+echo lost > "$FX/c"
+g -C "$FX" add c
+g -C "$FX" commit -qm lost
+g -C "$FX" reset -q --hard HEAD~1
+echo note > "$FX/.git/my-notes"
+assert_eq "a checkout in the layer: retired" "0" "$(retire)"
+assert_eq "the container is removed" "1" "$(removed)"
+assert_eq "every object of it is in the checkout" "true" \
+    "$(all_kept "$FX" && echo true || echo false)"
+assert_eq "its own file in .git too" "blob" \
+    "$(git -C "$REPO" cat-file -t "$(git hash-object "$FX/.git/my-notes")" 2>/dev/null)"
+assert_eq "the sources name the container, its id and the path" \
+    'l1 layer proj-agent-1 id-proj-agent-1 "/tmp/fx"' "$(last_sources)"
+assert_eq "one retire snapshot, with its sources ref" "1" "$(nsources)"
+assert_eq "saying where" "1" \
+    "$(grep -c 'kept as recovery refs under refs/swarm-recovery/e' "$TMPDIR/out" || true)"
+# Work outside Git's history in it refuses, or is dropped and listed
+# with --discard-uncommitted; files the engine writes in a workspace
+# are nobody's in a layer checkout.
+kept_case
+fixture /tmp/fx2
+FX2="$F/snaproot/tmp/fx2"
+echo staged > "$FX2/s"
+g -C "$FX2" add s
+echo untracked > "$FX2/u"
+mkdir -p "$FX2/agent_logs" "$FX2/.claude"
+echo log > "$FX2/agent_logs/x"
+echo '{}' > "$FX2/.claude/settings.local.json"
+printf 'ign\n' > "$FX2/.gitignore"
+g -C "$FX2" add .gitignore
+g -C "$FX2" commit -qm ignore
+echo staged > "$FX2/s"
+echo i > "$FX2/ign"
+echo changed > "$FX2/a"
+g -C "$FX2" update-index --skip-worktree .gitignore
+refused "a layer checkout with uncommitted work" \
+    "holds work outside Git's history"
+for _what in 'dirty .: ?? u' 'dirty .: ?? agent_logs/x' \
+        'dirty .: ?? .claude/settings.local.json' 'dirty .:  M a' \
+        'ignored .: ign' 'hidden .: S .gitignore'; do
+    assert_eq "listed: ${_what}" "1" \
+        "$(grep -cF -- "  ${_what}" "$TMPDIR/out" | awk '{ print ($1 > 0) }')"
+done
+assert_eq "nothing imported" "" "$(rrefs)"
+assert_eq "with --discard-uncommitted: retired" "0" \
+    "$(retire --discard-uncommitted)"
+assert_eq "saying what is dropped" "1" \
+    "$(grep -c 'Discarding, from proj-agent-1, in /tmp/fx2:' "$TMPDIR/out" || true)"
+assert_eq "the staged blob is kept all the same" "blob" \
+    "$(git -C "$REPO" cat-file -t "$(git hash-object "$FX2/s")" 2>/dev/null)"
+# Nesting: a submodule is scanned with its parent; any other repository
+# below a checkout makes that scan block.
+kept_case
+SUBSRC="$TMPDIR/subsrc5"
+rm -rf "$SUBSRC"
+git init -q "$SUBSRC"
+echo s > "$SUBSRC/s"
+g -C "$SUBSRC" add s
+g -C "$SUBSRC" commit -qm sub
+fixture /tmp/p
+g -C "$F/snaproot/tmp/p" -c protocol.file.allow=always submodule add -q \
+    "$SUBSRC" sub >/dev/null 2>&1
+g -C "$F/snaproot/tmp/p" commit -qm add-sub
+assert_eq "a checkout with a clean submodule: retired" "0" "$(retire)"
+assert_eq "in one scan, its parent's" "/tmp/p" \
+    "$(cat "$F/layer-scans" 2>/dev/null)"
+assert_eq "the submodule's objects are kept" "true" \
+    "$(all_kept "$F/snaproot/tmp/p/.git/modules/sub" && echo true || echo false)"
+kept_case
+fixture /tmp/p
+g -C "$F/snaproot/tmp/p" -c protocol.file.allow=always submodule add -q \
+    "$SUBSRC" sub >/dev/null 2>&1
+g -C "$F/snaproot/tmp/p" commit -qm add-sub
+echo changed > "$F/snaproot/tmp/p/sub/s"
+refused "a dirty submodule in a layer checkout" "dirty sub"
+kept_case
+fixture /tmp/p
+git init -q "$F/snaproot/tmp/p/inner"
+refused "a checkout inside a layer checkout" "embedded inner"
+kept_case
+fixture /tmp/p
+git init -q --bare "$F/snaproot/tmp/p/x.git"
+refused "a bare repository inside a layer checkout" "embedded x.git"
+kept_case
+fixture /tmp/a
+fixture /tmp/ab
+assert_eq "sibling checkouts /tmp/a and /tmp/ab: retired" "0" "$(retire)"
+assert_eq "both scanned" "/tmp/a /tmp/ab" \
+    "$(tr '\n' ' ' < "$F/layer-scans" | sed 's/ $//')"
+assert_eq "both listed" "2" "$(last_sources | grep -c ' layer proj-agent-1 ')"
+# Repositories that are not checkouts refuse as before.
+kept_case
+mkdir -p "$F/snaproot/srv"
+git init -q --separate-git-dir "$F/snaproot/srv/gd" "$F/snaproot/srv/wt"
+refused "a git dir apart from its work tree" "  /srv/gd"
+assert_eq "and its gitfile" "1" \
+    "$(grep -cxF '  /srv/wt/.git' "$TMPDIR/out" || true)"
+# Links out of a layer checkout: into the unchanged image they are
+# fine; into what the container wrote, or into /workspace, refuse.
+kept_case
+fixture /tmp/l
+ln -s /usr/bin/env "$F/snaproot/tmp/l/env-link"
+g -C "$F/snaproot/tmp/l" add env-link
+g -C "$F/snaproot/tmp/l" commit -qm link
+assert_eq "a tracked link to an unchanged image file: retired" "0" \
+    "$(retire)"
+kept_case
+fixture /tmp/l
+# (/srv: on macOS /tmp is itself a link, which the check would follow.)
+ln -s /srv/hook-script "$F/snaproot/tmp/l/.git/hooks/pre-commit"
+echo "A /srv/hook-script" > "$F/diff/id-proj-agent-1"
+refused "a hook linked to a file the container wrote" \
+    "links out of its volume to data in the container"
+kept_case
+fixture /tmp/l
+ln -s /workspace/x "$F/snaproot/tmp/l/ws-link"
+g -C "$F/snaproot/tmp/l" add ws-link
+g -C "$F/snaproot/tmp/l" commit -qm ws
+refused "a link into /workspace" "mount-crossing"
+# Size: a container's layer checkouts, as bundles, stay under
+# SWARM_RETIRE_LAYER_LIMIT_MB; --discard-uncommitted does not change that.
+kept_case
+fixture /tmp/big
+head -c 2000000 /dev/urandom > "$F/snaproot/tmp/big/blob"
+g -C "$F/snaproot/tmp/big" add blob
+g -C "$F/snaproot/tmp/big" commit -qm big
+SWARM_RETIRE_LAYER_LIMIT_MB=1 refused "a layer checkout over the limit" \
+    "more than retire keeps"
+SWARM_RETIRE_LAYER_LIMIT_MB=1 retire --discard-uncommitted > /dev/null
+assert_eq "--discard-uncommitted does not change that" "0" "$(removed)"
+kept_case
+for _n in 1 2; do
+    fixture "/tmp/half$_n"
+    head -c 700000 /dev/urandom > "$F/snaproot/tmp/half$_n/blob"
+    g -C "$F/snaproot/tmp/half$_n" add blob
+    g -C "$F/snaproot/tmp/half$_n" commit -qm half
+done
+SWARM_RETIRE_LAYER_LIMIT_MB=1 refused "two layer checkouts over the limit together" \
+    "more than retire keeps"
+for _bad in 0 x 1.5; do
+    kept_case
+    SWARM_RETIRE_LAYER_LIMIT_MB="$_bad" refused \
+        "SWARM_RETIRE_LAYER_LIMIT_MB '${_bad}'" "SWARM_RETIRE_LAYER_LIMIT_MB must be"
+done
+# A scan whose result lacks a part is not trusted.
+for _miss in nogitdir nobundle noobjects empty; do
+    kept_case
+    fixture /tmp/fx3
+    echo "$_miss" > "$F/layer-scan-incomplete"
+    refused "a layer scan with ${_miss}" "is incomplete"
+done
+# Paths that are not valid UTF-8 cannot cross Docker's JSON; macOS file
+# systems refuse to make them.
+if mkdir "$F/snaproot/tmp/bad$(printf '\377')" 2>/dev/null; then
+    kept_case
+    mkdir -p "$F/snaproot/tmp"
+    git init -q "$F/snaproot/tmp/bad$(printf '\377')"
+    refused "a checkout whose path is not valid UTF-8" "not valid UTF-8"
+else
+    echo "  SKIP: no file names that are not valid UTF-8 here"
+fi
+
+# Lists that cannot be written or read in full: retire keeps a list of
+# what it found and of what it scans; a write that fails, or a read
+# that fails (ending its loop like the end of the list), refuses with
+# nothing removed.  Sourced through BASH_ENV by the bash that runs
+# retire: the HOOK_AT-th read whose arguments are HOOK_SIG fails, and a
+# printf with format HOOK_FMT whose arguments hold HOOK_MATCH fails.
+cat > "$TMPDIR/retire-hook.sh" <<'EOF'
+read() {
+    # (No local named like a variable the caller reads into; the
+    # arguments joined with spaces, whatever IFS the caller set.)
+    local __hook_n __hook_sig="" __hook_a
+    for __hook_a in "$@"; do
+        __hook_sig="${__hook_sig} ${__hook_a}"
+    done
+    if [ -n "${HOOK_SIG:-}" ] && [ "${__hook_sig# }" = "$HOOK_SIG" ]; then
+        __hook_n=$(( $(cat "$HOOK_COUNT" 2>/dev/null || echo 0) + 1 ))
+        echo "$__hook_n" > "$HOOK_COUNT"
+        [ "$__hook_n" -ne "$HOOK_AT" ] || return 1
+    fi
+    builtin read "$@"
+}
+printf() {
+    if [ -n "${HOOK_FMT:-}" ] && [ "$1" = "$HOOK_FMT" ]; then
+        case "$*" in
+            *"$HOOK_MATCH"*) return 1 ;;
+        esac
+    fi
+    builtin printf "$@"
+}
+EOF
+# Retire with the hook; print its status.
+retire_hooked() {
+    rm -f "$TMPDIR/hook-count"
+    BASH_ENV="$TMPDIR/retire-hook.sh" HOOK_COUNT="$TMPDIR/hook-count" \
+        retire
+}
+list_case() {
+    reset_fake
+    add proj-agent-1
+    clear_rrefs
+    fixture /tmp/lw
+    git init -q --bare "$F/snaproot/tmp/lw-bare.git"
+}
+list_case
+rm -rf "$F/snaproot/tmp/lw-bare.git"
+assert_eq "control: the hook passes a plain retire" "0" \
+    "$(HOOK_SIG=none HOOK_AT=1 retire_hooked)"
+list_case
+rm -rf "$F/snaproot/tmp/lw-bare.git"
+assert_eq "a write to the list of what was found fails: refused" "1" \
+    "$(HOOK_FMT='%s\t%s\n' HOOK_MATCH=/tmp/lw/.git retire_hooked)"
+assert_eq "saying so" "1" \
+    "$(grep -c 'cannot keep track of the Git repositories' "$TMPDIR/out" || true)"
+assert_eq "nothing removed" "0" "$(removed)"
+list_case
+rm -rf "$F/snaproot/tmp/lw-bare.git"
+assert_eq "a write to the list of checkouts to scan fails: refused" "1" \
+    "$(HOOK_FMT='%s\n' HOOK_MATCH=/tmp/lw retire_hooked)"
+assert_eq "nothing removed" "0" "$(removed)"
+list_case
+assert_eq "a read that fails in the classifying pass: refused" "1" \
+    "$(HOOK_SIG='-r path kind' HOOK_AT=4 retire_hooked)"
+assert_eq "saying so, not skipping the bare repository" "1" \
+    "$(grep -c 'cannot keep track of the Git repositories' "$TMPDIR/out" || true)"
+assert_eq "nothing removed" "0" "$(removed)"
+list_case
+rm -rf "$F/snaproot/tmp/lw-bare.git"
+assert_eq "a read that fails in the scanning pass: refused" "1" \
+    "$(HOOK_SIG='-r path' HOOK_AT=1 retire_hooked)"
+assert_eq "nothing removed" "0" "$(removed)"
+list_case
+rm -rf "$F/snaproot/tmp/lw-bare.git"
+assert_eq "a read that fails in the size pass: refused" "1" \
+    "$(HOOK_SIG='-r c _ _ path' HOOK_AT=1 retire_hooked)"
+assert_eq "nothing removed" "0" "$(removed)"
+
+# The import step on its own (lib/retire.sh loaded here, its import
+# stubbed): a line count that cannot be read, or a path the JSON encoder
+# fails on, publishes no sources ref and fails.
+keep_alone() {
+    local rc=0 scratch
+    scratch=$(mktemp -d "$TMPDIR/keep.XXXXXX")
+    mkdir -p "$scratch/layer/1"
+    printf '1\tid-x\tproj-agent-1\t/tmp/fx\n' > "$scratch/layer.list"
+    (
+        ENGINE="$REPO_ROOT"
+        # shellcheck source=../lib/preserve.sh
+        source "$ENGINE/lib/preserve.sh"
+        # shellcheck source=../lib/retire.sh
+        source "$ENGINE/lib/retire.sh"
+        # shellcheck disable=SC2034  # read by the function run here
+        REPO_ROOT="$REPO" RUNTIME_DIR="$RT" RETIRE_SCRATCH="$scratch"
+        # shellcheck disable=SC2329
+        swarm_recovery_import() { return 0; }
+        eval "$1"
+        retire_keep_layer_checkouts e1 > /dev/null 2>&1
+    ) || rc=$?
+    printf '%s' "$rc"
+}
+clear_rrefs
+assert_eq "control: the import step alone publishes its sources ref" "0" \
+    "$(keep_alone :)"
+assert_eq "control: one sources ref" "1" "$(nsources)"
+clear_rrefs
+# shellcheck disable=SC2016  # evaluated in keep_alone
+assert_eq "a line count that cannot be read: the import step fails" "1" \
+    "$(keep_alone 'retire_count_lines() { return 1; }')"
+assert_eq "no sources ref" "0" "$(nsources)"
+# shellcheck disable=SC2016  # evaluated in keep_alone
+assert_eq "a path the JSON encoder fails on: the import step fails" "1" \
+    "$(keep_alone 'jq() { case "$*" in "-R -s .") return 1 ;; esac; command jq "$@"; }')"
+assert_eq "no sources ref" "0" "$(nsources)"
+
+# The transaction: every import, then git fsck, then the sources ref,
+# then removal.  A git that fails or stops at a step (a shim on PATH).
+SHIM5="$TMPDIR/bin-git-5"
+mkdir -p "$SHIM5"
+_rgit=$(command -v git)
+cat > "$SHIM5/git" <<EOF
+#!/bin/bash
+case " \$* " in
+    *" fetch "*bundle*)
+        n=\$(cat "$F/fetches" 2>/dev/null || echo 0)
+        n=\$((n + 1))
+        echo "\$n" > "$F/fetches"
+        if [ -e "$F/fetch-fails-at" ] && [ "\$n" = "\$(cat "$F/fetch-fails-at")" ]; then
+            exit 1
+        fi
+        if [ -e "$F/fetch-then-fail" ]; then
+            "$_rgit" "\$@"
+            exit 1
+        fi
+        if [ -e "$F/term-on-fetch" ]; then
+            kill -TERM 0
+        fi ;;
+    *" fsck "*)
+        [ ! -e "$F/fsck-fails" ] || exit 1
+        if [ -e "$F/term-on-fsck" ]; then
+            kill -TERM 0
+        fi ;;
+    *" update-ref "*"/sources "*)
+        [ ! -e "$F/sources-fails" ] || exit 1 ;;
+esac
+exec "$_rgit" "\$@"
+EOF
+chmod +x "$SHIM5/git"
+tx_case() {
+    reset_fake
+    add proj-agent-1
+    add proj-agent-2
+    clear_rrefs
+    fixture /tmp/tx
+    SHIM_DIR="$SHIM5"
+}
+tx_case
+edit proj-agent-2 '.[0].HostConfig.RestartPolicy.Name = "always"'
+assert_eq "the second container refused: retire fails" "1" "$(retire)"
+assert_eq "nothing imported" "" "$(rrefs)"
+assert_eq "nothing removed" "0" "$(removed)"
+tx_case
+echo 2 > "$F/fetch-fails-at"
+assert_eq "the second import fails: retire fails" "1" "$(retire)"
+assert_eq "nothing removed" "0" "$(removed)"
+assert_eq "no sources ref" "0" "$(nsources)"
+assert_eq "the first import's refs stay" "true" \
+    "$([ -n "$(rrefs | grep '/l1/')" ] && echo true || echo false)"
+_first=$(rrefs | head -1 | cut -d/ -f4)
+tx_case
+_now=$(retire)
+assert_eq "the next run: retired" "0" "$_now"
+assert_eq "under a new snapshot" "true" \
+    "$([ -n "$(rrefs | grep '/sources$')" ] && echo true || echo false)"
+tx_case
+: > "$F/fetch-then-fail"
+assert_eq "an import that updates its refs and then fails" "1" "$(retire)"
+assert_eq "nothing removed" "0" "$(removed)"
+assert_eq "no sources ref" "0" "$(nsources)"
+tx_case
+: > "$F/sources-fails"
+assert_eq "the sources ref cannot be written" "1" "$(retire)"
+assert_eq "nothing removed" "0" "$(removed)"
+tx_case
+: > "$F/fsck-fails"
+assert_eq "git fsck fails" "1" "$(retire)"
+assert_eq "nothing removed" "0" "$(removed)"
+assert_eq "no sources ref" "0" "$(nsources)"
+tx_case
+: > "$F/term-on-fetch"
+assert_eq "a SIGTERM during an import" "143" "$(retire_own_group)"
+assert_eq "nothing removed" "0" "$(removed)"
+assert_eq "no sources ref" "0" "$(nsources)"
+tx_case
+: > "$F/term-on-fsck"
+assert_eq "a SIGTERM during git fsck" "143" "$(retire_own_group)"
+assert_eq "nothing removed" "0" "$(removed)"
+assert_eq "no sources ref" "0" "$(nsources)"
+tx_case
+: > "$F/term-on-rm"
+assert_eq "a SIGTERM during removal" "143" "$(retire_own_group)"
+assert_eq "one container is gone" "1" "$(removed)"
+assert_eq "the sources ref is there" "1" "$(nsources)"
+: > "$F/log"
+printf 'id-proj-agent-2 proj-agent-2\n' > "$F/containers"
+assert_eq "the next retire takes the other" "0" "$(retire)"
+assert_eq "copying it again under a new snapshot" "2" "$(nsources)"
+tx_case
+jq '.[0].State.StartedAt = "S2"' "$F/inspect/id-proj-agent-1" \
+    > "$F/inspect/id-proj-agent-1.now"
+assert_eq "a container restarted during the import is left" "1" "$(retire)"
+assert_eq "the other one goes" "1" "$(removed)"
+SHIM_DIR=""
 
 echo ""
 echo "==============================="
