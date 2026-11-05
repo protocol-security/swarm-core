@@ -1174,7 +1174,15 @@ A new bare repo starts from the commit the checkout has: `agent-work`
 and `refs/swarm/base` point at it, the state file records it as
 `base_commit`, and the checkout's own `swarm/*` and `agent-parked/*`
 branches are not copied, so branches from an earlier engagement never
-look like new agent work.
+look like new agent work. The bare repo and the submodule mirrors are
+cloned through Git's transport (`--no-local`): they hold what the
+checkout's (or the submodule's) branches, tags and HEAD reach, and not
+the objects that only remote-tracking branches, the stash, the reflogs
+or recovery refs keep. A mirror also keeps the commit the base records
+for its submodule, under `refs/swarm/gitlink`, fetched by id when the
+submodule's own checkout has moved on; when the submodule does not
+have that commit at all, `start` warns, since the containers cannot
+check that submodule out.
 
 The state file also records the Docker daemon (`docker info` ID) the
 engagement runs on, and a token of 16 random hex digits that
