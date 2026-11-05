@@ -1067,6 +1067,76 @@ rm -rf "$_id_tmp"
 
 # ============================================================
 echo ""
+echo "=== 17. A dashboard that stops short does not end with 0 ==="
+
+# Bash 3.2 (macOS's /bin/bash, which the dashboard's shebang runs) gives
+# an EXIT trap status 0 when set -u stops the script.  The dashboard's
+# own EXIT trap (cleanup, extracted) in a small script run by the same
+# shell: stopped on an unset variable it ends with 1 and says so, a quit
+# on purpose ends with 0, any other status stays, and the scratch
+# directory goes every time.
+# The status /bin/bash gives an EXIT trap when set -u stops a script: 0
+# on Bash 3.2 (the bug), where the trap must say why it ends with 1; 1 on
+# later versions, where Bash's own status and error say it.
+printf '%s\n' 'set -euo pipefail' "trap 'echo \"\$?\"' EXIT" \
+    ': "$swarm_probe_unset"' > "$TMPDIR/stop-probe.sh"
+_stop_status=$(/bin/bash "$TMPDIR/stop-probe.sh" 2>/dev/null || true)
+_stop_says=0
+[ "$_stop_status" = 0 ] && _stop_says=1
+_ex_tmp=$(mktemp -d)
+awk '$0 ~ /^cleanup\(\)[[:space:]]*\{/ { p = 1 }
+     p { print }
+     p && /^\}[[:space:]]*$/ { exit }' "$DASHBOARD_FILE" > "$_ex_tmp/cleanup.sh"
+_ex_run() {  # END: how the run ends, after the trap is set
+    cat > "$_ex_tmp/run.sh" <<EOF
+set -euo pipefail
+tput() { :; }
+DASH_TMPDIR="$_ex_tmp/scratch"
+mkdir -p "\$DASH_TMPDIR"
+DASH_EXIT_OK=false
+# shellcheck source=/dev/null
+source "$_ex_tmp/cleanup.sh"
+trap cleanup EXIT
+$1
+EOF
+    /bin/bash "$_ex_tmp/run.sh" 2>&1
+}
+_ex_gone() {
+    if [ -e "$_ex_tmp/scratch" ]; then echo no; else echo yes; fi
+}
+_ex_rc=0
+_ex_out=$(_ex_run 'echo "$swarm_test_unset_variable"') || _ex_rc=$?
+assert_eq "stopped on an unset variable: status 1" "1" "$_ex_rc"
+assert_eq "saying so where Bash 3.2 would end with 0" "$_stop_says" \
+    "$(grep -c 'dashboard.sh stopped before the end of its run' \
+        <<< "$_ex_out")"
+assert_eq "the scratch directory goes" "yes" "$(_ex_gone)"
+_ex_rc=0
+_ex_run 'DASH_EXIT_OK=true; exit 0' >/dev/null || _ex_rc=$?
+assert_eq "a quit on purpose: status 0" "0" "$_ex_rc"
+assert_eq "the scratch directory goes" "yes" "$(_ex_gone)"
+_ex_rc=0
+_ex_run 'exit 3' >/dev/null || _ex_rc=$?
+assert_eq "another status stays" "3" "$_ex_rc"
+# The dashboard sets the trap, and says it quits on purpose right
+# before each exit 0 that comes after the trap (the q key).
+assert_eq "the dashboard sets cleanup as its EXIT trap" "1" \
+    "$(grep -c '^trap cleanup EXIT$' "$DASHBOARD_FILE")"
+assert_eq "every exit 0 after the trap is marked as on purpose" "0" \
+    "$(awk '/^trap cleanup EXIT$/ { t = 1; next }
+            t && /^[[:space:]]*exit 0[[:space:]]*$/ {
+                if (prev !~ /^[[:space:]]*DASH_EXIT_OK=true[[:space:]]*$/) n++
+            }
+            NF { prev = $0 }
+            END { print n + 0 }' "$DASHBOARD_FILE")"
+assert_eq "and there is one (q)" "1" \
+    "$(awk '/^trap cleanup EXIT$/ { t = 1; next }
+            t && /^[[:space:]]*exit 0[[:space:]]*$/ { n++ }
+            END { print n + 0 }' "$DASHBOARD_FILE")"
+rm -rf "$_ex_tmp"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

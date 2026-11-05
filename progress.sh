@@ -40,7 +40,22 @@ if docker info >/dev/null 2>&1; then
 fi
 
 CHECK_DIR=$(mktemp -d)
-trap 'rm -rf "$CHECK_DIR"' EXIT
+# Set when the run gets to its end (its last line).
+PROGRESS_EXIT_OK=false
+# The EXIT trap: remove the clone, and never let a run that stopped
+# short end with status 0.  Bash 3.2 (macOS's /bin/bash) runs an EXIT
+# trap with $? at 0 when set -u stops the script on an unset variable,
+# so that stop would pass for success.  Any other status stays, a
+# signal's too.
+progress_exit_trap() {
+    local rc=$?
+    rm -rf "$CHECK_DIR"
+    if [ "$rc" -eq 0 ] && ! $PROGRESS_EXIT_OK; then
+        echo "ERROR: progress.sh stopped before the end of its run." >&2
+        exit 1
+    fi
+}
+trap progress_exit_trap EXIT
 git clone --quiet "$BARE_REPO" "$CHECK_DIR"
 cd "$CHECK_DIR"
 git checkout --quiet agent-work
@@ -61,3 +76,5 @@ if [ "$DOCKER_UP" = true ] \
 else
     echo "(docker not available)"
 fi
+# The run got to its end (see progress_exit_trap).
+PROGRESS_EXIT_OK=true

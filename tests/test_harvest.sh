@@ -885,6 +885,39 @@ assert_eq "progress shows the history" "true" \
 assert_eq "progress reports Docker as unavailable" "true" \
     "$(grep -qF '(docker not available)' <<< "$progress_out" \
         && echo true || echo false)"
+# Bash 3.2 (macOS's /bin/bash, which the script's shebang runs) gives an
+# EXIT trap status 0 when set -u stops the script.  An echo that, through
+# BASH_ENV, reads an unset variable when it prints the history's title
+# (in the script's own shell, after the trap is set).
+# The status /bin/bash gives an EXIT trap when set -u stops a script: 0
+# on Bash 3.2 (the bug), where the trap must say why it ends with 1; 1 on
+# later versions, where Bash's own status and error say it.
+printf '%s\n' 'set -euo pipefail' "trap 'echo \"\$?\"' EXIT" \
+    ': "$swarm_probe_unset"' > "$TMPDIR/stop-probe.sh"
+_stop_status=$(/bin/bash "$TMPDIR/stop-probe.sh" 2>/dev/null || true)
+_stop_says=0
+[ "$_stop_status" = 0 ] && _stop_says=1
+cat > "$TMPDIR/progress-stop-env.sh" <<'EOF'
+echo() {
+    if [ -n "${SWARM_TEST_STOP:-}" ] \
+            && [ "${1:-}" = "=== Recent commits ===" ]; then
+        : "$swarm_test_unset_variable"
+    fi
+    builtin echo "$@"
+}
+EOF
+progress_rc=0
+progress_out=$(BASH_ENV="$TMPDIR/progress-stop-env.sh" SWARM_TEST_STOP=1 \
+    "$REPO_ROOT/progress.sh" 2>&1) || progress_rc=$?
+assert_eq "progress stopped on an unset variable ends with 1" "1" \
+    "$progress_rc"
+assert_eq "saying so where Bash 3.2 would end with 0" "$_stop_says" \
+    "$(grep -c 'progress.sh stopped before the end of its run' \
+        <<< "$progress_out")"
+progress_rc=0
+BASH_ENV="$TMPDIR/progress-stop-env.sh" "$REPO_ROOT/progress.sh" \
+    >/dev/null 2>&1 || progress_rc=$?
+assert_eq "the same run without the stop ends with 0" "0" "$progress_rc"
 
 # ============================================================
 echo ""

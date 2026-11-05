@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Fix: costs.sh, progress.sh and dashboard.sh no longer end with
+  status 0 when Bash 3.2 stops them on an unset variable.** macOS's
+  `/bin/bash` runs an EXIT trap with status 0 when `set -u` stops a
+  script, so a stop of that kind (a bug) passed for success. Such a
+  run now ends with 1 and says so; a quit on purpose (the dashboard's
+  `q`) still ends with 0.
+
 ## 0.23.0 — 2026-11-03
 
 - **Fix: retry Pi OAuth validation during credential refresh.** Shared
