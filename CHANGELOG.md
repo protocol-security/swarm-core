@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **The bare repo and the mirrors hold what the checkout's branches,
+  tags and HEAD reach.** They were local clones, which copy the whole
+  object store, so objects that only remote-tracking branches, the
+  stash, the reflogs or earlier recovery refs keep went into the bare
+  repo, the mirrors and every workspace, and each cleanup kept them
+  again as new recovery refs, more after every engagement in the same
+  checkout. A checkout of about 900 MB whose branches reach 21 MB gave
+  every workspace the 900 MB. Both are now cloned through Git's
+  transport (`--no-local`). A mirror also keeps the commit the
+  engagement's base records for its submodule (`refs/swarm/gitlink`),
+  fetched by id when the submodule's checkout has moved on, and
+  `start` warns when the submodule lacks it.
 - **retire keeps the Git checkouts a container has outside its
   volume.** It refused any container with a repository in its own
   layer, and agents leave some there routinely (a test's fixture in

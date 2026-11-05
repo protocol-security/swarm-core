@@ -1369,7 +1369,7 @@ rm -rf "$_wr_repo" "$_wr_bare"
 
 # ============================================================
 echo ""
-echo "=== 35b. Bare repo and mirrors copy the checkout's objects ==="
+echo "=== 35b. Bare repo and mirrors share no object files with the checkout ==="
 
 # A local clone hardlinks object files unless told otherwise, and the
 # chmod -R a+rwX in create_bare_repo and mirror_submodules would then
@@ -1413,7 +1413,7 @@ _hl_src_mode=$(_hl_mode "$_hl_src_pack")
 _hl_sub_mode=$(_hl_mode "$_hl_sub_pack")
 
 for _hl_fn in create_bare_repo prepare_bare_repo begin_engagement \
-        mirror_submodules; do
+        engagement_base mirror_submodules; do
     awk -v fn="$_hl_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' "$_hl_launch"
@@ -1461,12 +1461,183 @@ _hl_kept=no
 git -C "$_hl_dir/bare.git" cat-file -e "${_hl_base_head}^{commit}" \
     2>/dev/null && _hl_kept=yes
 assert_eq "bare repo keeps the borrowed objects" "yes" "$_hl_kept"
-assert_eq "every bare clone in launch.sh copies objects" \
+assert_eq "every bare clone in launch.sh goes through Git's transport" \
     "$(grep -c 'git clone --bare ' "$_hl_launch")" \
-    "$(grep -c 'git clone --bare --no-hardlinks --dissociate ' \
-        "$_hl_launch")"
+    "$(grep -c 'git clone --bare --no-local ' "$_hl_launch")"
 
 rm -rf "$_hl_dir"
+
+# ============================================================
+echo ""
+echo "=== 35c. Bare repo and mirrors hold what branches, tags and HEAD reach ==="
+
+# Objects of the checkout that only other refs (remote-tracking, the
+# recovery refs, the stash) or nothing reach stay out of the bare repo,
+# so a cleanup does not keep them again.  A mirror holds what the
+# submodule's branches, tags and HEAD reach, and the commit the
+# engagement's base records for the submodule under refs/swarm/gitlink,
+# fetched by id when the submodule's checkout moved on; a base that
+# records a commit the submodule lacks gets a warning.  The live
+# functions again (extracted in 35b).
+_tr_has() {  # REPO OID: yes when REPO has the object
+    if git -C "$1" cat-file -e "$2" 2>/dev/null; then echo yes
+    else echo no; fi
+}
+_tr_unreachable() {  # REPO: how many objects no ref and no HEAD reach
+    git -C "$1" cat-file --batch-all-objects \
+        --batch-check='%(objectname)' | sort > "$TMPDIR/tr_all"
+    git -C "$1" rev-list --objects --no-object-names --all HEAD \
+        | sort -u > "$TMPDIR/tr_reach"
+    comm -23 "$TMPDIR/tr_all" "$TMPDIR/tr_reach" | wc -l | tr -d ' '
+}
+# A user whose Git speaks protocol v0 by default.
+printf '[protocol]\n\tversion = 0\n' > "$TMPDIR/tr_v0.gitconfig"
+_tr_run() {  # FUNCTION ARGS...: one of the live functions, output kept
+    (
+        export GIT_CONFIG_GLOBAL="$TMPDIR/tr_v0.gitconfig"
+        # shellcheck source=/dev/null
+        source "$TMPDIR/hl_funcs.sh"
+        # shellcheck disable=SC2329
+        swarm_docker_daemon_id() { printf 'TEST:DAEMON'; }
+        REPO_ROOT="$_tr_src"
+        BARE_REPO="$_tr_dir/bare.git"
+        MIRROR_DIR="$_tr_runtime/mirrors"
+        STATE_FILE="$_tr_runtime/state.json"
+        "$@"
+    ) > "$TMPDIR/tr.out" 2>&1
+}
+_tr_dir="$TMPDIR/tr"
+mkdir -p "$_tr_dir"
+for _tr_s in sub sub2; do
+    _hl_git -C "$_tr_dir" init -q "$_tr_s"
+    _hl_git -C "$_tr_dir/$_tr_s" commit --allow-empty -m "$_tr_s one" -q
+done
+_tr_src="$_tr_dir/src"
+_hl_git -C "$_tr_dir" init -q src
+_hl_git -C "$_tr_src" commit --allow-empty -m one -q
+_hl_git -C "$_tr_src" submodule add -q "$_tr_dir/sub" sub 2>/dev/null
+_hl_git -C "$_tr_src" submodule add -q "$_tr_dir/sub2" sub2 2>/dev/null
+_hl_git -C "$_tr_src" commit -m 'Add the submodules' -q
+# Only a remote-tracking ref reaches this commit, only a recovery ref
+# this blob, only the stash its commit, and nothing the last blob.
+_tr_remote=$(_hl_git -C "$_tr_src" commit-tree -p HEAD -m remote \
+    'HEAD^{tree}')
+git -C "$_tr_src" update-ref refs/remotes/origin/side "$_tr_remote"
+_tr_rec=$(printf 'kept by a recovery ref\n' \
+    | git -C "$_tr_src" hash-object -w --stdin)
+git -C "$_tr_src" update-ref refs/swarm-recovery/e00/s/s1/1/t/1 "$_tr_rec"
+echo wip > "$_tr_src/wip.txt"
+_hl_git -C "$_tr_src" add wip.txt
+_hl_git -C "$_tr_src" stash -q
+_tr_stash=$(git -C "$_tr_src" rev-parse refs/stash)
+_tr_none=$(printf 'kept by nothing\n' \
+    | git -C "$_tr_src" hash-object -w --stdin)
+# The base records, for sub2, a commit sub2 never had.
+_tr_fake=$(printf 'no such commit\n' | git -C "$_tr_src" hash-object --stdin)
+git -C "$_tr_src" update-index --cacheinfo "160000,${_tr_fake},sub2"
+_hl_git -C "$_tr_src" commit -m 'Point sub2 at a commit it lacks' -q
+# sub's checkout moves on: HEAD to a commit of its own, and of its refs
+# only a remote-tracking one stays, at a child of the commit the base
+# records (so no ref has that commit as its tip, and protocol v0 would
+# refuse to fetch it by id); the mirror must not get the child.
+_tr_gitlink=$(git -C "$_tr_src" rev-parse HEAD:sub)
+_tr_empty=$(git -C "$_tr_src/sub" mktree < /dev/null)
+_tr_orphan=$(_hl_git -C "$_tr_src/sub" commit-tree -m orphan "$_tr_empty")
+_tr_subside=$(_hl_git -C "$_tr_src/sub" commit-tree -p "$_tr_gitlink" \
+    -m side "$_tr_empty")
+git -C "$_tr_src/sub" update-ref refs/remotes/origin/side "$_tr_subside"
+git -C "$_tr_src/sub" checkout -q --detach "$_tr_orphan"
+for _tr_r in $(git -C "$_tr_src/sub" for-each-ref --format='%(refname)'); do
+    [ "$_tr_r" = refs/remotes/origin/side ] \
+        || git -C "$_tr_src/sub" update-ref --no-deref -d "$_tr_r"
+done
+assert_eq "sub's branches, tags and HEAD do not reach the base's commit" \
+    0 "$(git -C "$_tr_src/sub" rev-list HEAD --branches --tags \
+        | grep -cx "$_tr_gitlink")"
+assert_eq "and no ref of sub has it as its tip" 0 \
+    "$(git -C "$_tr_src/sub" for-each-ref --format='%(objectname)' \
+        | grep -cx "$_tr_gitlink")"
+_tr_runtime="$_tr_dir/runtime"
+mkdir -m 700 "$_tr_runtime"
+_tr_rc=0
+_tr_run eval 'create_bare_repo && mirror_submodules' || _tr_rc=$?
+assert_eq "start's bare repo and mirrors are made" 0 "$_tr_rc"
+_tr_bare="$_tr_dir/bare.git"
+_tr_mirror="$_tr_runtime/mirrors/sub.git"
+_tr_mirror2="$_tr_runtime/mirrors/sub2.git"
+assert_eq "bare repo: agent-work at the checkout's HEAD" \
+    "$(git -C "$_tr_src" rev-parse HEAD)" \
+    "$(git -C "$_tr_bare" rev-parse agent-work 2>/dev/null)"
+assert_eq "bare repo: no commit only a remote-tracking ref reaches" \
+    no "$(_tr_has "$_tr_bare" "$_tr_remote")"
+assert_eq "bare repo: no object only a recovery ref reaches" \
+    no "$(_tr_has "$_tr_bare" "$_tr_rec")"
+assert_eq "bare repo: no commit only the stash reaches" \
+    no "$(_tr_has "$_tr_bare" "$_tr_stash")"
+assert_eq "bare repo: no object nothing reaches" \
+    no "$(_tr_has "$_tr_bare" "$_tr_none")"
+assert_eq "bare repo: every object is reachable" \
+    0 "$(_tr_unreachable "$_tr_bare")"
+assert_eq "mirror: the base's commit under refs/swarm/gitlink" \
+    "$_tr_gitlink" \
+    "$(git -C "$_tr_mirror" rev-parse -q --verify refs/swarm/gitlink)"
+assert_eq "mirror: HEAD where the submodule's is" "$_tr_orphan" \
+    "$(git -C "$_tr_mirror" rev-parse -q --verify HEAD)"
+assert_eq "mirror: no commit only a remote-tracking ref reaches" \
+    no "$(_tr_has "$_tr_mirror" "$_tr_subside")"
+assert_eq "mirror: every object is reachable" \
+    0 "$(_tr_unreachable "$_tr_mirror")"
+# What a container does: a local clone of the mirror, then a checkout
+# of the commit the base records.
+_tr_ck=no
+git clone -q "$_tr_mirror" "$_tr_dir/subclone" 2>/dev/null \
+    && git -C "$_tr_dir/subclone" checkout -q "$_tr_gitlink" 2>/dev/null \
+    && _tr_ck=yes
+assert_eq "a clone of the mirror checks the base's commit out" yes "$_tr_ck"
+assert_eq "sub2: mirrored all the same" yes \
+    "$([ -d "$_tr_mirror2" ] && echo yes || echo no)"
+assert_eq "sub2: no refs/swarm/gitlink" no \
+    "$(git -C "$_tr_mirror2" rev-parse -q --verify refs/swarm/gitlink \
+        >/dev/null 2>&1 && echo yes || echo no)"
+assert_eq "sub2: a warning names the commit it lacks" 1 \
+    "$(grep -c "^WARNING: .* has no commit ${_tr_fake}, " "$TMPDIR/tr.out")"
+# A session that joins adds a missing mirror for the engagement's base,
+# not for the checkout's HEAD, which moved since.
+_hl_git -C "$_tr_src/sub" checkout -q --detach "$_tr_subside"
+_hl_git -C "$_tr_src" add sub
+_hl_git -C "$_tr_src" commit -m 'Move sub' -q
+mv "$_tr_mirror" "$_tr_dir/sub-first.git"
+_tr_rc=0
+_tr_run mirror_submodules missing || _tr_rc=$?
+assert_eq "a joining session adds the missing mirror" 0 "$_tr_rc"
+assert_eq "for the engagement's base" "$_tr_gitlink" \
+    "$(git -C "$_tr_mirror" rev-parse -q --verify refs/swarm/gitlink)"
+# A state file whose base is not a commit id: no mirror.
+mv "$_tr_mirror" "$_tr_dir/sub-second.git"
+jq -c '.base_commit = "HEAD"' "$_tr_runtime/state.json" \
+    > "$_tr_runtime/state.json.tmp"
+mv "$_tr_runtime/state.json.tmp" "$_tr_runtime/state.json"
+_tr_rc=0
+_tr_run mirror_submodules missing || _tr_rc=$?
+assert_eq "a base that is no commit id refuses" 1 "$_tr_rc"
+assert_eq "saying so" 1 "$(grep -c 'records no base commit' "$TMPDIR/tr.out")"
+assert_eq "and mirrors nothing" no \
+    "$([ -e "$_tr_mirror" ] && echo yes || echo no)"
+# A commit id the checkout does not have: refused before anything is
+# made.
+jq -c --arg base "$_tr_fake" '.base_commit = $base' \
+    "$_tr_runtime/state.json" > "$_tr_runtime/state.json.tmp"
+mv "$_tr_runtime/state.json.tmp" "$_tr_runtime/state.json"
+_tr_rc=0
+_tr_run mirror_submodules missing || _tr_rc=$?
+assert_eq "a base the checkout lacks refuses" 1 "$_tr_rc"
+assert_eq "naming it" 1 \
+    "$(grep -c "^ERROR: cannot read .* in the engagement's base ${_tr_fake}" \
+        "$TMPDIR/tr.out")"
+assert_eq "and makes no mirror, not even a .new" no \
+    "$([ -e "$_tr_mirror" ] || [ -e "$_tr_mirror.new" ] && echo yes || echo no)"
+
+rm -rf "$_tr_dir"
 
 # ============================================================
 echo ""
@@ -3228,15 +3399,22 @@ git -C "$_mm_dir/src" -c protocol.file.allow=always submodule add -q \
     "$_mm_dir/sub" lib >/dev/null 2>&1
 git -C "$_mm_dir/src" -c user.name=t -c user.email=t@t \
     -c commit.gpgsign=false commit -q -m add-sub
-awk '$0 ~ /^mirror_submodules\(\)[[:space:]]*\{/ { p = 1 }
-     p { print }
-     p && /^\}[[:space:]]*$/ { exit }' "$_LAUNCH_SH" > "$_mm_dir/funcs.sh"
+for _mm_fn in engagement_base mirror_submodules; do
+    awk -v fn="$_mm_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
+         p { print }
+         p && /^\}[[:space:]]*$/ { exit }' "$_LAUNCH_SH"
+done > "$_mm_dir/funcs.sh"
+# The engagement's base, as begin_engagement records it.
+jq -n --arg schema "$SWARM_STATE_SCHEMA" \
+    --arg base "$(git -C "$_mm_dir/src" rev-parse HEAD)" \
+    '{schema: $schema, base_commit: $base}' > "$_mm_dir/state.json"
 _mm_run() {
     (
         # shellcheck source=/dev/null
         source "$_mm_dir/funcs.sh"
         REPO_ROOT="$_mm_dir/src"
         MIRROR_DIR="$_mm_dir/mirrors"
+        STATE_FILE="$_mm_dir/state.json"
         mirror_submodules "$@"
     ) >/dev/null 2>&1
 }
