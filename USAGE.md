@@ -398,6 +398,15 @@ Interactive containers appear as `I1`, `I2`, etc. with their
 branch and `dirty`, `unharvested`, or `harvested` state; they
 do not count toward numbered-agent completion.
 
+A numbered agent or the post-process that has no container but a
+workspace volume of the engagement shows `volume only`: `./launch.sh
+retire` removed its container (or `docker run` never made it), and its
+files stay on the volume until `./launch.sh cleanup`. Once no container
+is left, a line under the recent commits counts those volumes. A
+cleanup that has not finished (running, or stopped before the end) is
+shown there instead, until it finishes; if it is not running, run
+`./launch.sh cleanup` again.
+
 | Key | Action |
 |-----|--------|
 | `q` | Quit. |

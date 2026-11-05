@@ -929,8 +929,9 @@ done
 
 RUNTIME_DIR="$_ls_tmp/rt"
 STATE_FILE="$RUNTIME_DIR/state.json"
-# As dashboard.sh sets it before its first load_state.
+# As dashboard.sh sets them before its first load_state.
 DASH_TOKEN=""
+DASH_CLEANUP=false
 mkdir -m 700 "$RUNTIME_DIR"
 jq -n --arg t "x \$(touch $_ls_tmp/pwned)" \
     '{schema: "swarm-core.state/v1", title: $t,
@@ -959,6 +960,16 @@ jq 'del(.engagement_token)' "$STATE_FILE" > "$_ls_tmp/st" \
     && mv "$_ls_tmp/st" "$STATE_FILE"
 load_state || true
 assert_eq "a cleaned-up engagement shows no token" "" "$DASH_TOKEN"
+# A cleanup that has not finished (its checkpoint in the state) is shown
+# while the checkpoint is there, and no longer once it is gone.
+jq '.cleanup = {snapshot: "s1"}' "$STATE_FILE" > "$_ls_tmp/st" \
+    && mv "$_ls_tmp/st" "$STATE_FILE"
+load_state || true
+assert_eq "a cleanup checkpoint is shown" "true" "$DASH_CLEANUP"
+jq 'del(.cleanup)' "$STATE_FILE" > "$_ls_tmp/st" \
+    && mv "$_ls_tmp/st" "$STATE_FILE"
+load_state || true
+assert_eq "and no longer once it is gone" "false" "$DASH_CLEANUP"
 
 printf 'SWARM_TITLE="from env file"\n' > "$STATE_FILE"
 SWARM_TITLE="kept"
@@ -1286,6 +1297,155 @@ assert_eq "and there is one (q)" "1" \
             t && /^[[:space:]]*exit 0[[:space:]]*$/ { n++ }
             END { print n + 0 }' "$DASHBOARD_FILE")"
 rm -rf "$_ex_tmp"
+
+# ============================================================
+echo ""
+echo "=== 18. Workspace volumes with no container, an unfinished cleanup ==="
+
+# The whole dashboard, one refresh and then q, on a checkout whose
+# engagement (token t1) has agent 1 exited and agents 2 and 3 and the
+# post-process gone.  Docker is a fake answering from files (container
+# list, states, volume list) and logging its calls; tput gives a width.
+_rv=$(mktemp -d)
+mkdir -p "$_rv/bin" "$_rv/proj" "$_rv/xdg"
+cat > "$_rv/bin/docker" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$RV_DIR/calls"
+case "$1" in
+    ps) cat "$RV_DIR/ps" ;;
+    inspect)
+        case "$3" in
+            *State.Status*) awk -v id="$4" '$1 == id { print $2 }' \
+                "$RV_DIR/status" ;;
+        esac ;;
+    volume)
+        [ "$2" = ls ] || exit 1
+        cat "$RV_DIR/volumes"
+        # A failure after some output: none of it may count.
+        [ ! -e "$RV_DIR/volume-ls-fails" ] || exit 1 ;;
+    *) exit 1 ;;
+esac
+EOF
+cat > "$_rv/bin/tput" <<'EOF'
+#!/bin/bash
+[ "$1" != cols ] || echo 140
+EOF
+chmod +x "$_rv/bin/docker" "$_rv/bin/tput"
+git init -q "$_rv/proj"
+git -C "$_rv/proj" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m init
+_rv_root=$(cd -P "$_rv/proj" && pwd -P)
+cat > "$_rv/proj/swarm.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{"count": 3, "model": "claude-opus-4-6"}],
+  "post_process": {"prompt": "post.md", "model": "claude-opus-4-6"}
+}
+EOF
+_rv_rt="$_rv/rt"
+mkdir -m 700 "$_rv_rt"
+# Run the dashboard once; its screen goes to $_rv/screen.
+rv_draw() {
+    : > "$_rv/calls"
+    (cd "$_rv/proj" && printf 'q' | env -u SWARM_CONFIG -u SWARM_PROJECT \
+        PATH="$_rv/bin:$PATH" RV_DIR="$_rv" \
+        SWARM_RUNTIME_DIR="$_rv_rt" XDG_STATE_HOME="$_rv/xdg" \
+        bash "$TESTS_DIR/../dashboard.sh") > "$_rv/screen" 2>&1 || true
+}
+# STATUS of row ID (1-9 or P) on the screen, as its status column shows.
+rv_row() {
+    grep -E "^  $1 " "$_rv/screen" \
+        | grep -oE 'running|exited|volume only|configured|not found' \
+        | head -1
+}
+# Write the state file of the engagement, then apply jq filter $1.
+rv_state() {
+    jq -n --arg r "$_rv_root" --arg c "$_rv/proj/swarm.json" \
+        '{schema: "swarm-core.state/v1", project: "proj", repo_root: $r,
+          engagement_id: "e1", engagement_token: "t1", config: $c,
+          num_agents: 3} | '"${1:-.}" > "$_rv_rt/state.json"
+}
+rv_state
+jq -nc --arg o "$_rv_root" \
+    '{id: "cid1", name: "proj-agent-1", project: "proj", owner: $o}' \
+    > "$_rv/ps"
+printf 'cid1 exited\n' > "$_rv/status"
+# Agent 2 and the post-process have volumes of this engagement (two for
+# the post-process, retired twice); agent 3 has one of another, and
+# agent 2 one with no engagement token.  The listing is long: a match
+# early in it still counts.
+{
+    printf '%s\n' "proj-agent-2 t1" "proj-agent-post t1" \
+        "proj-agent-post t1" "proj-agent-3 t0" "proj-agent-2 "
+    awk 'BEGIN { for (i = 0; i < 20000; i++) print "other-" i " t9" }'
+} > "$_rv/volumes"
+rv_draw
+assert_eq "an exited container: exited" "exited" "$(rv_row 1)"
+assert_eq "no container, a volume: volume only" "volume only" \
+    "$(rv_row 2)"
+assert_eq "a volume of another engagement: configured" "configured" \
+    "$(rv_row 3)"
+assert_eq "the post-process: volume only" "volume only" "$(rv_row P)"
+assert_eq "only exited agents count as done" "1" \
+    "$(grep -c 'Swarm complete.*all 1 agents exited' "$_rv/screen" || true)"
+assert_eq "volumes are listed for this project and checkout" "1" \
+    "$(grep -c "^volume ls --filter label=swarm-core.project=proj --filter label=swarm-core.checkout=${_rv_root} " "$_rv/calls" || true)"
+assert_eq "a container is left: no volume line" "0" \
+    "$(grep -c 'workspace volume' "$_rv/screen" || true)"
+assert_eq "nothing but reads reach Docker" "" \
+    "$(grep -vE '^(--version$|ps |inspect |volume ls |cp [^ ]*:/workspace/)' \
+        "$_rv/calls" || true)"
+# A container listed whose state Docker does not give (inspect fails):
+# not taken for one that is not there.
+jq -nc --arg o "$_rv_root" \
+    '{id: "cid2", name: "proj-agent-2", project: "proj", owner: $o}' \
+    >> "$_rv/ps"
+rv_draw
+assert_eq "a container there, inspect failing: not volume only" "true" \
+    "$([ "$(rv_row 2)" != "volume only" ] && echo true || echo false)"
+# Every container gone: the volumes are counted, and cleanup named.
+: > "$_rv/ps"
+rv_draw
+assert_eq "agent 1 gone, no volume: configured" "configured" "$(rv_row 1)"
+assert_eq "the engagement's volumes counted" "1" \
+    "$(grep -c '3 workspace volume(s), no container: harvest, then ./launch.sh cleanup ends the engagement' "$_rv/screen" || true)"
+# Docker cannot list volumes: nothing is said about them.
+: > "$_rv/volume-ls-fails"
+rv_draw
+assert_eq "volumes not listed: configured" "configured" "$(rv_row 2)"
+assert_eq "and no volume line" "0" \
+    "$(grep -c 'workspace volume' "$_rv/screen" || true)"
+rm -f "$_rv/volume-ls-fails"
+# Tokens are compared as strings, even when awk could read them as
+# numbers (0 and 0e0).
+rv_state '.engagement_token = "0000000000000000"'
+printf '%s\n' "proj-agent-2 00000000000000e0" > "$_rv/volumes"
+rv_draw
+assert_eq "a token equal only as a number: configured" "configured" \
+    "$(rv_row 2)"
+assert_eq "and not counted" "0" \
+    "$(grep -c 'workspace volume' "$_rv/screen" || true)"
+printf '%s\n' "proj-agent-2 t1" "proj-agent-2 " > "$_rv/volumes"
+# No engagement recorded (cleaned up): no row is volume only.
+rv_state 'del(.engagement_token)'
+rv_draw
+assert_eq "no engagement shown: configured" "configured" "$(rv_row 2)"
+assert_eq "and no volume line" "0" \
+    "$(grep -c 'workspace volume' "$_rv/screen" || true)"
+# A cleanup that has not finished (running, or stopped before the end):
+# said, instead of the volumes.
+rv_state '.cleanup = {snapshot: "s1"}'
+rv_draw
+assert_eq "an unfinished cleanup is shown" "1" \
+    "$(grep -c 'A cleanup has not finished.*if it is not running, run ./launch.sh cleanup again' "$_rv/screen" || true)"
+assert_eq "instead of the volume line" "0" \
+    "$(grep -c 'workspace volume' "$_rv/screen" || true)"
+# Once it is done (no checkpoint), the line goes.
+rv_state
+rv_draw
+assert_eq "a finished cleanup is no longer shown" "0" \
+    "$(grep -c 'A cleanup has not finished' "$_rv/screen" || true)"
+rm -rf "$_rv"
 
 # ============================================================
 echo ""

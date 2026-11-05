@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The dashboard shows workspace volumes with no container, and an
+  unfinished cleanup.** A numbered agent or post-process whose
+  container retire removed showed `configured`, like one that never
+  started; it now shows `volume only` (its files are on its workspace
+  volume until cleanup). Once no container is left, a line counts the
+  engagement's workspace volumes; a cleanup that has not finished is
+  shown instead.
 - **Fix: harvest merges agent work built on the engagement's base
   after HEAD moved on.** It refused any branch that did not descend from
   HEAD, so agent work pushed after an interactive branch was merged, or
