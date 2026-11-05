@@ -310,12 +310,16 @@ create_bare_repo() {
         echo "ERROR: cannot record the engagement in ${STATE_FILE}." >&2
         exit 1
     }
-    # A local clone hardlinks object files by default, and the chmod
-    # below would then make the checkout's own objects writable for
-    # every user.  Copy them instead, with any objects the checkout
-    # borrows through alternates.  Later commands join any bare repo
-    # they find, so the clone gets its name only once it is ready.
-    if ! git clone --bare --no-hardlinks --dissociate "$REPO_ROOT" "$new" \
+    # Through Git's transport (--no-local), not a copy of the object
+    # store: the bare repo gets new files, so the chmod below cannot
+    # reach the checkout's own through hardlinks; it borrows nothing
+    # through alternates; and it holds what the checkout's branches,
+    # tags and HEAD reach, without the objects only other refs
+    # (recovery refs among them), the reflogs or nothing reach, which
+    # each cleanup would otherwise keep again.  Later commands join any
+    # bare repo they find, so the clone gets its name only once it is
+    # ready.
+    if ! git clone --bare --no-local "$REPO_ROOT" "$new" \
             || ! prepare_bare_repo "$new" "$base" \
             || ! mv "$new" "$BARE_REPO"; then
         echo "ERROR: cannot prepare ${BARE_REPO}." >&2
@@ -440,6 +444,21 @@ ensure_bare_repo_for_interactive() {
     mirror_submodules missing
 }
 
+# Print the commit the engagement started from, as begin_engagement
+# recorded it in the state file (the bare repo's refs/swarm/base is the
+# agents' to write).  Fails unless it is a SHA-1 or SHA-256 commit id.
+engagement_base() {
+    local state base
+    state=$(swarm_state_read "$STATE_FILE") || return 1
+    base=$(printf '%s' "$state" | jq -r '.base_commit // empty') \
+        || return 1
+    case "${#base}:${base}" in
+        40:*[!0123456789abcdef]*|64:*[!0123456789abcdef]*) return 1 ;;
+        40:*|64:*) printf '%s' "$base" ;;
+        *) return 1 ;;
+    esac
+}
+
 # Mirror every submodule into MIRROR_DIR.  A new engagement finds none
 # (clean runtime), and one that is there refuses; with "missing", only
 # the mirrors that do not exist yet are made and the others, which a
@@ -447,12 +466,19 @@ ensure_bare_repo_for_interactive() {
 # and renamed once ready, so a run stopped half way leaves only a .new,
 # which cleanup preserves and removes.
 mirror_submodules() {
-    local only_missing="${1:-}"
+    local only_missing="${1:-}" base
+    # The containers check out the submodule commits the engagement's
+    # base records.
+    base=$(engagement_base) || {
+        echo "ERROR: ${STATE_FILE} records no base commit." >&2
+        exit 1
+    }
     cd "$REPO_ROOT"
     mkdir -p "$MIRROR_DIR"
-    git submodule foreach --quiet 'echo "$name|$toplevel/.git/modules/$sm_path"' | \
-    while IFS='|' read -r name gitdir; do
-        local safe_name mirror
+    git submodule foreach --quiet \
+        'echo "$name|$sm_path|$toplevel/.git/modules/$sm_path"' | \
+    while IFS='|' read -r name path gitdir; do
+        local safe_name mirror entry mode oid
         safe_name="${name//\//_}"
         mirror="${MIRROR_DIR}/${safe_name}.git"
         if [ -e "$mirror" ] || [ -L "$mirror" ]; then
@@ -465,10 +491,40 @@ mirror_submodules() {
                  "way; ./launch.sh cleanup removes it." >&2
             exit 1
         fi
+        # What the base records at the submodule's path, read before
+        # anything is made.
+        if ! entry=$(git --literal-pathspecs ls-tree "$base" -- "$path")
+        then
+            echo "ERROR: cannot read ${path} in the engagement's base" \
+                 "${base}." >&2
+            exit 1
+        fi
+        mode="" oid=""
+        read -r mode _ oid _ <<< "$entry"
         echo "--- Mirroring submodule: ${name} ---"
-        # Copy objects, as create_bare_repo does, so the chmod below
-        # cannot reach the checkout's .git/modules through hardlinks.
-        git clone --bare --no-hardlinks --dissociate "$gitdir" "$mirror.new"
+        # Through Git's transport, as create_bare_repo does: new files,
+        # so the chmod below cannot reach the checkout's .git/modules
+        # through hardlinks, holding what the submodule's branches, tags
+        # and HEAD reach.
+        git clone --bare --no-local "$gitdir" "$mirror.new"
+        # The commit the base records there stays in the mirror under
+        # refs/swarm/gitlink, fetched by id when none of those reaches
+        # it (the submodule's checkout moved on).
+        if [ "$mode" = 160000 ]; then
+            git -C "$mirror.new" cat-file -e "${oid}^{commit}" 2>/dev/null \
+                || git -C "$mirror.new" -c protocol.version=2 fetch -q \
+                    --no-tags --no-write-fetch-head "$gitdir" "$oid" \
+                    2>/dev/null \
+                || true
+            if git -C "$mirror.new" cat-file -e "${oid}^{commit}" \
+                    2>/dev/null; then
+                git -C "$mirror.new" update-ref refs/swarm/gitlink "$oid"
+            else
+                echo "WARNING: ${gitdir} has no commit ${oid}, which" \
+                     "the engagement's base records for ${path}; the" \
+                     "containers cannot check that submodule out." >&2
+            fi
+        fi
         chmod -R a+rwX "$mirror.new"
         mv "$mirror.new" "$mirror"
     done
