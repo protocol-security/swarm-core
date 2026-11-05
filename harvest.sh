@@ -157,7 +157,7 @@ git fetch --no-recurse-submodules --no-tags "$REMOTE_NAME" \
 HARVEST_BRANCHES=(agent-work)
 while IFS= read -r branch; do
     [ -n "$branch" ] && HARVEST_BRANCHES+=("$branch")
-done < <(git -C "$BARE_REPO" for-each-ref \
+done < <(swarm_no_fetch git -C "$BARE_REPO" for-each-ref \
     --format='%(refname:short)' refs/heads/swarm 2>/dev/null \
     | grep -E '/interactive-' || true)
 

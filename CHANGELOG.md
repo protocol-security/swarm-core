@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Hardening: what agents write cannot steer the host's Git or fill
+  its disk.** The host's reads of the bare repo and the mirrors never
+  fetch and never check signatures; the preservation scans read no
+  global or system Git config, and stop before they read a work tree
+  when a repository's config sets a filter driver (which now blocks,
+  like `lfs.storage`) or includes other files, or when a repository
+  below it is not one they check; what a retire or cleanup helper
+  container writes to a file on the host is capped
+  (`SWARM_HELPER_OUTPUT_LIMIT_MB`, default 16384) and keeps no container
+  log, and a scan archive is checked before it is extracted.
 - **The dashboard shows workspace volumes with no container, and an
   unfinished cleanup.** A numbered agent or post-process whose
   container retire removed showed `configured`, like one that never

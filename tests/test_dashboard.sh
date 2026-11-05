@@ -863,7 +863,7 @@ echo "=== 14. Runtime directory is read only when private ==="
 # shellcheck disable=SC1091 source=../lib/project.sh
 source "$TESTS_DIR/../lib/project.sh"
 _rt_tmp=$(mktemp -d)
-for _fn in runtime_ok interactive_branch_status; do
+for _fn in runtime_ok bare_git interactive_branch_status; do
     awk -v fn="$_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' \
@@ -1445,6 +1445,48 @@ rv_state
 rv_draw
 assert_eq "a finished cleanup is no longer shown" "0" \
     "$(grep -c 'A cleanup has not finished' "$_rv/screen" || true)"
+# The bare repo is the agents' to write.  Its recent commits are read
+# without running what its config names: a gpg.program that
+# log.showSignature would run on a signed commit, and the uploadpack
+# command of a "promisor" remote that a missing object would fetch
+# from (protocol.file.allow=always included).
+_rvg() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
+_rv_src="$_rv/bare-src"
+git init -q "$_rv_src"
+_rvg -C "$_rv_src" commit -q --allow-empty -m one
+git clone -q --bare "$_rv_src" "$_rv_rt/upstream.git"
+_rv_bare="$_rv_rt/upstream.git"
+_rv_signed=$(printf 'tree %s\nparent %s\nauthor t <t@t> 1 +0000\ncommitter t <t@t> 1 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n x\n -----END PGP SIGNATURE-----\n\nsigned commit\n' \
+    "$(git -C "$_rv_bare" rev-parse 'HEAD^{tree}')" \
+    "$(git -C "$_rv_bare" rev-parse HEAD)" \
+    | git -C "$_rv_bare" hash-object -t commit -w --stdin)
+git -C "$_rv_bare" update-ref refs/heads/agent-work "$_rv_signed"
+printf '#!/bin/sh\ntouch %s/gpg-ran\nexit 1\n' "$_rv" > "$_rv/fakegpg"
+chmod +x "$_rv/fakegpg"
+git -C "$_rv_bare" config log.showSignature true
+git -C "$_rv_bare" config gpg.program "$_rv/fakegpg"
+git -C "$_rv_bare" log --oneline -1 refs/heads/agent-work >/dev/null 2>&1 || true
+assert_eq "control: git log on the bare repo runs its gpg.program" "true" \
+    "$([ -e "$_rv/gpg-ran" ] && echo true || echo false)"
+rm -f "$_rv/gpg-ran"
+rv_state
+rv_draw
+assert_eq "the dashboard shows the recent commits" "1" \
+    "$(grep -c 'signed commit' "$_rv/screen" || true)"
+assert_eq "without running the bare repo's gpg.program" "false" \
+    "$([ -e "$_rv/gpg-ran" ] && echo true || echo false)"
+git -C "$_rv_bare" repack -q -a -d
+rm -f "${_rv_bare:?}"/objects/pack/pack-*
+git -C "$_rv_bare" config core.repositoryformatversion 1
+git -C "$_rv_bare" config extensions.partialClone origin
+git -C "$_rv_bare" config remote.origin.url "$_rv_src"
+git -C "$_rv_bare" config remote.origin.promisor true
+git -C "$_rv_bare" config remote.origin.uploadpack \
+    "touch $_rv/promisor-ran; git-upload-pack"
+git -C "$_rv_bare" config protocol.file.allow always
+rv_draw
+assert_eq "nor a promisor remote's uploadpack for a missing object" \
+    "false" "$([ -e "$_rv/promisor-ran" ] && echo true || echo false)"
 rm -rf "$_rv"
 
 # ============================================================

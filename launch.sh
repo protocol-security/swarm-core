@@ -420,8 +420,8 @@ ensure_bare_repo_for_interactive() {
     swarm_engagement_daemon_check "$STATE_FILE" || exit 1
 
     local bare_head local_head
-    bare_head=$(git -C "$BARE_REPO" rev-parse --verify --quiet \
-        refs/heads/agent-work 2>/dev/null || true)
+    bare_head=$(swarm_no_fetch git -C "$BARE_REPO" rev-parse --verify \
+        --quiet refs/heads/agent-work 2>/dev/null || true)
     local_head=$(git rev-parse HEAD 2>/dev/null || true)
     if [ -n "$bare_head" ] && [ "$bare_head" != "$local_head" ] \
             && git merge-base --is-ancestor "$bare_head" HEAD 2>/dev/null; then
