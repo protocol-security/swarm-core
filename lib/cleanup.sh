@@ -905,7 +905,7 @@ cmd_cleanup() {
     RETIRE_SCRATCH=""
     # shellcheck disable=SC2034  # read by retire_cleanup (lib/retire.sh)
     RETIRE_SNAP_REF=""
-    trap retire_cleanup EXIT
+    trap retire_stopped EXIT
     trap 'trap "" HUP INT TERM; retire_cleanup; trap - EXIT; exit 129' HUP
     trap 'trap "" HUP INT TERM; retire_cleanup; trap - EXIT; exit 130' INT
     trap 'trap "" HUP INT TERM; retire_cleanup; trap - EXIT; exit 143' TERM

@@ -4408,6 +4408,33 @@ assert_eq "a second record of the same name is refused" "1" "$_v_rc"
 assert_eq "and the first stays as it was" "$_v_rec" \
     "$(cat "$_v_pd/interactive-${_v_img}-interactive-y-1.pending")"
 
+# ============================================================
+echo ""
+echo "=== 56. A run stopped on an unset variable does not end with 0 ==="
+
+# Bash 3.2 (macOS's /bin/bash, which runs these tests there) runs an
+# EXIT trap with $? at 0 when set -u stops the script on an unset
+# variable.  A flock that names one, through BASH_ENV, stops launch.sh in
+# swarm_lock, in the main shell and after its EXIT trap is set.
+_u_hook="$TMPDIR/unset-hook.sh"
+cat > "$_u_hook" <<'EOF'
+flock() { : "$swarm_test_unset_variable"; }
+EOF
+v_new
+_v_rc=0
+_v_out=$(BASH_ENV="$_u_hook" v_run start) || _v_rc=$?
+assert_eq "start stopped on an unset variable: not status 0" "true" \
+    "$([ "$_v_rc" -ne 0 ] && echo true || echo false)"
+assert_eq "having made no engagement" "" \
+    "$(jq -r '.engagement_id // empty' "$V_STATE" 2>/dev/null)"
+# The ends a run means keep status 0: help, and a run's last line.
+_v_rc=0
+v_run interactive --help >/dev/null || _v_rc=$?
+assert_eq "interactive --help ends with 0" "0" "$_v_rc"
+_v_rc=0
+v_run status >/dev/null || _v_rc=$?
+assert_eq "status ends with 0" "0" "$_v_rc"
+
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"

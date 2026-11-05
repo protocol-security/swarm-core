@@ -359,6 +359,14 @@ cmd_unit() {
         rc=0
         output=$("$f" 2>&1) || rc=$?
         count=$(printf '%s' "$output" | grep -oE '[0-9]+ passed' | tail -1 || true)
+        # A file passes only when it got to its summary: Bash 3.2 (the
+        # files' /bin/bash on macOS) exits 0 when set -u stops a script
+        # that has an EXIT trap.
+        if [ "$rc" -eq 0 ] \
+                && ! grep -qE '^ *[0-9]+ passed, 0 failed' <<< "$output"; then
+            rc=1
+            output="${output}"$'\n'"(no summary line: the file stopped early)"
+        fi
         if [ "$rc" -eq 0 ]; then
             printf "  PASS  %-24s (%s)\n" "$name" "${count:-?}"
             pass=$((pass + 1))
