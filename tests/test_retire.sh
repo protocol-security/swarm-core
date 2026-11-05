@@ -21,6 +21,8 @@ trap 'rm -rf "$TMPDIR"' EXIT
 # or later); here the scanner runs on this host's git.
 if ! git var GIT_CONFIG_SYSTEM >/dev/null 2>&1; then
     echo "SKIP: these tests need Git 2.42 or later (git var)"
+    # The runner wants a summary from every file.
+    echo "  0 passed, 0 failed"
     exit 0
 fi
 
@@ -1329,6 +1331,21 @@ assert_eq "a container without a recorded engagement is refused" "1" \
 assert_eq "as an earlier release's" "1" \
     "$(grep -c 'release that made it' "$TMPDIR/out" || true)"
 assert_eq "nothing removed then" "0" "$(removed)"
+# Stopped on an unset variable (a flock that names one, through
+# BASH_ENV), retire does not end with status 0, as Bash 3.2's EXIT trap
+# would have it, and removes nothing.
+swarm_state_update "$RT/state.json" \
+    '.engagement_id = "e1" | .docker_daemon = "d1"'
+cat > "$TMPDIR/unset-hook.sh" <<'EOF'
+flock() { : "$swarm_test_unset_variable"; }
+EOF
+reset_fake
+add proj-agent-1
+rc=$(BASH_ENV="$TMPDIR/unset-hook.sh" retire)
+assert_eq "retire stopped on an unset variable: not status 0" "true" \
+    "$([ "$rc" -ne 0 ] && echo true || echo false)"
+assert_eq "and removes nothing" "0" "$(removed)"
+swarm_state_update "$RT/state.json" 'del(.engagement_id, .docker_daemon)'
 reset_fake
 assert_eq "no engagement and nothing left: retire succeeds" "0" "$(retire)"
 assert_eq "with nothing to retire" "1" \

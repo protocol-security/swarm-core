@@ -24,6 +24,8 @@ trap 'chmod -R u+rwX "$TMPDIR" 2>/dev/null; rm -rf "$TMPDIR"' EXIT
 # or later); here it runs on this host's git.
 if ! git var GIT_CONFIG_SYSTEM >/dev/null 2>&1; then
     echo "SKIP: these tests need Git 2.42 or later (git var)"
+    # The runner wants a summary from every file.
+    echo "  0 passed, 0 failed"
     exit 0
 fi
 
@@ -1098,6 +1100,18 @@ for _flag in "" --allow-unharvested; do
         "$(present "$RT/upstream.git")"
     assert_eq "nothing is copied${_flag:+ ($_flag)}" "0" "$(recovery_refs)"
 done
+
+# Stopped on an unset variable (a flock that names one, through
+# BASH_ENV), cleanup does not end with status 0, as Bash 3.2's EXIT trap
+# would have it, and deletes nothing.
+cat > "$TMPDIR/unset-hook.sh" <<'EOF'
+flock() { : "$swarm_test_unset_variable"; }
+EOF
+setup
+_rc=$(BASH_ENV="$TMPDIR/unset-hook.sh" cleanup)
+assert_eq "cleanup stopped on an unset variable: not status 0" "true" \
+    "$([ "$_rc" -ne 0 ] && echo true || echo false)"
+assert_eq "the bare repo stays" "yes" "$(present "$RT/upstream.git")"
 
 echo ""
 echo "==============================="

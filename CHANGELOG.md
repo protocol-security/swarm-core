@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Fix: a run that Bash 3.2 stops on an unset variable no longer ends
+  with status 0.** macOS's `/bin/bash` runs an EXIT trap with status 0
+  when `set -u` stops a script, so `launch.sh`, retire and cleanup,
+  which have EXIT traps, would report a stop of that kind (a bug) as
+  success. Such a run now ends with 1. `tests/test.sh --unit` also
+  fails a test file that never printed its summary, which the same
+  quirk would have let pass; files that skip on purpose print one.
 - **Breaking: workspace volumes, one Docker daemon per engagement, new
   engagements only on a clean runtime directory.** Each engine container
   gets a `/workspace` volume of its own (`<container>-ws-<hex>`, labeled

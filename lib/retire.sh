@@ -106,6 +106,20 @@ $refs
 EOF
 }
 
+# The EXIT trap of retire and cleanup.  It fires only when the run
+# stops short (its normal end removes it first): clean up, and never end
+# with status 0 then.  Bash 3.2 runs an EXIT trap with $? at 0 when set
+# -u stops the script on an unset variable, so that stop would pass for
+# success; any other status stays.
+retire_stopped() {
+    local rc=$?
+    retire_cleanup
+    if [ "$rc" -eq 0 ]; then
+        echo "ERROR: the run stopped before its end." >&2
+        exit 1
+    fi
+}
+
 retire_cleanup() {
     # Every background job is a docker command retire started; a signal
     # can come before its pid is known, so wait for them all.
@@ -720,7 +734,7 @@ cmd_retire() {
     # The traps come first, so that nothing retire makes is ever
     # outside them.  Once a signal starts the cleanup, further ones wait
     # for it.
-    trap retire_cleanup EXIT
+    trap retire_stopped EXIT
     trap 'trap "" HUP INT TERM; retire_cleanup; trap - EXIT; exit 129' HUP
     trap 'trap "" HUP INT TERM; retire_cleanup; trap - EXIT; exit 130' INT
     trap 'trap "" HUP INT TERM; retire_cleanup; trap - EXIT; exit 143' TERM
