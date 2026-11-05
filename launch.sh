@@ -526,12 +526,28 @@ esac
 # INT or TERM end the script (retire and cleanup, above, make none and
 # set their own traps).
 SWARM_TMP_FILES=()
+# Set when the run gets to an end it means: its last line, or an exit
+# with status 0 it makes on purpose.
+SWARM_EXIT_OK=false
 swarm_tmp_cleanup() {
     if [ "${#SWARM_TMP_FILES[@]}" -gt 0 ]; then
         rm -f "${SWARM_TMP_FILES[@]}"
     fi
 }
-trap swarm_tmp_cleanup EXIT
+# The EXIT trap: remove the temporary files, and never let a run that
+# stopped short end with status 0.  Bash 3.2 (macOS's /bin/bash) runs an
+# EXIT trap with $? at 0 when set -u stops the script on an unset
+# variable, so that stop would pass for success.  Any other status
+# stays, a signal's too.
+swarm_exit_trap() {
+    local rc=$?
+    swarm_tmp_cleanup
+    if [ "$rc" -eq 0 ] && ! $SWARM_EXIT_OK; then
+        echo "ERROR: launch.sh stopped before the end of its run." >&2
+        exit 1
+    fi
+}
+trap swarm_exit_trap EXIT
 
 # Make a temporary file swarm-NAME.XXXXXX in TMPDIR, removed when this
 # run exits, and set the variable VAR to its absolute path (the run
@@ -750,6 +766,7 @@ Usage: $0 interactive [--agent NAME | --agent-index N] [--shell]
 
 Start one human-guided container from an agents[] profile.
 HELP
+                SWARM_EXIT_OK=true
                 exit 0 ;;
             *)
                 if [ -n "$selector" ]; then
@@ -1597,3 +1614,5 @@ case "${1:-start}" in
         exit 1
         ;;
 esac
+# The run got to its end (see swarm_exit_trap).
+SWARM_EXIT_OK=true
