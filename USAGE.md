@@ -107,6 +107,7 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_WATCHDOG_GRACE` | `10` | Grace window between watchdog SIGTERM and SIGKILL.  Rarely needs tuning. |
 | `SWARM_STOP_TIMEOUT` | `60` | Seconds `./launch.sh stop` passes to `docker stop -t`, so the harness's SIGTERM trap has time to ship any in-flight local commits via `_session_end_push` before SIGKILL hits.  See [Stopping the swarm](#stopping-the-swarm). |
 | `SWARM_WAIT_POLL` | `10` | Seconds between the checks of `./launch.sh wait`. |
+| `SWARM_HELPER_OUTPUT_LIMIT_MB` | `16384` | The most, in megabytes, that a helper container of retire or cleanup may write to any one file on the host (its output, its errors, a scan archive). |
 
 Per-group credentials (`api_key`, `auth_token`, `base_url`)
 are set in the swarmfile.  Use `$VAR` references to pull
@@ -1315,8 +1316,9 @@ refuses when one
   relative or not normalized;
 - has repository data outside `/workspace`: a worktree registered
   elsewhere, a `.git` that is a link or a gitfile, repository config
-  that includes files or sets `core.worktree` outside, `core.hooksPath`
-  or `lfs.storage`, alternates outside, or a nested repository;
+  that includes files or sets `core.worktree` outside, `core.hooksPath`,
+  `lfs.storage` or a filter driver, alternates outside, or a nested
+  repository;
 - has a symlink in the volume that leads to data the container wrote
   itself, or to an image file it changed (links into the unchanged
   image, such as a virtualenv's `python`, are fine);
@@ -1335,6 +1337,15 @@ outside the volume is found. For links that lead out of the volume,
 `docker diff` and a comparison with the original image tell whether
 the container wrote what they lead to (a name that is not valid UTF-8
 reaches `docker diff` altered, so such a name refuses too).
+
+Those containers run the agent's own files and tools, so what they
+send back is checked rather than trusted: the docker client writes at
+most `SWARM_HELPER_OUTPUT_LIMIT_MB` megabytes to any one file (the
+bound is per file, not a total, and not the disk a helper uses inside
+Docker), a scan's archive must hold only the scan's own files, and
+the scans read no global or system Git config and stop before they
+read a work tree whose repository config sets a filter driver or
+includes other files.
 
 The error says what to copy out first. Removal goes by ID, without
 `-f`, and leaves any container that changed since it was checked. Run

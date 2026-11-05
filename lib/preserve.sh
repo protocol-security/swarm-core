@@ -17,10 +17,11 @@ SWARM_PRESERVATION_REFS=(
 # give a commit parents it does not have, which would make work look
 # contained, so both are turned off.  Git warns about the graft file
 # setting itself; that advice is silenced, because the checks treat
-# any message on stderr as a failure.
+# any message on stderr as a failure.  These checks read the bare
+# repo, which agents write: no transport may run (swarm_no_fetch).
 swarm_preserve_git() {
     GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null \
-        git -c advice.graftFileDeprecated=false "$@"
+        swarm_no_fetch git -c advice.graftFileDeprecated=false "$@"
 }
 
 # Succeed when the checkout at ROOT is a repository with a commit at
@@ -463,22 +464,48 @@ swarm_scan_host() {
         "$out"
 }
 
+# Print, in the 1024-byte blocks of Bash's ulimit -f, the most a
+# helper's docker client may write to any one file:
+# SWARM_HELPER_OUTPUT_LIMIT_MB megabytes (default 16384).  It keeps
+# what a helper sends back (its output is the container's to choose: a
+# snapshot is its agent's) from filling the host's disk; it bounds each
+# file, not their total, nor what the helper uses inside Docker.
+swarm_helper_limit_kb() {
+    local mb="${SWARM_HELPER_OUTPUT_LIMIT_MB:-16384}"
+    case "$mb" in
+        ''|*[!0123456789]*|0*)
+            echo "ERROR: SWARM_HELPER_OUTPUT_LIMIT_MB must be a whole" \
+                 "number of megabytes from 1, not '${mb}'." >&2
+            return 1 ;;
+    esac
+    printf '%s' "$((mb * 1024))"
+}
+
 # Run docker ARGS in a process group of its own and wait for it.  A
 # Ctrl-C at the terminal then reaches the caller (whose cleanup waits
 # for this job: wait with no operand) but not the docker client, which,
 # stopped mid-request, can leave the daemon to make a container or an
 # image after that cleanup ran.  Its standard input is the caller's,
-# or /dev/null when that is a terminal.
+# or /dev/null when that is a terminal.  The client runs under ulimit
+# -f (swarm_helper_limit_kb): whatever it writes to a file, its output
+# and its errors included, stops there (it then gets EFBIG and fails).
+# A container it runs keeps no log (--log-driver none): the daemon
+# stores no copy of what a helper prints.
 swarm_docker_own_group() {
-    local rc=0 had_m=false
+    local rc=0 had_m=false kb
+    kb=$(swarm_helper_limit_kb) || return 1
+    if [ "${1:-}" = run ]; then
+        shift
+        set -- run --log-driver none "$@"
+    fi
     case "$-" in
         *m*) had_m=true ;;
     esac
     set -m
     if [ -t 0 ]; then
-        docker "$@" < /dev/null &
+        ( ulimit -f "$kb" || exit 125; exec docker "$@" ) < /dev/null &
     else
-        docker "$@" &
+        ( ulimit -f "$kb" || exit 125; exec docker "$@" ) &
     fi
     if [ "$had_m" = false ]; then
         set +m
@@ -519,6 +546,93 @@ swarm_scan_volume() {
         < "$(dirname "${BASH_SOURCE[0]}")/preserve-scan.sh" \
         > "$out/scan.tar" || rc=$?
     [ "$rc" -eq 0 ] || return 3
-    tar -C "$out" -xf "$out/scan.tar" 2>/dev/null || return 3
-    rm -f "$out/scan.tar"
+    swarm_scan_extract "$out/scan.tar" "$out" || return 3
+}
+
+# Extract the scan archive ARCHIVE (a helper's output: the container
+# chooses its bytes) into directory OUT, which must hold nothing else.
+# It may list only report, bundle and objects, each at most once:
+# its listing is read through head -c 64 (the longest right one is 22
+# bytes), so no member name, however long, is read whole.  The members
+# are written under the helper limit, and each must then be a regular
+# file with a single link.  The archive is removed.  Fails on anything
+# else.
+swarm_scan_extract() {
+    local archive="$1" out="$2" kb list name rest seen=" " rc=0 nl=$'\n'
+    kb=$(swarm_helper_limit_kb) || return 1
+    # A compressed archive is listed and extracted like a plain one;
+    # the limits apply to what tar writes either way.
+    list=$( (ulimit -f "$kb"; tar -tf "$archive" 2>/dev/null) \
+        | head -c 64; printf x) || list=x
+    list="${list%x}"
+    if [ "${#list}" -ge 64 ]; then
+        echo "the scan archive lists more than it may hold." >&2
+        rm -f "$archive"
+        return 1
+    fi
+    # tar printed less than 64 bytes, so it ended on its own: its status
+    # counts.
+    if ! (ulimit -f "$kb"; tar -tf "$archive" > /dev/null 2>"$out/.tar-err")
+    then
+        echo "cannot read the scan archive: $(head -c 300 "$out/.tar-err")" >&2
+        rm -f "$archive" "$out/.tar-err"
+        return 1
+    fi
+    rest="${list%"$nl"}"
+    while [ -n "$rest" ]; do
+        name="${rest%%"$nl"*}"
+        if [ "$name" = "$rest" ]; then rest=""; else rest="${rest#*"$nl"}"; fi
+        case "$name" in
+            report|bundle|objects) ;;
+            *)
+                echo "the scan archive holds an unexpected entry." >&2
+                rm -f "$archive" "$out/.tar-err"
+                return 1 ;;
+        esac
+        case "$seen" in
+            *" $name "*)
+                echo "the scan archive holds ${name} twice." >&2
+                rm -f "$archive" "$out/.tar-err"
+                return 1 ;;
+        esac
+        seen="${seen}${name} "
+    done
+    case "$seen" in
+        *" report "*) ;;
+        *)
+            echo "the scan archive holds no report." >&2
+            rm -f "$archive" "$out/.tar-err"
+            return 1 ;;
+    esac
+    # shellcheck disable=SC2086  # the names checked above, one word each
+    (ulimit -f "$kb"; tar -C "$out" -xf "$archive" $seen) \
+        2>"$out/.tar-err" || rc=1
+    if [ "$rc" -ne 0 ]; then
+        echo "cannot extract the scan archive: $(head -c 300 "$out/.tar-err")" >&2
+    fi
+    rm -f "$archive" "$out/.tar-err"
+    [ "$rc" -eq 0 ] || return 1
+    for name in $seen; do
+        if [ -L "$out/$name" ] || [ ! -f "$out/$name" ] \
+                || [ "$(swarm_link_count "$out/$name")" != 1 ]; then
+            echo "the scan archive's ${name} is not a plain file." >&2
+            return 1
+        fi
+    done
+}
+
+# Print the number of hard links of file PATH (GNU or BSD stat).
+swarm_link_count() {
+    if [ -z "${SWARM_STAT_FORM:-}" ]; then
+        if stat -c '%d:%i' / >/dev/null 2>&1; then
+            SWARM_STAT_FORM=-c
+        else
+            SWARM_STAT_FORM=-f
+        fi
+    fi
+    if [ "$SWARM_STAT_FORM" = -c ]; then
+        stat -c '%h' "$1"
+    else
+        stat -f '%l' "$1"
+    fi
 }

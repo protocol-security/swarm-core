@@ -570,10 +570,12 @@ mkdir -p "$TMPDIR/clean-elsewhere"
 echo dirty-again >> "$W/.gitmodules"
 git -C "$W" config core.worktree "$TMPDIR/clean-elsewhere"
 out=$(scan worktree "$W" full)
-assert_eq "core.worktree does not hide dirty files" "1" \
-    "$(has_line "$out" 'uncommitted dirty .:  M .gitmodules')"
 assert_eq "a core.worktree outside the volume blocks" "1" \
     "$(has_line "$out" 'block core-worktree .git ')"
+# Refused anyway, it stops the scan before git status, which would go
+# where core.worktree says (and into the repositories there).
+assert_eq "and the scan stops before status" "0" \
+    "$(has_line "$out" 'uncommitted dirty')"
 git -C "$W" config --unset core.worktree
 git -C "$W" checkout -q -- .gitmodules
 
@@ -1206,6 +1208,521 @@ assert_eq "so does one of the list of files to keep" "3" \
     "$(rb_scan cat)"
 assert_eq "saying so" "1" \
     "$(grep -c 'cannot read a list' "$TMPDIR/rb.log" || true)"
+
+# ============================================================
+echo ""
+echo "=== 14. Agent-written settings and helper output stay contained ==="
+
+# A clean filter that leaves a marker when Git runs it: what git status
+# would run, through a filter an agent configured, inside the scan.
+# The control lines show git status alone does run it.  Each change
+# keeps the file's size, so that Git must read the content (through
+# the filter) to tell.
+fl_repo() {
+    local d="$1"
+    git init -q "$d"
+    echo a > "$d/f"
+    echo '* filter=x' > "$d/.gitattributes"
+    g -C "$d" add f .gitattributes
+    g -C "$d" commit -qm one
+}
+FLM="$TMPDIR/filter-ran"
+FW="$TMPDIR/fw"
+fl_repo "$FW"
+git -C "$FW" config filter.x.clean "touch $FLM; cat"
+echo b > "$FW/f"
+git -C "$FW" status --porcelain >/dev/null 2>&1 || true
+assert_eq "control: git status runs the repository's clean filter" "true" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+rm -f "$FLM"
+out=$(scan worktree "$FW" full)
+assert_eq "a filter driver in the repository's config blocks" "1" \
+    "$(has_line "$out" 'block filter-driver .git filter.x.clean')"
+assert_eq "and the scan never runs it" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+# The same in config.worktree, read with extensions.worktreeConfig.
+FW2="$TMPDIR/fw2"
+fl_repo "$FW2"
+git -C "$FW2" config extensions.worktreeConfig true
+git -C "$FW2" config --worktree filter.x.clean "touch $FLM; cat"
+echo b > "$FW2/f"
+out=$(scan worktree "$FW2" full)
+assert_eq "a filter driver in config.worktree blocks" "1" \
+    "$(has_line "$out" 'block filter-driver .git filter.x.clean')"
+assert_eq "and is never run" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+# Through an include: the include blocks, and status never runs.
+FW3="$TMPDIR/fw3"
+fl_repo "$FW3"
+printf '[filter "x"]\n\tclean = touch %s; cat\n' "$FLM" > "$TMPDIR/inc.cfg"
+git -C "$FW3" config include.path "$TMPDIR/inc.cfg"
+echo b > "$FW3/f"
+git -C "$FW3" status --porcelain >/dev/null 2>&1 || true
+assert_eq "control: git status runs an included filter" "true" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+rm -f "$FLM"
+out=$(scan worktree "$FW3" full)
+assert_eq "an include blocks" "1" "$(has_line "$out" 'block config-include .git')"
+assert_eq "and the scan stops before status" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+assert_eq "with no bundle" "false" \
+    "$([ -e "$out/bundle" ] && echo true || echo false)"
+# In a submodule's git dir: status looks into submodules.
+FSUB="$TMPDIR/fsub-src"
+fl_repo "$FSUB"
+FW4="$TMPDIR/fw4"
+git init -q "$FW4"
+g -C "$FW4" -c protocol.file.allow=always submodule add -q "$FSUB" sub \
+    >/dev/null 2>&1
+g -C "$FW4" commit -qm add-sub
+git -C "$FW4/sub" config filter.x.clean "touch $FLM; cat"
+echo b > "$FW4/sub/f"
+git -C "$FW4" status --porcelain --ignore-submodules=none >/dev/null 2>&1 \
+    || true
+assert_eq "control: git status in the parent runs a submodule's filter" \
+    "true" "$([ -e "$FLM" ] && echo true || echo false)"
+rm -f "$FLM"
+out=$(scan worktree "$FW4" full)
+assert_eq "a filter driver in a submodule's git dir blocks" "1" \
+    "$(has_line "$out" 'block filter-driver .git/modules/sub filter.x.clean')"
+assert_eq "and is never run" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+# A submodule whose .git names a git dir outside the checkout: the
+# embedded check runs before status, which would use that git dir's
+# config.
+FW5="$TMPDIR/fw5"
+git init -q "$FW5"
+g -C "$FW5" -c protocol.file.allow=always submodule add -q "$FSUB" sub \
+    >/dev/null 2>&1
+g -C "$FW5" commit -qm add-sub
+mv "$FW5/.git/modules/sub" "$TMPDIR/ext-sub.git"
+printf 'gitdir: %s\n' "$TMPDIR/ext-sub.git" > "$FW5/sub/.git"
+git config -f "$TMPDIR/ext-sub.git/config" core.worktree "$FW5/sub"
+git config -f "$TMPDIR/ext-sub.git/config" filter.x.clean "touch $FLM; cat"
+echo b > "$FW5/sub/f"
+git -C "$FW5" status --porcelain --ignore-submodules=none >/dev/null 2>&1 \
+    || true
+assert_eq "control: git status runs the outside git dir's filter" "true" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+rm -f "$FLM"
+out=$(scan worktree "$FW5" full)
+assert_eq "a submodule with its git dir outside blocks" "1" \
+    "$(has_line "$out" 'block embedded sub')"
+assert_eq "before status, which never runs its filter" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+# A repository below the checkout whose path holds a newline cannot be
+# checked; status would look into it (a gitlink with its own .git), so
+# the scan stops first.
+FW7="$TMPDIR/fw7"
+git init -q "$FW7"
+g -C "$FW7" commit -q --allow-empty -m one
+_nlsub="$FW7/odd"$'\n'"sub"
+fl_repo "$_nlsub"
+git -C "$_nlsub" config filter.x.clean "touch $FLM; cat"
+git -C "$FW7" update-index --add --cacheinfo \
+    "160000,$(git -C "$_nlsub" rev-parse HEAD),odd"$'\n'"sub"
+g -C "$FW7" commit -qm add-gitlink
+echo b > "$_nlsub/f"
+git -C "$FW7" status --porcelain --ignore-submodules=none >/dev/null 2>&1 \
+    || true
+assert_eq "control: git status looks into a gitlink at a newline path" \
+    "true" "$([ -e "$FLM" ] && echo true || echo false)"
+rm -f "$FLM"
+out=$(scan worktree "$FW7" full)
+assert_eq "a repository at a newline path blocks" "1" \
+    "$(has_line "$out" 'block newline-path odd')"
+assert_eq "and the scan stops before status" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+# A submodule whose core.worktree is outside, holding a repository at a
+# gitlink there with a filter: the scan stops before status.
+FW8="$TMPDIR/fw8"
+git init -q "$FW8"
+g -C "$FW8" -c protocol.file.allow=always submodule add -q "$FSUB" sub \
+    >/dev/null 2>&1
+g -C "$FW8" commit -qm add-sub
+EXT="$TMPDIR/ext-wt"
+mkdir -p "$EXT"
+cp -R "$FW8/sub/." "$EXT/"
+rm -f "$EXT/.git"
+fl_repo "$EXT/inner"
+git -C "$EXT/inner" config filter.x.clean "touch $FLM; cat"
+git config -f "$FW8/.git/modules/sub/config" core.worktree "$EXT"
+git --git-dir="$FW8/.git/modules/sub" --work-tree="$EXT" update-index --add \
+    --cacheinfo "160000,$(git -C "$EXT/inner" rev-parse HEAD),inner"
+echo b > "$EXT/inner/f"
+git -C "$FW8" status --porcelain --ignore-submodules=none >/dev/null 2>&1 \
+    || true
+assert_eq "control: status follows core.worktree into a repository there" \
+    "true" "$([ -e "$FLM" ] && echo true || echo false)"
+rm -f "$FLM"
+out=$(scan worktree "$FW8" full)
+assert_eq "a submodule's core.worktree outside blocks" "1" \
+    "$(has_line "$out" 'block core-worktree .git/modules/sub')"
+assert_eq "and the scan stops before status" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+# A submodule whose core.worktree is inside the git dir, where the
+# search for repositories below ROOT does not look, with a repository at
+# a gitlink there: the scan stops before status.
+FW9="$TMPDIR/fw9"
+git init -q "$FW9"
+g -C "$FW9" -c protocol.file.allow=always submodule add -q "$FSUB" sub \
+    >/dev/null 2>&1
+g -C "$FW9" commit -qm add-sub
+HID="$FW9/.git/hidden"
+mkdir -p "$HID"
+cp -R "$FW9/sub/." "$HID/"
+rm -f "$HID/.git"
+fl_repo "$HID/inner"
+git -C "$HID/inner" config filter.x.clean "touch $FLM; cat"
+git config -f "$FW9/.git/modules/sub/config" core.worktree "$HID"
+git --git-dir="$FW9/.git/modules/sub" --work-tree="$HID" update-index --add \
+    --cacheinfo "160000,$(git -C "$HID/inner" rev-parse HEAD),inner"
+echo b > "$HID/inner/f"
+git -C "$FW9" status --porcelain --ignore-submodules=none >/dev/null 2>&1 \
+    || true
+assert_eq "control: status follows a core.worktree inside the git dir" \
+    "true" "$([ -e "$FLM" ] && echo true || echo false)"
+rm -f "$FLM"
+out=$(scan worktree "$FW9" full)
+assert_eq "a work tree inside the git dir blocks" "1" \
+    "$(has_line "$out" 'block gitdir-worktree .git/modules/sub')"
+assert_eq "and the scan stops before status" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+# A submodule whose git dir is not one the scan checked (its objects is
+# an executable file, which Git takes for a repository and this scan's
+# list of git dirs does not): blocked before status.
+FW10="$TMPDIR/fw10"
+git init -q "$FW10"
+g -C "$FW10" -c protocol.file.allow=always submodule add -q "$FSUB" sub \
+    >/dev/null 2>&1
+g -C "$FW10" commit -qm add-sub
+mv "$FW10/.git/modules/sub/objects" "$FW10/.git/modules/sub/objects.d"
+printf '#!/bin/sh\n' > "$FW10/.git/modules/sub/objects"
+chmod +x "$FW10/.git/modules/sub/objects"
+git config -f "$FW10/.git/modules/sub/config" filter.x.clean "touch $FLM; cat"
+echo b > "$FW10/sub/f"
+git -C "$FW10" status --porcelain --ignore-submodules=none >/dev/null 2>&1 \
+    || true
+if [ -e "$FLM" ]; then
+    rm -f "$FLM"
+    out=$(scan worktree "$FW10" full)
+    assert_eq "a submodule whose git dir the scan did not check blocks" "1" \
+        "$(has_line "$out" 'block embedded sub')"
+    assert_eq "and its filter never runs" "false" \
+        "$([ -e "$FLM" ] && echo true || echo false)"
+else
+    echo "  SKIP: this Git does not take that git dir for a repository"
+fi
+# A gitfile with a line break inside: Git keeps it and goes elsewhere;
+# the scan blocks instead of checking only its first line.
+FW11="$TMPDIR/fw11"
+git init -q "$FW11"
+g -C "$FW11" -c protocol.file.allow=always submodule add -q "$FSUB" sub \
+    >/dev/null 2>&1
+g -C "$FW11" commit -qm add-sub
+cp -R "$FW11/.git/modules/sub" "$TMPDIR/out11.git"
+git config -f "$TMPDIR/out11.git/config" core.worktree "$FW11/sub"
+git config -f "$TMPDIR/out11.git/config" filter.x.clean "touch $FLM; cat"
+mkdir "$FW11/.git/modules/safe"$'\n'
+# Up from .git/modules/safe<LF> to /, counted on the resolved path (on
+# macOS /var is a link), then down to the outside repository.
+_mods=$(cd -P "$FW11/.git/modules" && pwd -P)
+_out=$(cd -P "$TMPDIR/out11.git" && pwd -P)
+_up=$(printf '%s' "$_mods" | tr -cd / | sed 's|/|../|g')
+printf 'gitdir: %s\n/../%s%s\n' "$_mods/safe" "$_up" "${_out#/}" \
+    > "$FW11/sub/.git"
+echo b > "$FW11/sub/f"
+git -C "$FW11" status --porcelain --ignore-submodules=none >/dev/null 2>&1 \
+    || true
+assert_eq "control: Git follows the gitfile past its line break" "true" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+rm -f "$FLM"
+out=$(scan worktree "$FW11" full)
+assert_eq "a gitfile with a line break blocks" "1" \
+    "$(has_line "$out" 'block embedded sub (not one gitdir line in .git)')"
+assert_eq "and the outside filter never runs" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+# An index an agent wrote by hand, with a gitlink inside the git dir
+# (.git/hidden), whose .git names an outside repository with a filter:
+# the scan's status does not look into submodules, so it never runs.
+if command -v perl >/dev/null 2>&1; then
+    FW12="$TMPDIR/fw12"
+    fl_repo "$FW12"
+    fl_repo "$TMPDIR/out12"
+    git -C "$TMPDIR/out12" config filter.x.clean "touch $FLM; cat"
+    git -C "$FW12" update-index --add --cacheinfo \
+        "160000,$(git -C "$TMPDIR/out12" rev-parse HEAD),AAAA/hidden"
+    perl -0777 -i -pe 'use Digest::SHA qw(sha1); s/AAAA/.git/g;
+        $_ = substr($_, 0, -20); $_ .= sha1($_);' "$FW12/.git/index"
+    mkdir -p "$FW12/.git/hidden"
+    cp "$TMPDIR/out12/f" "$TMPDIR/out12/.gitattributes" "$FW12/.git/hidden/"
+    git config -f "$TMPDIR/out12/.git/config" core.worktree \
+        "$FW12/.git/hidden"
+    printf 'gitdir: %s\n' "$TMPDIR/out12/.git" > "$FW12/.git/hidden/.git"
+    echo b > "$FW12/.git/hidden/f"
+    git -C "$FW12" status --porcelain --ignore-submodules=none \
+        >/dev/null 2>&1 || true
+    if [ -e "$FLM" ]; then
+        rm -f "$FLM"
+        out=$(scan worktree "$FW12" full)
+        assert_eq "an index entry an agent put in the git dir blocks" "1" \
+            "$(has_line "$out" 'block index-in-gitdir .: .git/hidden')"
+        assert_eq "before status reads it: its filter never runs" \
+            "false" "$([ -e "$FLM" ] && echo true || echo false)"
+        # The same entry written as ./.git/hidden, and a/../.git/hidden:
+        # any path Git would not write blocks.
+        for _np in './.git/hidden' 'q/../.git/hidden'; do
+            _fw="$TMPDIR/fw12-$(printf '%s' "$_np" | tr -c 'a-z' '_')"
+            cp -R "$FW12" "$_fw"
+            git -C "$_fw" read-tree --empty
+            git -C "$_fw" update-index --add --cacheinfo \
+                "160000,$(git -C "$TMPDIR/out12" rev-parse HEAD),$(printf '%s' "$_np" | tr './' 'XY')"
+            # Written under a name of the same length, then renamed in
+            # the file, its checksum made again.
+            _from=$(printf '%s' "$_np" | tr './' 'XY')
+            FROM="$_from" TO="$_np" perl -0777 -i -pe '
+                use Digest::SHA qw(sha1);
+                s/\Q$ENV{FROM}\E/$ENV{TO}/g;
+                $_ = substr($_, 0, -20); $_ .= sha1($_);' "$_fw/.git/index"
+            out=$(scan worktree "$_fw" full)
+            assert_eq "an index entry ${_np} blocks" "1" \
+                "$(has_line "$out" "block index-in-gitdir .: ${_np}")"
+            assert_eq "and its filter never runs" "false" \
+                "$([ -e "$FLM" ] && echo true || echo false)"
+        done
+    else
+        echo "  SKIP: this Git does not follow a gitlink inside the git dir"
+    fi
+else
+    echo "  SKIP: no perl to write an index by hand"
+fi
+# A commondir read as Git reads it: "shared<CR><LF>" names .git/shared
+# (trailing CR and LF dropped), not a listed .git/shared<CR> next to it.
+FW13="$TMPDIR/fw13"
+fl_repo "$FW13"
+mkdir "$FW13/.git/shared"
+mv "$FW13/.git/objects" "$FW13/.git/refs" "$FW13/.git/config" \
+    "$FW13/.git/shared/"
+git config -f "$FW13/.git/shared/config" filter.x.clean "touch $FLM; cat"
+git init -q --bare "$FW13/.git/shared"$'\r'
+printf 'shared\r\n' > "$FW13/.git/commondir"
+echo b > "$FW13/f"
+git -C "$FW13" status --porcelain >/dev/null 2>&1 || true
+assert_eq "control: Git uses the common dir without the CR" "true" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+rm -f "$FLM"
+out=$(scan worktree "$FW13" full)
+assert_eq "that common dir, which the scan does not list, blocks" "1" \
+    "$(grep -c '^block commondir \.git .*/\.git/shared$' "$out/report" || true)"
+assert_eq "and its filter never runs" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+# The global and system config of whoever runs the scan do not apply:
+# a filter defined there is not run, and nothing blocks for it.
+GH="$TMPDIR/ghome"
+mkdir -p "$GH"
+printf '[filter "x"]\n\tclean = touch %s; cat\n' "$FLM" > "$GH/.gitconfig"
+FW6="$TMPDIR/fw6"
+fl_repo "$FW6"
+echo b > "$FW6/f"
+HOME="$GH" GIT_CONFIG_GLOBAL="$GH/.gitconfig" git -C "$FW6" status \
+    --porcelain >/dev/null 2>&1 || true
+assert_eq "control: git status runs a global filter" "true" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+rm -f "$FLM"
+out=$(scan worktree "$FW6" full HOME="$GH" XDG_CONFIG_HOME="$GH/xdg")
+assert_eq "the scan reads no global config: the filter does not run" \
+    "false" "$([ -e "$FLM" ] && echo true || echo false)"
+assert_eq "and the change shows as such" "1" \
+    "$(has_line "$out" 'uncommitted dirty .:  M f')"
+
+# A bare repo an agent turned into a partial clone, with a ref whose
+# object is missing and a local "promisor" remote whose uploadpack
+# command leaves a marker, protocol.file.allow=always included: the
+# host's reads never run it (no lazy fetch, no transport), on any Git.
+PRM="$TMPDIR/promisor-ran"
+pr_bare() {
+    local d="$1"
+    git clone -q --bare "$WORK" "$d"
+    # The preservation check reads the agent refs only.
+    git -C "$d" update-ref refs/heads/agent-work HEAD
+    git -C "$d" repack -q -a -d
+    rm -f "${d:?}"/objects/pack/pack-*
+    git -C "$d" config core.repositoryformatversion 1
+    git -C "$d" config extensions.partialClone origin
+    git -C "$d" config remote.origin.url "$WORK"
+    git -C "$d" config remote.origin.promisor true
+    git -C "$d" config remote.origin.uploadpack "touch $PRM; git-upload-pack"
+    git -C "$d" config protocol.file.allow always
+}
+pr_bare "$TMPDIR/pr-control.git"
+git -C "$TMPDIR/pr-control.git" rev-list --count HEAD >/dev/null 2>&1 || true
+assert_eq "control: a plain read fetches and runs the uploadpack command" \
+    "true" "$([ -e "$PRM" ] && echo true || echo false)"
+rm -f "$PRM"
+pr_bare "$TMPDIR/pr-scan.git"
+out=$(scan gitdir "$TMPDIR/pr-scan.git" -)
+assert_eq "a host scan of it runs nothing" "false" \
+    "$([ -e "$PRM" ] && echo true || echo false)"
+pr_bare "$TMPDIR/pr-check.git"
+pc_rc=0
+swarm_preservation_check "$TMPDIR/pr-check.git" "$WORK" >/dev/null 2>&1 \
+    || pc_rc=$?
+assert_eq "nor does the preservation check" "false" \
+    "$([ -e "$PRM" ] && echo true || echo false)"
+assert_eq "which cannot tell, and says so" "2" "$pc_rc"
+# Both layers are there, whichever one this Git honors: Git from 2.45
+# (and patched older releases) stops at GIT_NO_LAZY_FETCH, any Git at
+# the empty allow-list.  Every git the wrapper and the scanner run sees
+# both.
+assert_eq "swarm_no_fetch passes an empty GIT_ALLOW_PROTOCOL" "1" \
+    "$(swarm_no_fetch env | grep -c '^GIT_ALLOW_PROTOCOL=$' || true)"
+assert_eq "and GIT_NO_LAZY_FETCH=1" "1" \
+    "$(swarm_no_fetch env | grep -c '^GIT_NO_LAZY_FETCH=1$' || true)"
+GENV="$TMPDIR/git-env"
+mkdir -p "$GENV/bin"
+_real_git=$(command -v git)
+cat > "$GENV/bin/git" <<EOF
+#!/bin/bash
+{ printf 'allow=%s|' "\${GIT_ALLOW_PROTOCOL-unset}"
+  printf 'nolazy=%s\n' "\${GIT_NO_LAZY_FETCH-unset}"; } >> "$GENV/log"
+exec "$_real_git" "\$@"
+EOF
+chmod +x "$GENV/bin/git"
+out=$(scan gitdir "$BARE" - PATH="$GENV/bin:$PATH")
+assert_eq "every git a host scan runs gets no transport" "true" \
+    "$([ -s "$GENV/log" ] && ! grep -qv '^allow=|nolazy=1$' "$GENV/log" \
+        && echo true || echo false)"
+
+# Helper output: whatever the docker client writes to a file stops at
+# SWARM_HELPER_OUTPUT_LIMIT_MB; a run keeps no container log.
+HB="$TMPDIR/helper-bin"
+mkdir -p "$HB"
+cat > "$HB/docker" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$HELPER_LOG"
+# Like the docker client, it fails when a write does.
+case "${HELPER_FLOOD:-}" in
+    out) head -c 3000000 /dev/zero || exit 1 ;;
+    err) head -c 3000000 /dev/zero >&2 || exit 1 ;;
+esac
+exit 0
+EOF
+chmod +x "$HB/docker"
+export HELPER_LOG="$TMPDIR/helper.log"
+h_rc=0
+PATH="$HB:$PATH" HELPER_FLOOD=out SWARM_HELPER_OUTPUT_LIMIT_MB=1 \
+    swarm_docker_own_group run --rm img > "$TMPDIR/h.out" 2>/dev/null \
+    || h_rc=$?
+assert_eq "a helper flooding its output fails" "true" \
+    "$([ "$h_rc" -ne 0 ] && echo true || echo false)"
+assert_eq "with the file at the limit" "1048576" \
+    "$(wc -c < "$TMPDIR/h.out" | tr -d ' ')"
+h_rc=0
+PATH="$HB:$PATH" HELPER_FLOOD=err SWARM_HELPER_OUTPUT_LIMIT_MB=1 \
+    swarm_docker_own_group run --rm img > /dev/null 2>"$TMPDIR/h.err" \
+    || h_rc=$?
+assert_eq "so does one flooding its errors" "true" \
+    "$([ "$h_rc" -ne 0 ] && echo true || echo false)"
+# The calling shell may add a line about the job; nothing more.
+assert_eq "with that file at the limit" "true" \
+    "$([ "$(wc -c < "$TMPDIR/h.err" | tr -d ' ')" -le $((1048576 + 4096)) ] \
+        && echo true || echo false)"
+assert_eq "a run keeps no container log" "true" \
+    "$(grep -q '^run --log-driver none --rm img$' "$HELPER_LOG" \
+        && echo true || echo false)"
+for _bad in 0 -1 x 1.5 08; do
+    h_rc=0
+    PATH="$HB:$PATH" SWARM_HELPER_OUTPUT_LIMIT_MB="$_bad" \
+        swarm_docker_own_group run --rm img >/dev/null 2>&1 || h_rc=$?
+    assert_eq "SWARM_HELPER_OUTPUT_LIMIT_MB '${_bad}' refuses" "1" "$h_rc"
+done
+
+# Scan archives: only report, bundle and objects, once each, as plain
+# files, under the limit.
+AX="$TMPDIR/ax"
+mkdir -p "$AX"
+# Make archive NAME from the files listed after it, in directory $AX/src.
+ax_tar() {
+    local name="$1"
+    shift
+    (cd "$AX/src" && tar -cf "$AX/$name" "$@")
+}
+# Extract archive NAME into the new directory $TMPDIR/axo-NAME; print
+# the status.
+ax_extract() {
+    local d="$TMPDIR/axo-$1" rc=0
+    mkdir "$d"
+    cp "$AX/$1" "$d/scan.tar"
+    swarm_scan_extract "$d/scan.tar" "$d" 2>/dev/null || rc=$?
+    printf '%s' "$rc"
+}
+rm -rf "$AX/src"
+mkdir -p "$AX/src"
+echo r > "$AX/src/report"
+echo b > "$AX/src/bundle"
+echo o > "$AX/src/objects"
+echo e > "$AX/src/extra"
+ax_tar ok.tar report bundle objects
+assert_eq "a scan archive of report, bundle and objects extracts" "0" \
+    "$(ax_extract ok.tar)"
+assert_eq "with each member in place" "r b o" \
+    "$(cat "$TMPDIR/axo-ok.tar/report" "$TMPDIR/axo-ok.tar/bundle" \
+        "$TMPDIR/axo-ok.tar/objects" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "and the archive gone" "false" \
+    "$([ -e "$TMPDIR/axo-ok.tar/scan.tar" ] && echo true || echo false)"
+ax_tar report-only.tar report
+assert_eq "a report alone is fine" "0" "$(ax_extract report-only.tar)"
+ax_tar extra.tar report extra
+assert_eq "an extra member refuses" "1" "$(ax_extract extra.tar)"
+ax_tar noreport.tar bundle objects
+assert_eq "no report refuses" "1" "$(ax_extract noreport.tar)"
+ax_tar twice.tar report report
+assert_eq "a member twice refuses" "1" "$(ax_extract twice.tar)"
+rm -f "$AX/src/report"
+ln -s /etc/hosts "$AX/src/report"
+ax_tar link.tar report
+assert_eq "a symlink member refuses" "1" "$(ax_extract link.tar)"
+rm -f "$AX/src/report" "$AX/src/bundle"
+echo r > "$AX/src/report"
+ln "$AX/src/report" "$AX/src/bundle"
+ax_tar hard.tar report bundle
+assert_eq "a hard-linked member refuses" "1" "$(ax_extract hard.tar)"
+rm -f "$AX/src/bundle"
+echo b > "$AX/src/bundle"
+mkdir -p "$AX/src/sub"
+echo x > "$AX/src/sub/x"
+if tar --version 2>/dev/null | grep -q bsdtar; then
+    (cd "$AX/src/sub" && tar -cf "$AX/dotdot.tar" -s ',^x$,../x,' x)
+else
+    (cd "$AX/src/sub" && tar -cf "$AX/dotdot.tar" --transform 's,^x$,../x,' x)
+fi
+assert_eq "a member named ../x refuses" "1" "$(ax_extract dotdot.tar)"
+assert_eq "and nothing lands next to the output" "false" \
+    "$([ -e "$TMPDIR/x" ] && echo true || echo false)"
+_long="$AX/src/$(printf 'a%.0s' $(seq 1 120))/$(printf 'b%.0s' $(seq 1 120))"
+mkdir -p "$_long"
+echo r > "$_long/report"
+(cd "$AX/src" && tar -cf "$AX/long.tar" "${_long#"$AX/src/"}/report")
+assert_eq "a member name longer than the listing allows refuses" "1" \
+    "$(ax_extract long.tar)"
+for _i in $(seq 1 30); do echo "$_i" > "$AX/src/r$_i"; done
+(cd "$AX/src" && tar -cf "$AX/many.tar" r*)
+assert_eq "many members refuse" "1" "$(ax_extract many.tar)"
+head -c 3000000 /dev/zero > "$AX/src/report"
+ax_tar big.tar report
+gzip -c "$AX/big.tar" > "$AX/big.tar.gz"
+_saved="${SWARM_HELPER_OUTPUT_LIMIT_MB:-}"
+export SWARM_HELPER_OUTPUT_LIMIT_MB=1
+assert_eq "a member past the limit refuses" "1" "$(ax_extract big.tar)"
+assert_eq "with what was written kept to the limit" "true" \
+    "$([ "$(wc -c < "$TMPDIR/axo-big.tar/report" 2>/dev/null || echo 0)" \
+        -le 1048576 ] && echo true || echo false)"
+assert_eq "so does a compressed one" "1" "$(ax_extract big.tar.gz)"
+if [ -n "$_saved" ]; then
+    SWARM_HELPER_OUTPUT_LIMIT_MB="$_saved"
+else
+    unset SWARM_HELPER_OUTPUT_LIMIT_MB
+fi
 
 echo ""
 echo "==============================="
