@@ -119,10 +119,13 @@ state_value() {
 }
 
 # The engagement the dashboard shows, by its token (empty for none);
-# s and p act on it alone.  Set by load_state.
+# s and p act on it alone.  DASH_CLEANUP is true while the state holds
+# the checkpoint of a cleanup that has not finished (running, or stopped
+# before the end; only cleanup may go on).  Both set by load_state.
 DASH_TOKEN=""
+DASH_CLEANUP=false
 load_state() {
-    local state title config agents summary label token
+    local state title config agents summary label token cleanup
     if [ ! -f "$STATE_FILE" ] || ! runtime_ok; then
         return 1
     fi
@@ -137,6 +140,7 @@ load_state() {
     summary=$(state_value "$state" model_summary clean) || return 1
     label=$(state_value "$state" config_label clean) || return 1
     token=$(state_value "$state" engagement_token) || return 1
+    cleanup=$(printf '%s' "$state" | jq -r 'has("cleanup")') || return 1
     case "$title" in y*) title="${title#y}"; SWARM_TITLE="${title%x}" ;; esac
     case "$config" in
         y*) config="${config#y}"; SWARM_CONFIG="${config%x}" ;;
@@ -156,8 +160,72 @@ load_state() {
         y*) token="${token#y}"; DASH_TOKEN="${token%x}" ;;
         *) DASH_TOKEN="" ;;
     esac
+    if [ "$cleanup" = true ]; then
+        DASH_CLEANUP=true
+    else
+        DASH_CLEANUP=false
+    fi
 }
 load_state || true
+
+# The workspace volumes of this checkout, as "<container> <token>" lines
+# (the labels naming the container a volume was made for and its
+# engagement), read once per refresh by refresh_volumes.  DASH_VOLUMES_OK
+# is false when Docker could not list them: the dashboard then says
+# nothing about volumes rather than guess.
+CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")" || exit 1
+DASH_VOLUMES=""
+DASH_VOLUMES_OK=false
+refresh_volumes() {
+    local fmt
+    fmt="{{.Label \"${SWARM_CONTAINER_LABEL}\"}} {{.Label \"${SWARM_TOKEN_LABEL}\"}}"
+    if DASH_VOLUMES=$(docker volume ls \
+            --filter "label=${SWARM_PROJECT_LABEL}=${PROJECT}" \
+            --filter "label=${SWARM_CHECKOUT_LABEL}=${CHECKOUT_PATH}" \
+            --format "$fmt" 2>/dev/null); then
+        DASH_VOLUMES_OK=true
+    else
+        DASH_VOLUMES=""
+        DASH_VOLUMES_OK=false
+    fi
+}
+
+# Succeed when container NAME is not there (not in this refresh's list
+# of the checkout's containers) and the engagement shown has a workspace
+# volume made for it: retire removed the container and kept its files,
+# or the container was never made (docker run failed).
+volume_only() {
+    $DASH_VOLUMES_OK && [ -n "$DASH_TOKEN" ] || return 1
+    [ -z "$(own_ref "$1")" ] || return 1
+    case "${NL}${DASH_VOLUMES}${NL}" in
+        *"${NL}${1} ${DASH_TOKEN}${NL}"*) return 0 ;;
+    esac
+    return 1
+}
+
+# Print the line under the recent commits about what is left of the
+# engagement shown, or nothing: a cleanup that has not finished (it is
+# running, or it stopped before the end), or, once no container of this
+# checkout is there, its workspace volumes.
+engagement_note() {
+    local kept
+    if $DASH_CLEANUP; then
+        printf ' %sA cleanup has not finished%s: %s\n' \
+            "$YELLOW" "$RESET" \
+            "if it is not running, run ./launch.sh cleanup again."
+        return 0
+    fi
+    $DASH_VOLUMES_OK && [ -n "$DASH_TOKEN" ] || return 0
+    [ -z "${OWN_CONTAINERS//$NL/}" ] || return 0
+    # Compared as strings: a token can look like a number to awk.
+    kept=$(printf '%s\n' "$DASH_VOLUMES" \
+        | awk -v t="$DASH_TOKEN" 'NF == 2 && ("x" $2) == ("x" t) { n++ }
+                                  END { print n + 0 }')
+    [ "$kept" -gt 0 ] || return 0
+    printf ' %s%s workspace volume(s), no container: %s%s\n' \
+        "$DIM" "$kept" \
+        "harvest, then ./launch.sh cleanup ends the engagement." "$RESET"
+}
 
 DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
 
@@ -595,6 +663,7 @@ draw() {
             fi
         fi
     fi
+    refresh_volumes
 
     local now elapsed uptime_str
     now=$(date +%s)
@@ -660,6 +729,10 @@ draw() {
                     agent_driver <<< "$configured_fields"
                 model="${model:-unknown}"
                 state="configured"
+            fi
+            # Its files are on its workspace volume until cleanup.
+            if volume_only "$name"; then
+                state="volume only"
             fi
         fi
 
@@ -836,12 +909,15 @@ draw() {
         pp_driver=$(jq -r '.post_process.driver // .driver // "claude-code"' \
             "$CONFIG_FILE" 2>/dev/null || echo "claude-code")
 
-        local pp_rule
+        local pp_rule pp_status="configured"
+        if volume_only "$pp_name"; then
+            pp_status="volume only"
+        fi
         pp_rule=$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))
         printf "  ${DIM}%s${RESET}\n" "$pp_rule"
         emit_row "P" "$(format_model "$pp_model" "$pp_effort")" \
             "$(short_driver "$pp_driver")" "$pp_auth_mode" \
-            "$DIM" "configured" \
+            "$DIM" "$pp_status" \
             "" "" "" "" "" "" "$pp_tag"
     fi
 
@@ -878,6 +954,12 @@ draw() {
     fi
 
     echo ""
+
+    local note
+    note=$(engagement_note)
+    if [ -n "$note" ]; then
+        printf '%s\n\n' "$note"
+    fi
 
     if [ "$running_count" -eq 0 ] && [ "$exited_count" -gt 0 ]; then
         printf " ${BOLD}${GREEN}Swarm complete${RESET} -- all %s agents exited.\n" "$exited_count"
