@@ -564,8 +564,27 @@ post-processing, run `./launch.sh post-process`; use that command
 directly when you intentionally want to run only the post-process
 agent and then harvest.
 
+`harvest.sh` merges a branch built on the commit the engagement started
+from (`base_commit` in the state file) as long as HEAD's history still
+has that commit, so it also merges agent work after you merged an
+interactive branch or made commits of your own. It refuses when HEAD's
+history no longer has it (rewritten after the engagement started, by a
+force-push or a rebase): take what you need by hand, then end the
+engagement with `./launch.sh cleanup --allow-unharvested`. It also
+records what each harvest merged, and refuses when HEAD no longer has
+that (a rebase dropped some of it): merging again would bring it back.
+Each merge is recorded before it starts, and committed whatever merge
+options the Git config sets (`--no-commit`, `--squash`). A merge that
+stops on a conflict says how to finish it or give it up. Finished by
+hand, it counts as merged; given up, or cut short with the harvest
+(killed, say), the next harvest refuses as well, as does one run while
+the merge is still in progress. After undoing a harvest on purpose
+(`git reset --hard <tag>`, below) or giving up such a merge,
+`./harvest.sh --again` merges that work again.
+
 Before merging, `harvest.sh` tags the current branch tip with a
-local `swarm-harvest-<date>-<time>` tag (skipped on `--dry` and
+local `swarm-harvest-<date>-<time>` tag (`-2`, `-3` and so on for
+another harvest within the same second; skipped on `--dry` and
 when nothing is new). Undo a harvest with
 `git reset --hard <tag>`. The tag is never pushed and does not
 interfere with the harvested branches.
@@ -1332,8 +1351,9 @@ It stops, and deletes nothing, when
 
 - the bare repo holds agent work that HEAD's history does not have yet
   (`agent-work`, `swarm/*`, `agent-parked/*`): harvest first. When it
-  never can (`harvest.sh` refuses a bare repo that does not descend
-  from HEAD, after a rewritten upstream say), take what you need by
+  never can (`harvest.sh` refuses when HEAD's history no longer has
+  the engagement's base commit, after a rewritten upstream say), take
+  what you need by
   hand and pass `--allow-unharvested`, which keeps that work as
   recovery refs only. A read of the bare repo's refs that fails part of
   the way refuses either way;

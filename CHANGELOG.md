@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Fix: harvest merges agent work built on the engagement's base
+  after HEAD moved on.** It refused any branch that did not descend from
+  HEAD, so agent work pushed after an interactive branch was merged, or
+  after commits made in the checkout, could not be harvested. It now
+  checks the commit the engagement started from (`base_commit`, recorded
+  on the host): a branch built on it merges while HEAD's history still
+  has it, and still has what earlier harvests of the engagement merged
+  (recorded too). A history rewritten after the start, or one that
+  dropped harvested work or gave up a merge (each merge is recorded
+  before it starts, and committed whatever the Git config says), still
+  refuses;
+  `harvest.sh --again` merges that work again on purpose, after undoing
+  a harvest say. A merge that stops on a conflict says how to finish or
+  give it up, a harvest refuses while a merge is in progress, and one
+  within the same second as the previous one no longer fails on its
+  restore tag. Harvest no longer fetches tags from the bare repo, and
+  refuses when a tag or branch of the checkout has the name of a
+  harvested branch (`_agent-harvest/<branch>`).
 - **Fix: a run that Bash 3.2 stops on an unset variable no longer ends
   with status 0.** macOS's `/bin/bash` runs an EXIT trap with status 0
   when `set -u` stops a script, so `launch.sh`, retire and cleanup,
