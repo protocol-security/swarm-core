@@ -5,10 +5,20 @@ set -euo pipefail
 # start real containers, so keep the caller's: it is how a checkout
 # runs when another one owns the project's containers.
 _caller_project="${SWARM_PROJECT:-}"
+_own_project=false
 # shellcheck source=_test_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 if [ -n "$_caller_project" ]; then
     export SWARM_PROJECT="$_caller_project"
+else
+    _own_project=true
+    # Each run makes and removes an engagement of its own, under a
+    # project id of its own, so it never meets an engagement of this
+    # checkout (a new one needs a clean runtime), and its cleanup never
+    # touches one.
+    SWARM_PROJECT="swarm-core-test-$(od -An -N4 -tx1 /dev/urandom \
+        | tr -d ' \n')"
+    export SWARM_PROJECT
 fi
 
 # Smoke test: launch agents with a counting prompt, verify results.
@@ -37,6 +47,13 @@ PROJECT="$(swarm_project_resolve "$REPO_ROOT")" || exit 1
 REVIEW_DIR="/tmp/${PROJECT}-test-review"
 INJECT_DIR="/tmp/${PROJECT}-test-inject"
 TIMEOUT="${TIMEOUT:-600}"
+
+# The engine image of a project id this run made up goes when the run
+# is over (the runs it starts share the id and leave it).
+drop_own_image() {
+    $_own_project || return 0
+    docker rmi "${PROJECT}-agent" >/dev/null 2>&1 || true
+}
 
 # Docker containers may leave files owned by a different UID.
 rm_docker_dir() {
@@ -455,8 +472,10 @@ if $RUN_UNIT; then
 fi
 
 if $RUN_OAUTH; then
-    cmd_oauth
-    exit $?
+    rc=0
+    cmd_oauth || rc=$?
+    drop_own_image
+    exit "$rc"
 fi
 
 if $RUN_RUNTIME; then
@@ -468,8 +487,10 @@ if $RUN_RUNTIME; then
 fi
 
 if $RUN_ALL; then
-    run_all_tests
-    exit $?
+    rc=0
+    run_all_tests || rc=$?
+    drop_own_image
+    exit "$rc"
 fi
 
 if [ -n "$CONFIG_FILE" ] && [ ! -f "$CONFIG_FILE" ]; then
@@ -679,11 +700,29 @@ cleanup() {
     cd "$REPO_ROOT"
     SWARM_CONFIG="$TEMP_CONFIG" \
         "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
+    # This run's containers and volumes, and nothing else: those with
+    # its engagement's token, which its own runtime directory records.
+    local token id vol
+    token=$(swarm_engagement_token "$TEST_RUNTIME_DIR/state.json" \
+        2>/dev/null) || token=""
+    if [ -n "$token" ]; then
+        for id in $(docker ps -aq \
+                --filter "label=swarm-core.engagement-token=${token}" \
+                2>/dev/null); do
+            docker rm -f "$id" >/dev/null 2>&1 || true
+        done
+        for vol in $(docker volume ls -q \
+                --filter "label=swarm-core.engagement-token=${token}" \
+                2>/dev/null); do
+            docker volume rm "$vol" >/dev/null 2>&1 || true
+        done
+    fi
     rm -f "$TEMP_CONFIG" "$_AUTO_CONFIG"
     rm -rf "$REVIEW_DIR" "$INJECT_DIR"
     rm_docker_dir "$TEST_RUNTIME_DIR"
     rm -f "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$SETUP_FILE" \
         "$REPO_ROOT/$ALT_PROMPT_FILE"
+    drop_own_image
 }
 trap cleanup EXIT
 

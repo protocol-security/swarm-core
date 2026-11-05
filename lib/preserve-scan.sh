@@ -117,9 +117,6 @@ oneline() {
         | sed 's/\\n$//'
 }
 
-
-
-
 # Succeed when file $1 holds a NUL byte, or cannot be read.  Git stops
 # reading a path at a NUL, while the shell's read drops it and carries
 # on, so the two would disagree on what such a file names.
@@ -816,7 +813,6 @@ if [ "$MODE" = worktree ]; then
         done < "$od/info/alternates"
     done
 fi
-
 
 # Engine files and the deletions the context mode makes: in the
 # workspace's own checkout ($2 = "."), where the engine writes those

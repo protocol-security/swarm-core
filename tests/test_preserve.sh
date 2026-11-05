@@ -13,6 +13,8 @@ TMPDIR=$(mktemp -d)
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
+# shellcheck source=../lib/project.sh
+source "$REPO_ROOT/lib/project.sh"
 # shellcheck source=../lib/preserve.sh
 source "$REPO_ROOT/lib/preserve.sh"
 
@@ -120,6 +122,30 @@ assert_eq "ref to a missing object: status 2" "2" \
     "$(check | cut -d'|' -f1)"
 rm -f "$BARE/refs/heads/agent-parked/missing"
 assert_eq "clean again after removing them" "0|" "$(check)"
+
+echo ""
+echo "=== 5c. A read that fails part of the way is no end of the list ==="
+# An I/O error ends a read loop as the end of the list would; the refs
+# after it, uncontained ones among them, would never be looked at.  A
+# read override fails the first read of the list.
+z=$(agent_push refs/heads/agent-parked/9-z)
+rc=0
+(
+    # Shadows the builtin for the check below; it passes the caller's
+    # options on.
+    # shellcheck disable=SC2329,SC2162
+    read() {
+        if [ "${!#}" = ref ]; then return 1; fi
+        builtin read "$@"
+    }
+    swarm_preservation_check "$BARE" "$WORK"
+) >/dev/null 2>"$TMPDIR/read.err" || rc=$?
+assert_eq "a failed read before an uncontained ref: status 2" "2" "$rc"
+assert_eq "saying the refs could not be read in full" "1" \
+    "$(grep -c 'cannot read the refs of' "$TMPDIR/read.err" || true)"
+assert_eq "without the failure the ref is listed" "1|refs/heads/agent-parked/9-z ${z}" \
+    "$(check)"
+git -C "$BARE" update-ref -d refs/heads/agent-parked/9-z "$z"
 
 echo ""
 echo "=== 6. Not a bare repository ==="
@@ -1065,6 +1091,8 @@ if [ -r /proc/self/mountinfo ] && unshare -rm true 2>/dev/null; then
     rc=0
     unshare -rm "$BASH" -c '
         mount --bind "$1" "$2" || exit 9
+        # shellcheck source=../lib/project.sh
+        source "$3/lib/project.sh"
         # shellcheck source=../lib/preserve.sh
         source "$3/lib/preserve.sh"
         swarm_checkout_storage_ok "$4" "$5" "$2"' sh \

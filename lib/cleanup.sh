@@ -15,6 +15,7 @@
 # STATE_FILE, BARE_REPO, MIRROR_DIR and IMAGE_NAME.
 
 CLEANUP_DISCARD=false
+CLEANUP_ALLOW_UNHARVESTED=false
 CLEANUP_HELPER_LABEL="swarm-core.cleanup"
 
 # Print STRING as lowercase hex: any engagement id becomes a valid ref
@@ -60,76 +61,11 @@ cleanup_lines() {
     printf '%s' "$((count + 0))"
 }
 
-# Succeed when the runtime directory is safe to delete things in: a
-# directory of this user's, and not /, $HOME, the checkout, its git
-# dir or anything around them.
+# Succeed when the runtime directory is safe to delete things in (the
+# rules every lifecycle command applies to it; see
+# swarm_runtime_location_ok).
 cleanup_runtime_sane() {
-    local rt home root common gitdir x owner
-    if [ -L "$RUNTIME_DIR" ] || [ ! -d "$RUNTIME_DIR" ]; then
-        echo "ERROR: ${RUNTIME_DIR} is not a directory." >&2
-        return 1
-    fi
-    rt=$(cd -P "$RUNTIME_DIR" && pwd -P) || return 1
-    owner=$(swarm_owner_uid "$rt") || return 1
-    if [ "$owner" != "$(id -u)" ]; then
-        echo "ERROR: ${RUNTIME_DIR} does not belong to this user." >&2
-        return 1
-    fi
-    home=$(cd -P "${HOME:-/}" 2>/dev/null && pwd -P) || home=/
-    # The checkout, its common git dir and its own git dir (a linked
-    # worktree's lives apart from the common one).
-    if ! root=$(cd -P "$REPO_ROOT" 2>/dev/null && pwd -P) \
-            || ! common=$(swarm_recovery_git -C "$REPO_ROOT" rev-parse \
-                --git-common-dir 2>/dev/null) \
-            || ! gitdir=$(swarm_recovery_git -C "$REPO_ROOT" rev-parse \
-                --absolute-git-dir 2>/dev/null); then
-        echo "ERROR: cannot resolve the git dir of ${REPO_ROOT}." >&2
-        return 1
-    fi
-    case "$common" in
-        /*) ;;
-        *) common="$REPO_ROOT/$common" ;;
-    esac
-    if ! common=$(cd -P "$common" 2>/dev/null && pwd -P) \
-            || ! gitdir=$(cd -P "$gitdir" 2>/dev/null && pwd -P); then
-        echo "ERROR: cannot resolve the git dir of ${REPO_ROOT}." >&2
-        return 1
-    fi
-    if [ "$rt" = / ] || [ "$rt" = "$home" ]; then
-        echo "ERROR: refusing to clean up in ${RUNTIME_DIR}." >&2
-        return 1
-    fi
-    # The Docker helper mounts it with --mount, whose value is
-    # comma-separated, and cleanup's lists are tab-separated lines.
-    case "$RUNTIME_DIR" in
-        *[,\"]*|*$'\n'*|*$'\t'*)
-            echo "ERROR: ${RUNTIME_DIR} holds a comma, a quote, a tab or a" \
-                 "newline; cleanup cannot work with it." >&2
-            return 1 ;;
-    esac
-    for x in "$root" "$common" "$gitdir"; do
-        case "$x/" in
-            "$rt"/*)
-                echo "ERROR: ${RUNTIME_DIR} holds the checkout or its git" \
-                     "dir (${x})." >&2
-                return 1 ;;
-        esac
-        case "$rt/" in
-            "$x"/*)
-                echo "ERROR: ${RUNTIME_DIR} is inside the checkout or its" \
-                     "git dir (${x})." >&2
-                return 1 ;;
-        esac
-    done
-}
-
-# Print the numeric owner of PATH.
-swarm_owner_uid() {
-    if stat -c %u / >/dev/null 2>&1; then
-        stat -c %u "$1"
-    else
-        stat -f %u "$1"
-    fi
+    swarm_runtime_location_ok "$RUNTIME_DIR" "$REPO_ROOT"
 }
 
 # Wait for, then remove, the helper containers a killed cleanup of this
@@ -192,6 +128,43 @@ cleanup_no_pending() {
         echo "ERROR: interactive sessions are open or starting:" >&2
         printf '%s\n' "$live" | sed 's/^/  /' >&2
         echo "  End them first." >&2
+        return 1
+    fi
+}
+
+# Fail, naming them, while containers of this checkout run (or are
+# paused or restarting), or Docker cannot say they do not: their
+# workspaces still change, so the scans would judge them too early, and
+# retire refuses them anyway.  Stopping the agents is the step to take,
+# not dropping what a scan finds.
+cleanup_none_running() {
+    local list line name id st live="" IFS
+    list=$(swarm_own_containers "$PROJECT" "$REPO_ROOT") || {
+        echo "ERROR: cannot list Docker containers." >&2
+        return 1
+    }
+    # "<name> <id>" lines; no read loop over a here-string (see
+    # wait_count in launch.sh).  Names and ids hold no glob characters.
+    IFS=$'\n'
+    for line in $list; do
+        name="${line%% *}"
+        id="${line#* }"
+        if ! st=$(docker container inspect "$id" 2>/dev/null \
+                | jq -r '.[0].State.Status // empty' 2>/dev/null); then
+            # One gone since the listing is no longer in the way; one
+            # Docker cannot describe might still run.
+            swarm_container_gone "$id" && continue
+            st=""
+        fi
+        case "$st" in
+            exited|created|dead) ;;
+            *) live="${live}  ${name} (${st:-state unknown})"$'\n' ;;
+        esac
+    done
+    if [ -n "$live" ]; then
+        echo "ERROR: containers of this engagement still run, or Docker" \
+             "cannot tell; stop them first (./launch.sh stop):" >&2
+        printf '%s' "$live" >&2
         return 1
     fi
 }
@@ -274,6 +247,15 @@ cleanup_sources() {
             case "$name" in
                 *.removing) continue ;;
                 *$'\t'*|*$'\n'*) odd="${odd}  ${e}"$'\n'; continue ;;
+                *.new)
+                    # A mirror cut off while it was made.
+                    if [ -L "$e" ]; then
+                        echo "ERROR: ${e} is a link; cleanup will not" \
+                             "follow it." >&2
+                        return 1
+                    fi
+                    printf 'new\t%s\n' "$e" >> "$out" || return 1
+                    continue ;;
             esac
             if [ ! -L "$e" ] && [ -d "$e" ] && [ -f "$e/HEAD" ] \
                     && { [ -d "$e/objects" ] || [ -f "$e/commondir" ]; }; then
@@ -421,7 +403,7 @@ cleanup_scan() {
             SWARM_SCAN_DOCKER_ARGS=()
             sed 's/^/  /' "$out.err" >&2
             return 1 ;;
-        removing)
+        removing|new)
             if [ -f "$path/HEAD" ] \
                     && { [ -d "$path/objects" ] \
                          || [ -f "$path/commondir" ]; } \
@@ -601,100 +583,26 @@ cleanup_delete_host() {
     cleanup_record "$id" '.state = "deleted"'
 }
 
-# The cleanup command; cmd_cleanup runs it with retire's cleanup and
-# traps in place.
-cleanup_run() {
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            --discard-uncommitted) CLEANUP_DISCARD=true; shift ;;
-            -h|--help)
-                cat <<HELP
-Usage: $0 cleanup [--discard-uncommitted]
-
-Delete this checkout's engagement: retire its containers, then copy
-everything Git keeps in its workspace volumes, the bare repo and the
-mirrors into the checkout as recovery refs (refs/swarm-recovery/...),
-and delete them.  Work outside Git's history (uncommitted or ignored
-files, files too large to copy) stops it, unless
---discard-uncommitted drops exactly what it lists.  The engagement lock
-and the runtime directory stay.
-HELP
-                return 0 ;;
-            *) echo "ERROR: unknown cleanup option: $1" >&2; return 1 ;;
-        esac
-    done
-    if [ ! -f "$STATE_FILE" ]; then
-        echo "ERROR: no state file in ${RUNTIME_DIR}; cannot tell which" \
-             "engagement to clean up." >&2
-        return 1
-    fi
-    swarm_lock "$RUNTIME_DIR" || return 1
-    # Checked before the lock too, but another checkout of this project
-    # id could have claimed the runtime and started in between.
-    swarm_runtime_verify "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || return 1
-    swarm_engagement_join "$STATE_FILE" || return 1
-    cleanup_runtime_sane || return 1
-    local engagement e
-    engagement=$(swarm_engagement_recorded "$STATE_FILE") || return 1
-    if [ -z "$engagement" ]; then
-        # Nothing recorded: a cleaned-up runtime directory, unless engine
-        # state is left without an engagement to file it under.
-        for e in "$BARE_REPO" "${BARE_REPO}.new" "$MIRROR_DIR" \
-                "$RUNTIME_DIR"/*.removing; do
-            if [ -e "$e" ] || [ -L "$e" ]; then
-                echo "ERROR: ${STATE_FILE} records no engagement, but" \
-                     "${e} is there." >&2
-                echo "  See USAGE.md (Cleanup) for the manual steps." >&2
-                return 1
-            fi
-        done
-        echo "No engagement recorded in ${STATE_FILE}; nothing to clean up."
-        return 0
-    fi
-    retire_require_daemon || return 1
-    cleanup_settle_helpers || return 1
-    cleanup_no_pending || return 1
-    cleanup_check_evidence || return 1
-
-    # The bare repo's agent work must be in the checkout already
-    # (harvest); recovery refs are the safety net, not the workflow.
-    local rc=0
-    if [ -d "$BARE_REPO" ]; then
-        swarm_preservation_check "$BARE_REPO" "$REPO_ROOT" \
-            > "$RETIRE_SCRATCH/e3" || rc=$?
-        case "$rc" in
-            0) ;;
-            1)
-                swarm_preservation_explain "$BARE_REPO" \
-                    < "$RETIRE_SCRATCH/e3"
-                return 1 ;;
-            *) return 1 ;;
-        esac
-    fi
-
-    # Every container goes first, through retire's checks.
-    retire_run || {
-        echo "Cleanup stops: every container must be retired first." >&2
-        return 1
-    }
-    local left
-    left=$(swarm_own_containers "$PROJECT" "$REPO_ROOT") || return 1
-    if [ -n "$left" ]; then
-        echo "ERROR: containers of this checkout remain:" >&2
-        printf '%s\n' "$left" | sed 's/^/  /' >&2
-        return 1
-    fi
-
-    local sources="$RETIRE_SCRATCH/sources"
+# Examine every location cleanup would delete, into directory OUT: the
+# list (OUT/sources), the storage check, every scan (OUT/scan.<n>) with
+# the policy applied, and the list of what was scanned (OUT/scanned,
+# "<n>\t<kind>\t<path>\t<mode>").  With FREE set, a volume must also
+# have no container left that uses it.  Sets CLEANUP_TOTAL to the
+# number of locations.  Fails on any refusal, having changed nothing.
+cleanup_examine() {
+    local out="$1" free="${2:-}" sources targets=() kind path mp seen=0
+    local total n=0 dir mode
+    sources="$out/sources"
     cleanup_sources "$sources" || return 1
 
     # Storage: the checkout must keep what it gets by itself.
-    local targets=() kind path mp seen=0 total
     cleanup_no_mounts "$RUNTIME_DIR" || return 1
     while IFS="$(printf '\t')" read -r -u 3 kind path; do
         seen=$((seen + 1))
         if [ "$kind" = volume ]; then
-            cleanup_volume_free "$path" || return 1
+            if [ -n "$free" ]; then
+                cleanup_volume_free "$path" || return 1
+            fi
             mp=$(cleanup_volume_mountpoint "$path") || {
                 echo "ERROR: cannot inspect volume ${path}." >&2
                 return 1
@@ -717,11 +625,10 @@ HELP
         "${targets[@]+"${targets[@]}"}" || return 1
 
     # Scan every source and apply the policy before anything is copied.
-    local n=0 dir mode
-    : > "$RETIRE_SCRATCH/scanned" || return 1
+    : > "$out/scanned" || return 1
     while IFS="$(printf '\t')" read -r -u 3 kind path; do
         n=$((n + 1))
-        dir="$RETIRE_SCRATCH/scan.$n"
+        dir="$out/scan.$n"
         mkdir "$dir" || return 1
         mode=$(cleanup_scan "$kind" "$path" "$dir") || {
             echo "ERROR: cannot scan ${path}." >&2
@@ -729,12 +636,117 @@ HELP
         }
         cleanup_policy "$dir/report" "$path" || return 1
         printf '%s\t%s\t%s\t%s\n' "$n" "$kind" "$path" "$mode" \
-            >> "$RETIRE_SCRATCH/scanned" || return 1
+            >> "$out/scanned" || return 1
     done 3< "$sources" < /dev/null || return 1
     if [ "$n" -ne "$total" ]; then
         echo "ERROR: scanned ${n} of the ${total} locations to clean up." >&2
         return 1
     fi
+    CLEANUP_TOTAL="$total"
+}
+
+# The cleanup command; cmd_cleanup runs it with retire's cleanup and
+# traps in place.
+cleanup_run() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --discard-uncommitted) CLEANUP_DISCARD=true; shift ;;
+            --allow-unharvested) CLEANUP_ALLOW_UNHARVESTED=true; shift ;;
+            -h|--help)
+                cat <<HELP
+Usage: $0 cleanup [--discard-uncommitted] [--allow-unharvested]
+
+Delete this checkout's engagement: retire its containers, then copy
+everything Git keeps in its workspace volumes, the bare repo and the
+mirrors into the checkout as recovery refs (refs/swarm-recovery/...),
+and delete them.  Work outside Git's history (uncommitted or ignored
+files, files too large to copy) stops it, unless
+--discard-uncommitted drops exactly what it lists.  So does agent work
+in the bare repo that HEAD's history lacks, unless --allow-unharvested
+keeps it as recovery refs only (after a rewritten upstream, say).  The
+engagement lock and the runtime directory stay.
+HELP
+                return 0 ;;
+            *) echo "ERROR: unknown cleanup option: $1" >&2; return 1 ;;
+        esac
+    done
+    if [ ! -f "$STATE_FILE" ]; then
+        echo "ERROR: no state file in ${RUNTIME_DIR}; cannot tell which" \
+             "engagement to clean up." >&2
+        return 1
+    fi
+    swarm_lock "$RUNTIME_DIR" || return 1
+    # Checked before the lock too, but another checkout of this project
+    # id could have claimed the runtime and started in between.
+    swarm_runtime_verify "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || return 1
+    swarm_engagement_join "$STATE_FILE" || return 1
+    cleanup_runtime_sane || return 1
+    local engagement
+    engagement=$(swarm_engagement_recorded "$STATE_FILE") || return 1
+    if [ -z "$engagement" ]; then
+        # Nothing recorded: a cleaned-up runtime directory, unless
+        # something of an engagement is left without one to file it
+        # under (an earlier release's).
+        swarm_unrecorded_refuse "$RUNTIME_DIR" "$PROJECT" "$REPO_ROOT" \
+            "$CHECKOUT_PATH" || return 1
+        echo "No engagement recorded in ${STATE_FILE}; nothing to clean up."
+        return 0
+    fi
+    swarm_legacy_refuse "$RUNTIME_DIR" "$STATE_FILE" || return 1
+    swarm_engagement_daemon_check "$STATE_FILE" || return 1
+    cleanup_settle_helpers || return 1
+    cleanup_no_pending || return 1
+    cleanup_check_evidence || return 1
+
+    # The bare repo's agent work must be in the checkout already
+    # (harvest); recovery refs are the safety net, not the workflow.
+    local rc=0
+    if [ -d "$BARE_REPO" ]; then
+        swarm_preservation_check "$BARE_REPO" "$REPO_ROOT" \
+            > "$RETIRE_SCRATCH/e3" || rc=$?
+        case "$rc" in
+            0) ;;
+            1)
+                if [ "$CLEANUP_ALLOW_UNHARVESTED" = true ]; then
+                    echo "Kept only as recovery refs (HEAD's history" \
+                         "lacks them):"
+                    sed 's/^/  /' "$RETIRE_SCRATCH/e3"
+                else
+                    swarm_preservation_explain "$BARE_REPO" \
+                        < "$RETIRE_SCRATCH/e3"
+                    echo "  Or, to keep that work only as recovery refs" \
+                         "(after a rewritten upstream, say), run cleanup" \
+                         "with --allow-unharvested." >&2
+                    return 1
+                fi ;;
+            *) return 1 ;;
+        esac
+    fi
+
+    # A first pass that only reads, while the stopped containers are
+    # still there: a refusal here (work outside Git's history, storage)
+    # leaves every container, its logs and its volume as they were.
+    cleanup_none_running || return 1
+    mkdir "$RETIRE_SCRATCH/first" || return 1
+    cleanup_examine "$RETIRE_SCRATCH/first" || return 1
+
+    # Every container goes next, through retire's checks.
+    retire_run || {
+        echo "Cleanup stops: every container must be retired first." >&2
+        return 1
+    }
+    local left
+    left=$(swarm_own_containers "$PROJECT" "$REPO_ROOT") || return 1
+    if [ -n "$left" ]; then
+        echo "ERROR: containers of this checkout remain:" >&2
+        printf '%s\n' "$left" | sed 's/^/  /' >&2
+        return 1
+    fi
+
+    # Then everything again, the volumes now free: nothing checked
+    # before retire is trusted after it.
+    cleanup_examine "$RETIRE_SCRATCH" free || return 1
+    local total="$CLEANUP_TOTAL" n kind path mode dir
 
     # Preserve every source under a new snapshot, then verify the
     # checkout's whole object store once.
@@ -847,7 +859,9 @@ HELP
                     rc=0
                     swarm_preservation_check "$BARE_REPO" "$REPO_ROOT" \
                         > "$RETIRE_SCRATCH/e3" || rc=$?
-                    if [ "$rc" -ne 0 ]; then
+                    if [ "$rc" -ne 0 ] && { [ "$rc" -ne 1 ] \
+                            || [ "$CLEANUP_ALLOW_UNHARVESTED" != true ]; }
+                    then
                         echo "ERROR: ${BARE_REPO} changed during cleanup." >&2
                         return 1
                     fi

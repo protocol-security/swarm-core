@@ -781,22 +781,30 @@ assert_eq "lowercase p asks for confirmation" "true" \
 assert_eq "lowercase p can launch post-process" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF '"$SWARM_DIR/launch.sh" post-process' || true)"
-assert_eq "lowercase p preserves dashboard config" "1" \
+# Both launch.sh runs get the dashboard's swarmfile and the token of the
+# engagement shown, so a cleanup and a new start between them make the
+# second refuse.
+assert_eq "lowercase p passes the dashboard config to both runs" "2" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'SWARM_CONFIG="$CONFIG_FILE"' || true)"
+assert_eq "lowercase p passes the engagement token to both runs" "2" \
+    "$(printf '%s\n' "$pp_lower_case" \
+        | grep -cF 'SWARM_ENGAGEMENT_TOKEN="$_token"' || true)"
+assert_eq "lowercase p stops the numbered agents through launch.sh" "1" \
+    "$(printf '%s\n' "$pp_lower_case" \
+        | grep -cF '"$SWARM_DIR/launch.sh" stop --numbered' || true)"
 assert_eq "lowercase p has cancellation path" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
-        | grep -cF 'post-processing not started' || true)"
+        | grep -cF '"(post-processing not started)"' || true)"
 assert_eq "lowercase p refuses to replace running post-process" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'post-processing is already running' || true)"
 assert_eq "lowercase p blocks only running post-process" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'if post_process_container_running; then' || true)"
-assert_eq "lowercase p allows exited post-process replacement" "1" \
+assert_eq "lowercase p sends an exited post-process to retire" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
-        | grep -cF 'previous post-process container will be replaced' \
-        || true)"
+        | grep -cF './launch.sh retire --post-process' || true)"
 assert_eq "lowercase p has no replacement prompt" "0" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'Replace existing' || true)"
@@ -817,12 +825,17 @@ assert_eq "footer guards start hint on running container" "1" \
 assert_eq "footer keeps logs hint for exited container" "1" \
     "$(printf '%s\n' "$help_bar" \
         | grep -cF 'if post_process_container_exists; then' || true)"
-assert_eq "s stops post-process container" "1" \
+# launch.sh stop covers the agents, post-process and the interactive
+# containers of the engagement shown (its token), with its own checks.
+assert_eq "s stops through launch.sh stop" "1" \
     "$(printf '%s\n' "$s_case" \
-        | grep -cF 'stop_own_container "${IMAGE_NAME}-post"' || true)"
-assert_eq "s stops interactive containers" "1" \
-    "$(printf '%s\n' "$s_case" \
-        | grep -cF 'interactive_container_names' || true)"
+        | grep -cF '"$SWARM_DIR/launch.sh" stop' || true)"
+assert_eq "s passes the dashboard config" "1" \
+    "$(printf '%s\n' "$s_case" | grep -cF 'SWARM_CONFIG="$CONFIG_FILE"' \
+        || true)"
+assert_eq "and the engagement token" "1" \
+    "$(printf '%s\n' "$s_case" | grep -cF 'SWARM_ENGAGEMENT_TOKEN="$_token"' \
+        || true)"
 
 # ============================================================
 echo ""
@@ -916,6 +929,8 @@ done
 
 RUNTIME_DIR="$_ls_tmp/rt"
 STATE_FILE="$RUNTIME_DIR/state.json"
+# As dashboard.sh sets it before its first load_state.
+DASH_TOKEN=""
 mkdir -m 700 "$RUNTIME_DIR"
 jq -n --arg t "x \$(touch $_ls_tmp/pwned)" \
     '{schema: "swarm-core.state/v1", title: $t,
@@ -933,6 +948,17 @@ assert_eq "config" "/c/swarm.json" "$SWARM_CONFIG"
 assert_eq "agent count" "3" "$SWARM_NUM_AGENTS"
 assert_eq "model summary" "3x m" "$SWARM_MODEL_SUMMARY"
 assert_eq "config label" "swarm.json" "$SWARM_CONFIG_LABEL"
+assert_eq "no engagement recorded: no token shown" "" "$DASH_TOKEN"
+# The engagement shown is the state's token; once the state has none
+# (cleaned up), none is shown, whatever was shown before.
+jq '.engagement_token = "t1"' "$STATE_FILE" > "$_ls_tmp/st" \
+    && mv "$_ls_tmp/st" "$STATE_FILE"
+load_state || true
+assert_eq "the engagement's token is shown" "t1" "$DASH_TOKEN"
+jq 'del(.engagement_token)' "$STATE_FILE" > "$_ls_tmp/st" \
+    && mv "$_ls_tmp/st" "$STATE_FILE"
+load_state || true
+assert_eq "a cleaned-up engagement shows no token" "" "$DASH_TOKEN"
 
 printf 'SWARM_TITLE="from env file"\n' > "$STATE_FILE"
 SWARM_TITLE="kept"
@@ -1067,7 +1093,133 @@ rm -rf "$_id_tmp"
 
 # ============================================================
 echo ""
-echo "=== 17. A dashboard that stops short does not end with 0 ==="
+echo "=== 17. s and p act through launch.sh on the engagement shown ==="
+
+# The s and p arms of the key loop, run with a launch.sh that logs its
+# arguments, the swarmfile and the token it got.  Its stop can fail, or
+# replace the engagement (another token in the state file) as a cleanup
+# and a new start in another terminal would.  The swarmfile is a custom
+# one, as a standalone dashboard knows it from the state file, and the
+# engagement shown is DASH_TOKEN (load_state sets it at each refresh).
+_kd=$(mktemp -d)
+mkdir -p "$_kd/swarm"
+cat > "$_kd/swarm/launch.sh" <<'EOF'
+#!/bin/bash
+printf '%s|%s|%s\n' "$*" "${SWARM_CONFIG:-}" \
+    "${SWARM_ENGAGEMENT_TOKEN-unset}" >> "$KEYS_DIR/log"
+if [ "$1" = stop ]; then
+    [ ! -e "$KEYS_DIR/stop-fails" ] || exit 1
+    if [ -e "$KEYS_DIR/replace" ]; then
+        jq -c '.engagement_token = "t2"' "$KEYS_DIR/state.json" \
+            > "$KEYS_DIR/state.x" && mv "$KEYS_DIR/state.x" \
+            "$KEYS_DIR/state.json"
+    fi
+fi
+exit 0
+EOF
+chmod +x "$_kd/swarm/launch.sh"
+# Run the body of a case arm (ARM, as extracted above) once, with the
+# answers on standard input; its output goes to $_kd/out.
+run_key() {
+    local body
+    body=$(printf '%s\n' "$1" | sed '1d;$d')
+    (
+        SWARM_DIR="$_kd/swarm"
+        STATE_FILE="$_kd/state.json"
+        CONFIG_FILE="$_kd/custom.json"
+        IMAGE_NAME=proj-agent
+        DASH_TOKEN="$KEY_TOKEN"
+        KEYS_DIR="$_kd"
+        export KEYS_DIR
+        # The dashboard's own helpers, as the key loop finds them.
+        # shellcheck disable=SC2329
+        leave_alt_screen() { :; }
+        # shellcheck disable=SC2329
+        enter_alt_screen() { :; }
+        # shellcheck disable=SC2329
+        identity_ok() { return 0; }
+        # shellcheck disable=SC2329
+        post_process_configured() { return 0; }
+        # shellcheck disable=SC2329
+        post_process_container_running() { [ -e "$_kd/pp-running" ]; }
+        # shellcheck disable=SC2329
+        post_process_container_exists() { [ -e "$_kd/pp-exists" ]; }
+        # The arms end with continue: a loop of one turn.
+        eval "for _turn in 1; do
+$body
+done"
+    ) < <(printf '%s\n' "${2:-}" "" "" "") > "$_kd/out" 2>&1
+}
+key_reset() {
+    rm -f "$_kd/log" "$_kd/stop-fails" "$_kd/replace" "$_kd/pp-running" \
+        "$_kd/pp-exists"
+    : > "$_kd/log"
+    KEY_TOKEN=t1
+    jq -n '{schema: "swarm-core.state/v1", engagement_id: "e1",
+        engagement_token: "t1", docker_daemon: "d1"}' > "$_kd/state.json"
+}
+key_reset
+run_key "$s_case"
+assert_eq "s runs launch.sh stop with the swarmfile and the token" \
+    "stop|$_kd/custom.json|t1" "$(cat "$_kd/log")"
+key_reset
+run_key "$pp_lower_case" y
+assert_eq "p stops the numbered agents, then starts post-process" \
+    "stop --numbered|$_kd/custom.json|t1
+post-process|$_kd/custom.json|t1" "$(cat "$_kd/log")"
+key_reset
+: > "$_kd/replace"
+run_key "$pp_lower_case" y
+assert_eq "an engagement replaced during p's stop: post-process gets the old token" \
+    "post-process|$_kd/custom.json|t1" "$(sed -n 2p "$_kd/log")"
+key_reset
+: > "$_kd/stop-fails"
+run_key "$pp_lower_case" y
+assert_eq "a stop that fails: no post-process" "1" \
+    "$(grep -c . "$_kd/log")"
+assert_eq "saying so" "1" \
+    "$(grep -c 'agents not stopped; post-processing not started' \
+        "$_kd/out" || true)"
+key_reset
+: > "$_kd/pp-exists"
+run_key "$pp_lower_case" y
+assert_eq "an earlier post-process container: p runs nothing" "0" \
+    "$(grep -c . "$_kd/log" || true)"
+assert_eq "and names the retire step" "1" \
+    "$(grep -c 'retire it first: ./launch.sh retire --post-process' \
+        "$_kd/out" || true)"
+key_reset
+run_key "$pp_lower_case" n
+assert_eq "p not confirmed: nothing runs" "0" \
+    "$(grep -c . "$_kd/log" || true)"
+# No engagement shown (cleaned up, or none started): nothing runs,
+# rather than a launch.sh bound to no engagement, which would act on
+# whatever is there by then.
+key_reset
+KEY_TOKEN=""
+run_key "$s_case"
+assert_eq "no engagement shown: s runs nothing" "0" \
+    "$(grep -c . "$_kd/log" || true)"
+assert_eq "saying so" "1" \
+    "$(grep -c 'no engagement shown; nothing stopped' "$_kd/out" || true)"
+key_reset
+KEY_TOKEN=""
+run_key "$pp_lower_case" y
+assert_eq "no engagement shown: p runs nothing" "0" \
+    "$(grep -c . "$_kd/log" || true)"
+# The token is the one shown, not one read at the key press: an
+# engagement started since the last refresh is not acted on.
+key_reset
+jq '.engagement_token = "t9"' "$_kd/state.json" > "$_kd/state.x" \
+    && mv "$_kd/state.x" "$_kd/state.json"
+run_key "$s_case"
+assert_eq "s passes the token shown, not the state's newer one" \
+    "stop|$_kd/custom.json|t1" "$(cat "$_kd/log")"
+rm -rf "$_kd"
+
+# ============================================================
+echo ""
+echo "=== 17b. A dashboard that stops short does not end with 0 ==="
 
 # Bash 3.2 (macOS's /bin/bash, which the dashboard's shebang runs) gives
 # an EXIT trap status 0 when set -u stops the script.  The dashboard's

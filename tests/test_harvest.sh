@@ -32,11 +32,20 @@ printf '#!/bin/bash\necho "$*" >> "%s"\nexit 1\n' "$_down_log" \
 chmod +x "$_down_bin/docker"
 PATH="$_down_bin:$PATH"
 
-# Point harvest.sh at a private runtime directory below TMPDIR.
+# Point harvest.sh at a private runtime directory below TMPDIR, with an
+# engagement recorded as this engine records it before it makes the
+# bare repo (record_engagement writes it again).
 use_runtime() {
     SWARM_RUNTIME_DIR="$TMPDIR/runtime-$1"
     export SWARM_RUNTIME_DIR
     mkdir -m 700 "$SWARM_RUNTIME_DIR"
+    record_engagement
+}
+record_engagement() {
+    jq -n '{schema: "swarm-core.state/v1", engagement_id: "eng-1",
+           engagement_token: "t1", docker_daemon: "d1"}' \
+        > "$SWARM_RUNTIME_DIR/state.json"
+    chmod 600 "$SWARM_RUNTIME_DIR/state.json"
 }
 
 assert_eq() {
@@ -654,12 +663,11 @@ assert_eq "guard prints the diagnostic line" "true" \
 assert_eq "guard names short HEAD in diagnostic" "true" \
     "$(grep -qE "HEAD:[[:space:]]+${HEAD_BEFORE:0:7}" <<< "$guard_output" \
         && echo true || echo false)"
-guard_hint=$(printf '%s\n' "$guard_output" | grep '^  docker run ' || true)
-guard_hint="${guard_hint#  docker run }"
-eval "set -- $guard_hint"
-assert_eq "guard names the bare path in remediation" \
-    "$(dirname "$GUARD_BARE"):/runtime /runtime/upstream.git" \
-    "${3:-} ${7:-}"
+assert_eq "guard sends the user to cleanup --allow-unharvested" "true" \
+    "$(grep -q 'launch.sh cleanup --allow-unharvested' <<< "$guard_output" \
+        && echo true || echo false)"
+assert_eq "guard prints no removal command" "0" \
+    "$(grep -cE 'docker run|rm -rf' <<< "$guard_output" || true)"
 assert_eq "no merge commit produced" "$HEAD_BEFORE" "$HEAD_AFTER"
 assert_eq "_agent-harvest remote cleaned up after failure" "" \
     "$(git remote | grep -E '^_agent-harvest$' || true)"
@@ -798,7 +806,7 @@ assert_eq "another checkout's runtime stops harvest" "1" "$owner_rc"
 assert_eq "message names SWARM_PROJECT" "true" \
     "$(grep -q SWARM_PROJECT <<< "$owner_output" \
         && echo true || echo false)"
-rm -f "$SWARM_RUNTIME_DIR/state.json"
+record_engagement
 
 # ============================================================
 echo ""
@@ -1012,7 +1020,8 @@ done
 echo ""
 echo "=== 19. Behavioural: harvest.sh checks the engagement ==="
 
-jq -n '{schema: "swarm-core.state/v1", engagement_id: "eng-1"}' \
+jq -n '{schema: "swarm-core.state/v1", engagement_id: "eng-1",
+       engagement_token: "t1", docker_daemon: "d1"}' \
     > "$SWARM_RUNTIME_DIR/state.json"
 cd "$DOWN_WORK"
 eng_rc=0
@@ -1023,7 +1032,7 @@ eng_rc=0
 SWARM_ENGAGEMENT_ID=eng-1 bash "$HARVEST_SH" --dry >/dev/null 2>&1 \
     || eng_rc=$?
 assert_eq "harvest joins the recorded engagement" "0" "$eng_rc"
-rm -f "$SWARM_RUNTIME_DIR/state.json"
+record_engagement
 
 # ============================================================
 echo ""
@@ -1041,6 +1050,67 @@ SWARM_LOCK_FD=8 "$BASH" "$HARVEST_SH" --dry >/dev/null 2>&1 || lock_rc=$?
 assert_eq "harvest runs under the caller's lock (SWARM_LOCK_FD)" "0" \
     "$lock_rc"
 exec 8>&-
+
+# ============================================================
+echo ""
+echo "=== 21. Behavioural: harvest.sh and the engagement it was started for ==="
+
+# An engagement an earlier release started (no Docker daemon recorded)
+# is refused before the checkout is touched, with the way to finish it;
+# the Docker daemon is down here, and the check needs only the state
+# file.
+cd "$DOWN_WORK"
+jq -n '{schema: "swarm-core.state/v1", engagement_id: "eng-1"}' \
+    > "$SWARM_RUNTIME_DIR/state.json"
+refs_before=$(git for-each-ref)
+old_rc=0
+old_out=$(bash "$HARVEST_SH" 2>&1) || old_rc=$?
+assert_eq "an earlier release's engagement: harvest refused" "1" "$old_rc"
+assert_eq "saying how to finish it" "true" \
+    "$(grep -qF 'Finish it with the release that made it' <<< "$old_out" \
+        && echo true || echo false)"
+assert_eq "the checkout's refs are as they were" "$refs_before" \
+    "$(git for-each-ref)"
+assert_eq "no harvest remote is left" "" \
+    "$(git remote | grep -E '^_agent-harvest$' || true)"
+# A token names the engagement harvest.sh was started for.
+jq -n '{schema: "swarm-core.state/v1", engagement_id: "eng-1",
+       engagement_token: "t1", docker_daemon: "d1"}' \
+    > "$SWARM_RUNTIME_DIR/state.json"
+tok_rc=0
+tok_out=$(SWARM_ENGAGEMENT_TOKEN=t2 bash "$HARVEST_SH" --dry 2>&1) \
+    || tok_rc=$?
+assert_eq "another engagement's token: harvest refused" "1" "$tok_rc"
+assert_eq "saying the engagement is gone" "true" \
+    "$(grep -qF 'the engagement this command was started for is gone' \
+        <<< "$tok_out" && echo true || echo false)"
+tok_rc=0
+SWARM_ENGAGEMENT_TOKEN=t1 bash "$HARVEST_SH" --dry >/dev/null 2>&1 \
+    || tok_rc=$?
+assert_eq "its own token: harvest runs" "0" "$tok_rc"
+# This engine records the engagement before it makes the bare repo, so
+# a bare repo with none recorded is an earlier release's too: with no
+# state file, and with one that holds only the checkout's claim.
+for _st in none claim; do
+    case "$_st" in
+        none) rm -f "$SWARM_RUNTIME_DIR/state.json" ;;
+        claim)
+            jq -n --arg r "$(cd -P "$DOWN_WORK" && pwd -P)" \
+                '{schema: "swarm-core.state/v1", repo_root: $r}' \
+                > "$SWARM_RUNTIME_DIR/state.json" ;;
+    esac
+    refs_before=$(git for-each-ref)
+    un_rc=0
+    un_out=$(bash "$HARVEST_SH" 2>&1) || un_rc=$?
+    assert_eq "a bare repo, no engagement ($_st): harvest refused" "1" \
+        "$un_rc"
+    assert_eq "as an earlier release's ($_st)" "true" \
+        "$(grep -qF 'Finish it with the release that made it' \
+            <<< "$un_out" && echo true || echo false)"
+    assert_eq "the checkout's refs are as they were ($_st)" \
+        "$refs_before" "$(git for-each-ref)"
+done
+record_engagement
 
 # ============================================================
 echo ""

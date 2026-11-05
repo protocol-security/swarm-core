@@ -51,6 +51,13 @@ cleanup() {
             >/dev/null 2>&1 || true
     fi
     docker image rm "$IMAGE" >/dev/null 2>&1 || true
+    # The workspace volumes launch.sh made for this run's containers (the
+    # project id is this run's own).
+    local vol
+    for vol in $(docker volume ls -q \
+            --filter "label=swarm-core.project=${PROJECT}" 2>/dev/null); do
+        docker volume rm "$vol" >/dev/null 2>&1 || true
+    done
     rm -rf "$WORK" "$RT"
 }
 trap cleanup EXIT

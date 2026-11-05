@@ -78,7 +78,7 @@ swarm_tip_contained() {
 # missing (printed as "<ref> <sha>" lines), and 2 when the check could
 # not be made (said on stderr).  Callers branch on the status.
 swarm_preservation_check() {
-    local bare="$1" root="$2" tmp err sha type ref status rc=0
+    local bare="$1" root="$2" tmp err sha type ref status rc=0 seen=0 lines
     if [ -L "$bare" ] || [ ! -d "$bare" ] \
             || [ "$(swarm_preserve_git -C "$bare" rev-parse \
                 --is-bare-repository 2>/dev/null)" != true ]; then
@@ -101,6 +101,7 @@ swarm_preservation_check() {
     fi
     rm -f "$err"
     while read -r sha type ref; do
+        seen=$((seen + 1))
         if [ "$type" != commit ]; then
             echo "ERROR: ${ref} in ${bare} does not point to a commit." >&2
             rc=2
@@ -119,6 +120,15 @@ swarm_preservation_check() {
                 break ;;
         esac
     done < "$tmp"
+    # A read that fails ends the loop like the end of the list: every
+    # ref must have been looked at (unless the loop broke off above).
+    if [ "$rc" -ne 2 ]; then
+        if ! lines=$(wc -l < "$tmp") || [ "$seen" -ne "$((lines + 0))" ]
+        then
+            echo "ERROR: cannot read the refs of ${bare} in full." >&2
+            rc=2
+        fi
+    fi
     rm -f "$tmp"
     return "$rc"
 }
@@ -192,30 +202,6 @@ swarm_dev_ino() {
         fi
     fi
     stat "$SWARM_STAT_FORM" '%d:%i' "$1"
-}
-
-# Print absolute PATH with the longest leading part of it that can be
-# entered resolved (cd -P), and the rest as it is: PATH need not exist
-# on this host, but a link on the way to it is still followed.  Fails
-# on a relative path.
-swarm_path_resolve() {
-    local p="$1" head rest="" resolved
-    case "$p" in
-        /*) ;;
-        *) return 1 ;;
-    esac
-    while [ "$p" != / ] && [ "${p%/}" != "$p" ]; do
-        p="${p%/}"
-    done
-    head="$p"
-    while ! resolved=$(cd -P "$head" 2>/dev/null && pwd -P); do
-        rest="/${head##*/}${rest}"
-        head="${head%/*}"
-        [ -n "$head" ] || head=/
-    done
-    [ "$resolved" != / ] || resolved=""
-    [ -n "${resolved}${rest}" ] || rest=/
-    printf '%s%s\n' "$resolved" "$rest"
 }
 
 # Succeed when the checkout at ROOT keeps every object in its own

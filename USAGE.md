@@ -8,6 +8,9 @@ SWARM_CONFIG=swarm.json ./launch.sh start --dashboard
 
 # Later, after agents are running or have exited:
 SWARM_CONFIG=swarm.json ./launch.sh wait
+
+# Then delete the engagement before the next start:
+./launch.sh cleanup
 ```
 
 All configuration lives in the swarmfile (JSON).  Place a
@@ -53,8 +56,11 @@ names, and existing bind mounts still refer to their original paths.
 ## Commands
 
 ```bash
-./launch.sh start [--dashboard]   # Launch numbered agents.
-./launch.sh stop                  # Stop all agents.
+./launch.sh start [--dashboard]   # Start an engagement: launch
+                                  # numbered agents.
+./launch.sh stop [--numbered]     # Stop this engagement's
+                                  # containers (or only the
+                                  # numbered agents).
 ./launch.sh status                # Show containers.
 ./launch.sh logs N                # Tail agent N logs.
 ./launch.sh wait                  # Wait for already-started
@@ -66,6 +72,10 @@ names, and existing bind mounts still refer to their original paths.
 ./launch.sh interactive hunter    # Start a human-guided driver
                                   # session from agents[].name.
 ./launch.sh shell --agent hunter  # Start a shell in that profile.
+./launch.sh retire                # Remove stopped containers.
+./launch.sh cleanup               # Keep what Git had as recovery
+                                  # refs, then delete the
+                                  # engagement.
 ```
 
 ## Environment variables
@@ -89,12 +99,14 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_RUNTIME_DIR` | | See [Runtime directory](#runtime-directory). |
 | `SWARM_PROJECT` | | See [Project identity](#project-identity). |
 | `SWARM_ENGAGEMENT_ID` | | See [Engagements](#engagements). |
+| `SWARM_ENGAGEMENT_TOKEN` | | See [Engagements](#engagements). |
 | `SWARM_LOCK_FD` | | See [Engagement lock](#engagement-lock). |
 | `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
 | `SWARM_ACTIVITY_TIMEOUT` | `0` | Seconds of logfile silence before the in-container watchdog SIGTERMs the agent CLI's process group.  `0` disables.  See [Activity watchdog](#activity-watchdog). |
 | `SWARM_ACTIVITY_POLL` | `10` | Watchdog mtime-poll interval, in seconds.  Rarely needs tuning. |
 | `SWARM_WATCHDOG_GRACE` | `10` | Grace window between watchdog SIGTERM and SIGKILL.  Rarely needs tuning. |
 | `SWARM_STOP_TIMEOUT` | `60` | Seconds `./launch.sh stop` passes to `docker stop -t`, so the harness's SIGTERM trap has time to ship any in-flight local commits via `_session_end_push` before SIGKILL hits.  See [Stopping the swarm](#stopping-the-swarm). |
+| `SWARM_WAIT_POLL` | `10` | Seconds between the checks of `./launch.sh wait`. |
 
 Per-group credentials (`api_key`, `auth_token`, `base_url`)
 are set in the swarmfile.  Use `$VAR` references to pull
@@ -225,9 +237,10 @@ gap.  Both rarely need adjustment outside the test suite.
 
 ### Stopping the swarm
 
-`./launch.sh stop` sends each numbered agent and post-process
-container `docker stop -t 60`.  The 60 s grace gives the
-harness's SIGTERM trap time to ship
+`./launch.sh stop` sends every running container of the engagement
+(numbered agents, post-process, interactive sessions)
+`docker stop -t 60`; `--numbered` stops only the numbered agents.
+The 60 s grace gives the harness's SIGTERM trap time to ship
 any in-flight local commits (in-place rebase → scratch
 worktree → `agent-parked/*` salvage) before docker forces
 SIGKILL.  Without this window, commits the agent made during
@@ -255,6 +268,18 @@ The harness handles SIGTERM and SIGINT identically; an
 `emergency shutdown complete` indicates the trap fired and
 the emergency push attempt completed.
 
+`stop` takes no lock, so it can stop a post-process that holds one.
+It acts on the engagement the state file records when it starts,
+through its token: it lists the running containers that carry it,
+reads each one's labels again right before it stops it, and stops it
+by ID, so a container of a later engagement is never stopped. It lists
+them again after each pass, so agents a start is still launching are
+stopped too, and fails when they keep appearing, when one of them
+still runs afterwards, or when Docker cannot tell. It refuses an engagement of an earlier release (see
+[Engagements of earlier releases](#engagements-of-earlier-releases)),
+and stops nothing while Docker talks to another daemon than the
+engagement's.
+
 ### Extra Docker arguments
 
 Pass arbitrary flags to every `docker run` invocation via the
@@ -272,6 +297,11 @@ top-level `docker_args` array.  Each element is one shell token:
 This is useful for mounting the host Docker socket, adding
 devices or capabilities, setting network modes, or passing any
 other flags that the harness does not manage natively.
+
+What the engine sets comes after `docker_args`, and Docker takes the
+last value of a flag given twice, so an entry there cannot replace it:
+the workspace volume at `/workspace`, the engagement labels,
+`--restart no`, `--rm=false` and the container's name.
 
 Docker's `-e` flag accepts two forms: `-e VAR=value` passes a
 literal value, and `-e VAR` (no `=value`) inherits `VAR` from the
@@ -374,8 +404,8 @@ do not count toward numbered-agent completion.
 | `1`-`9` | Logs for agent N. |
 | `P` | Post-process logs (the `P` row), if it exists. |
 | `h` | Harvest results. |
-| `s` | Stop numbered agents and post-process. |
-| `p` | Start post-process after confirmation; replaces an exited run. |
+| `s` | Stop the containers of the engagement shown (`./launch.sh stop`). |
+| `p` | After confirmation, stop the numbered agents and start post-process; refuses while an earlier post-process container is there. |
 
 The Model column appends the agent's reasoning effort as a
 parenthesised letter: `(h)` high, `(m)` medium or minimal, `(l)` low,
@@ -516,6 +546,13 @@ Trigger via `[p]` in the dashboard, `./launch.sh post-process`,
 or automatically via `./launch.sh wait` after numbered agents have
 already been started. `./launch.sh wait` does not launch numbered
 agents.
+
+`post-process` refuses while numbered agents of the engagement run:
+stop them (`./launch.sh stop --numbered`) or wait for them first. A
+post-process container is never replaced: while
+`<project>-agent-post` is there, `post-process` refuses. Stop it first
+if it runs, then remove it with `./launch.sh retire --post-process`;
+its workspace volume stays for cleanup.
 
 The post-process agent clones the same bare repo, sees all
 commits on `agent-work`, runs its prompt, and pushes.
@@ -1007,6 +1044,7 @@ Each project keeps its host-side state in one directory:
 |------|---------|
 | `upstream.git` | Bare repo that containers mount at `/upstream`. |
 | `mirrors/<name>.git` | Submodule mirrors (`/mirrors`, read-only). |
+| `upstream.git.new`, `mirrors/<name>.git.new` | A bare repo or mirror being cloned, renamed once ready. |
 | `state.json` | State file for a standalone dashboard. |
 | `engagement.lock` | Lock that lifecycle commands hold. |
 
@@ -1021,6 +1059,14 @@ elsewhere, and set it the same way for every command of a run
 (`launch.sh`, `harvest.sh`, `dashboard.sh`, `progress.sh`,
 `costs.sh`): each one resolves the directory on its own.
 `launch.sh start` prints the directory it used.
+
+Cleanup has to be able to work there, so `launch.sh` refuses, before
+it creates anything, a runtime directory that is `/` or your home
+directory, that holds or lies inside the checkout or its git dir, that
+is not a directory of yours, or whose path has a comma, a quote, a tab
+or a newline. Only an earlier release can have made one in such a
+place (see
+[Engagements of earlier releases](#engagements-of-earlier-releases)).
 
 `launch.sh` creates the directory with mode 700 and refuses one that
 is a symlink, belongs to another user, has any group or other
@@ -1063,6 +1109,23 @@ because an older release created it (see
 stopping a container checks its labels again and acts on its ID.
 `harvest.sh` only looks into containers when the Docker daemon answers.
 
+### Workspace volumes
+
+Each container's `/workspace` is a Docker volume of its own,
+`<container name>-ws-<8 hex digits>`, created right before the
+container. The volume carries the `swarm-core.project`,
+`swarm-core.checkout`, `swarm-core.engagement` and
+`swarm-core.engagement-token` labels, plus `swarm-core.container` (its
+container's name), `swarm-core.kind` (`agent` for numbered agents and
+post-process, `interactive` for a human session), `swarm-core.context`
+(`full`, `slim` or `none`) and a random `swarm-core.nonce` that
+`launch.sh` reads back after creating the volume. A launch fails before
+`docker run` when the volume cannot be created or does not carry those
+labels. Containers carry the engagement labels too. Removing a stopped
+container (`./launch.sh retire`) leaves its volume, and the files in
+it; `./launch.sh cleanup` copies what Git keeps there into the checkout,
+then deletes the volumes.
+
 ### Engagements
 
 An engagement is one life of the bare repo. It begins when `start`
@@ -1081,6 +1144,57 @@ and `refs/swarm/base` point at it, the state file records it as
 `base_commit`, and the checkout's own `swarm/*` and `agent-parked/*`
 branches are not copied, so branches from an earlier engagement never
 look like new agent work.
+
+The state file also records the Docker daemon (`docker info` ID) the
+engagement runs on, and a token of 16 random hex digits that
+`launch.sh` makes for each new engagement (an engagement id can come
+from the caller and repeat, the token cannot); containers and volumes
+carry it in `swarm-core.engagement-token`. `post-process` and
+`interactive` joining an engagement, `stop`, `wait`, `retire` and
+`cleanup` refuse when Docker talks to another daemon (another Docker
+context or `DOCKER_HOST`): switch back first. Each command uses the
+Docker context it found when it started for all its Docker calls, even
+if another terminal switches it meanwhile.
+
+`SWARM_ENGAGEMENT_TOKEN` binds a command to one engagement: `stop`,
+`post-process`, `interactive` and `harvest.sh` refuse when it is set
+and the state file records another token, and `post-process` and
+`interactive` then never create an engagement. `wait` reads the token
+once, refuses to go on when the engagement changed while it waited
+(a cleanup and a new start in another terminal), and passes the token
+to the post-process or harvest it runs; the dashboard passes it to each
+`launch.sh` it runs.
+
+A new engagement starts only on a clean runtime directory. `start`, and
+`post-process` or `interactive` when there is no bare repo to join,
+refuse while the runtime directory holds a bare repo, an
+`upstream.git.new`, `mirrors/` or a remnant of a cleanup, while a
+container or a workspace volume of this checkout exists, or while an
+interactive session is open. The error lists what it found and, when
+the bare repo holds agent work the checkout lacks, what to harvest.
+End the engagement first: stop the agents, run `harvest.sh`, then
+`./launch.sh cleanup`. Nothing is removed by force. The engagement is
+recorded before anything is made, and a bare repo or a mirror is cloned
+to `<name>.new` and renamed once ready, so a run stopped half way
+leaves at most a `.new`, which `cleanup` preserves and deletes. A
+mistake in the swarmfile (an unknown driver or context mode) or a
+failed image build stops `start` before the engagement is created.
+
+### Engagements of earlier releases
+
+An earlier release's engagement records no Docker daemon in the state
+file, and its containers keep their files in their own layers (or in
+volumes `docker_args` made); Docker may remove some when they stop
+(`--rm` in `docker_args`). This release does not take such an
+engagement over: `start`, `post-process`, `interactive`, `stop`,
+`wait`, `retire`, `cleanup` and `harvest.sh` refuse it and change
+nothing, and only `status` and `logs` work on it. The same holds for
+what an engagement leaves (a bare repo, mirrors, containers, volumes)
+when the state file records none, and for a runtime directory in a
+place this release refuses. Finish it with the release that made it:
+check that release out, stop the agents, run `harvest.sh`, then follow
+that release's cleanup steps in its USAGE.md, and come back to this
+one.
 
 ### Engagement lock
 
@@ -1127,42 +1241,25 @@ that the descriptor is open on that lock file and locks through it:
 
 Older releases kept this state in `/tmp/<project>-upstream.git`,
 `/tmp/<project>-mirror-*.git` and `/tmp/<project>-swarm.env`, where
-any local user could write to it. It is never reused. While
-`/tmp/<project>-upstream.git` exists and belongs to you, `start`,
-`post-process`, `interactive`, `chat`, `shell` and `harvest.sh` stop
-and print the commands below.
+any local user could write to it. It is never reused, and this release
+changes nothing there. While `/tmp/<project>-upstream.git` exists and
+belongs to you, `start`, `post-process`, `interactive`, `chat`, `shell`
+and `harvest.sh` stop.
 
 Containers that an older release started carry no labels, so
 `launch.sh` refuses every command while they exist, `stop` included,
 before it gets to the `/tmp` check (see
 [Project identity](#project-identity)). Their agents push to the old
-bare repo. Stop the containers that the error lists with the grace
-`./launch.sh stop` gives, so the agents can still push their last
-commits:
-
-```bash
-docker stop -t "${SWARM_STOP_TIMEOUT:-60}" <container>...
-```
-
-To keep agent commits from the old bare repo, fetch its branches and
-review them before merging anything:
+bare repo. Finish that engagement with the release that made it, as
+for [engagements of earlier releases](#engagements-of-earlier-releases):
+check it out, stop the agents, harvest, then follow its USAGE.md. To
+look at the agents' commits in the old bare repo meanwhile, fetch its
+branches and review them before merging anything (this changes nothing
+there):
 
 ```bash
 git fetch /tmp/<project>-upstream.git \
     '+refs/heads/*:refs/remotes/legacy-swarm/*'
-```
-
-Then remove the old containers with `docker rm`, and the old state
-with the commands below. The agents wrote part of the old bare repo as
-the container's user, and on Linux a plain `rm -rf` cannot delete those
-files, so remove the bare repo through Docker. The error about `/tmp`
-lists the exact paths; this form also works in zsh when there are no
-mirrors:
-
-```bash
-docker run --rm -v /tmp:/tmp alpine rm -rf /tmp/<project>-upstream.git
-rm -rf /tmp/<project>-swarm.env
-find -H /tmp -maxdepth 1 -name '<project>-mirror-*.git' -exec rm -rf {} +
 ```
 
 ## Retiring containers
@@ -1212,9 +1309,11 @@ reaches `docker diff` altered, so such a name refuses too).
 The error says what to copy out first. Removal goes by ID, without
 `-f`, and leaves any container that changed since it was checked. Run
 `costs.sh` before retire if you need the containers' stats. retire
-needs no swarmfile; it takes the engagement lock and refuses when
-Docker talks to another daemon than the engagement's (an engagement
-that recorded none needs `SWARM_DOCKER_DAEMON=<docker info ID>`).
+needs no swarmfile; it takes the engagement lock, refuses an engagement
+of an earlier release (see
+[Engagements of earlier releases](#engagements-of-earlier-releases)),
+and removes nothing while Docker talks to another daemon than the
+engagement's.
 
 ## Cleanup
 
@@ -1226,16 +1325,21 @@ every object, stashes, unfinished operations, and every file of the
 git dir) into the checkout as recovery refs, and checks them there.
 
 ```bash
-./launch.sh cleanup [--discard-uncommitted]
+./launch.sh cleanup [--discard-uncommitted] [--allow-unharvested]
 ```
 
 It stops, and deletes nothing, when
 
-- the bare repo holds agent work the checkout does not have yet
-  (`agent-work`, `swarm/*`, `agent-parked/*`): harvest first;
-- a container cannot be retired (see [Retiring
-  containers](#retiring-containers)), or an interactive session is open
-  or starting;
+- the bare repo holds agent work that HEAD's history does not have yet
+  (`agent-work`, `swarm/*`, `agent-parked/*`): harvest first. When it
+  never can (`harvest.sh` refuses a bare repo that does not descend
+  from HEAD, after a rewritten upstream say), take what you need by
+  hand and pass `--allow-unharvested`, which keeps that work as
+  recovery refs only. A read of the bare repo's refs that fails part of
+  the way refuses either way;
+- a container still runs (stop the agents first) or cannot be retired
+  (see [Retiring containers](#retiring-containers)), or an interactive
+  session is open or starting;
 - a workspace, the bare repo or a mirror holds work outside Git's
   history (uncommitted or ignored files, files too large to copy):
   commit or copy it out, or pass `--discard-uncommitted`, which drops
@@ -1251,7 +1355,19 @@ It stops, and deletes nothing, when
   quote, a tab or a newline in its path;
 - something is mounted inside the runtime directory, or at a workspace
   volume's directory on this host (cleanup never deletes through a
-  mount).
+  mount);
+- the engagement is an earlier release's (see
+  [Engagements of earlier releases](#engagements-of-earlier-releases)).
+
+It checks the workspace volumes while the stopped containers are still
+there, so none of these refusals touches a container; then it retires
+the containers and checks everything again before it copies and
+deletes. A later failure (the copy into the checkout, `git fsck`)
+leaves the containers retired and every repository location in place,
+so save the containers' logs and stats first if you need them
+(`./launch.sh logs N`, `costs.sh`). A `.new` that a run cut off while
+it cloned the bare repo or a mirror is copied as it is (every file)
+and deleted too.
 
 The recovery refs are `refs/swarm-recovery/e<hex>/<snapshot>/s<n>/...`,
 `<hex>` being the engagement id in hex;

@@ -10,9 +10,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 # into as its own user (on Linux another UID than this host user's, so
 # only the Docker helper can delete those files), a mirror, and a real
 # workspace volume of this checkout.  Cleanup refuses while a container
-# of the project remains (before workspace volumes, retire refuses
-# every container), then copies all three into the checkout as recovery
-# refs and deletes them.
+# of the project remains that retire refuses (one without its workspace
+# volume, as an earlier release made them), then copies all three into
+# the checkout as recovery refs and deletes them.  Then one whole
+# engagement through launch.sh: start, wait, retire, cleanup, and a
+# second start on the cleaned runtime directory.
 #
 # Requires Docker.  No API key needed.
 
@@ -38,6 +40,8 @@ source "$REPO_ROOT/lib/project.sh"
 
 BASE_IMAGE="swarm-core-runtime-test"
 P="swarm-core-cleanup-test"
+# The engagement launch.sh starts, under a project id of its own.
+P2="swarm-core-cycle-test"
 # Cleanup's helpers run the engine image, <project>-agent.
 ENGINE_IMAGE="${P}-agent"
 NAME="${P}-agent-1"
@@ -45,12 +49,19 @@ VOL="${NAME}-ws-00000000"
 WORKDIR=$(mktemp -d /tmp/swarm-core-cleanup-XXXXXX)
 
 drop_all() {
-    local c
-    for c in $(docker ps -aq --filter "label=${SWARM_PROJECT_LABEL}=${P}"); do
-        docker rm -f "$c" >/dev/null 2>&1 || true
-    done
-    for c in $(docker ps -aq --filter "label=swarm-core.cleanup=${P}"); do
-        docker rm -f "$c" >/dev/null 2>&1 || true
+    local c p
+    for p in "$P" "$P2"; do
+        for c in $(docker ps -aq \
+                --filter "label=${SWARM_PROJECT_LABEL}=${p}"); do
+            docker rm -f "$c" >/dev/null 2>&1 || true
+        done
+        for c in $(docker ps -aq --filter "label=swarm-core.cleanup=${p}"); do
+            docker rm -f "$c" >/dev/null 2>&1 || true
+        done
+        for c in $(docker volume ls -q \
+                --filter "label=${SWARM_PROJECT_LABEL}=${p}"); do
+            docker volume rm "$c" >/dev/null 2>&1 || true
+        done
     done
     docker volume rm "$VOL" >/dev/null 2>&1 || true
 }
@@ -60,8 +71,8 @@ cleanup_test() {
     # root with the test image, which needs no pull.
     docker run --rm --user 0 --entrypoint rm \
         -v "$WORKDIR:/workdir" "$BASE_IMAGE" -rf /workdir/runtime \
-        >/dev/null 2>&1 || true
-    docker rmi "$ENGINE_IMAGE" >/dev/null 2>&1 || true
+        /workdir/runtime2 >/dev/null 2>&1 || true
+    docker rmi "$ENGINE_IMAGE" "${P2}-agent" >/dev/null 2>&1 || true
     rm -rf "$WORKDIR"
 }
 trap cleanup_test EXIT
@@ -212,6 +223,82 @@ check "the volume's work is in the recovery refs" \
 check "no helper container is left" \
     "$(docker ps -aq --filter "label=swarm-core.cleanup=${P}" | grep -c . \
         || true)" "0"
+
+echo "--- a whole engagement: start, wait, retire, cleanup, start ---"
+# The fake driver makes no commits, so with max_idle 1 each agent exits
+# after one session.  docker_args ask for auto-remove, a restart policy
+# and another name; what the engine sets comes after and wins.
+C2="$WORKDIR/cycle"
+RT2="$WORKDIR/runtime2"
+git init -q "$C2"
+echo "Prompt." > "$C2/prompt.md"
+cat > "$C2/swarm.json" <<'EOF'
+{ "prompt": "prompt.md", "driver": "fake", "max_idle": 1,
+  "docker_args": ["--rm", "--restart", "always", "--name", "other"],
+  "agents": [{ "count": 2, "model": "fake" }] }
+EOF
+gitc -C "$C2" add -A
+gitc -C "$C2" commit -qm init
+run2() {
+    (cd "$C2" && SWARM_RUNTIME_DIR="$RT2" SWARM_PROJECT="$P2" \
+        SWARM_SKIP_DEP_CHECK=1 SWARM_WAIT_POLL=2 "$BASH" "$LAUNCH_SH" "$@")
+}
+vols2() {
+    docker volume ls -q --filter "label=${SWARM_PROJECT_LABEL}=${P2}" \
+        | grep -c . || true
+}
+rc=0
+out=$(run2 start 2>&1) || rc=$?
+check "start succeeds" "$rc" "0"
+[ "$rc" -eq 0 ] || printf '%s\n' "$out" | tail -8 | sed 's/^/      /'
+TOKEN1=$(jq -r '.engagement_token // empty' "$RT2/state.json")
+check "one volume per agent" "$(vols2)" "2"
+for i in 1 2; do
+    check "agent $i: its own name, no restart policy, no auto-remove" \
+        "$(docker inspect -f \
+            '{{.Name}} {{.HostConfig.RestartPolicy.Name}} {{.HostConfig.AutoRemove}}' \
+            "${P2}-agent-${i}" 2>/dev/null)" "/${P2}-agent-${i} no false"
+    check "agent $i: /workspace is its volume" \
+        "$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Type}} {{.Name}}{{end}}{{end}}' \
+            "${P2}-agent-${i}" 2>/dev/null | grep -cE "^volume ${P2}-agent-${i}-ws-[0-9a-f]{8}$")" "1"
+done
+rc=0
+out=$(run2 wait 2>&1) || rc=$?
+check "wait sees both agents finish and harvests" "$rc" "0"
+[ "$rc" -eq 0 ] || printf '%s\n' "$out" | tail -8 | sed 's/^/      /'
+rc=0
+run2 start >/dev/null 2>&1 || rc=$?
+check "a second start before cleanup is refused" "$rc" "1"
+rc=0
+out=$(run2 retire 2>&1) || rc=$?
+check "retire takes the stopped agents" "$rc" "0"
+[ "$rc" -eq 0 ] || printf '%s\n' "$out" | tail -8 | sed 's/^/      /'
+check "no container of the engagement is left" \
+    "$(docker ps -aq --filter "label=${SWARM_PROJECT_LABEL}=${P2}" \
+        | grep -c . || true)" "0"
+check "their volumes stay" "$(vols2)" "2"
+rc=0
+out=$(run2 cleanup 2>&1) || rc=$?
+check "cleanup succeeds" "$rc" "0"
+[ "$rc" -eq 0 ] || printf '%s\n' "$out" | tail -8 | sed 's/^/      /'
+check "the volumes are gone" "$(vols2)" "0"
+check "so is the bare repo" "$(present "$RT2/upstream.git")" "no"
+check "the volumes' history is in the recovery refs" \
+    "$(git -C "$C2" for-each-ref refs/swarm-recovery/ | grep -c . \
+        | awk '{ print ($1 > 0) }')" "1"
+rc=0
+out=$(run2 start 2>&1) || rc=$?
+check "start on the cleaned runtime succeeds" "$rc" "0"
+[ "$rc" -eq 0 ] || printf '%s\n' "$out" | tail -8 | sed 's/^/      /'
+check "as a new engagement" \
+    "$(jq -r '.engagement_token // empty' "$RT2/state.json" \
+        | grep -cvx "${TOKEN1:-none}" || true)" "1"
+check "with new volumes" "$(vols2)" "2"
+run2 wait >/dev/null 2>&1 || true
+run2 retire >/dev/null 2>&1 || true
+rc=0
+run2 cleanup >/dev/null 2>&1 || rc=$?
+check "and cleans up again" "$rc" "0"
 
 echo ""
 echo "  ${PASS} passed, ${FAIL} failed"
