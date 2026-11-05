@@ -12,7 +12,8 @@
 #
 # worktree: ROOT is a checkout (a workspace) whose repository is
 #   ROOT/.git; CONTEXT (full, slim or none) says which deletions under
-#   .claude the engine made itself.
+#   .claude the engine made itself; CONTEXT layer is a checkout in a
+#   container's own layer (retire), where no file is the engine's.
 # gitdir: ROOT is a repository directory (a bare repo or a mirror).
 # files: ROOT is what is left of one that a deletion got part of the way
 #   through: every file is stored as a blob, those under objects/
@@ -88,6 +89,12 @@ case "$MODE" in
     worktree|gitdir|userconfig|files) ;;
     *) fail "unknown mode: ${MODE}" ;;
 esac
+if [ "$MODE" = worktree ]; then
+    case "$CONTEXT" in
+        full|slim|none|layer) ;;
+        *) fail "unknown context: ${CONTEXT}" ;;
+    esac
+fi
 # Only each repository's own config applies: the global and system
 # files of whoever runs the scan (in a container, files its agent could
 # write) must not change what Git reports or runs.  userconfig mode
@@ -127,6 +134,18 @@ canon() {
         *$'\n'*) return 1 ;;
     esac
     printf '%s' "$r"
+}
+
+# Succeed when path $1 is a directory on the way to ROOT (/tmp and
+# /tmp/fixture for ROOT /tmp/fixture/repo): resolving a path inside ROOT
+# visits them, and they hold nothing ROOT depends on.  ROOT is canonical
+# (resolved), so none of them is a link.  For ROOT /workspace there are
+# none.
+on_the_way_to_root() {
+    case "$ROOT/" in
+        "$1"/*) return 0 ;;
+    esac
+    return 1
 }
 
 # Print what Git reads from pointer file $1 (a commondir, a gitfile):
@@ -238,13 +257,16 @@ g() {
     [ ! -s "$ERR" ] || fail "git $* in ${dir}: $(cat "$ERR")"
 }
 
-# The same for a work tree $1 whose git dir Git finds itself.
+# The same for a work tree $1 whose git dir Git finds itself.  A file
+# whose content changed is found by its stat data: its ctime too, which
+# no tool can put back, whatever the repository's config says.
 gw() {
     local dir="$1"
     shift
     if ! git -C "$dir" -c safe.directory='*' \
             -c core.excludesFile=/dev/null -c core.attributesFile=/dev/null \
             -c core.fsmonitor=false -c core.untrackedCache=false \
+            -c core.trustctime=true -c core.checkStat=default \
             -c advice.graftFileDeprecated=false --no-optional-locks \
             "$@" 2>"$ERR"; then
         fail "git $* in ${dir} failed: $(cat "$ERR")"
@@ -283,7 +305,8 @@ canon_nm() {
     while IFS= read -r v; do
         case "$v" in
             "$ROOT"|"$ROOT"/*) ;;
-            *) report "layer-path $(oneline "$v")" ;;
+            *) on_the_way_to_root "$v" \
+                   || report "layer-path $(oneline "$v")" ;;
         esac
     done < "$OUT/.cnm"
     if [ -s "$OUT/.mounts" ]; then
@@ -796,7 +819,7 @@ if [ "$MODE" = worktree ]; then
         while IFS= read -r v; do
             case "$v" in
                 "$ROOT"|"$ROOT"/*) ;;
-                *) out_of_root=yes ;;
+                *) on_the_way_to_root "$v" || out_of_root=yes ;;
             esac
         done < "$OUT/.seen"
         case "$lt" in
@@ -831,6 +854,7 @@ if [ "$MODE" = worktree ]; then
             case "$v" in
                 "$ROOT"|"$ROOT"/*) ;;
                 *)
+                    ! on_the_way_to_root "$v" || continue
                     report "layer-path $(oneline "$v")"
                     while IFS= read -r m; do
                         [ -n "$m" ] || continue
@@ -888,6 +912,8 @@ fi
 # worktrees it is.
 engine_entry() {
     local xy="$1" rel="$2" path="$3"
+    # A checkout in a container's layer is the agent's alone.
+    [ "$CONTEXT" != layer ] || return 1
     [ "$rel" = "." ] || return 1
     case "$path" in
         agent_logs|agent_logs/*|.claude/settings.local.json) return 0 ;;

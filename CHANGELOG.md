@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **retire keeps the Git checkouts a container has outside its
+  volume.** It refused any container with a repository in its own
+  layer, and agents leave some there routinely (a test's fixture in
+  `/tmp`), so an engagement ended with `docker cp` and `docker rm` by
+  hand. A checkout there is now scanned in the container's snapshot,
+  copied into the checkout as recovery refs (`.../l<n>/`, listed in the
+  snapshot's `sources`), and the checkout is verified with `git fsck`
+  before any container goes. Work outside Git's history in it stops
+  retire unless `--discard-uncommitted` (new for retire; cleanup passes
+  its own on) drops exactly what it lists; other repositories there
+  (bare ones, git dirs apart from their work trees) still refuse, and a
+  container's checkouts may take `SWARM_RETIRE_LAYER_LIMIT_MB` megabytes
+  (default 100). cleanup, like retire, now writes a snapshot's
+  `sources` ref only after `git fsck` passed.
 - **Hardening: what agents write cannot steer the host's Git or fill
   its disk.** The host's reads of the bare repo and the mirrors never
   fetch and never check signatures; the preservation scans read no
