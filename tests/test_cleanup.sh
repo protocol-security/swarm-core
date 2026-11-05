@@ -62,8 +62,10 @@ _ct=$(cd -P "$TMPDIR" && pwd -P)
 #                       show an empty directory)
 #   daemon              docker info id (default d1)
 #   helper-mountinfo    the mount table a deletion helper sees
-#   volume-later        a volume name that docker volume ls adds from
-#                       its second call on
+#   volume-later        a volume name that docker volume ls adds once it
+#                       was called volume-later-after times (default 1)
+#   present-ids         ids docker ps --filter id= lists (none by default:
+#                       a container whose inspect fails is gone)
 #   log                 every call
 F="$TMPDIR/fake"
 mkdir -p "$TMPDIR/bin"
@@ -95,6 +97,7 @@ case "$1" in
                 cat "$F/volusers/$v" 2>/dev/null
                 exit 0 ;;
             *"label=swarm-core.session="*) exit 0 ;;
+            *" id="*) cat "$F/present-ids" 2>/dev/null ;;
             *"label=swarm-core.project="*)
                 while read -r id name; do
                     [ -n "$id" ] || continue
@@ -125,11 +128,13 @@ case "$1" in
                 cat "$F/volumes"
                 # A volume that shows up after the first listing.
                 if [ -f "$F/volume-later" ]; then
-                    if [ -f "$F/volume-listed" ]; then
+                    listed=$(cat "$F/volume-listed" 2>/dev/null || echo 0)
+                    if [ "$listed" -ge \
+                            "$(cat "$F/volume-later-after" 2>/dev/null \
+                                || echo 1)" ]; then
                         cat "$F/volume-later"
-                    else
-                        : > "$F/volume-listed"
                     fi
+                    echo $((listed + 1)) > "$F/volume-listed"
                 fi
                 exit 0 ;;
             rm)
@@ -442,7 +447,7 @@ refused "a runtime directory with a tab in its path" "a tab or a newline"
 setup
 assert_eq "a runtime directory that is HOME: refused" "1" \
     "$(HOME="$RT" cleanup)"
-assert_eq "for that reason" "1" "$(said "refusing to clean up in")"
+assert_eq "for that reason" "1" "$(said "as the runtime directory")"
 assert_eq "its bare repo stays" "yes" "$(present "$RT/upstream.git")"
 setup
 mv "$RT" "$REPO/rt"
@@ -510,7 +515,8 @@ setup
 add_volume proj-agent-1-ws-00000001
 add_volume proj-agent-2-ws-00000002
 assert_eq "two volumes: cleanup succeeds" "0" "$(cleanup)"
-assert_eq "both are scanned" "2" "$(grep -c 'type=volume,src=' "$F/log")"
+# Scanned twice each: before retire, and again once it is done.
+assert_eq "both are scanned" "4" "$(grep -c 'type=volume,src=' "$F/log")"
 assert_eq "both are removed" "0" "$(grep -c . "$F/volumes" || true)"
 assert_eq "their work is kept" "1" \
     "$(git -C "$REPO" for-each-ref refs/swarm-recovery/ | grep -c . \
@@ -751,6 +757,9 @@ fi
 # one that showed up meanwhile keeps them.
 setup
 echo "${P}-late-ws-00000001" > "$F/volume-later"
+# Listed first before retire, then after it: it shows up in the last
+# listing, the one before the engagement's records go.
+echo 2 > "$F/volume-later-after"
 assert_eq "a volume that shows up during cleanup: refused" "1" "$(cleanup)"
 assert_eq "for that reason" "1" "$(said "left these in place")"
 assert_eq "the checkpoint stays" "true" \
@@ -925,6 +934,169 @@ for bare in present renamed gone; do
             "$(grep -cE '^(run|create|rm|volume|build|stop|kill)' \
                 "$F/log" || true)"
     done
+done
+
+echo ""
+echo "=== 6. Engagements of earlier releases, and runs cut off ==="
+# An engagement an earlier release started records no Docker daemon:
+# cleanup refuses it, says how to finish it, and changes nothing.
+docker_changes() {
+    grep -cE '^(run|create|rm|volume rm|commit|stop|kill)' "$F/log" || true
+}
+setup
+swarm_state_update "$RT/state.json" 'del(.docker_daemon)'
+cp "$RT/state.json" "$TMPDIR/state.before"
+refused "an earlier release's engagement" \
+    "Finish it with the release that made it"
+assert_eq "its state file stays as it was" "same" \
+    "$(cmp -s "$TMPDIR/state.before" "$RT/state.json" && echo same)"
+assert_eq "its mirror stays" "yes" "$(present "$RT/mirrors/lib space.git")"
+assert_eq "nothing is copied" "0" "$(recovery_refs)"
+assert_eq "Docker made or removed nothing" "0" "$(docker_changes)"
+# What an engagement leaves, with none recorded, is an earlier release's
+# too: the bare repo, a hidden remnant, a container, a volume.
+for _left in bare hidden container volume; do
+    setup
+    swarm_state_update "$RT/state.json" 'del(.engagement_id, .docker_daemon)'
+    rm -rf "$RT/mirrors"
+    [ "$_left" = bare ] || rm -rf "$RT/upstream.git"
+    case "$_left" in
+        hidden) mkdir "$RT/.x.removing" ;;
+        container) echo "id-c1 proj-agent-1" > "$F/containers" ;;
+        volume) echo proj-agent-1-ws-00000001 > "$F/volumes" ;;
+    esac
+    cp "$RT/state.json" "$TMPDIR/state.before"
+    assert_eq "$_left without an engagement: refused" "1" "$(cleanup)"
+    assert_eq "$_left without an engagement: as an earlier release's" "1" \
+        "$(said "Finish it with the release that made it")"
+    assert_eq "$_left without an engagement: state as it was" "same" \
+        "$(cmp -s "$TMPDIR/state.before" "$RT/state.json" && echo same)"
+    assert_eq "$_left without an engagement: Docker changed nothing" "0" \
+        "$(docker_changes)"
+    if [ "$_left" = hidden ]; then
+        assert_eq "the hidden remnant stays" "yes" \
+            "$(present "$RT/.x.removing")"
+    fi
+done
+
+# Runs cut off while they made the bare repo and a mirror: each left a
+# .new without HEAD and with part of the objects, under the recorded
+# engagement.  cleanup keeps their files (files mode) and removes them.
+setup
+mv "$RT/upstream.git" "$TMPDIR/case/bare.full"
+mkdir -p "$RT/upstream.git.new/objects"
+cp -R "$TMPDIR/case/bare.full/objects/." "$RT/upstream.git.new/objects/"
+rm -rf "$TMPDIR/case/bare.full"
+mkdir -p "$RT/mirrors/.sub.git.new/objects/pack"
+head -c 2000 /dev/urandom > "$RT/mirrors/.sub.git.new/objects/pack/tmp_pack_x"
+assert_eq "two runs cut off half way: cleanup succeeds" "0" "$(cleanup)"
+assert_eq "the bare repo's .new is removed" "no" \
+    "$(present "$RT/upstream.git.new")"
+assert_eq "so is the hidden mirror's" "no" \
+    "$(present "$RT/mirrors/.sub.git.new")"
+_base=$(git -C "$REPO" for-each-ref --format='%(refname)' refs/swarm-recovery/ \
+    | sed -n 's|^\(refs/swarm-recovery/e[0-9a-f]*/[^/]*\)/.*|\1|p' | sort -u)
+_map=$(git -C "$REPO" cat-file blob "$_base/sources" 2>/dev/null || true)
+assert_eq "both are recorded as cut-off creations" "2" \
+    "$(printf '%s\n' "$_map" | grep -c ' new "' || true)"
+assert_eq "their files are kept" "1" \
+    "$(git -C "$REPO" for-each-ref "$_base/" | grep -c '/files$' \
+        | awk '{ print ($1 > 0) }')"
+
+# A stopped container whose volume holds uncommitted work: cleanup's
+# first pass refuses while the container is still there, so its logs
+# and its volume stay (retire never ran).
+setup
+add_volume proj-agent-1-ws-00000001
+echo dirty > "$F/voldir/proj-agent-1-ws-00000001/w"
+echo "id-c1 proj-agent-1" > "$F/containers"
+jq -n --arg ck "$CK" '[{Id: "id-c1", Name: "/proj-agent-1",
+    State: {Status: "exited"},
+    HostConfig: {RestartPolicy: {Name: "no"}, AutoRemove: false},
+    Mounts: [{Type: "volume", Name: "proj-agent-1-ws-00000001",
+        Destination: "/workspace"}],
+    Config: {Labels: {"swarm-core.project": "proj",
+        "swarm-core.checkout": $ck}}}]' > "$F/inspect/id-c1"
+echo id-c1 > "$F/volusers/proj-agent-1-ws-00000001"
+refused "uncommitted work while the container is there" \
+    "holds work outside Git's history"
+assert_eq "retire never ran: no container removed" "0" \
+    "$(grep -cE '^(rm|commit|stop|kill)' "$F/log" || true)"
+assert_eq "the container is still listed" "1" \
+    "$(grep -c proj-agent-1 "$F/containers")"
+assert_eq "and its volume stays" "1" "$(grep -c . "$F/volumes")"
+
+# A container that still runs: refused before any scan, with the step
+# to take (stop the agents), not --discard-uncommitted for what its
+# changing workspace holds.
+setup
+add_volume proj-agent-1-ws-00000001
+echo dirty > "$F/voldir/proj-agent-1-ws-00000001/w"
+echo "id-c1 proj-agent-1" > "$F/containers"
+jq -n --arg ck "$CK" '[{Id: "id-c1", Name: "/proj-agent-1",
+    State: {Status: "running"},
+    HostConfig: {RestartPolicy: {Name: "no"}, AutoRemove: false},
+    Mounts: [{Type: "volume", Name: "proj-agent-1-ws-00000001",
+        Destination: "/workspace"}],
+    Config: {Labels: {"swarm-core.project": "proj",
+        "swarm-core.checkout": $ck}}}]' > "$F/inspect/id-c1"
+refused "a container that still runs" "still run, or Docker cannot tell"
+assert_eq "naming it" "1" "$(said "proj-agent-1 (running)")"
+assert_eq "before any scan" "0" "$(grep -c '^run ' "$F/log" || true)"
+assert_eq "nothing removed or stopped" "0" \
+    "$(grep -cE '^(rm|commit|stop|kill)' "$F/log" || true)"
+# Docker cannot describe a container it still lists: refused the same
+# way, rather than taken for gone.
+rm -f "$F/inspect/id-c1"
+echo id-c1 > "$F/present-ids"
+: > "$F/log"
+refused "a container Docker cannot describe" \
+    "still run, or Docker cannot tell"
+assert_eq "naming it" "1" "$(said "proj-agent-1 (state unknown)")"
+assert_eq "before any scan" "0" "$(grep -c '^run ' "$F/log" || true)"
+
+# Agent work HEAD's history lacks (after a rewritten upstream, say):
+# refused, then kept only as recovery refs with --allow-unharvested.
+setup
+gitc -C "$REPO" commit -q --amend -m rewritten
+_old=$(git -C "$RT/upstream.git" rev-parse agent-work)
+refused "work HEAD's history lacks" "agent-work"
+assert_eq "the refusal names --allow-unharvested" "1" \
+    "$(said "--allow-unharvested")"
+assert_eq "nothing is copied then" "0" "$(recovery_refs)"
+assert_eq "--allow-unharvested: cleanup goes on" "0" \
+    "$(cleanup --allow-unharvested)"
+assert_eq "saying what is kept only as recovery refs" "1" \
+    "$(said "Kept only as recovery refs")"
+assert_eq "the bare repo is gone" "no" "$(present "$RT/upstream.git")"
+assert_eq "the old tip is in the recovery refs" "1" \
+    "$(git -C "$REPO" for-each-ref --format='%(objectname)' \
+        refs/swarm-recovery/ | grep -cx "$_old" | awk '{ print ($1 > 0) }')"
+assert_eq "the engagement is cleaned up" "" \
+    "$(jq -r '.engagement_id // empty' "$RT/state.json")"
+
+# A read of the bare repo's refs that fails part of the way (an I/O
+# error) is no proof that the checkout has them: refused, with and
+# without --allow-unharvested.
+cat > "$TMPDIR/hook-ref.sh" <<'EOF'
+read() {
+    if [ "$#" -eq 4 ] && [ "$1" = -r ] && [ "$2" != -u ] \
+            && [ "$4" = ref ]; then
+        return 1
+    fi
+    builtin read "$@"
+}
+EOF
+for _flag in "" --allow-unharvested; do
+    setup
+    gitc -C "$REPO" commit -q --amend -m rewritten
+    assert_eq "a failed read of the refs${_flag:+ ($_flag)}: refused" "1" \
+        "$(BASH_ENV="$TMPDIR/hook-ref.sh" cleanup $_flag)"
+    assert_eq "for that reason${_flag:+ ($_flag)}" "1" \
+        "$(said "cannot read the refs of")"
+    assert_eq "the bare repo stays${_flag:+ ($_flag)}" "yes" \
+        "$(present "$RT/upstream.git")"
+    assert_eq "nothing is copied${_flag:+ ($_flag)}" "0" "$(recovery_refs)"
 done
 
 echo ""

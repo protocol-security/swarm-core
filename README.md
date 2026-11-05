@@ -50,7 +50,7 @@ Host                         runtime dir (mode 700)
 ~/project/ ── git clone ──>  upstream.git (rw)
                --bare        mirrors/*.git (ro)
                                         |
-                                        | docker volumes
+                                        | bind mounts
                                         |
                  .-----------.----------+-----------.
                  |           |          |           |
@@ -61,12 +61,23 @@ Host                         runtime dir (mode 700)
                  v                      v
            /workspace/            /workspace/
            (agent-work)           (agent-work)
+           volume                 volume
+           <name>-ws-<hex>        <name>-ws-<hex>
 ```
 
 All containers mount the same bare repo. Each runs
 `lib/harness.sh` which loops: reset to `origin/agent-work`,
 run one agent session, push. When one agent pushes, others
 see the changes on the next fetch.
+
+Each container's `/workspace` is a Docker volume of its own, so its
+files outlive the container. One engagement goes from `start` to
+`harvest.sh`, which merges the agents' work into the checkout, then to
+`./launch.sh retire`, which removes the stopped containers once nothing
+lives only in them, and `./launch.sh cleanup`, which copies everything
+Git kept in the volumes, the bare repo and the mirrors into the
+checkout as recovery refs before it deletes them. The next `start`
+needs a runtime directory cleaned up that way.
 
 The runtime directory is private to the user who runs the swarm,
 `~/.local/state/swarm-core/<project>` by default (see
@@ -88,6 +99,10 @@ SWARM_CONFIG=swarm.json ./launch.sh wait
 
 # Open a human-guided session from a named agent profile:
 SWARM_CONFIG=swarm.json ./launch.sh interactive hunter
+
+# Once the work is harvested (wait does it), delete the engagement;
+# what Git had in it stays in the checkout as recovery refs:
+./launch.sh cleanup
 
 # Or place swarm.json in your repo root and launch.
 ./launch.sh start --dashboard

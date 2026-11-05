@@ -136,6 +136,10 @@ case "$1" in
         cat "$F/inspect/$1"
         exit 0 ;;
     volume)
+        if [ "$2" = ls ]; then
+            ls "$F/volumes"
+            exit 0
+        fi
         [ "$2" = inspect ] || exit 1
         [ -f "$F/volumes/$5" ] || exit 1
         cat "$F/volumes/$5"
@@ -1310,17 +1314,27 @@ add proj-agent-1
 echo d2 > "$F/daemon"
 assert_eq "another Docker daemon is refused" "1" "$(retire)"
 rm -f "$F/daemon"
+# An engagement with no recorded daemon was started by an earlier
+# release: refused, untouched, with how to finish it.
 swarm_state_update "$RT/state.json" 'del(.docker_daemon)'
-assert_eq "no recorded daemon is refused" "1" "$(retire)"
-assert_eq "the message says how to name it" "1" \
-    "$(grep -c 'SWARM_DOCKER_DAEMON=' "$TMPDIR/out" || true)"
-rc=0
-(cd "$REPO" && PATH="$TMPDIR/bin:$PATH" FAKE_DOCKER="$F" FAKE_CK="$CK" \
-    SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" SWARM_SKIP_DEP_CHECK=1 \
-    SWARM_DOCKER_DAEMON=d1 "$BASH" "$LAUNCH" retire > /dev/null 2>&1) \
-    || rc=$?
-assert_eq "SWARM_DOCKER_DAEMON names it" "0" "$rc"
-swarm_state_update "$RT/state.json" '.docker_daemon = "d1"'
+assert_eq "an earlier release's engagement is refused" "1" "$(retire)"
+assert_eq "the message says how to finish it" "1" \
+    "$(grep -c 'release that made it' "$TMPDIR/out" || true)"
+assert_eq "nothing removed then" "0" "$(removed)"
+# Containers with no engagement recorded at all are an earlier
+# release's too; with nothing left, there is nothing to retire.
+swarm_state_update "$RT/state.json" 'del(.engagement_id, .docker_daemon)'
+assert_eq "a container without a recorded engagement is refused" "1" \
+    "$(retire)"
+assert_eq "as an earlier release's" "1" \
+    "$(grep -c 'release that made it' "$TMPDIR/out" || true)"
+assert_eq "nothing removed then" "0" "$(removed)"
+reset_fake
+assert_eq "no engagement and nothing left: retire succeeds" "0" "$(retire)"
+assert_eq "with nothing to retire" "1" \
+    "$(grep -c 'nothing to retire' "$TMPDIR/out" || true)"
+swarm_state_update "$RT/state.json" \
+    '.engagement_id = "e1" | .docker_daemon = "d1"'
 reset_fake
 add proj-agent-1
 rc=0

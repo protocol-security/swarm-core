@@ -88,7 +88,6 @@ own_ref() {
 }
 
 identity_ok || exit 1
-CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")"
 
 IMAGE_NAME="${PROJECT}-agent"
 START_TIME=$(date +%s)
@@ -119,8 +118,11 @@ state_value() {
         else "n" end'
 }
 
+# The engagement the dashboard shows, by its token (empty for none);
+# s and p act on it alone.  Set by load_state.
+DASH_TOKEN=""
 load_state() {
-    local state title config agents summary label
+    local state title config agents summary label token
     if [ ! -f "$STATE_FILE" ] || ! runtime_ok; then
         return 1
     fi
@@ -134,6 +136,7 @@ load_state() {
     agents=$(state_value "$state" num_agents) || return 1
     summary=$(state_value "$state" model_summary clean) || return 1
     label=$(state_value "$state" config_label clean) || return 1
+    token=$(state_value "$state" engagement_token) || return 1
     case "$title" in y*) title="${title#y}"; SWARM_TITLE="${title%x}" ;; esac
     case "$config" in
         y*) config="${config#y}"; SWARM_CONFIG="${config%x}" ;;
@@ -146,6 +149,12 @@ load_state() {
     esac
     case "$label" in
         y*) label="${label#y}"; SWARM_CONFIG_LABEL="${label%x}" ;;
+    esac
+    # Unlike the fields above, a token the state no longer has (the
+    # engagement was cleaned up) is no engagement.
+    case "$token" in
+        y*) token="${token#y}"; DASH_TOKEN="${token%x}" ;;
+        *) DASH_TOKEN="" ;;
     esac
 }
 load_state || true
@@ -471,17 +480,6 @@ post_process_container_running() {
 interactive_container_names() {
     swarm_interactive_container_names "$PROJECT" 2>/dev/null \
         | sort || true
-}
-
-# Stop this checkout's container NAME by ID after checking its label
-# again; another checkout's container under that name is left alone.
-stop_own_container() {
-    local name="$1" id
-    id=$(swarm_own_container_id "$name" "$CHECKOUT_PATH" "$PROJECT") \
-        || return 0
-    if [ -n "$id" ] && docker stop "$id" >/dev/null 2>&1; then
-        echo "  stopped ${name}"
-    fi
 }
 
 read_interactive_state_value() {
@@ -948,15 +946,17 @@ while true; do
             s|S)
                 leave_alt_screen
                 identity_ok || exit 1
-                echo "--- Stopping all agents ---"
-                for i in $(seq 1 "$NUM_AGENTS"); do
-                    stop_own_container "${IMAGE_NAME}-${i}"
-                done
-                while IFS= read -r int_name; do
-                    [ -n "$int_name" ] || continue
-                    stop_own_container "$int_name"
-                done < <(interactive_container_names)
-                stop_own_container "${IMAGE_NAME}-post"
+                # launch.sh stop, with its checks, on the engagement
+                # shown (its token, from the last refresh): never a
+                # later one, and nothing when none is shown.
+                _token="$DASH_TOKEN"
+                if [ -z "$_token" ]; then
+                    echo "(no engagement shown; nothing stopped)"
+                else
+                    SWARM_CONFIG="$CONFIG_FILE" \
+                        SWARM_ENGAGEMENT_TOKEN="$_token" \
+                        "$SWARM_DIR/launch.sh" stop || echo "(stop failed)"
+                fi
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
                 enter_alt_screen
@@ -983,7 +983,12 @@ while true; do
                     continue
                 fi
                 if post_process_container_exists; then
-                    echo "(previous post-process container will be replaced)"
+                    echo "(${_pp_name} is still there; retire it first:" \
+                         "./launch.sh retire --post-process)"
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
+                    enter_alt_screen
+                    continue
                 fi
                 _pp_prompt="Start post-processing now? [y/N] "
                 read -r -p "$_pp_prompt" _pp_confirm || _pp_confirm=""
@@ -998,14 +1003,29 @@ while true; do
                         ;;
                 esac
                 identity_ok || exit 1
+                # Both steps on the engagement shown (its token, from
+                # the last refresh): a cleanup and a new start since make
+                # them refuse, and nothing runs when none is shown.
+                _token="$DASH_TOKEN"
+                if [ -z "$_token" ]; then
+                    echo "(no engagement shown; post-processing not started)"
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
+                    enter_alt_screen
+                    continue
+                fi
                 echo "--- Stopping agents ---"
-                for i in $(seq 1 "$NUM_AGENTS"); do
-                    stop_own_container "${IMAGE_NAME}-${i}" >/dev/null
-                done
-                echo "--- Starting post-processing ---"
-                SWARM_CONFIG="$CONFIG_FILE" \
-                    "$SWARM_DIR/launch.sh" post-process || \
-                    echo "(post-processing failed)"
+                if ! SWARM_CONFIG="$CONFIG_FILE" \
+                        SWARM_ENGAGEMENT_TOKEN="$_token" \
+                        "$SWARM_DIR/launch.sh" stop --numbered >/dev/null; then
+                    echo "(agents not stopped; post-processing not started)"
+                else
+                    echo "--- Starting post-processing ---"
+                    SWARM_CONFIG="$CONFIG_FILE" \
+                        SWARM_ENGAGEMENT_TOKEN="$_token" \
+                        "$SWARM_DIR/launch.sh" post-process || \
+                        echo "(post-processing failed)"
+                fi
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
                 enter_alt_screen
