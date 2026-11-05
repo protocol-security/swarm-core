@@ -19,13 +19,12 @@
   (recorded too). A history rewritten after the start, or one that
   dropped harvested work or gave up a merge (each merge is recorded
   before it starts, and committed whatever the Git config says), still
-  refuses;
-  `harvest.sh --again` merges that work again on purpose, after undoing
-  a harvest say. A merge that stops on a conflict says how to finish or
-  give it up, a harvest refuses while a merge is in progress, and one
-  within the same second as the previous one no longer fails on its
-  restore tag. Harvest no longer fetches tags from the bare repo, and
-  refuses when a tag or branch of the checkout has the name of a
+  refuses; `harvest.sh --again` merges that work again on purpose, after
+  undoing a harvest say. A merge that stops on a conflict says how to
+  finish or give it up, a harvest refuses while a merge is in progress,
+  and one within the same second as the previous one no longer fails on
+  its restore tag. Harvest no longer fetches tags from the bare repo,
+  and refuses when a tag or branch of the checkout has the name of a
   harvested branch (`_agent-harvest/<branch>`).
 - **Fix: a run that Bash 3.2 stops on an unset variable no longer ends
   with status 0.** macOS's `/bin/bash` runs an EXIT trap with status 0
@@ -47,25 +46,26 @@
   command keeps the Docker context it started with. `stop` takes no
   lock, stops by ID only containers that carry the engagement's token
   (`--numbered`: the numbered agents only), and fails when one still
-  runs; `wait` checks the token again before it goes on; `SWARM_ENGAGEMENT_TOKEN` binds `stop`,
-  `post-process`, `interactive` and `harvest.sh` to one engagement, and
-  the dashboard's `s` and `p` go through `launch.sh`. `start`, and
-  `post-process` or `interactive` when they would create the engagement,
-  refuse while the runtime directory holds anything of one; nothing is
-  removed by force any more (no `docker rm -f`, no `alpine` helper, no
-  `rm -rf` recipes): end an engagement with `harvest.sh` and
-  `./launch.sh cleanup`, which gains `--allow-unharvested` for work a
-  rewritten upstream left behind and checks the volumes before it
-  retires anything. `post-process` refuses while numbered agents of the
-  engagement run, and while an earlier post-process container is there
-  (`./launch.sh retire --post-process`). Bare repos and mirrors are cloned to `.new` and
-  renamed once ready, and a mistake in the swarmfile or a failed image
-  build stops `start` before the engagement is created. The runtime
-  directory must be a place cleanup can work in. Engagements of earlier
-  releases are not taken over: every command but `status` and `logs`
-  refuses them. Finish such an engagement with the release that
-  started it (check it out, stop the agents, run `harvest.sh`, follow
-  its cleanup steps), then come back.
+  runs; `wait` checks the token again before it goes on;
+  `SWARM_ENGAGEMENT_TOKEN` binds `stop`, `post-process`, `interactive`
+  and `harvest.sh` to one engagement, and the dashboard's `s` and `p` go
+  through `launch.sh`. `start`, and `post-process` or `interactive` when
+  they would create the engagement, refuse while the runtime directory
+  holds anything of one; nothing is removed by force any more (no
+  `docker rm -f`, no `alpine` helper, no `rm -rf` recipes): end an
+  engagement with `harvest.sh` and `./launch.sh cleanup`, which gains
+  `--allow-unharvested` for work a rewritten upstream left behind and
+  checks the volumes before it retires anything. `post-process` refuses
+  while numbered agents of the engagement run, and while an earlier
+  post-process container is there (`./launch.sh retire --post-process`).
+  Bare repos and mirrors are cloned to `.new` and renamed once ready,
+  and a mistake in the swarmfile or a failed image build stops `start`
+  before the engagement is created. The runtime directory must be a
+  place cleanup can work in. Engagements of earlier releases are not
+  taken over: every command but `status` and `logs` refuses them. Finish
+  such an engagement with the release that started it (check it out,
+  stop the agents, run `harvest.sh`, follow its cleanup steps), then
+  come back.
 - **Fix: `tests/runtime_pi.sh` on Linux hosts whose UID is not 1000.**
   The test handed its Codex auth fixture to the container's user before
   the driver read it on the host, so the Codex checks failed, and its
