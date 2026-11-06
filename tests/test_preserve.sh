@@ -352,6 +352,65 @@ assert_eq "a file with a space in its name is reported unquoted" "1" \
     "$(has_line "$out" 'uncommitted dirty .: ?? my file.txt')"
 rm -rf "$W/agent_logs" "$W/my file.txt"
 
+# An ignore pattern that names .claude/ makes Git show that directory as
+# one ignored entry when nothing in it is tracked.  Holding only the
+# engine's .claude/settings.local.json, it is not work; holding anything
+# else (as the file system lists it: Git skips a .GIT when it ignores
+# case), or in a container's layer, it is reported whole, as one entry;
+# another ignored directory stays one entry.
+cp "$W/.git/info/exclude" "$TMPDIR/exclude.saved"
+printf '.claude/\nbig/\n' >> "$W/.git/info/exclude"
+mkdir -p "$W/.claude" "$W/big/deep"
+echo '{}' > "$W/.claude/settings.local.json"
+echo x > "$W/big/deep/f1"
+echo y > "$W/big/f2"
+# Print "<rc file or none> <count of exact LINE in the report>".
+claude_entry() {
+    local out
+    out=$(scan worktree "$W" "${1:-full}")
+    printf '%s %s' "$(cat "$out/.rc" 2>/dev/null || echo none)" \
+        "$(grep -cxF 'uncommitted ignored .: .claude/' "$out/report" || true)"
+}
+assert_eq "an ignored .claude/ with only the engine's settings is not work" \
+    "none 0" "$(claude_entry)"
+out=$(scan worktree "$W" full)
+assert_eq "another ignored directory is one entry" "1" \
+    "$(has_line "$out" 'uncommitted ignored .: big/')"
+assert_eq "none of its files listed" "0" \
+    "$(grep -c 'big/.' "$out/report" || true)"
+assert_eq "in a layer, the ignored .claude/ is reported" "none 1" \
+    "$(claude_entry layer)"
+# Git ignoring case, as it does on macOS, skips .GIT as it would .git.
+_cl_ic=$(git -C "$W" config --get core.ignoreCase || true)
+git -C "$W" config core.ignoreCase true
+for _cl_case in "notes.txt:a file of the agent's" "sub/x:a nested one" \
+        ".GIT/notes.txt:one under a .GIT, which Git may skip" \
+        ".hidden:a hidden one"; do
+    mkdir -p "$(dirname "$W/.claude/${_cl_case%%:*}")"
+    echo w > "$W/.claude/${_cl_case%%:*}"
+    assert_eq "with ${_cl_case#*:} next to the settings: reported whole" \
+        "none 1" "$(claude_entry)"
+    rm -rf "$W/.claude/${_cl_case%%:*}"
+    [ "${_cl_case%%/*}" = "${_cl_case%%:*}" ] \
+        || rm -rf "$W/.claude/${_cl_case%%/*}"
+done
+if [ -n "$_cl_ic" ]; then
+    git -C "$W" config core.ignoreCase "$_cl_ic"
+else
+    git -C "$W" config --unset core.ignoreCase
+fi
+mv "$W/.claude/settings.local.json" "$TMPDIR/settings.saved"
+ln -s "$TMPDIR/settings.saved" "$W/.claude/settings.local.json"
+assert_eq "settings that are a symlink: reported whole" "none 1" \
+    "$(claude_entry)"
+rm -f "$W/.claude/settings.local.json"
+mkdir "$W/.claude/settings.local.json"
+assert_eq "settings that are a directory: reported whole" "none 1" \
+    "$(claude_entry)"
+rmdir "$W/.claude/settings.local.json"
+cp "$TMPDIR/exclude.saved" "$W/.git/info/exclude"
+rm -rf "$W/.claude" "$W/big"
+
 # Context modes: the deletions under .claude the engine makes are not
 # work; anything else there is.
 mkdir -p "$W/.claude"

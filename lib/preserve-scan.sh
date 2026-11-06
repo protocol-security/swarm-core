@@ -931,6 +931,25 @@ engine_entry() {
     return 1
 }
 
+# Succeed when ignored-directory entry $3 of the checkout at $1 (shown
+# as $2) stands for nothing but the engine's file: .claude/ in the
+# workspace's own checkout (never in a layer), a real directory that
+# holds .claude/settings.local.json, a regular file, and nothing else,
+# as the file system (not Git, which skips what it takes for a .git)
+# lists it.  Git shows an ignored directory as one entry when nothing in
+# it is tracked; anything else in it keeps that entry reported whole.
+engine_dir_only() {
+    local wt="$1" rel="$2" path="$3" entries
+    [ "$CONTEXT" != layer ] || return 1
+    [ "$rel" = "." ] && [ "$path" = ".claude/" ] || return 1
+    [ -d "$wt/.claude" ] && [ ! -L "$wt/.claude" ] || return 1
+    [ -f "$wt/.claude/settings.local.json" ] \
+        && [ ! -L "$wt/.claude/settings.local.json" ] || return 1
+    entries=$(cd "$wt/.claude" && find . -mindepth 1 -print 2>/dev/null \
+        | head -n 2 && echo x) || return 1
+    [ "$entries" = "./settings.local.json"$'\n'"x" ]
+}
+
 # Work-tree content outside Git's history, for the checkout at $1 with
 # git dir $3 ($2 is its path in the report).  Both are passed
 # explicitly, so a core.worktree setting cannot point status elsewhere.
@@ -959,6 +978,7 @@ check_checkout() {
         [ "${rec:0:3}" = "!! " ] || continue
         path="${rec:3}"
         engine_entry "!!" "$rel" "$path" && continue
+        engine_dir_only "$wt" "$rel" "$path" && continue
         report "uncommitted ignored ${rel}: $(oneline "$path")"
     done < "$OUT/.st"
     gw "$wt" --git-dir="$gd" --work-tree="$wt" ls-files -v -z > "$OUT/.ls"
