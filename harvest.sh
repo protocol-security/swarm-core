@@ -235,7 +235,8 @@ harvest_record() {
     if ! h=$(printf '%s' "$keep" \
                 | jq -R -s -c 'split("\n") | map(select(length > 0))') \
             || ! p=$(printf '%s' "$pending" \
-                | jq -R -s -c 'split("\n") | map(select(length > 0))') \
+                | jq -R -s -c 'split("\n") | map(select(length > 0))
+                    | unique') \
             || ! swarm_state_update "$RUNTIME_DIR/state.json" \
                 '.harvested = $h | .harvest_pending = $p' \
                 --argjson h "$h" --argjson p "$p"; then
@@ -292,10 +293,10 @@ if ! $AGAIN; then
         if ! harvest_is_ancestor "$c" HEAD; then
             harvest_refuse \
                 "ERROR: HEAD does not have ${c:0:12}, which an earlier" \
-                "harvest started merging: that merge stopped (on a" \
-                "conflict, or with the harvest) and was given up, or it" \
-                "was finished and dropped since.  To merge it again, run" \
-                "./harvest.sh --again."
+                "harvest left to merge: that merge stopped (on a" \
+                "conflict, or with the harvest) and was given up, it" \
+                "was finished and dropped since, or a harvest --again" \
+                "stopped before it.  To merge it, run ./harvest.sh --again."
         fi
     done
     for c in $HARVESTED; do
@@ -370,6 +371,72 @@ for branch in "${HARVEST_BRANCHES[@]}"; do
     fi
 done
 
+# The commits the record holds that HEAD lacks, under --again: it merges
+# them all again, and they stay in the record, as pending, until HEAD
+# has them (a harvest stopped half way leaves them there).
+harvest_owed() {
+    local c
+    $AGAIN || return 0
+    for c in $HARVESTED $PENDING; do
+        # One this checkout does not have is owed too (and refused below).
+        if ! git cat-file -e "${c}^{commit}" 2>/dev/null \
+                || ! harvest_is_ancestor "$c" HEAD; then
+            printf '%s\n' "$c"
+        fi
+    done
+}
+# --again merges by id what the record holds and no branch above brings
+# back (its branch was deleted from the bare repo, or agent-work moved
+# back), from this checkout, which has it from the harvest that merged
+# it.  A commit it no longer has, or one not built on the base, refuses.
+if $AGAIN; then
+    for c in $(harvest_owed | LC_ALL=C sort -u); do
+        case "${#c}:${c}" in
+            40:*[!0123456789abcdef]*|64:*[!0123456789abcdef]*) bad=true ;;
+            40:*|64:*) bad=false ;;
+            *) bad=true ;;
+        esac
+        if $bad || ! git cat-file -e "${c}^{commit}" 2>/dev/null; then
+            harvest_refuse \
+                "ERROR: ./harvest.sh --again cannot merge ${c:0:12}" \
+                "again: an earlier harvest recorded it, and neither this" \
+                "checkout nor a branch of the bare repo has it any more."
+        fi
+        # Brought in by a branch, or by a commit, queued before it.
+        covered=false
+        if [ "${#MERGE_BRANCHES[@]}" -gt 0 ]; then
+            for item in "${MERGE_BRANCHES[@]}"; do
+                branch="${item%%|*}"
+                case "$branch" in
+                    commit:*) ref="${branch#commit:}" ;;
+                    *) ref="refs/remotes/${REMOTE_NAME}/${branch}" ;;
+                esac
+                if harvest_is_ancestor "$c" "$ref"; then
+                    covered=true
+                    break
+                fi
+            done
+        fi
+        $covered && continue
+        if ! harvest_is_ancestor "$HARVEST_BASE" "$c"; then
+            harvest_refuse \
+                "ERROR: ${c:0:12}, which an earlier harvest recorded, is" \
+                "not built on the commit this engagement started from."
+        fi
+        COMMIT_LOG=$(git log --oneline "$c" ^HEAD)
+        NEW_COMMITS=$(echo "$COMMIT_LOG" | grep -c . || true)
+        MERGE_BRANCHES+=("commit:${c}|${NEW_COMMITS}")
+        TOTAL_NEW_COMMITS=$((TOTAL_NEW_COMMITS + NEW_COMMITS))
+        echo ""
+        echo "${NEW_COMMITS} new commits from ${c:0:12}, which an earlier" \
+             "harvest recorded and no branch brings back:"
+        echo "$COMMIT_LOG" | head -20 || true
+        if [ "$NEW_COMMITS" -gt 20 ]; then
+            echo "  ... and $((NEW_COMMITS - 20)) more"
+        fi
+    done
+fi
+
 if [ "$DRY_RUN" = true ]; then
     echo ""
     echo "(dry run -- not merging)"
@@ -386,7 +453,8 @@ if [ "$TOTAL_NEW_COMMITS" -eq 0 ]; then
     echo ""
     echo "Nothing new to merge."
     # A merge finished by hand since the last harvest counts from now.
-    if ! harvest_record "${RECORD}"$'\n'"$(harvest_tips)"; then
+    if ! harvest_record "${RECORD}"$'\n'"$(harvest_tips)" \
+            "$(harvest_owed)"; then
         git remote remove "$REMOTE_NAME"
         exit 1
     fi
@@ -419,13 +487,26 @@ for item in "${MERGE_BRANCHES[@]}"; do
     branch="${item%%|*}"
     new_commits="${item##*|}"
     [ "$new_commits" -eq 0 ] && continue
+    # A commit --again merges by id (no ref name has a colon), unless a
+    # merge before it brought it in already.
+    case "$branch" in
+        commit:*)
+            tip="${branch#commit:}"
+            harvest_is_ancestor "$tip" HEAD && continue
+            ref="$tip"
+            branch="${tip:0:12}" ;;
+        *)
+            ref="${REMOTE_NAME}/${branch}"
+            tip=$(git rev-parse --verify -q \
+                "refs/remotes/${REMOTE_NAME}/${branch}^{commit}") \
+                || tip="" ;;
+    esac
     # Record the merge before it starts, with what HEAD has from the
     # merges before it: a harvest that stops before its last record
     # below (killed, say) leaves no merged work unrecorded.
-    if ! tip=$(git rev-parse --verify -q \
-                "refs/remotes/${REMOTE_NAME}/${branch}^{commit}") \
-            || ! harvest_record "${RECORD}"$'\n'"$(harvest_tips)" "$tip"
-    then
+    if [ -z "$tip" ] \
+            || ! harvest_record "${RECORD}"$'\n'"$(harvest_tips)" \
+                "${tip}"$'\n'"$(harvest_owed)"; then
         echo "ERROR: ${branch} not merged." >&2
         git remote remove "$REMOTE_NAME"
         exit 1
@@ -436,7 +517,7 @@ for item in "${MERGE_BRANCHES[@]}"; do
     # the recorded tip: harvest fetched once, under the lock.)  Each
     # merge is committed, whatever merge options the Git config sets
     # (--no-commit, --squash).
-    if ! git merge --no-edit --commit --no-squash "$REMOTE_NAME/$branch"
+    if ! git merge --no-edit --commit --no-squash "$ref"
     then
         echo "" >&2
         if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
@@ -456,8 +537,8 @@ for item in "${MERGE_BRANCHES[@]}"; do
         if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
             stopped="$tip"
         fi
-        harvest_record "${RECORD}"$'\n'"$(harvest_tips)" "$stopped" \
-            || true
+        harvest_record "${RECORD}"$'\n'"$(harvest_tips)" \
+            "${stopped}"$'\n'"$(harvest_owed)" || true
         git remote remove "$REMOTE_NAME"
         exit 1
     fi
@@ -470,12 +551,14 @@ for item in "${MERGE_BRANCHES[@]}"; do
              "it (git commit) to finish it, or give it up with git merge" \
              "--abort; after that, harvest refuses until ./harvest.sh" \
              "--again." >&2
-        harvest_record "${RECORD}"$'\n'"$(harvest_tips)" "$tip" || true
+        harvest_record "${RECORD}"$'\n'"$(harvest_tips)" \
+            "${tip}"$'\n'"$(harvest_owed)" || true
         git remote remove "$REMOTE_NAME"
         exit 1
     fi
 done
-if ! harvest_record "${RECORD}"$'\n'"$(harvest_tips)"; then
+if ! harvest_record "${RECORD}"$'\n'"$(harvest_tips)" \
+        "$(harvest_owed)"; then
     git remote remove "$REMOTE_NAME"
     exit 1
 fi

@@ -56,7 +56,8 @@
   dropped harvested work or gave up a merge (each merge is recorded
   before it starts, and committed whatever the Git config says), still
   refuses; `harvest.sh --again` merges that work again on purpose, after
-  undoing a harvest say. A merge that stops on a conflict says how to
+  undoing a harvest say, even once the bare repo's branches no longer
+  bring it back. A merge that stops on a conflict says how to
   finish or give it up, a harvest refuses while a merge is in progress,
   and one within the same second as the previous one no longer fails on
   its restore tag. Harvest no longer fetches tags from the bare repo,
