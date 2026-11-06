@@ -80,10 +80,12 @@
   `docker_args`. The state file records the engagement's Docker daemon
   and a random token; `post-process` and `interactive` joining it,
   `stop`, `wait`, `retire` and `cleanup` refuse another daemon, and each
-  command keeps the Docker context it started with. `stop` takes no
-  lock, stops by ID only containers that carry the engagement's token
-  (`--numbered`: the numbered agents only), and fails when one still
-  runs; `wait` checks the token again before it goes on;
+  command keeps the Docker context it started with. `stop` stops by ID
+  only containers that carry the engagement's token (`--numbered`: the
+  numbered agents only), first without the engagement lock, then under
+  it, after waiting up to its grace for a start still launching agents,
+  and fails when one still runs or the lock stays held; `wait` checks
+  the token again before it goes on;
   `SWARM_ENGAGEMENT_TOKEN` binds `stop`, `post-process`, `interactive`
   and `harvest.sh` to one engagement, and the dashboard's `s` and `p` go
   through `launch.sh`. `start`, and `post-process` or `interactive` when

@@ -105,7 +105,7 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_ACTIVITY_TIMEOUT` | `0` | Seconds of logfile silence before the in-container watchdog SIGTERMs the agent CLI's process group.  `0` disables.  See [Activity watchdog](#activity-watchdog). |
 | `SWARM_ACTIVITY_POLL` | `10` | Watchdog mtime-poll interval, in seconds.  Rarely needs tuning. |
 | `SWARM_WATCHDOG_GRACE` | `10` | Grace window between watchdog SIGTERM and SIGKILL.  Rarely needs tuning. |
-| `SWARM_STOP_TIMEOUT` | `60` | Seconds `./launch.sh stop` passes to `docker stop -t`, so the harness's SIGTERM trap has time to ship any in-flight local commits via `_session_end_push` before SIGKILL hits.  See [Stopping the swarm](#stopping-the-swarm). |
+| `SWARM_STOP_TIMEOUT` | `60` | Seconds `./launch.sh stop` passes to `docker stop -t`, so the harness's SIGTERM trap has time to ship any in-flight local commits via `_session_end_push` before SIGKILL hits.  Also how long `stop` waits for the engagement lock.  See [Stopping the swarm](#stopping-the-swarm). |
 | `SWARM_WAIT_POLL` | `10` | Seconds between the checks of `./launch.sh wait`. |
 | `SWARM_RETIRE_LAYER_LIMIT_MB` | `100` | The most, in megabytes, that the Git checkouts a container has outside its workspace volume may take as bundles for retire to keep them. |
 | `SWARM_HELPER_OUTPUT_LIMIT_MB` | `16384` | The most, in megabytes, that a helper container of retire or cleanup may write to any one file on the host (its output, its errors, a scan archive). |
@@ -270,14 +270,23 @@ The harness handles SIGTERM and SIGINT identically; an
 `emergency shutdown complete` indicates the trap fired and
 the emergency push attempt completed.
 
-`stop` takes no lock, so it can stop a post-process that holds one.
-It acts on the engagement the state file records when it starts,
+`stop` acts on the engagement the state file records when it starts,
 through its token: it lists the running containers that carry it,
 reads each one's labels again right before it stops it, and stops it
-by ID, so a container of a later engagement is never stopped. It lists
-them again after each pass, so agents a start is still launching are
-stopped too, and fails when they keep appearing, when one of them
-still runs afterwards, or when Docker cannot tell. It refuses an
+by ID, so a container of a later engagement is never stopped. It does
+this first without the engagement lock, which a post-process holds for
+its whole run, and lists them again after each pass. A start that is
+still launching agents holds the lock until it is done, so `stop` then
+waits for the lock, up to `SWARM_STOP_TIMEOUT` seconds, and under it
+stops what came meanwhile. After a success no agent or post-process of
+the engagement runs or is about to start, with two exceptions: an
+interactive session holds the lock only while it prepares, so a
+container it is starting is not waited for, and a `wait` already
+running goes on to its post-process or harvest once it sees the agents
+stopped, as it does when they finish. `stop` fails when the lock stays
+held that long (run it again: it stops what runs then before it waits
+for the lock), when containers keep appearing, when one of them still
+runs afterwards, or when Docker cannot tell. It refuses an
 engagement of an earlier release (see
 [Engagements of earlier releases](#engagements-of-earlier-releases)),
 and stops nothing while Docker talks to another daemon than the
@@ -1261,9 +1270,11 @@ missing ones. Once the session's process has ended, a check from
 another Docker daemon (another Docker context or `DOCKER_HOST`) fails
 instead of guessing, and each check and launch pins one Docker context
 for all its Docker commands. `start --dashboard` lets the lock go before
-the dashboard opens. `stop`, `status`, `logs`, `progress.sh`,
-`costs.sh` and the dashboard never take it, and containers push
-through git without it.
+the dashboard opens. `stop` waits for it after its first passes, which
+stop what runs without it (see [Stopping the swarm](#stopping-the-swarm));
+`wait` takes it once the agents are done, and waits up to a minute for
+it. `status`, `logs`, `progress.sh`, `costs.sh` and the dashboard
+never take it, and containers push through git without it.
 
 A caller that runs several commands as one unit can hold the lock
 itself and pass the descriptor in `SWARM_LOCK_FD`. The engine checks
