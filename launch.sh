@@ -1186,18 +1186,25 @@ cmd_stop() {
     #   SWARM_STOP_TIMEOUT=120 ./launch.sh stop
     local stop_timeout="${SWARM_STOP_TIMEOUT:-60}" numbered=false
     local snap token list id info name rest state failed=0 pass=0 found
-    local labels
+    local labels phase
     while [ $# -gt 0 ]; do
         case "$1" in
             --numbered) numbered=true; shift ;;
             *) echo "ERROR: unknown stop option: $1" >&2; exit 1 ;;
         esac
     done
-    # stop takes no lock (post-process holds it for its whole run, and
-    # stop must be able to stop it).  It acts on the engagement the
-    # state file records now, through its token: every check reads the
-    # same copy of the state, and a container of a later engagement,
-    # under a reused name or engagement id, is never stopped.
+    # Whole seconds for docker stop -t and for the wait for the lock.
+    case "$stop_timeout" in
+        ''|*[!0123456789]*|???????*)
+            echo "ERROR: SWARM_STOP_TIMEOUT must be a whole number of" \
+                 "seconds below 1000000." >&2
+            exit 1 ;;
+    esac
+    stop_timeout=$((10#$stop_timeout))
+    # stop acts on the engagement the state file records now, through
+    # its token: every check reads the same copy of the state, and a
+    # container of a later engagement, under a reused name or engagement
+    # id, is never stopped.
     state_snapshot snap || exit 1
     swarm_cleanup_pending_check "$snap" || exit 1
     swarm_legacy_refuse "$RUNTIME_DIR" "$snap" || exit 1
@@ -1216,78 +1223,102 @@ cmd_stop() {
     labels="{{.Name}}|{{index .Config.Labels \"${SWARM_PROJECT_LABEL}\"}}"
     labels+="|{{index .Config.Labels \"${SWARM_CHECKOUT_LABEL}\"}}"
     labels+="|{{index .Config.Labels \"${SWARM_TOKEN_LABEL}\"}}"
-    # A start that recorded the engagement can still be launching its
-    # agents (it holds the lock; stop does not), so the listing is taken
-    # again after each pass, until one finds nothing more to stop: up to
-    # three passes that stop, then one that only checks.
-    while :; do
-        pass=$((pass + 1))
-        if ! list=$(docker ps -q \
-                --filter "label=${SWARM_TOKEN_LABEL}=${token}" \
-                --filter "label=${SWARM_PROJECT_LABEL}=${PROJECT}" \
-                2>/dev/null); then
-            echo "ERROR: cannot list Docker containers." >&2
+    # Two phases.  The first runs without the engagement lock, which a
+    # post-process holds for its whole run (stop must be able to stop
+    # it): the listing is taken again after each pass, until one finds
+    # nothing more to stop, up to three passes that stop.  A start that
+    # recorded the engagement can still be launching its agents then,
+    # and holds the lock until it is done, so an empty listing does not
+    # settle it.  The second phase waits for the lock, up to the grace,
+    # and under it, where neither a start nor a post-process can launch
+    # anything, stops what came meanwhile: up to three passes that stop,
+    # then one that only checks.  An interactive session holds the lock
+    # only while it prepares: a container it is starting is not waited
+    # for.  Nor is what a wait already running does once it sees the
+    # agents stopped: it goes on to its post-process or harvest, as when
+    # they finish.
+    for phase in 1 2; do
+        if [ "$phase" = 2 ] \
+                && ! swarm_lock "$RUNTIME_DIR" "$stop_timeout"; then
+            echo "ERROR: without the engagement lock, stop cannot tell" \
+                 "that nothing of this engagement runs or is about to" \
+                 "start; run stop again." >&2
             exit 1
         fi
-        found=false
-        for id in $list; do
-            # Its labels again, right before it is stopped by ID.  One gone
-            # since the listing needs nothing; one Docker cannot describe
-            # fails the stop.
-            if ! info=$(docker container inspect -f "$labels" "$id" \
+        pass=0
+        while :; do
+            pass=$((pass + 1))
+            if ! list=$(docker ps -q \
+                    --filter "label=${SWARM_TOKEN_LABEL}=${token}" \
+                    --filter "label=${SWARM_PROJECT_LABEL}=${PROJECT}" \
                     2>/dev/null); then
-                if ! swarm_container_gone "$id"; then
-                    echo "ERROR: cannot inspect container ${id}." >&2
-                    failed=1
-                fi
-                continue
-            fi
-            name="${info%%|*}"
-            name="${name#/}"
-            if [ "$info" != "/${name}|${PROJECT}|${CHECKOUT_PATH}|${token}" ]
-            then
-                echo "  ${name} skipped: not this engagement's container"
-                continue
-            fi
-            if $numbered; then
-                rest="${name#"${IMAGE_NAME}"-}"
-                if [ "$rest" = "$name" ] || [ -z "$rest" ] \
-                        || [ -n "${rest//[0-9]/}" ]; then
-                    continue
-                fi
-            fi
-            if [ "$pass" -gt 3 ]; then
-                echo "ERROR: containers of this engagement keep" \
-                     "starting; run stop again once start is done." >&2
+                echo "ERROR: cannot list Docker containers." >&2
                 exit 1
             fi
-            found=true
-            if docker stop -t "$stop_timeout" "$id" >/dev/null 2>&1; then
-                echo "  stopped ${name}"
-                continue
+            found=false
+            for id in $list; do
+                # Its labels again, right before it is stopped by ID.  One gone
+                # since the listing needs nothing; one Docker cannot describe
+                # fails the stop.
+                if ! info=$(docker container inspect -f "$labels" "$id" \
+                        2>/dev/null); then
+                    if ! swarm_container_gone "$id"; then
+                        echo "ERROR: cannot inspect container ${id}." >&2
+                        failed=1
+                    fi
+                    continue
+                fi
+                name="${info%%|*}"
+                name="${name#/}"
+                if [ "$info" \
+                        != "/${name}|${PROJECT}|${CHECKOUT_PATH}|${token}" ]
+                then
+                    echo "  ${name} skipped: not this engagement's container"
+                    continue
+                fi
+                if $numbered; then
+                    rest="${name#"${IMAGE_NAME}"-}"
+                    if [ "$rest" = "$name" ] || [ -z "$rest" ] \
+                            || [ -n "${rest//[0-9]/}" ]; then
+                        continue
+                    fi
+                fi
+                if [ "$pass" -gt 3 ]; then
+                    # Without the lock, the second phase settles it.
+                    [ "$phase" = 2 ] || break 2
+                    echo "ERROR: containers of this engagement keep" \
+                         "starting, even under the engagement lock." >&2
+                    exit 1
+                fi
+                found=true
+                if docker stop -t "$stop_timeout" "$id" >/dev/null 2>&1; then
+                    echo "  stopped ${name}"
+                    continue
+                fi
+                # docker stop fails too for one that stopped or went meanwhile;
+                # one that still runs, or that Docker cannot tell, fails the
+                # stop, so that callers (the dashboard's p) do not go on.
+                if ! state=$(docker container inspect -f '{{.State.Running}}' \
+                        "$id" 2>/dev/null); then
+                    state=unknown
+                    swarm_container_gone "$id" && state=gone
+                fi
+                case "$state" in
+                    false|gone) echo "  ${name} not running" ;;
+                    *)
+                        echo "ERROR: cannot stop ${name}." >&2
+                        failed=1 ;;
+                esac
+            done
+            if ! $found || [ "$failed" -ne 0 ]; then
+                break
             fi
-            # docker stop fails too for one that stopped or went meanwhile;
-            # one that still runs, or that Docker cannot tell, fails the
-            # stop, so that callers (the dashboard's p) do not go on.
-            if ! state=$(docker container inspect -f '{{.State.Running}}' \
-                    "$id" 2>/dev/null); then
-                state=unknown
-                swarm_container_gone "$id" && state=gone
-            fi
-            case "$state" in
-                false|gone) echo "  ${name} not running" ;;
-                *)
-                    echo "ERROR: cannot stop ${name}." >&2
-                    failed=1 ;;
-            esac
         done
-        if ! $found || [ "$failed" -ne 0 ]; then
-            break
-        fi
+        [ "$failed" -eq 0 ] || exit 1
     done
+    swarm_unlock
     # The state file stays: it records which checkout owns the runtime
     # directory, and later phases read it.
-    [ "$failed" -eq 0 ] || exit 1
 }
 
 cmd_logs() {
@@ -1408,8 +1439,11 @@ cmd_wait() {
         # meanwhile would have changed it), and none of its agents may
         # run.  A start records the engagement before it launches the
         # agents, and holds the lock until they run: agents it launched
-        # meanwhile are waited for too.
-        swarm_lock "$RUNTIME_DIR" || exit 1
+        # meanwhile are waited for too.  A stop takes the lock for a
+        # moment once it has stopped the agents, to check that no more
+        # are starting: wait up to a minute for it rather than give up.
+        # Agents a stop ended count as done, as those that finish.
+        swarm_lock "$RUNTIME_DIR" 60 || exit 1
         swarm_cleanup_pending_check "$STATE_FILE" || exit 1
         if [ "$(swarm_engagement_token "$STATE_FILE")" != "$token" ]; then
             echo "" >&2
