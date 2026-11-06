@@ -268,6 +268,47 @@ assert_eq "copy target directory is removed too" "false" \
 
 # ============================================================
 echo ""
+echo "=== 11. A run stopped on an unset variable fails ==="
+
+# Bash 3.2 (macOS's /bin/bash, which the script's shebang runs) gives an
+# EXIT trap status 0 when set -u stops the script.  The real script with
+# the fake docker of section 10, and a printf that, through BASH_ENV,
+# reads an unset variable when it prints the table's header (in the
+# script's own shell, after the trap is set).
+# The status /bin/bash gives an EXIT trap when set -u stops a script: 0
+# on Bash 3.2 (the bug), where the trap must say why it ends with 1; 1 on
+# later versions, where Bash's own status and error say it.
+printf '%s\n' 'set -euo pipefail' "trap 'echo \"\$?\"' EXIT" \
+    ': "$swarm_probe_unset"' > "$TMPDIR/stop-probe.sh"
+_stop_status=$(/bin/bash "$TMPDIR/stop-probe.sh" 2>/dev/null || true)
+_stop_says=0
+[ "$_stop_status" = 0 ] && _stop_says=1
+cat > "$TMPDIR/stop-env.sh" <<'EOF'
+printf() {
+    if [ -n "${SWARM_TEST_STOP:-}" ] && [ "${1:-}" = \
+            "%-4s %-20s %9s %10s %10s %6s %8s %8s\n" ]; then
+        : "$swarm_test_unset_variable"
+    fi
+    builtin printf "$@"
+}
+EOF
+_stop_rc=0
+_stop_out=$(cd "$_costs_repo" \
+    && PATH="$_fake_bin:$PATH" SWARM_RUNTIME_DIR="$TMPDIR/no-runtime" \
+        BASH_ENV="$TMPDIR/stop-env.sh" SWARM_TEST_STOP=1 \
+        "$_costs_sh" 2>&1) || _stop_rc=$?
+assert_eq "a run stopped on an unset variable ends with 1" "1" "$_stop_rc"
+assert_eq "saying so where Bash 3.2 would end with 0" "$_stop_says" \
+    "$(grep -c 'costs.sh stopped before the end of its run' <<< "$_stop_out")"
+_stop_rc=0
+(cd "$_costs_repo" \
+    && PATH="$_fake_bin:$PATH" SWARM_RUNTIME_DIR="$TMPDIR/no-runtime" \
+        BASH_ENV="$TMPDIR/stop-env.sh" "$_costs_sh" >/dev/null 2>&1) \
+    || _stop_rc=$?
+assert_eq "the same run without the stop ends with 0" "0" "$_stop_rc"
+
+# ============================================================
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
