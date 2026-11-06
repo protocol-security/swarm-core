@@ -1613,7 +1613,22 @@ refused "a dirty submodule in a layer checkout" "dirty sub"
 kept_case
 fixture /tmp/p
 git init -q "$F/snaproot/tmp/p/inner"
-refused "a checkout inside a layer checkout" "embedded inner"
+echo i > "$F/snaproot/tmp/p/inner/i"
+g -C "$F/snaproot/tmp/p/inner" add i
+g -C "$F/snaproot/tmp/p/inner" commit -qm inner
+assert_eq "a checkout inside a layer checkout: retired" "0" "$(retire)"
+assert_eq "in one scan, its parent's" "/tmp/p" \
+    "$(cat "$F/layer-scans" 2>/dev/null)"
+assert_eq "the inner checkout's objects are kept" "true" \
+    "$(all_kept "$F/snaproot/tmp/p/inner/.git" && echo true || echo false)"
+kept_case
+fixture /tmp/p
+git init -q "$F/snaproot/tmp/p/inner"
+echo i > "$F/snaproot/tmp/p/inner/i"
+g -C "$F/snaproot/tmp/p/inner" add i
+g -C "$F/snaproot/tmp/p/inner" commit -qm inner
+echo changed > "$F/snaproot/tmp/p/inner/i"
+refused "a dirty checkout inside a layer checkout" "dirty inner"
 kept_case
 fixture /tmp/p
 git init -q --bare "$F/snaproot/tmp/p/x.git"

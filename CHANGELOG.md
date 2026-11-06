@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Cleanup and retire keep repositories nested in a workspace.** A
+  repository cloned or initialized inside a workspace or a layer
+  checkout retire keeps (a setup hook's clone of the code under audit,
+  say) made both refuse (`embedded`), and nothing let them go on. Its
+  git dir is now checked and copied like the workspace's own (refs,
+  reflogs, objects, stashes, unfinished operations, git-dir files, its
+  submodules), its work outside Git's history is listed with its path,
+  and the workspace's entry for its directory is no longer counted as
+  the workspace's. Every copied git dir keeps its path as `<k>/path`
+  under the recovery refs. A bare repository, a `.git` link and a
+  `.git` file that leads elsewhere still refuse.
 - **A workspace scan stops instead of hanging on what an agent left.**
   A FIFO or another special file as a git dir's `HEAD`, `config`,
   `index`, pointer or alternates file, or a config that includes one,
