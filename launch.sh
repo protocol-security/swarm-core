@@ -28,6 +28,15 @@ Commands:
   chat PROFILE         Alias for interactive PROFILE.
   shell PROFILE        Start an interactive shell from a named
                        agent profile.
+  retire [--post-process] [--discard-uncommitted]
+                       Remove stopped containers whose files all live
+                       in their workspace volumes, after copying the
+                       Git checkouts they have outside them into the
+                       checkout.
+  cleanup [--discard-uncommitted]
+                       Delete the engagement (containers, workspace
+                       volumes, bare repo, mirrors) after copying what
+                       Git keeps there into the checkout.
 
 Start options:
   --dashboard          Open the TUI dashboard after launch.
@@ -60,6 +69,22 @@ source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq docker
 # shellcheck source=lib/project.sh
 source "$SWARM_DIR/lib/project.sh"
+# shellcheck source=lib/preserve.sh
+source "$SWARM_DIR/lib/preserve.sh"
+
+# retire and cleanup read and write Git data: none of the caller's GIT_*
+# variables may point them at another repository or inject settings
+# (only the choice of config files stays).  Before the repository is
+# looked up below.
+case "${1:-}" in
+    retire|cleanup)
+        for _v in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do
+            case "$_v" in
+                GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM) ;;
+                *) unset "$_v" ;;
+            esac
+        done ;;
+esac
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROJECT_RAW="$(basename "$REPO_ROOT")"
@@ -76,6 +101,12 @@ IMAGE_NAME="${PROJECT}-agent"
 # Every command acts on this project's containers or runtime directory,
 # so none runs when the directory belongs to another checkout.
 swarm_runtime_verify "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
+# Every Docker call of this run, from this first listing on, goes to one
+# daemon, even if another terminal switches the context meanwhile.
+if ! swarm_docker_pin; then
+    echo "ERROR: cannot read the current Docker context." >&2
+    exit 1
+fi
 swarm_containers_verify "$PROJECT" "$REPO_ROOT" || exit 1
 CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")"
 CHECKOUT_LABEL="${SWARM_CHECKOUT_LABEL}=${CHECKOUT_PATH}"
@@ -93,21 +124,6 @@ expand_env_ref() {
     else
         printf '%s' "$val"
     fi
-}
-
-# Docker containers may create files owned by a different UID inside
-# bind-mounted host directories.  Plain rm -rf fails without root.
-# Use a throwaway Alpine container (Docker is already required) so
-# we never need sudo/su -c.
-rm_docker_dir() {
-    local dir="$1"
-    [ -d "$dir" ] || return 0
-    local parent base
-    parent="$(dirname "$dir")"
-    base="$(basename "$dir")"
-    docker run --rm -v "${parent}:${parent}" alpine \
-        rm -rf "${parent}/${base}" 2>/dev/null \
-        || rm -rf "$dir" 2>/dev/null || true
 }
 
 # Compute the comma-separated SWARM_AGENTS build-arg from a config:
@@ -160,35 +176,6 @@ build_image() {
         -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
 }
 
-# Remove this checkout's container NAME before the name is reused.  The
-# label is checked again here, since another checkout can create the
-# container after the check at the top, and removal goes by ID; when a
-# foreign container takes the name afterwards, docker run fails on it.
-remove_own_container() {
-    local id
-    id=$(swarm_own_container_id "$1" "$CHECKOUT_PATH" "$PROJECT") || exit 1
-    if [ -n "$id" ]; then
-        docker rm -f "$id" >/dev/null
-    fi
-}
-
-# Stop this checkout's container NAME by ID, after checking its label
-# again; a container of another checkout under that name is skipped.
-stop_own_container() {
-    local name="$1" timeout="$2" id
-    if ! id=$(swarm_own_container_id "$name" "$CHECKOUT_PATH" \
-            "$PROJECT"); then
-        echo "  ${name} skipped: not this checkout's container"
-        return 0
-    fi
-    if [ -n "$id" ] \
-            && docker stop -t "$timeout" "$id" >/dev/null 2>&1; then
-        echo "  stopped ${name}"
-    else
-        echo "  ${name} not running"
-    fi
-}
-
 # Print the state of this checkout's container NAME: its Docker status,
 # "not found" when there is none, or "not ours" when a container of
 # another checkout or project holds the name.
@@ -207,37 +194,66 @@ own_container_state() {
         || printf 'not found'
 }
 
-# Hold the lock descriptors this process inherited until container NAME
-# has started (running, or already stopped), file STOP exists, or
-# process PARENT is gone.  cmd_interactive creates STOP as soon as
-# docker run returns; the parent check covers a launch.sh that was
-# killed.  There is no timeout: a slow start keeps the lock, to protect
-# what the container is about to mount.
-hold_lock_until_running() {
-    local name="$1" parent="$2" stop="$3" state
-    while [ ! -e "$stop" ] && kill -0 "$parent" 2>/dev/null; do
-        state=$(docker inspect -f '{{.State.Status}}' "$name" \
-            2>/dev/null || true)
-        case "$state" in
-            running|exited|dead) return 0 ;;
-        esac
-        sleep 0.1
-    done
-}
-
 # Lifecycle commands call this before they touch the bare repo or the
 # mirrors: stop on state that older releases left in /tmp (named after
 # the directory, as they did), create or check the private runtime
 # directory, take its engagement lock, and record this checkout as its
 # owner.  The lock stays held until the command exits, except that
-# interactive releases it once its container runs and start --dashboard
-# before the dashboard opens; children such as harvest.sh inherit it.
+# interactive releases it once its session is recorded, before docker
+# run, and start --dashboard before the dashboard opens; children such
+# as harvest.sh inherit it.
 prepare_runtime() {
     swarm_refuse_legacy_state "$(swarm_project_id "$PROJECT_RAW")" \
         || exit 1
+    # Only where cleanup can work later; checked before anything is made.
+    swarm_runtime_location_ok "$RUNTIME_DIR" "$REPO_ROOT" || exit 1
     swarm_runtime_init "$RUNTIME_DIR" || exit 1
     swarm_lock "$RUNTIME_DIR" || exit 1
+    swarm_cleanup_pending_check "$STATE_FILE" || exit 1
+    swarm_legacy_refuse "$RUNTIME_DIR" "$STATE_FILE" || exit 1
+    swarm_engagement_token_check "$STATE_FILE" || exit 1
     swarm_runtime_claim "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
+}
+
+# Stop unless the runtime directory holds nothing of an engagement: no
+# bare repo, no upstream.git.new, no mirrors/, no remnant of a cleanup,
+# no container or workspace volume of this checkout, no interactive
+# session open or starting.  A new engagement starts only there, after
+# ./launch.sh cleanup has preserved and removed the last one.  Called
+# under the lock and the pin, by start, and by post-process and
+# interactive when they would create the engagement.
+require_clean_runtime() {
+    local left live engaged rc=0 tmp
+    left=$(swarm_runtime_leftovers "$RUNTIME_DIR" "$PROJECT" "$REPO_ROOT" \
+        "$CHECKOUT_PATH") || exit 1
+    live=$(swarm_pending_live "$RUNTIME_DIR") || exit 1
+    if [ -n "$live" ]; then
+        left="${left:+${left}$'\n'}  interactive sessions: $(printf '%s\n' \
+            "$live" | tr '\n' ' ')"
+    fi
+    [ -n "$left" ] || return 0
+    engaged=$(swarm_engagement_recorded "$STATE_FILE") || exit 1
+    if [ -z "$engaged" ]; then
+        swarm_legacy_explain "$RUNTIME_DIR" \
+            "what is left of an engagement it never recorded"
+        printf '%s\n' "$left" >&2
+        exit 1
+    fi
+    echo "ERROR: a new engagement starts only on a clean runtime" \
+         "directory; ${RUNTIME_DIR} still holds engagement" \
+         "${engaged}:" >&2
+    printf '%s\n' "$left" >&2
+    if [ -d "$BARE_REPO" ] && swarm_tmp_file tmp e3; then
+        swarm_preservation_check "$BARE_REPO" "$REPO_ROOT" > "$tmp" || rc=$?
+        if [ "$rc" -eq 1 ]; then
+            swarm_preservation_explain "$BARE_REPO" < "$tmp"
+        fi
+        rm -f "$tmp"
+    fi
+    echo "Stop the agents (./launch.sh stop), run harvest.sh, then" \
+         "./launch.sh cleanup: it keeps everything Git had there as" \
+         "recovery refs before it deletes anything." >&2
+    exit 1
 }
 
 # Record the run in the state file, so a standalone dashboard can show
@@ -271,72 +287,246 @@ write_state_file() {
 }
 
 create_bare_repo() {
-    local label="${1:-bare repo}"
+    local label="${1:-bare repo}" base daemon new="${BARE_REPO}.new"
     echo "--- Creating ${label} ---"
-    rm_docker_dir "$BARE_REPO"
-    # A local clone hardlinks object files by default, and the chmod
-    # below would then make the checkout's own objects writable for
-    # every user.  Copy them instead, with any objects the checkout
-    # borrows through alternates.
-    git clone --bare --no-hardlinks --dissociate "$REPO_ROOT" "$BARE_REPO"
-    git -C "$BARE_REPO" branch agent-work HEAD 2>/dev/null || true
-    git -C "$BARE_REPO" symbolic-ref HEAD refs/heads/agent-work
+    # The engagement starts from the commit the checkout has now.
+    base=$(git -C "$REPO_ROOT" rev-parse --verify --quiet 'HEAD^{commit}') \
+        || { echo "ERROR: ${REPO_ROOT} has no commit to start from." >&2
+             exit 1; }
+    # The clean-runtime check came first; nothing is ever replaced.
+    if [ -e "$BARE_REPO" ] || [ -L "$BARE_REPO" ] \
+            || [ -e "$new" ] || [ -L "$new" ]; then
+        echo "ERROR: ${BARE_REPO} or ${new} is there already." >&2
+        exit 1
+    fi
+    if ! daemon=$(swarm_docker_daemon_id); then
+        echo "ERROR: cannot read the Docker daemon id." >&2
+        exit 1
+    fi
+    # The engagement is recorded first: a run stopped from here on
+    # leaves at most upstream.git.new under it, which cleanup preserves
+    # and removes.
+    begin_engagement "$base" "$daemon" || {
+        echo "ERROR: cannot record the engagement in ${STATE_FILE}." >&2
+        exit 1
+    }
+    # Through Git's transport (--no-local), not a copy of the object
+    # store: the bare repo gets new files, so the chmod below cannot
+    # reach the checkout's own through hardlinks; it borrows nothing
+    # through alternates; and it holds what the checkout's branches,
+    # tags and HEAD reach, without the objects only other refs
+    # (recovery refs among them), the reflogs or nothing reach, which
+    # each cleanup would otherwise keep again.  Later commands join any
+    # bare repo they find, so the clone gets its name only once it is
+    # ready.
+    if ! git clone --bare --no-local "$REPO_ROOT" "$new" \
+            || ! prepare_bare_repo "$new" "$base" \
+            || ! mv "$new" "$BARE_REPO"; then
+        echo "ERROR: cannot prepare ${BARE_REPO}." >&2
+        # This user's files, which no container has seen yet.
+        rm -rf "$new"
+        exit 1
+    fi
+}
+
+# Set up the fresh clone DIR for an engagement that starts at BASE.
+# Returns 1 at the first failure.
+prepare_bare_repo() {
+    local dir="$1" base="$2" ref refs
+    # The clone copies every local branch.  Branches that harvest or
+    # the preservation checks treat as agent work start empty, so an
+    # old local agent-work, interactive or parked branch is never
+    # taken for work of this engagement.
+    refs=$(git -C "$dir" for-each-ref --format='%(refname)' \
+        refs/heads/swarm/ refs/heads/agent-parked/ refs/swarm-runs/) \
+        || return 1
+    # Ref names cannot contain whitespace or glob characters, so word
+    # splitting yields one name per word.
+    for ref in $refs; do
+        git -C "$dir" update-ref -d "$ref" || return 1
+    done
+    git -C "$dir" update-ref refs/heads/agent-work "$base" || return 1
+    git -C "$dir" update-ref refs/swarm/base "$base" || return 1
+    git -C "$dir" symbolic-ref HEAD refs/heads/agent-work || return 1
     # The container's agent user can have a different UID from the host
     # user, so the repo stays writable for everyone.  The owner-only
     # runtime directory around it keeps other host users out.
-    git -C "$BARE_REPO" config core.sharedRepository world
-    chmod -R a+rwX "$BARE_REPO"
-    begin_engagement
+    git -C "$dir" config core.sharedRepository world || return 1
+    chmod -R a+rwX "$dir" || return 1
 }
 
 # A new bare repo starts a new engagement: record its id, which every
-# later phase checks against SWARM_ENGAGEMENT_ID.
+# later phase checks against SWARM_ENGAGEMENT_ID, and the commit it
+# starts from (BASE).  Agents can write to the bare repo, including its
+# refs/swarm/base, so the state file keeps the copy that later checks
+# of the agents' branches can trust.  Returns 1 if either fails.
 begin_engagement() {
-    local id
-    id=$(swarm_engagement_new) || exit 1
+    local base="$1" daemon="$2" id token
+    id=$(swarm_engagement_new) || return 1
+    token=$(swarm_random_hex 8) || return 1
+    # What harvests of an earlier engagement merged means nothing for
+    # this one (cleanup drops it too).
     swarm_state_update "$STATE_FILE" \
-        '.engagement_id = $id | .engagement_started_at = $at' \
+        '.engagement_id = $id | .engagement_started_at = $at
+         | .base_commit = $base | .docker_daemon = $daemon
+         | .engagement_token = $token
+         | del(.harvested, .harvest_pending)' \
         --arg id "$id" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        || exit 1
+        --arg base "$base" --arg daemon "$daemon" --arg token "$token" \
+        || return 1
     echo "Engagement: ${id}"
 }
 
+# Fill WORKSPACE_ARGS with a new workspace volume for container NAME
+# (kind KIND, context CONTEXT) and the run arguments every engine
+# container gets after docker_args, so that an entry there cannot
+# replace them: the engagement and its token as labels, no restart
+# policy and no auto-remove (retire and cleanup refuse both).  Needs the
+# engagement recorded, so it runs once the bare repo was created or
+# joined.
+workspace_args() {
+    local name="$1" kind="$2" context="$3" engagement token vol
+    engagement=$(swarm_engagement_recorded "$STATE_FILE") || exit 1
+    token=$(swarm_engagement_token "$STATE_FILE") || exit 1
+    if [ -z "$engagement" ] || [ -z "$token" ]; then
+        echo "ERROR: ${STATE_FILE} records no engagement." >&2
+        exit 1
+    fi
+    vol=$(swarm_workspace_volume_create "$name" "$PROJECT" \
+        "$CHECKOUT_PATH" "$engagement" "$token" "$kind" "$context") \
+        || exit 1
+    WORKSPACE_ARGS=(
+        --mount "type=volume,src=${vol},dst=/workspace"
+        --label "${SWARM_ENGAGEMENT_LABEL}=${engagement}"
+        --label "${SWARM_TOKEN_LABEL}=${token}"
+        --restart no --rm=false
+    )
+}
+
+# A session that creates the bare repo mirrors the submodules too; one
+# that joins keeps the mirrors the engagement has, which other sessions
+# may be about to mount, and only adds the ones that are missing.  The
+# image is built once the checks passed, and before an engagement is
+# created, so a failed build leaves the runtime directory clean.
 ensure_bare_repo_for_interactive() {
     if [ ! -d "$BARE_REPO" ]; then
+        # A token names an engagement to join, never a new one.
+        if [ -n "${SWARM_ENGAGEMENT_TOKEN:-}" ]; then
+            echo "ERROR: the engagement this session was started for" \
+                 "has no bare repo any more." >&2
+            exit 1
+        fi
+        require_clean_runtime
+        build_image
         create_bare_repo "bare repo for interactive session"
+        mirror_submodules
         return
     fi
     swarm_engagement_join "$STATE_FILE" || exit 1
+    swarm_engagement_daemon_check "$STATE_FILE" || exit 1
 
     local bare_head local_head
-    bare_head=$(git -C "$BARE_REPO" rev-parse --verify --quiet \
-        refs/heads/agent-work 2>/dev/null || true)
+    bare_head=$(swarm_no_fetch git -C "$BARE_REPO" rev-parse --verify \
+        --quiet refs/heads/agent-work 2>/dev/null || true)
     local_head=$(git rev-parse HEAD 2>/dev/null || true)
     if [ -n "$bare_head" ] && [ "$bare_head" != "$local_head" ] \
             && git merge-base --is-ancestor "$bare_head" HEAD 2>/dev/null; then
         echo "ERROR: ${BARE_REPO} is stale (agent-work" \
              "${bare_head:0:7} behind local HEAD" \
              "${local_head:0:7})." >&2
-        echo "       Remove it to start from current HEAD:" >&2
-        echo "       $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
+        echo "       To start from the current HEAD, end this" \
+             "engagement: stop the agents, run harvest.sh, then" \
+             "./launch.sh cleanup, which keeps everything as recovery" \
+             "refs." >&2
         exit 1
     fi
+    build_image
+    mirror_submodules missing
 }
 
+# Print the commit the engagement started from, as begin_engagement
+# recorded it in the state file (the bare repo's refs/swarm/base is the
+# agents' to write).  Fails unless it is a SHA-1 or SHA-256 commit id.
+engagement_base() {
+    local state base
+    state=$(swarm_state_read "$STATE_FILE") || return 1
+    base=$(printf '%s' "$state" | jq -r '.base_commit // empty') \
+        || return 1
+    case "${#base}:${base}" in
+        40:*[!0123456789abcdef]*|64:*[!0123456789abcdef]*) return 1 ;;
+        40:*|64:*) printf '%s' "$base" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Mirror every submodule into MIRROR_DIR.  A new engagement finds none
+# (clean runtime), and one that is there refuses; with "missing", only
+# the mirrors that do not exist yet are made and the others, which a
+# session may be about to mount, stay.  Each is cloned to <name>.git.new
+# and renamed once ready, so a run stopped half way leaves only a .new,
+# which cleanup preserves and removes.
 mirror_submodules() {
+    local only_missing="${1:-}" base
+    # The containers check out the submodule commits the engagement's
+    # base records.
+    base=$(engagement_base) || {
+        echo "ERROR: ${STATE_FILE} records no base commit." >&2
+        exit 1
+    }
     cd "$REPO_ROOT"
     mkdir -p "$MIRROR_DIR"
-    git submodule foreach --quiet 'echo "$name|$toplevel/.git/modules/$sm_path"' | \
-    while IFS='|' read -r name gitdir; do
-        local safe_name mirror
+    git submodule foreach --quiet \
+        'echo "$name|$sm_path|$toplevel/.git/modules/$sm_path"' | \
+    while IFS='|' read -r name path gitdir; do
+        local safe_name mirror entry mode oid
         safe_name="${name//\//_}"
         mirror="${MIRROR_DIR}/${safe_name}.git"
-        rm_docker_dir "$mirror"
+        if [ -e "$mirror" ] || [ -L "$mirror" ]; then
+            [ "$only_missing" = missing ] && continue
+            echo "ERROR: ${mirror} is there already." >&2
+            exit 1
+        fi
+        if [ -e "$mirror.new" ] || [ -L "$mirror.new" ]; then
+            echo "ERROR: ${mirror}.new is left from a run stopped half" \
+                 "way; ./launch.sh cleanup removes it." >&2
+            exit 1
+        fi
+        # What the base records at the submodule's path, read before
+        # anything is made.
+        if ! entry=$(git --literal-pathspecs ls-tree "$base" -- "$path")
+        then
+            echo "ERROR: cannot read ${path} in the engagement's base" \
+                 "${base}." >&2
+            exit 1
+        fi
+        mode="" oid=""
+        read -r mode _ oid _ <<< "$entry"
         echo "--- Mirroring submodule: ${name} ---"
-        # Copy objects, as create_bare_repo does, so the chmod below
-        # cannot reach the checkout's .git/modules through hardlinks.
-        git clone --bare --no-hardlinks --dissociate "$gitdir" "$mirror"
-        chmod -R a+rwX "$mirror"
+        # Through Git's transport, as create_bare_repo does: new files,
+        # so the chmod below cannot reach the checkout's .git/modules
+        # through hardlinks, holding what the submodule's branches, tags
+        # and HEAD reach.
+        git clone --bare --no-local "$gitdir" "$mirror.new"
+        # The commit the base records there stays in the mirror under
+        # refs/swarm/gitlink, fetched by id when none of those reaches
+        # it (the submodule's checkout moved on).
+        if [ "$mode" = 160000 ]; then
+            git -C "$mirror.new" cat-file -e "${oid}^{commit}" 2>/dev/null \
+                || git -C "$mirror.new" -c protocol.version=2 fetch -q \
+                    --no-tags --no-write-fetch-head "$gitdir" "$oid" \
+                    2>/dev/null \
+                || true
+            if git -C "$mirror.new" cat-file -e "${oid}^{commit}" \
+                    2>/dev/null; then
+                git -C "$mirror.new" update-ref refs/swarm/gitlink "$oid"
+            else
+                echo "WARNING: ${gitdir} has no commit ${oid}, which" \
+                     "the engagement's base records for ${path}; the" \
+                     "containers cannot check that submodule out." >&2
+            fi
+        fi
+        chmod -R a+rwX "$mirror.new"
+        mv "$mirror.new" "$mirror"
     done
 }
 
@@ -363,6 +553,98 @@ mirror_volume_args() {
 available_drivers() {
     find "$SWARM_DIR/lib/drivers" -type f -name '*.sh' \
         -exec basename {} .sh \; | tr '\n' ' '
+}
+
+# retire needs no swarmfile: it acts on what the runtime directory and
+# Docker already hold.
+case "${1:-}" in
+    retire)
+        shift
+        # shellcheck source=lib/preserve.sh
+        source "$SWARM_DIR/lib/preserve.sh"
+        # shellcheck source=lib/retire.sh
+        source "$SWARM_DIR/lib/retire.sh"
+        rc=0
+        cmd_retire "$@" || rc=$?
+        exit "$rc"
+        ;;
+    cleanup)
+        shift
+        # shellcheck source=lib/preserve.sh
+        source "$SWARM_DIR/lib/preserve.sh"
+        # shellcheck source=lib/retire.sh
+        source "$SWARM_DIR/lib/retire.sh"
+        # shellcheck source=lib/cleanup.sh
+        source "$SWARM_DIR/lib/cleanup.sh"
+        rc=0
+        cmd_cleanup "$@" || rc=$?
+        exit "$rc"
+        ;;
+esac
+
+# Temporary files this run makes, removed when it exits, however it
+# does: Bash runs the EXIT trap on exit, under set -e, and when HUP,
+# INT or TERM end the script (retire and cleanup, above, make none and
+# set their own traps).
+SWARM_TMP_FILES=()
+# Set when the run gets to an end it means: its last line, or an exit
+# with status 0 it makes on purpose.
+SWARM_EXIT_OK=false
+swarm_tmp_cleanup() {
+    if [ "${#SWARM_TMP_FILES[@]}" -gt 0 ]; then
+        rm -f "${SWARM_TMP_FILES[@]}"
+    fi
+}
+# The EXIT trap: remove the temporary files, and never let a run that
+# stopped short end with status 0.  Bash 3.2 (macOS's /bin/bash) runs an
+# EXIT trap with $? at 0 when set -u stops the script on an unset
+# variable, so that stop would pass for success.  Any other status
+# stays, a signal's too.
+swarm_exit_trap() {
+    local rc=$?
+    swarm_tmp_cleanup
+    if [ "$rc" -eq 0 ] && ! $SWARM_EXIT_OK; then
+        echo "ERROR: launch.sh stopped before the end of its run." >&2
+        exit 1
+    fi
+}
+trap swarm_exit_trap EXIT
+
+# Make a temporary file swarm-NAME.XXXXXX in TMPDIR, removed when this
+# run exits, and set the variable VAR to its absolute path (the run
+# may change directory before it exits).
+swarm_tmp_file() {
+    local _dir="${TMPDIR:-/tmp}" _tmp
+    case "$_dir" in
+        /*) ;;
+        *)
+            # As for the swarmfile's directory: CDPATH cleared, links
+            # resolved, trailing newlines kept.
+            _dir=$(CDPATH='' cd -P -- "$_dir" && pwd -P && echo x) \
+                || return 1
+            _dir="${_dir%x}"
+            _dir="${_dir%$'\n'}" ;;
+    esac
+    _tmp=$(mktemp "${_dir%/}/swarm-$2.XXXXXX") || return 1
+    SWARM_TMP_FILES+=("$_tmp")
+    printf -v "$1" '%s' "$_tmp"
+}
+
+# Copy the state file to a temporary file and set the variable VAR to
+# its path, for stop and wait, which hold no lock: every check they make
+# then reads one version of it, whatever another terminal does
+# meanwhile (the state file is replaced by a rename, so a copy holds one
+# whole version).  With no state file, VAR names a file that does not
+# exist.
+state_snapshot() {
+    local _snap
+    swarm_tmp_file _snap state || return 1
+    if [ -e "$STATE_FILE" ] || [ -L "$STATE_FILE" ]; then
+        cp "$STATE_FILE" "$_snap" || return 1
+    else
+        rm -f "$_snap" || return 1
+    fi
+    printf -v "$1" '%s' "$_snap"
 }
 
 CONFIG_FILE="${SWARM_CONFIG:-}"
@@ -545,6 +827,7 @@ Usage: $0 interactive [--agent NAME | --agent-index N] [--shell]
 
 Start one human-guided container from an agents[] profile.
 HELP
+                SWARM_EXIT_OK=true
                 exit 0 ;;
             *)
                 if [ -n "$selector" ]; then
@@ -557,7 +840,7 @@ HELP
     done
 
     local profile_file
-    profile_file=$(mktemp)
+    swarm_tmp_file profile_file profile || exit 1
     select_interactive_profile "$selector" "$selector_index" "$profile_file"
 
     local profile_name profile_label safe_profile short_id branch name
@@ -571,7 +854,9 @@ HELP
     fi
     safe_profile="$(swarm_project_id "$profile_label")"
     safe_profile="${safe_profile:0:32}"
-    short_id="$(date -u +%Y%m%d%H%M%S)-${RANDOM}"
+    # Random enough that two sessions never meet (a record is never
+    # written over another; see swarm_pending_write).
+    short_id="$(date -u +%Y%m%d%H%M%S)-$(swarm_random_hex 4)" || exit 1
     branch="swarm/${SWARM_RUN_HASH}/interactive-${safe_profile}-${short_id}"
     name="${IMAGE_NAME}-interactive-${safe_profile}-${short_id}"
 
@@ -588,6 +873,13 @@ HELP
     agent_auth=$(jq -r '.auth // empty' "$profile_file")
     agent_context=$(jq -r '.context // empty' "$profile_file")
     agent_context="${agent_context:-full}"
+    case "$agent_context" in
+        full|slim|none) ;;
+        *)
+            echo "ERROR: unknown context mode: ${agent_context}" \
+                 "(full, slim or none)." >&2
+            exit 1 ;;
+    esac
     agent_prompt=$(jq -r '.prompt // empty' "$profile_file")
     agent_auth_token=$(jq -r '.auth_token // empty' "$profile_file")
     agent_auth_token="$(expand_env_ref "$agent_auth_token")"
@@ -618,8 +910,6 @@ HELP
 
     prepare_runtime
     ensure_bare_repo_for_interactive
-    mirror_submodules
-    build_image
 
     MIRROR_ARGS=()
     mirror_volume_args
@@ -642,32 +932,41 @@ HELP
         [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
     done
 
-    remove_own_container "$name"
+    # Its workspace volume, made under the lock before the session is
+    # recorded.
+    workspace_args "$name" interactive "$agent_context"
 
     # The session can last hours and only pushes through git, so it runs
-    # without the lock, but the lock has to last until the container
-    # runs: its mounts are made at start, and a concurrent start could
-    # otherwise replace the bare repo or the mirrors first.  A helper
-    # that inherits the lock descriptor holds it until then; this shell
-    # drops its own copy so that docker run, which keeps the terminal
-    # for the whole session, does not inherit it.
-    # The helper gets no stdio, so it never keeps a caller's output pipe
-    # open.  Its stop file lives in the private runtime directory.
-    local helper stop rc=0
-    stop="${RUNTIME_DIR}/.interactive-$$.stop"
-    rm -f "$stop"
-    hold_lock_until_running "$name" "$$" "$stop" \
-        </dev/null >/dev/null 2>&1 &
-    helper=$!
+    # without the lock.  It is recorded under the lock with this
+    # process's pid; then the lock goes and exec keeps that pid for
+    # docker run, which makes the container and its mounts.  Until this
+    # process ends, or its container after a detach, start and
+    # post-process leave the bare repo and the mirrors alone
+    # (require_clean_runtime).  One Docker context serves
+    # the daemon id and docker run, even if another terminal switches
+    # it meanwhile.
+    local daemon
+    if ! swarm_docker_pin || ! daemon=$(swarm_docker_daemon_id); then
+        echo "ERROR: cannot read the Docker daemon id." >&2
+        exit 1
+    fi
+    if ! swarm_pending_write "$RUNTIME_DIR" "$name" "$$" "$daemon"; then
+        echo "ERROR: cannot record the interactive session." >&2
+        exit 1
+    fi
     swarm_unlock
     echo "--- Starting interactive ${profile_label} (${agent_model}) ---"
     echo "Branch: ${branch}"
-    docker run -it \
-        --name "$name" \
+    # --name and the session label come after docker_args: the last
+    # one wins, and the record must find the container Docker makes.
+    exec docker run -it \
         -v "${BARE_REPO}:/upstream:rw" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
         "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
         "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+        "${WORKSPACE_ARGS[@]}" \
+        --name "$name" \
+        --label "${SWARM_SESSION_LABEL}=${name}" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
         --label "$CHECKOUT_LABEL" \
         --label "$PROJECT_LABEL" \
@@ -690,13 +989,7 @@ HELP
         -e "SWARM_INTERACTIVE_PROFILE=${profile_label}" \
         -e "SWARM_INTERACTIVE_MODE=${mode}" \
         --entrypoint /interactive.sh \
-        "$IMAGE_NAME" || rc=$?
-    # docker run has returned: the container ran or never will.  wait
-    # only reaps this shell's own child, so a reused PID is never hit.
-    : > "$stop"
-    wait "$helper" 2>/dev/null || true
-    rm -f "$stop"
-    return "$rc"
+        "$IMAGE_NAME"
 }
 
 cmd_start() {
@@ -728,59 +1021,23 @@ cmd_start() {
         fi
     done <<< "$group_prompts"
 
-    prepare_runtime
-
-    # Refuse to overwrite a bare repo that diverges from local HEAD.
-    # Distinguish two directions so the message leads with the remediation
-    # that actually works.  The `--is-ancestor` check runs in the local
-    # repo, not in the bare: in the "local ahead" case LOCAL_HEAD is not
-    # in the bare's object db, so running the check in the bare would
-    # always return non-zero and collapse the stale case into the
-    # unharvested branch.  Running in local works across all three cases
-    # because bare's objects are either (a) still in local (inherited at
-    # clone time, so ancestry is resolvable -> stale) or (b) only in
-    # bare (agent-produced post-clone, so BARE_HEAD errors out here ->
-    # unharvested, which also catches the truly-divergent case).
-    if [ -d "$BARE_REPO" ]; then
-        BARE_HEAD=$(git -C "$BARE_REPO" rev-parse --verify --quiet refs/heads/agent-work 2>/dev/null || true)
-        LOCAL_HEAD=$(git rev-parse HEAD 2>/dev/null || true)
-        if [ -n "$BARE_HEAD" ] && [ "$BARE_HEAD" != "$LOCAL_HEAD" ]; then
-            if git merge-base --is-ancestor "$BARE_HEAD" HEAD 2>/dev/null; then
-                echo "ERROR: ${BARE_REPO} is stale (agent-work" \
-                     "${BARE_HEAD:0:7} behind local HEAD" \
-                     "${LOCAL_HEAD:0:7})." >&2
-                echo "       Remove it to start a fresh run from" \
-                     "current HEAD:" >&2
-                echo "       $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
-            else
-                echo "ERROR: ${BARE_REPO} has unharvested agent" \
-                     "commits (agent-work ${BARE_HEAD:0:7} vs local" \
-                     "HEAD ${LOCAL_HEAD:0:7})." >&2
-                echo "       Run harvest.sh first, or if you've" \
-                     "already integrated those commits:" >&2
-                echo "       $(swarm_bare_rm_command "$RUNTIME_DIR")" >&2
-            fi
-            exit 1
-        fi
-    fi
-
-    create_bare_repo "bare repo"
-
-    # Mirror each submodule so containers can init without network.
-    mirror_submodules
-
     # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line).
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
-    AGENTS_CFG=$(mktemp)
+    swarm_tmp_file AGENTS_CFG agents || exit 1
     jq -r '.tag as $dt | .driver as $dd |
         .agents[] | range(.count // 0) as $i |
         [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' \
         "$CONFIG_FILE" > "$AGENTS_CFG"
 
-    # Preflight: validate all referenced drivers exist before
-    # spending time on image build and container startup.
-    local _bad_drivers="" _checked_drivers=" "
-    while IFS='|' read -r _ _ _ _ _ _ _ _ _ _drv; do
+    # Preflight: validate all referenced drivers and context modes
+    # before anything is created, so that a mistake in the swarmfile
+    # leaves the runtime directory clean.
+    local _bad_drivers="" _checked_drivers=" " _ctx _bad_contexts=""
+    while IFS='|' read -r _ _ _ _ _ _ctx _ _ _ _drv; do
+        case "${_ctx:-full}" in
+            full|slim|none) ;;
+            *) _bad_contexts+="  - ${_ctx}\n" ;;
+        esac
         _drv="${_drv:-${SWARM_DRIVER_DEFAULT}}"
         [[ "$_checked_drivers" == *" $_drv "* ]] && continue
         _checked_drivers+="$_drv "
@@ -793,8 +1050,23 @@ cmd_start() {
         echo "Available drivers: $(available_drivers)" >&2
         exit 1
     fi
+    if [ -n "$_bad_contexts" ]; then
+        printf "ERROR: unknown context mode(s):\n%b" "$_bad_contexts" >&2
+        echo "Context modes: full, slim, none." >&2
+        exit 1
+    fi
 
+    prepare_runtime
+
+    # A new engagement, only once the last one was cleaned up.  The
+    # image is built before it is created, so a failed build leaves the
+    # runtime directory clean.
+    require_clean_runtime
     build_image
+    create_bare_repo "bare repo"
+
+    # Mirror each submodule so containers can init without network.
+    mirror_submodules
 
     # Mirror volume mounts, shared across all containers.
     MIRROR_ARGS=()
@@ -804,11 +1076,11 @@ cmd_start() {
     while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt agent_auth_token agent_tag agent_driver; do
         AGENT_IDX=$((AGENT_IDX + 1))
         NAME="${IMAGE_NAME}-${AGENT_IDX}"
-        remove_own_container "$NAME"
         agent_api_key="$(expand_env_ref "$agent_api_key")"
         agent_auth_token="$(expand_env_ref "$agent_auth_token")"
         agent_tag="$(expand_env_ref "$agent_tag")"
         agent_context="${agent_context:-full}"
+        workspace_args "$NAME" agent "$agent_context"
         agent_driver="${agent_driver:-${SWARM_DRIVER_DEFAULT}}"
 
         # Source the driver to access agent_docker_env.
@@ -849,12 +1121,15 @@ cmd_start() {
             read -r price_input price_output price_cached <<< "$_price"
         fi
 
+        # The workspace, its labels, no restart policy, no auto-remove
+        # and the name come after docker_args: the last value wins.
         docker run -d \
-            --name "$NAME" \
             -v "${BARE_REPO}:/upstream:rw" \
             "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
             "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
             "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+            "${WORKSPACE_ARGS[@]}" \
+            --name "$NAME" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
             --label "$CHECKOUT_LABEL" \
             --label "$PROJECT_LABEL" \
@@ -909,18 +1184,139 @@ cmd_stop() {
     # default that docker ships with cuts the emergency push
     # mid-rebase on a busy bare repo.  Override via env:
     #   SWARM_STOP_TIMEOUT=120 ./launch.sh stop
-    local stop_timeout="${SWARM_STOP_TIMEOUT:-60}"
-    swarm_engagement_join "$STATE_FILE" || exit 1
-    echo "--- Stopping agents (grace ${stop_timeout}s) ---"
-    for i in $(seq 1 "$NUM_AGENTS"); do
-        stop_own_container "${IMAGE_NAME}-${i}" "$stop_timeout"
+    local stop_timeout="${SWARM_STOP_TIMEOUT:-60}" numbered=false
+    local snap token list id info name rest state failed=0 pass=0 found
+    local labels phase
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --numbered) numbered=true; shift ;;
+            *) echo "ERROR: unknown stop option: $1" >&2; exit 1 ;;
+        esac
     done
-    while IFS= read -r NAME; do
-        [ -n "$NAME" ] || continue
-        stop_own_container "$NAME" "$stop_timeout"
-    done < <(swarm_interactive_container_names "$PROJECT" 2>/dev/null \
-        | sort || true)
-    stop_own_container "${IMAGE_NAME}-post" "$stop_timeout"
+    # Whole seconds for docker stop -t and for the wait for the lock.
+    case "$stop_timeout" in
+        ''|*[!0123456789]*|???????*)
+            echo "ERROR: SWARM_STOP_TIMEOUT must be a whole number of" \
+                 "seconds below 1000000." >&2
+            exit 1 ;;
+    esac
+    stop_timeout=$((10#$stop_timeout))
+    # stop acts on the engagement the state file records now, through
+    # its token: every check reads the same copy of the state, and a
+    # container of a later engagement, under a reused name or engagement
+    # id, is never stopped.
+    state_snapshot snap || exit 1
+    swarm_cleanup_pending_check "$snap" || exit 1
+    swarm_legacy_refuse "$RUNTIME_DIR" "$snap" || exit 1
+    swarm_engagement_join "$snap" || exit 1
+    # A token names an engagement: one that is gone, or replaced, refuses
+    # (also when none is recorded any more).
+    swarm_engagement_token_check "$snap" || exit 1
+    token=$(swarm_engagement_token "$snap") || exit 1
+    if [ -z "$token" ]; then
+        echo "No engagement recorded; nothing to stop."
+        return 0
+    fi
+    swarm_engagement_daemon_check "$snap" || exit 1
+    echo "--- Stopping agents (grace ${stop_timeout}s) ---"
+    # What a container's labels must read before it is stopped.
+    labels="{{.Name}}|{{index .Config.Labels \"${SWARM_PROJECT_LABEL}\"}}"
+    labels+="|{{index .Config.Labels \"${SWARM_CHECKOUT_LABEL}\"}}"
+    labels+="|{{index .Config.Labels \"${SWARM_TOKEN_LABEL}\"}}"
+    # Two phases.  The first runs without the engagement lock, which a
+    # post-process holds for its whole run (stop must be able to stop
+    # it): the listing is taken again after each pass, until one finds
+    # nothing more to stop, up to three passes that stop.  A start that
+    # recorded the engagement can still be launching its agents then,
+    # and holds the lock until it is done, so an empty listing does not
+    # settle it.  The second phase waits for the lock, up to the grace,
+    # and under it, where neither a start nor a post-process can launch
+    # anything, stops what came meanwhile: up to three passes that stop,
+    # then one that only checks.  An interactive session holds the lock
+    # only while it prepares: a container it is starting is not waited
+    # for.  Nor is what a wait already running does once it sees the
+    # agents stopped: it goes on to its post-process or harvest, as when
+    # they finish.
+    for phase in 1 2; do
+        if [ "$phase" = 2 ] \
+                && ! swarm_lock "$RUNTIME_DIR" "$stop_timeout"; then
+            echo "ERROR: without the engagement lock, stop cannot tell" \
+                 "that nothing of this engagement runs or is about to" \
+                 "start; run stop again." >&2
+            exit 1
+        fi
+        pass=0
+        while :; do
+            pass=$((pass + 1))
+            if ! list=$(docker ps -q \
+                    --filter "label=${SWARM_TOKEN_LABEL}=${token}" \
+                    --filter "label=${SWARM_PROJECT_LABEL}=${PROJECT}" \
+                    2>/dev/null); then
+                echo "ERROR: cannot list Docker containers." >&2
+                exit 1
+            fi
+            found=false
+            for id in $list; do
+                # Its labels again, right before it is stopped by ID.  One gone
+                # since the listing needs nothing; one Docker cannot describe
+                # fails the stop.
+                if ! info=$(docker container inspect -f "$labels" "$id" \
+                        2>/dev/null); then
+                    if ! swarm_container_gone "$id"; then
+                        echo "ERROR: cannot inspect container ${id}." >&2
+                        failed=1
+                    fi
+                    continue
+                fi
+                name="${info%%|*}"
+                name="${name#/}"
+                if [ "$info" \
+                        != "/${name}|${PROJECT}|${CHECKOUT_PATH}|${token}" ]
+                then
+                    echo "  ${name} skipped: not this engagement's container"
+                    continue
+                fi
+                if $numbered; then
+                    rest="${name#"${IMAGE_NAME}"-}"
+                    if [ "$rest" = "$name" ] || [ -z "$rest" ] \
+                            || [ -n "${rest//[0-9]/}" ]; then
+                        continue
+                    fi
+                fi
+                if [ "$pass" -gt 3 ]; then
+                    # Without the lock, the second phase settles it.
+                    [ "$phase" = 2 ] || break 2
+                    echo "ERROR: containers of this engagement keep" \
+                         "starting, even under the engagement lock." >&2
+                    exit 1
+                fi
+                found=true
+                if docker stop -t "$stop_timeout" "$id" >/dev/null 2>&1; then
+                    echo "  stopped ${name}"
+                    continue
+                fi
+                # docker stop fails too for one that stopped or went meanwhile;
+                # one that still runs, or that Docker cannot tell, fails the
+                # stop, so that callers (the dashboard's p) do not go on.
+                if ! state=$(docker container inspect -f '{{.State.Running}}' \
+                        "$id" 2>/dev/null); then
+                    state=unknown
+                    swarm_container_gone "$id" && state=gone
+                fi
+                case "$state" in
+                    false|gone) echo "  ${name} not running" ;;
+                    *)
+                        echo "ERROR: cannot stop ${name}." >&2
+                        failed=1 ;;
+                esac
+            done
+            if ! $found || [ "$failed" -ne 0 ]; then
+                break
+            fi
+        done
+        [ "$failed" -eq 0 ] || exit 1
+    done
+    swarm_unlock
     # The state file stays: it records which checkout owns the runtime
     # directory, and later phases read it.
 }
@@ -969,35 +1365,104 @@ cmd_status() {
         | sort || true)
 }
 
+# Print "<running> <exited>" for the numbered agents in LISTING, docker
+# ps lines "<name> <state>".  No read loop over a here-string: Bash 3.2
+# makes a temporary file for it, which can fail to be made, and a read
+# that fails ends a loop like the end of the list; either would count
+# running agents as done.  Names and states hold no glob characters.
+wait_count() {
+    local line name state rest running=0 exited=0 IFS=$'\n'
+    for line in $1; do
+        name="${line%% *}"
+        state="${line##* }"
+        # The numbered agents only.
+        rest="${name#"${IMAGE_NAME}"-}"
+        if [ "$rest" = "$name" ] || [ -z "$rest" ] \
+                || [ -n "${rest//[0-9]/}" ]; then
+            continue
+        fi
+        case "$state" in
+            running|restarting|created|paused) running=$((running + 1)) ;;
+            *) exited=$((exited + 1)) ;;
+        esac
+    done
+    printf '%s %s\n' "$running" "$exited"
+}
+
+# Print "<running> <exited>" for the numbered agents of the engagement
+# with token TOKEN, as Docker lists them now.
+wait_agents() {
+    local states
+    if ! states=$(docker ps -a \
+            --filter "label=${SWARM_TOKEN_LABEL}=${1}" \
+            --filter "label=${SWARM_PROJECT_LABEL}=${PROJECT}" \
+            --format '{{.Names}} {{.State}}' 2>/dev/null); then
+        echo "" >&2
+        echo "ERROR: cannot list Docker containers." >&2
+        return 1
+    fi
+    wait_count "$states"
+}
+
 cmd_wait() {
-    swarm_engagement_join "$STATE_FILE" || exit 1
+    local snap token own_lock=true
+    # wait holds no lock while it polls: every check reads the same copy
+    # of the state, and the engagement waited for is the one its token
+    # names there.
+    state_snapshot snap || exit 1
+    swarm_cleanup_pending_check "$snap" || exit 1
+    swarm_legacy_refuse "$RUNTIME_DIR" "$snap" || exit 1
+    swarm_engagement_join "$snap" || exit 1
+    swarm_engagement_token_check "$snap" || exit 1
+    token=$(swarm_engagement_token "$snap") || exit 1
+    if [ -z "$token" ]; then
+        echo "ERROR: ${STATE_FILE} records no engagement to wait for." >&2
+        exit 1
+    fi
+    swarm_engagement_daemon_check "$snap" || exit 1
+    # A lock the caller holds stays held throughout.
+    [ -z "${SWARM_LOCK_FD:-}" ] || own_lock=false
     echo "--- Waiting for all agents to finish ---"
 
+    local counts running exited
     while true; do
-        sleep 10
-        local all_done=true running=0 exited=0
-        for i in $(seq 1 "$NUM_AGENTS"); do
-            local state
-            state=$(own_container_state "${IMAGE_NAME}-${i}")
-            case "$state" in
-                running) running=$((running + 1)); all_done=false ;;
-                exited)  exited=$((exited + 1)) ;;
-                "not ours")
-                    echo "" >&2
-                    echo "ERROR: ${IMAGE_NAME}-${i} is not this" \
-                         "checkout's container." >&2
-                    exit 1 ;;
-            esac
-        done
-
+        sleep "${SWARM_WAIT_POLL:-10}"
+        counts=$(wait_agents "$token") || exit 1
+        running="${counts% *}"
+        exited="${counts#* }"
         printf "\r  %d running, %d exited " "$running" "$exited"
+        [ "$running" -eq 0 ] || continue
 
-        if $all_done; then
+        # What comes next acts on the engagement waited for, and on
+        # nothing else: under the lock, the state file must still record
+        # its token (a cleanup and a new start in another terminal
+        # meanwhile would have changed it), and none of its agents may
+        # run.  A start records the engagement before it launches the
+        # agents, and holds the lock until they run: agents it launched
+        # meanwhile are waited for too.  A stop takes the lock for a
+        # moment once it has stopped the agents, to check that no more
+        # are starting: wait up to a minute for it rather than give up.
+        # Agents a stop ended count as done, as those that finish.
+        swarm_lock "$RUNTIME_DIR" 60 || exit 1
+        swarm_cleanup_pending_check "$STATE_FILE" || exit 1
+        if [ "$(swarm_engagement_token "$STATE_FILE")" != "$token" ]; then
+            echo "" >&2
+            echo "ERROR: the engagement changed while waiting (cleaned" \
+                 "up, or started again); nothing more is done." >&2
+            exit 1
+        fi
+        counts=$(wait_agents "$token") || exit 1
+        if [ "${counts% *}" -eq 0 ]; then
             echo ""
             echo "All agents finished."
             break
         fi
+        if $own_lock; then
+            swarm_unlock
+        fi
     done
+    SWARM_ENGAGEMENT_TOKEN="$token"
+    export SWARM_ENGAGEMENT_TOKEN
 
     local pp_prompt
     pp_prompt=$(jq -r '.post_process.prompt // empty' "$CONFIG_FILE")
@@ -1044,18 +1509,64 @@ cmd_post_process() {
         echo "ERROR: post_process.prompt is not set in ${CONFIG_FILE}." >&2
         exit 1
     fi
-
-    prepare_runtime
-    if [ ! -d "$BARE_REPO" ]; then
-        create_bare_repo "bare repo for post-process"
-    else
-        swarm_engagement_join "$STATE_FILE" || exit 1
+    if [ ! -f "$SWARM_DIR/lib/drivers/${pp_driver}.sh" ]; then
+        echo "ERROR: unknown driver: ${pp_driver}" >&2
+        echo "Available drivers: $(available_drivers)" >&2
+        exit 1
     fi
 
-    build_image
+    prepare_runtime
+    local NAME="${IMAGE_NAME}-post" pp_state
+    if [ ! -d "$BARE_REPO" ]; then
+        # A token names an engagement to join, never a new one.
+        if [ -n "${SWARM_ENGAGEMENT_TOKEN:-}" ]; then
+            echo "ERROR: the engagement post-process was started for" \
+                 "has no bare repo any more." >&2
+            exit 1
+        fi
+        # The image is built before the engagement is created, so a
+        # failed build leaves the runtime directory clean.
+        require_clean_runtime
+        build_image
+        create_bare_repo "bare repo for post-process"
+        mirror_submodules
+    else
+        swarm_engagement_join "$STATE_FILE" || exit 1
+        swarm_engagement_daemon_check "$STATE_FILE" || exit 1
+        # The numbered agents must be done: post-process works on what
+        # they pushed, and under the lock no start can be launching more
+        # of them (the dashboard's p stops them first, without the lock).
+        local pp_token pp_counts
+        pp_token=$(swarm_engagement_token "$STATE_FILE") || exit 1
+        pp_counts=$(wait_agents "$pp_token") || exit 1
+        if [ "${pp_counts% *}" -ne 0 ]; then
+            echo "ERROR: numbered agents of this engagement still run;" \
+                 "stop them (./launch.sh stop --numbered) or wait for" \
+                 "them (./launch.sh wait) first." >&2
+            exit 1
+        fi
+        # An earlier post-process container is never replaced: its
+        # files stay until retire takes it (they are in its volume).
+        # On a clean runtime there is none of this checkout's.
+        pp_state=$(own_container_state "$NAME")
+        case "$pp_state" in
+            "not found") ;;
+            running|restarting|paused|created)
+                echo "ERROR: ${NAME} is ${pp_state}; stop it first" \
+                     "(./launch.sh stop)." >&2
+                exit 1 ;;
+            "not ours")
+                echo "ERROR: ${NAME} is not this checkout's container." >&2
+                exit 1 ;;
+            *)
+                echo "ERROR: ${NAME} is there (${pp_state}); retire it" \
+                     "first: ./launch.sh retire --post-process." >&2
+                exit 1 ;;
+        esac
+        build_image
+    fi
 
-    local NAME="${IMAGE_NAME}-post"
-    remove_own_container "$NAME"
+    workspace_args "$NAME" agent full
 
     # Build mirror volume args from existing mirrors.
     local MIRROR_ARGS=()
@@ -1092,12 +1603,15 @@ cmd_post_process() {
 
     echo "--- Starting post-processing (${pp_model}) ---"
     local pp_id
+    # As for the agents: the workspace, its labels, the policies and the
+    # name come after docker_args.
     pp_id=$(docker run -d \
-        --name "$NAME" \
         -v "${BARE_REPO}:/upstream:rw" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
         "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
         "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+        "${WORKSPACE_ARGS[@]}" \
+        --name "$NAME" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
         --label "$CHECKOUT_LABEL" \
         --label "$PROJECT_LABEL" \
@@ -1172,7 +1686,7 @@ case "${1:-start}" in
             exec "$SWARM_DIR/dashboard.sh"
         fi
         ;;
-    stop)          cmd_stop ;;
+    stop)          shift; cmd_stop "$@" ;;
     logs)          cmd_logs "${2:-1}" ;;
     status)        cmd_status ;;
     wait)          cmd_wait ;;
@@ -1195,3 +1709,5 @@ case "${1:-start}" in
         exit 1
         ;;
 esac
+# The run got to its end (see swarm_exit_trap).
+SWARM_EXIT_OK=true

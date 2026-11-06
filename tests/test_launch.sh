@@ -16,6 +16,64 @@ TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../lib/project.sh
 source "$TESTS_DIR/../lib/project.sh"
 
+# The fake docker CLIs below hand "docker volume" to this script, which
+# keeps each volume's labels in a file, so launch.sh can create and
+# check workspace volumes.  FAKE_VOLUME_FAIL=create makes create fail;
+# FAKE_VOLUME_FAIL=labels makes inspect show the labels with another
+# nonce, as for a volume of that name another run made;
+# FAKE_VOLUME_FAIL=exists makes every name taken; FAKE_VOLUME_FAIL=error
+# makes inspect fail as when the daemon is gone.
+FAKE_DOCKER_VOLUME="$TMPDIR/fake-docker-volume"
+FAKE_DOCKER_VOLUME_DIR="$TMPDIR/fake-volumes"
+export FAKE_DOCKER_VOLUME FAKE_DOCKER_VOLUME_DIR
+mkdir -p "$FAKE_DOCKER_VOLUME_DIR"
+cat > "$FAKE_DOCKER_VOLUME" <<'EOF'
+#!/bin/bash
+d="$FAKE_DOCKER_VOLUME_DIR"
+shift
+case "$1" in
+    inspect)
+        shift
+        fmt=""
+        if [ "$1" = -f ]; then fmt="$2"; shift 2; fi
+        case "${FAKE_VOLUME_FAIL:-}" in
+            error)
+                echo "Cannot connect to the Docker daemon" >&2
+                exit 1 ;;
+            exists)
+                [ -n "$fmt" ] || { echo "[]"; exit 0; } ;;
+        esac
+        if [ ! -f "$d/$1" ]; then
+            echo "Error response from daemon: get $1: no such volume" >&2
+            exit 1
+        fi
+        if [ "${FAKE_VOLUME_FAIL:-}" = labels ]; then
+            jq -c '.["swarm-core.nonce"] = "other"' "$d/$1"
+        elif [ -n "$fmt" ]; then
+            cat "$d/$1"
+        else
+            echo "[]"
+        fi ;;
+    create)
+        shift
+        [ "${FAKE_VOLUME_FAIL:-}" = create ] && exit 1
+        labels='{}'
+        while [ $# -gt 1 ]; do
+            if [ "$1" = --label ]; then
+                labels=$(printf '%s' "$labels" | jq -c --arg k "${2%%=*}" \
+                    --arg v "${2#*=}" '.[$k] = $v')
+                shift 2
+                continue
+            fi
+            shift
+        done
+        printf '%s\n' "$labels" > "$d/$1"
+        echo "$1" ;;
+esac
+exit 0
+EOF
+chmod +x "$FAKE_DOCKER_VOLUME"
+
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
     if [ "$expected" = "$actual" ]; then
@@ -842,20 +900,21 @@ echo ""
 echo "=== 18. Swarmfile is required ==="
 
 # launch.sh start without a config should fail with a clear message.
-# Must run from a git repo (launch.sh needs git rev-parse).
-# Requires docker in PATH (check_deps runs before config check).
-if command -v docker &>/dev/null; then
-    _no_cfg_dir=$(mktemp -d)
-    git -C "$_no_cfg_dir" init -q
-    out=$(cd "$_no_cfg_dir" && SWARM_CONFIG="" bash "$TESTS_DIR/../launch.sh" start 2>&1) \
-        && rc=0 || rc=$?
-    rm -rf "$_no_cfg_dir"
-    assert_eq "no config exits nonzero" "1" "$rc"
-    assert_eq "no config says swarmfile" "true" \
-        "$([[ "$out" == *"swarmfile"* ]] && echo true || echo false)"
-else
-    echo "  SKIP: docker not available (macOS CI)"
-fi
+# Must run from a git repo (launch.sh needs git rev-parse).  The checks
+# before it ask Docker for its context and containers: a fake docker
+# answers, with none.
+_no_cfg_dir=$(mktemp -d)
+_no_cfg_bin=$(mktemp -d)
+printf '#!/bin/bash\n[ "$1 $2" = "context show" ] && echo default\nexit 0\n' \
+    > "$_no_cfg_bin/docker"
+chmod +x "$_no_cfg_bin/docker"
+git -C "$_no_cfg_dir" init -q
+out=$(cd "$_no_cfg_dir" && PATH="$_no_cfg_bin:$PATH" SWARM_CONFIG="" \
+    bash "$TESTS_DIR/../launch.sh" start 2>&1) && rc=0 || rc=$?
+rm -rf "$_no_cfg_dir" "$_no_cfg_bin"
+assert_eq "no config exits nonzero" "1" "$rc"
+assert_eq "no config says swarmfile" "true" \
+    "$([[ "$out" == *"swarmfile"* ]] && echo true || echo false)"
 
 # ============================================================
 echo ""
@@ -1310,7 +1369,7 @@ rm -rf "$_wr_repo" "$_wr_bare"
 
 # ============================================================
 echo ""
-echo "=== 35b. Bare repo and mirrors copy the checkout's objects ==="
+echo "=== 35b. Bare repo and mirrors share no object files with the checkout ==="
 
 # A local clone hardlinks object files unless told otherwise, and the
 # chmod -R a+rwX in create_bare_repo and mirror_submodules would then
@@ -1353,7 +1412,8 @@ _hl_sub_pack=${_hl_packs[0]}
 _hl_src_mode=$(_hl_mode "$_hl_src_pack")
 _hl_sub_mode=$(_hl_mode "$_hl_sub_pack")
 
-for _hl_fn in create_bare_repo begin_engagement mirror_submodules; do
+for _hl_fn in create_bare_repo prepare_bare_repo begin_engagement \
+        engagement_base mirror_submodules; do
     awk -v fn="$_hl_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' "$_hl_launch"
@@ -1364,9 +1424,9 @@ _hl_mirror="$_hl_runtime/mirrors/sub.git"
 (
     # shellcheck source=/dev/null
     source "$TMPDIR/hl_funcs.sh"
-    # The extracted functions call this stub.
+    # No Docker here: the daemon id is made up.
     # shellcheck disable=SC2329
-    rm_docker_dir() { rm -rf "$1"; }
+    swarm_docker_daemon_id() { printf 'TEST:DAEMON'; }
     REPO_ROOT="$_hl_dir/src"
     BARE_REPO="$_hl_dir/bare.git"
     MIRROR_DIR="$_hl_runtime/mirrors"
@@ -1401,12 +1461,183 @@ _hl_kept=no
 git -C "$_hl_dir/bare.git" cat-file -e "${_hl_base_head}^{commit}" \
     2>/dev/null && _hl_kept=yes
 assert_eq "bare repo keeps the borrowed objects" "yes" "$_hl_kept"
-assert_eq "every bare clone in launch.sh copies objects" \
+assert_eq "every bare clone in launch.sh goes through Git's transport" \
     "$(grep -c 'git clone --bare ' "$_hl_launch")" \
-    "$(grep -c 'git clone --bare --no-hardlinks --dissociate ' \
-        "$_hl_launch")"
+    "$(grep -c 'git clone --bare --no-local ' "$_hl_launch")"
 
 rm -rf "$_hl_dir"
+
+# ============================================================
+echo ""
+echo "=== 35c. Bare repo and mirrors hold what branches, tags and HEAD reach ==="
+
+# Objects of the checkout that only other refs (remote-tracking, the
+# recovery refs, the stash) or nothing reach stay out of the bare repo,
+# so a cleanup does not keep them again.  A mirror holds what the
+# submodule's branches, tags and HEAD reach, and the commit the
+# engagement's base records for the submodule under refs/swarm/gitlink,
+# fetched by id when the submodule's checkout moved on; a base that
+# records a commit the submodule lacks gets a warning.  The live
+# functions again (extracted in 35b).
+_tr_has() {  # REPO OID: yes when REPO has the object
+    if git -C "$1" cat-file -e "$2" 2>/dev/null; then echo yes
+    else echo no; fi
+}
+_tr_unreachable() {  # REPO: how many objects no ref and no HEAD reach
+    git -C "$1" cat-file --batch-all-objects \
+        --batch-check='%(objectname)' | sort > "$TMPDIR/tr_all"
+    git -C "$1" rev-list --objects --no-object-names --all HEAD \
+        | sort -u > "$TMPDIR/tr_reach"
+    comm -23 "$TMPDIR/tr_all" "$TMPDIR/tr_reach" | wc -l | tr -d ' '
+}
+# A user whose Git speaks protocol v0 by default.
+printf '[protocol]\n\tversion = 0\n' > "$TMPDIR/tr_v0.gitconfig"
+_tr_run() {  # FUNCTION ARGS...: one of the live functions, output kept
+    (
+        export GIT_CONFIG_GLOBAL="$TMPDIR/tr_v0.gitconfig"
+        # shellcheck source=/dev/null
+        source "$TMPDIR/hl_funcs.sh"
+        # shellcheck disable=SC2329
+        swarm_docker_daemon_id() { printf 'TEST:DAEMON'; }
+        REPO_ROOT="$_tr_src"
+        BARE_REPO="$_tr_dir/bare.git"
+        MIRROR_DIR="$_tr_runtime/mirrors"
+        STATE_FILE="$_tr_runtime/state.json"
+        "$@"
+    ) > "$TMPDIR/tr.out" 2>&1
+}
+_tr_dir="$TMPDIR/tr"
+mkdir -p "$_tr_dir"
+for _tr_s in sub sub2; do
+    _hl_git -C "$_tr_dir" init -q "$_tr_s"
+    _hl_git -C "$_tr_dir/$_tr_s" commit --allow-empty -m "$_tr_s one" -q
+done
+_tr_src="$_tr_dir/src"
+_hl_git -C "$_tr_dir" init -q src
+_hl_git -C "$_tr_src" commit --allow-empty -m one -q
+_hl_git -C "$_tr_src" submodule add -q "$_tr_dir/sub" sub 2>/dev/null
+_hl_git -C "$_tr_src" submodule add -q "$_tr_dir/sub2" sub2 2>/dev/null
+_hl_git -C "$_tr_src" commit -m 'Add the submodules' -q
+# Only a remote-tracking ref reaches this commit, only a recovery ref
+# this blob, only the stash its commit, and nothing the last blob.
+_tr_remote=$(_hl_git -C "$_tr_src" commit-tree -p HEAD -m remote \
+    'HEAD^{tree}')
+git -C "$_tr_src" update-ref refs/remotes/origin/side "$_tr_remote"
+_tr_rec=$(printf 'kept by a recovery ref\n' \
+    | git -C "$_tr_src" hash-object -w --stdin)
+git -C "$_tr_src" update-ref refs/swarm-recovery/e00/s/s1/1/t/1 "$_tr_rec"
+echo wip > "$_tr_src/wip.txt"
+_hl_git -C "$_tr_src" add wip.txt
+_hl_git -C "$_tr_src" stash -q
+_tr_stash=$(git -C "$_tr_src" rev-parse refs/stash)
+_tr_none=$(printf 'kept by nothing\n' \
+    | git -C "$_tr_src" hash-object -w --stdin)
+# The base records, for sub2, a commit sub2 never had.
+_tr_fake=$(printf 'no such commit\n' | git -C "$_tr_src" hash-object --stdin)
+git -C "$_tr_src" update-index --cacheinfo "160000,${_tr_fake},sub2"
+_hl_git -C "$_tr_src" commit -m 'Point sub2 at a commit it lacks' -q
+# sub's checkout moves on: HEAD to a commit of its own, and of its refs
+# only a remote-tracking one stays, at a child of the commit the base
+# records (so no ref has that commit as its tip, and protocol v0 would
+# refuse to fetch it by id); the mirror must not get the child.
+_tr_gitlink=$(git -C "$_tr_src" rev-parse HEAD:sub)
+_tr_empty=$(git -C "$_tr_src/sub" mktree < /dev/null)
+_tr_orphan=$(_hl_git -C "$_tr_src/sub" commit-tree -m orphan "$_tr_empty")
+_tr_subside=$(_hl_git -C "$_tr_src/sub" commit-tree -p "$_tr_gitlink" \
+    -m side "$_tr_empty")
+git -C "$_tr_src/sub" update-ref refs/remotes/origin/side "$_tr_subside"
+git -C "$_tr_src/sub" checkout -q --detach "$_tr_orphan"
+for _tr_r in $(git -C "$_tr_src/sub" for-each-ref --format='%(refname)'); do
+    [ "$_tr_r" = refs/remotes/origin/side ] \
+        || git -C "$_tr_src/sub" update-ref --no-deref -d "$_tr_r"
+done
+assert_eq "sub's branches, tags and HEAD do not reach the base's commit" \
+    0 "$(git -C "$_tr_src/sub" rev-list HEAD --branches --tags \
+        | grep -cx "$_tr_gitlink")"
+assert_eq "and no ref of sub has it as its tip" 0 \
+    "$(git -C "$_tr_src/sub" for-each-ref --format='%(objectname)' \
+        | grep -cx "$_tr_gitlink")"
+_tr_runtime="$_tr_dir/runtime"
+mkdir -m 700 "$_tr_runtime"
+_tr_rc=0
+_tr_run eval 'create_bare_repo && mirror_submodules' || _tr_rc=$?
+assert_eq "start's bare repo and mirrors are made" 0 "$_tr_rc"
+_tr_bare="$_tr_dir/bare.git"
+_tr_mirror="$_tr_runtime/mirrors/sub.git"
+_tr_mirror2="$_tr_runtime/mirrors/sub2.git"
+assert_eq "bare repo: agent-work at the checkout's HEAD" \
+    "$(git -C "$_tr_src" rev-parse HEAD)" \
+    "$(git -C "$_tr_bare" rev-parse agent-work 2>/dev/null)"
+assert_eq "bare repo: no commit only a remote-tracking ref reaches" \
+    no "$(_tr_has "$_tr_bare" "$_tr_remote")"
+assert_eq "bare repo: no object only a recovery ref reaches" \
+    no "$(_tr_has "$_tr_bare" "$_tr_rec")"
+assert_eq "bare repo: no commit only the stash reaches" \
+    no "$(_tr_has "$_tr_bare" "$_tr_stash")"
+assert_eq "bare repo: no object nothing reaches" \
+    no "$(_tr_has "$_tr_bare" "$_tr_none")"
+assert_eq "bare repo: every object is reachable" \
+    0 "$(_tr_unreachable "$_tr_bare")"
+assert_eq "mirror: the base's commit under refs/swarm/gitlink" \
+    "$_tr_gitlink" \
+    "$(git -C "$_tr_mirror" rev-parse -q --verify refs/swarm/gitlink)"
+assert_eq "mirror: HEAD where the submodule's is" "$_tr_orphan" \
+    "$(git -C "$_tr_mirror" rev-parse -q --verify HEAD)"
+assert_eq "mirror: no commit only a remote-tracking ref reaches" \
+    no "$(_tr_has "$_tr_mirror" "$_tr_subside")"
+assert_eq "mirror: every object is reachable" \
+    0 "$(_tr_unreachable "$_tr_mirror")"
+# What a container does: a local clone of the mirror, then a checkout
+# of the commit the base records.
+_tr_ck=no
+git clone -q "$_tr_mirror" "$_tr_dir/subclone" 2>/dev/null \
+    && git -C "$_tr_dir/subclone" checkout -q "$_tr_gitlink" 2>/dev/null \
+    && _tr_ck=yes
+assert_eq "a clone of the mirror checks the base's commit out" yes "$_tr_ck"
+assert_eq "sub2: mirrored all the same" yes \
+    "$([ -d "$_tr_mirror2" ] && echo yes || echo no)"
+assert_eq "sub2: no refs/swarm/gitlink" no \
+    "$(git -C "$_tr_mirror2" rev-parse -q --verify refs/swarm/gitlink \
+        >/dev/null 2>&1 && echo yes || echo no)"
+assert_eq "sub2: a warning names the commit it lacks" 1 \
+    "$(grep -c "^WARNING: .* has no commit ${_tr_fake}, " "$TMPDIR/tr.out")"
+# A session that joins adds a missing mirror for the engagement's base,
+# not for the checkout's HEAD, which moved since.
+_hl_git -C "$_tr_src/sub" checkout -q --detach "$_tr_subside"
+_hl_git -C "$_tr_src" add sub
+_hl_git -C "$_tr_src" commit -m 'Move sub' -q
+mv "$_tr_mirror" "$_tr_dir/sub-first.git"
+_tr_rc=0
+_tr_run mirror_submodules missing || _tr_rc=$?
+assert_eq "a joining session adds the missing mirror" 0 "$_tr_rc"
+assert_eq "for the engagement's base" "$_tr_gitlink" \
+    "$(git -C "$_tr_mirror" rev-parse -q --verify refs/swarm/gitlink)"
+# A state file whose base is not a commit id: no mirror.
+mv "$_tr_mirror" "$_tr_dir/sub-second.git"
+jq -c '.base_commit = "HEAD"' "$_tr_runtime/state.json" \
+    > "$_tr_runtime/state.json.tmp"
+mv "$_tr_runtime/state.json.tmp" "$_tr_runtime/state.json"
+_tr_rc=0
+_tr_run mirror_submodules missing || _tr_rc=$?
+assert_eq "a base that is no commit id refuses" 1 "$_tr_rc"
+assert_eq "saying so" 1 "$(grep -c 'records no base commit' "$TMPDIR/tr.out")"
+assert_eq "and mirrors nothing" no \
+    "$([ -e "$_tr_mirror" ] && echo yes || echo no)"
+# A commit id the checkout does not have: refused before anything is
+# made.
+jq -c --arg base "$_tr_fake" '.base_commit = $base' \
+    "$_tr_runtime/state.json" > "$_tr_runtime/state.json.tmp"
+mv "$_tr_runtime/state.json.tmp" "$_tr_runtime/state.json"
+_tr_rc=0
+_tr_run mirror_submodules missing || _tr_rc=$?
+assert_eq "a base the checkout lacks refuses" 1 "$_tr_rc"
+assert_eq "naming it" 1 \
+    "$(grep -c "^ERROR: cannot read .* in the engagement's base ${_tr_fake}" \
+        "$TMPDIR/tr.out")"
+assert_eq "and makes no mirror, not even a .new" no \
+    "$([ -e "$_tr_mirror" ] || [ -e "$_tr_mirror.new" ] && echo yes || echo no)"
+
+rm -rf "$_tr_dir"
 
 # ============================================================
 echo ""
@@ -1532,184 +1763,6 @@ fi
 assert_eq "missing signing_key -> non-zero exit" "nonzero" "$_missing_rc"
 
 rm -rf "$_sk_dir" "$_sk_home"
-
-# ============================================================
-echo ""
-echo "=== 37. bare preflight: stale vs unharvested ==="
-
-# Mirrors the divergence guard in launch.sh.  The `--is-ancestor`
-# check runs in the local repo (not in the bare) so the stale
-# case -- where LOCAL_HEAD is a commit that only exists in local
-# -- resolves correctly; running the check inside the bare would
-# fail to resolve LOCAL_HEAD and collapse stale into unharvested.
-# Returns 0 when the guard would allow the run, 1 (with an ERROR
-# line on stderr) when it would refuse.
-check_bare_preflight() {
-    local bare="$1" local_repo="$2"
-    [ -d "$bare" ] || return 0
-    local bare_head local_head
-    bare_head=$(git -C "$bare" rev-parse --verify --quiet \
-        refs/heads/agent-work 2>/dev/null || true)
-    local_head=$(git -C "$local_repo" rev-parse HEAD \
-        2>/dev/null || true)
-    [ -z "$bare_head" ] && return 0
-    [ "$bare_head" = "$local_head" ] && return 0
-    if git -C "$local_repo" merge-base --is-ancestor \
-            "$bare_head" HEAD 2>/dev/null; then
-        echo "ERROR: ${bare} is stale (agent-work" \
-             "${bare_head:0:7} behind local HEAD" \
-             "${local_head:0:7})." >&2
-        echo "       Remove it to start a fresh run from" \
-             "current HEAD:" >&2
-        echo "       $(swarm_bare_rm_command "$(dirname "$bare")")" >&2
-    else
-        echo "ERROR: ${bare} has unharvested agent commits" \
-             "(agent-work ${bare_head:0:7} vs local HEAD" \
-             "${local_head:0:7})." >&2
-        echo "       Run harvest.sh first, or if you've" \
-             "already integrated those commits:" >&2
-        echo "       $(swarm_bare_rm_command "$(dirname "$bare")")" >&2
-    fi
-    return 1
-}
-
-# Build a local repo with commits A, B on HEAD (where B is
-# LOCAL_HEAD).  A bare clone taken at B mirrors the happy path;
-# moving bare's agent-work forward to a fresh commit C created
-# in the bare itself models the unharvested case; advancing
-# local past B to D models the stale case; combining both models
-# divergence.
-_bp_local="$TMPDIR/bp-local"
-_bp_bare="$TMPDIR/bp-bare.git"
-git init -q -b main "$_bp_local"
-git -C "$_bp_local" -c user.name=t -c user.email=t@t \
-    commit --allow-empty -q -m "A"
-git -C "$_bp_local" -c user.name=t -c user.email=t@t \
-    commit --allow-empty -q -m "B"
-_bp_B=$(git -C "$_bp_local" rev-parse HEAD)
-
-# ------ 37.1 equal (guard does not fire) ------
-git clone -q --bare "$_bp_local" "$_bp_bare"
-git -C "$_bp_bare" branch -q agent-work "$_bp_B" 2>/dev/null \
-    || git -C "$_bp_bare" update-ref refs/heads/agent-work "$_bp_B"
-if check_bare_preflight "$_bp_bare" "$_bp_local" 2>/dev/null; then
-    _bp_eq_rc="zero"
-else
-    _bp_eq_rc="nonzero"
-fi
-assert_eq "equal BARE_HEAD / LOCAL_HEAD -> guard allows run" \
-    "zero" "$_bp_eq_rc"
-
-# ------ 37.2 unharvested (bare has a commit local doesn't) ------
-# Create commit C inside the bare on agent-work, mirroring an
-# agent push.  Uses `git -C $bare commit-tree` with B's tree so
-# the new commit's object lives only in the bare's objects/.
-# Pass -c user.{name,email} explicitly: commit-tree refuses to
-# stamp without an identity, and CI runners may have neither a
-# global git config nor a usable getpwuid gecos fallback.
-_bp_C=$(git -c user.name=t -c user.email=t@t \
-    -C "$_bp_bare" commit-tree \
-    -p "$_bp_B" -m "C (agent)" "${_bp_B}^{tree}")
-git -C "$_bp_bare" update-ref refs/heads/agent-work "$_bp_C"
-_bp_unh_err=$(check_bare_preflight "$_bp_bare" "$_bp_local" \
-    2>&1 >/dev/null || true)
-assert_eq "unharvested -> 'has unharvested agent commits'" "1" \
-    "$(echo "$_bp_unh_err" \
-        | grep -cE 'has unharvested agent commits' || true)"
-assert_eq "unharvested -> names short BARE_HEAD" "1" \
-    "$(echo "$_bp_unh_err" \
-        | grep -cE "agent-work ${_bp_C:0:7}" || true)"
-assert_eq "unharvested -> names short LOCAL_HEAD" "1" \
-    "$(echo "$_bp_unh_err" \
-        | grep -cE "local HEAD ${_bp_B:0:7}" || true)"
-assert_eq "unharvested -> removal through Docker still offered" "1" \
-    "$(echo "$_bp_unh_err" \
-        | grep -cF "alpine rm -rf /runtime/upstream.git" || true)"
-if check_bare_preflight "$_bp_bare" "$_bp_local" \
-        >/dev/null 2>&1; then
-    _bp_unh_rc="zero"
-else
-    _bp_unh_rc="nonzero"
-fi
-assert_eq "unharvested -> non-zero exit" "nonzero" "$_bp_unh_rc"
-
-# ------ 37.3 stale (local has commit D that bare doesn't) ------
-# Reset bare back to B; advance local to D.
-git -C "$_bp_bare" update-ref refs/heads/agent-work "$_bp_B"
-git -C "$_bp_local" -c user.name=t -c user.email=t@t \
-    commit --allow-empty -q -m "D (local-only)"
-_bp_D=$(git -C "$_bp_local" rev-parse HEAD)
-_bp_stale_err=$(check_bare_preflight "$_bp_bare" "$_bp_local" \
-    2>&1 >/dev/null || true)
-assert_eq "stale -> 'is stale' wording" "1" \
-    "$(echo "$_bp_stale_err" \
-        | grep -cE 'is stale \(agent-work' || true)"
-assert_eq "stale -> 'behind local HEAD' wording" "1" \
-    "$(echo "$_bp_stale_err" \
-        | grep -cE 'behind local HEAD' || true)"
-assert_eq "stale -> leads with removal as remediation" "1" \
-    "$(echo "$_bp_stale_err" \
-        | grep -cE 'Remove it to start a fresh run' || true)"
-assert_eq "stale -> does NOT instruct to run harvest.sh" "0" \
-    "$(echo "$_bp_stale_err" \
-        | grep -cE 'Run harvest\.sh first' || true)"
-assert_eq "stale -> names short BARE_HEAD" "1" \
-    "$(echo "$_bp_stale_err" \
-        | grep -cE "agent-work ${_bp_B:0:7}" || true)"
-assert_eq "stale -> names short LOCAL_HEAD" "1" \
-    "$(echo "$_bp_stale_err" \
-        | grep -cE "local HEAD ${_bp_D:0:7}" || true)"
-if check_bare_preflight "$_bp_bare" "$_bp_local" \
-        >/dev/null 2>&1; then
-    _bp_stale_rc="zero"
-else
-    _bp_stale_rc="nonzero"
-fi
-assert_eq "stale -> non-zero exit" "nonzero" "$_bp_stale_rc"
-
-# ------ 37.4 divergent (each side has commits the other lacks) ------
-# Give bare its own E on top of B while local still sits on D.
-_bp_E=$(git -c user.name=t -c user.email=t@t \
-    -C "$_bp_bare" commit-tree \
-    -p "$_bp_B" -m "E (agent)" "${_bp_B}^{tree}")
-git -C "$_bp_bare" update-ref refs/heads/agent-work "$_bp_E"
-_bp_div_err=$(check_bare_preflight "$_bp_bare" "$_bp_local" \
-    2>&1 >/dev/null || true)
-# Divergent collapses into the unharvested branch per spec --
-# the goal is only that the operator sees both SHAs and knows
-# rm -rf is available.
-assert_eq "divergent -> falls through to unharvested wording" "1" \
-    "$(echo "$_bp_div_err" \
-        | grep -cE 'has unharvested agent commits' || true)"
-assert_eq "divergent -> names short BARE_HEAD" "1" \
-    "$(echo "$_bp_div_err" \
-        | grep -cE "agent-work ${_bp_E:0:7}" || true)"
-assert_eq "divergent -> names short LOCAL_HEAD" "1" \
-    "$(echo "$_bp_div_err" \
-        | grep -cE "local HEAD ${_bp_D:0:7}" || true)"
-
-# ------ 37.5 bare absent (guard is a no-op) ------
-rm -rf "$_bp_bare"
-if check_bare_preflight "$_bp_bare" "$_bp_local" \
-        >/dev/null 2>&1; then
-    _bp_abs_rc="zero"
-else
-    _bp_abs_rc="nonzero"
-fi
-assert_eq "bare missing -> guard is a no-op" "zero" "$_bp_abs_rc"
-
-# ------ 37.6 bare exists but agent-work ref missing (guard no-op) ------
-git init -q --bare "$_bp_bare"
-if check_bare_preflight "$_bp_bare" "$_bp_local" \
-        >/dev/null 2>&1; then
-    _bp_noref_rc="zero"
-else
-    _bp_noref_rc="nonzero"
-fi
-assert_eq "bare without agent-work ref -> guard is a no-op" \
-    "zero" "$_bp_noref_rc"
-
-rm -rf "$_bp_local" "$_bp_bare"
 
 # ============================================================
 echo ""
@@ -1860,10 +1913,11 @@ echo "=== 39. build_image is wired into launch entrypoints ==="
 # rebuild the image with build-args derived from its own config so
 # the layer cache invalidates correctly when the driver set differs
 # from a prior cmd_start.  Catches accidental removal of either
-# call site.
+# call site.  post-process and interactive build in each of their two
+# ways (creating the engagement, joining it), start in its one.
 _call_sites=$(grep -cE '^[[:space:]]+build_image[[:space:]]*$' \
     "$_LAUNCH_SH" || true)
-assert_eq "build_image has 3 call sites" "3" "$_call_sites"
+assert_eq "build_image has 5 call sites" "5" "$_call_sites"
 
 _pp_calls=$(awk '
     /^cmd_post_process\(\)[[:space:]]*\{/ { p = 1; next }
@@ -1871,7 +1925,7 @@ _pp_calls=$(awk '
     p && /^[[:space:]]+build_image[[:space:]]*$/ { c++ }
     END { print c + 0 }
 ' "$_LAUNCH_SH")
-assert_eq "cmd_post_process calls build_image" "1" "$_pp_calls"
+assert_eq "cmd_post_process calls build_image in both ways" "2" "$_pp_calls"
 
 _start_calls=$(awk '
     /^cmd_start\(\)[[:space:]]*\{/ { p = 1; next }
@@ -1882,12 +1936,19 @@ _start_calls=$(awk '
 assert_eq "cmd_start calls build_image" "1" "$_start_calls"
 
 _interactive_calls=$(awk '
-    /^cmd_interactive\(\)[[:space:]]*\{/ { p = 1; next }
+    /^ensure_bare_repo_for_interactive\(\)[[:space:]]*\{/ { p = 1; next }
     p && /^\}[[:space:]]*$/ { p = 0 }
     p && /^[[:space:]]+build_image[[:space:]]*$/ { c++ }
     END { print c + 0 }
 ' "$_LAUNCH_SH")
-assert_eq "cmd_interactive calls build_image" "1" "$_interactive_calls"
+assert_eq "interactive calls build_image in both ways" "2" \
+    "$_interactive_calls"
+assert_eq "cmd_interactive goes through that step" "1" "$(awk '
+    /^cmd_interactive\(\)[[:space:]]*\{/ { p = 1; next }
+    p && /^\}[[:space:]]*$/ { p = 0 }
+    p && /^[[:space:]]+ensure_bare_repo_for_interactive[[:space:]]*$/ { c++ }
+    END { print c + 0 }
+' "$_LAUNCH_SH")"
 
 # build_image must thread both the SWARM_AGENTS union and the
 # version pins; missing any of these would silently produce a
@@ -1926,12 +1987,12 @@ echo "=== 40. cmd_stop gives the harness time to push ==="
 # flag's presence, the default, and the env-var override.
 LAUNCH_FILE="$TESTS_DIR/../launch.sh"
 CMD_STOP_BODY=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
-STOP_OWN_BODY=$(awk '/^stop_own_container\(\) \{/,/^\}$/' "$LAUNCH_FILE")
-assert_eq "stop_own_container passes -t to docker stop" "1" \
-    "$(printf '%s\n' "$STOP_OWN_BODY" \
-        | grep -cF 'docker stop -t "$timeout"')"
-assert_eq "cmd_stop passes the grace to every stop" "3" \
-    "$(printf '%s\n' "$CMD_STOP_BODY" | grep -cF '"$stop_timeout"')"
+# cmd_stop checks a copy of the state, which these make.
+STOP_HELPERS=$(awk '/^(state_snapshot|swarm_tmp_file)\(\) \{/,/^\}$/' \
+    "$LAUNCH_FILE")
+assert_eq "cmd_stop passes the grace to docker stop" "1" \
+    "$(printf '%s\n' "$CMD_STOP_BODY" \
+        | grep -cF 'docker stop -t "$stop_timeout"')"
 assert_eq "cmd_stop defaults grace to 60s" "1" \
     "$(printf '%s\n' "$CMD_STOP_BODY" \
         | grep -cF 'stop_timeout="${SWARM_STOP_TIMEOUT:-60}"')"
@@ -1947,125 +2008,184 @@ exit 0
 FAKE
 chmod +x "$FAKE_DOCKER_DIR/docker"
 
-# Pull cmd_stop and its helper out of launch.sh into sourceable text
-# so we do not have to run the launch.sh argv dispatcher.
-cmd_stop_src=$(printf '%s\n%s\n' "$CMD_STOP_BODY" "$STOP_OWN_BODY")
-
-# Run cmd_stop with a docker function in front of the fake CLI.  It
-# answers the container list (STOP_LIST, "name project" pairs, all owned
-# by this checkout) and the label lookups: every container is this
-# checkout's and this project's, with ID "id-<name>", except the names
-# in STOP_FOREIGN.
+# Run cmd_stop ARGS on the engagement of $_sr/state.json (token tok1 on
+# daemon d1 unless set otherwise), with a docker function in front of
+# the fake CLI.  The running containers are the lines of $_sr/list,
+# "<name> <project> <checkout> <token>", each with ID "id-<name>"; each
+# run starts from them, and a container it stops no longer runs.
+# STOP_DAEMON names the daemon Docker talks to (d1); with STOP_SWITCH
+# set, the first docker stop makes a new engagement (token tok2, same
+# names) take the place of this one.
+_sr="$TMPDIR/stop-rt"
+mkdir -m 700 "$_sr"
+stop_state() {
+    printf '%s\n' "$1" > "$_sr/state.json"
+}
 run_stop() {
+    # The containers that run, from $_sr/list; stop takes them out.
+    cp "$_sr/list" "$_sr/running"
     (
-        eval "$cmd_stop_src"
+        eval "$CMD_STOP_BODY"
+        eval "$STOP_HELPERS"
+        SWARM_TMP_FILES=()
         CHECKOUT_PATH="/checkout"
-        STATE_FILE="$TMPDIR/no-such-state.json"
+        RUNTIME_DIR="$_sr"
+        STATE_FILE="$_sr/state.json"
         # Called by cmd_stop and the lib/project.sh helpers.
         # shellcheck disable=SC2329
         docker() {
-            local last owner
+            local last a want_t="" want_p="" line n pr ck tk
             for last; do :; done
             case "${1:-} ${2:-}" in
-                "ps -a")
-                    # shellcheck disable=SC2086
-                    set -- ${STOP_LIST:-}
-                    while [ $# -gt 1 ]; do
-                        jq -nc --arg n "$1" --arg p "$2" \
-                            --arg o "$CHECKOUT_PATH" \
-                            '{name: $n, project: $p, owner: $o}'
-                        shift 2
+                "info -f") echo "${STOP_DAEMON:-d1}"; return 0 ;;
+                "context show") echo default; return 0 ;;
+                "ps -q")
+                    for a; do
+                        case "$a" in
+                            label=swarm-core.engagement-token=*)
+                                want_t="${a#*=}"; want_t="${want_t#*=}" ;;
+                            label=swarm-core.project=*)
+                                want_p="${a#*=}"; want_p="${want_p#*=}" ;;
+                        esac
                     done
+                    while read -r n pr ck tk; do
+                        [ -n "$n" ] || continue
+                        [ "$tk" = "$want_t" ] && [ "$pr" = "$want_p" ] \
+                            && echo "id-$n"
+                    done < "$_sr/running"
                     return 0 ;;
                 "container inspect")
-                    owner="$CHECKOUT_PATH"
-                    case " ${STOP_FOREIGN:-} " in
-                        *" ${last} "*) owner="/elsewhere" ;;
-                    esac
-                    jq -nc --arg id "id-${last}" --arg o "$owner" \
-                        --arg p "$PROJECT" \
-                        '{id: $id, labels: {"swarm-core.checkout": $o,
-                                            "swarm-core.project": $p}}'
-                    return 0 ;;
+                    while read -r n pr ck tk; do
+                        if [ "id-$n" = "$last" ]; then
+                            echo "/$n|$pr|$ck|$tk"
+                            return 0
+                        fi
+                    done < "$_sr/running"
+                    return 1 ;;
+                "stop -t")
+                    # Stopped, it no longer runs.
+                    grep -v "^${last#id-} " "$_sr/running" \
+                        > "$_sr/running.stopped" || true
+                    mv "$_sr/running.stopped" "$_sr/running"
+                    if [ -n "${STOP_SWITCH:-}" ] \
+                            && [ ! -e "$_sr/switched" ]; then
+                        : > "$_sr/switched"
+                        sed 's/ tok1$/ tok2/' "$_sr/running" > "$_sr/running.new"
+                        mv "$_sr/running.new" "$_sr/running"
+                        jq -c '.engagement_token = "tok2"' \
+                            "$_sr/state.json" > "$_sr/state.new"
+                        mv "$_sr/state.new" "$_sr/state.json"
+                    fi ;;
             esac
             command docker "$@"
         }
-        PATH="$FAKE_DOCKER_DIR:$PATH" cmd_stop >/dev/null 2>&1 || true
+        # cmd_stop exits on a refusal: a subshell of its own keeps that
+        # from ending this one before the status is noted.
+        (PATH="$FAKE_DOCKER_DIR:$PATH" cmd_stop "$@") > "$TMPDIR/stop.out" \
+            2>&1 || echo "rc=1" >> "$TMPDIR/stop.out"
     )
 }
+_stop_engaged='{"schema":"swarm-core.state/v1","engagement_id":"e1","engagement_token":"tok1","docker_daemon":"d1"}'
+stopped() {
+    grep -c "^stop -t ${1:-60} " "$trap_dir/calls" || true
+}
 
-# Default grace: 60 for the agents, the post-process container and the
-# interactive containers.
+# Default grace: 60 for every container of the engagement (numbered
+# agents, post-process, interactive).
+stop_state "$_stop_engaged"
+printf '%s\n' "fake-agent-1 fake /checkout tok1" \
+    "fake-agent-2 fake /checkout tok1" "fake-agent-post fake /checkout tok1" \
+    "fake-agent-interactive-codex-1 fake /checkout tok1" > "$_sr/list"
 : > "$trap_dir/calls"
-NUM_AGENTS=3 PROJECT="claude-swarm-fake" IMAGE_NAME="claude-swarm-fake-agent" \
-    STOP_LIST="claude-swarm-fake-agent-interactive-codex-1 claude-swarm-fake
-claude-swarm-fake-agent-interactive-claude-2 claude-swarm-fake" run_stop
-default_calls=$(wc -l < "$trap_dir/calls" | tr -d ' ')
-assert_eq "default grace: 3 agents plus 2 interactive plus post" \
-    "6" "$default_calls"
-default_flag=$(head -1 "$trap_dir/calls")
-assert_eq "default grace: -t 60 in flags" "1" \
-    "$(printf '%s\n' "$default_flag" | grep -cF 'stop -t 60')"
-assert_eq "default grace: post-process is stopped by ID" "1" \
-    "$(grep -cF 'stop -t 60 id-claude-swarm-fake-agent-post' \
-        "$trap_dir/calls" || true)"
-assert_eq "default grace: interactive containers are stopped" "2" \
-    "$(grep -cF 'stop -t 60 id-claude-swarm-fake-agent-interactive-' \
-        "$trap_dir/calls" || true)"
-
-# New project name with env override: SWARM_STOP_TIMEOUT=120.
+PROJECT=fake IMAGE_NAME=fake-agent run_stop
+assert_eq "default grace: every container of the engagement" "4" \
+    "$(stopped 60)"
+assert_eq "default grace: by ID" "1" \
+    "$(grep -cF 'stop -t 60 id-fake-agent-post' "$trap_dir/calls" || true)"
 : > "$trap_dir/calls"
-NUM_AGENTS=2 PROJECT="swarm-core-fake" IMAGE_NAME="swarm-core-fake-agent" \
-    STOP_LIST="swarm-core-fake-agent-interactive-codex-1 swarm-core-fake" \
-    SWARM_STOP_TIMEOUT=120 run_stop
-override_flag=$(head -1 "$trap_dir/calls")
-assert_eq "SWARM_STOP_TIMEOUT=120 propagates to docker stop -t 120" "1" \
-    "$(printf '%s\n' "$override_flag" | grep -cF 'stop -t 120')"
-assert_eq "SWARM_STOP_TIMEOUT=120 propagates to post-process" "1" \
-    "$(grep -cF 'stop -t 120 id-swarm-core-fake-agent-post' \
-        "$trap_dir/calls" || true)"
-assert_eq "SWARM_STOP_TIMEOUT=120 propagates to interactive" "1" \
-    "$(grep -cF 'stop -t 120 id-swarm-core-fake-agent-interactive-codex-1' \
-        "$trap_dir/calls" || true)"
-
-# A '.' in the project id matches only itself: axb's interactive
-# container is not a.b's.
+PROJECT=fake IMAGE_NAME=fake-agent SWARM_STOP_TIMEOUT=120 run_stop
+assert_eq "SWARM_STOP_TIMEOUT=120 propagates to docker stop -t 120" "4" \
+    "$(stopped 120)"
+# Whole seconds: 0 stops at once (and tries the lock once, which flock
+# -w 0 would refuse on macOS), and leading zeros go.  Anything else
+# stops nothing.
 : > "$trap_dir/calls"
-NUM_AGENTS=1 PROJECT="a.b" IMAGE_NAME="a.b-agent" \
-    STOP_LIST="a.b-agent-interactive-x a.b axb-agent-interactive-y axb" \
-    run_stop
-assert_eq "dotted id: its own interactive container is stopped" "1" \
-    "$(grep -cF 'stop -t 60 id-a.b-agent-interactive-x' \
-        "$trap_dir/calls" || true)"
-assert_eq "dotted id: a look-alike name is not stopped" "0" \
-    "$(grep -cF 'axb' "$trap_dir/calls" || true)"
-
-# A container that another checkout created under one of the names
-# after the check at the top is skipped, by its label.
+PROJECT=fake IMAGE_NAME=fake-agent SWARM_STOP_TIMEOUT=0 run_stop
+assert_eq "SWARM_STOP_TIMEOUT=0: docker stop -t 0" "4" "$(stopped 0)"
+assert_eq "SWARM_STOP_TIMEOUT=0: a success" "0" \
+    "$(grep -c '^rc=1$' "$TMPDIR/stop.out" || true)"
 : > "$trap_dir/calls"
-NUM_AGENTS=2 PROJECT="fake" IMAGE_NAME="fake-agent" \
-    STOP_FOREIGN="fake-agent-2" run_stop
-assert_eq "foreign container under the name is not stopped" "0" \
-    "$(grep -cF 'id-fake-agent-2' "$trap_dir/calls" || true)"
-assert_eq "own containers are still stopped" "1" \
-    "$(grep -cF 'stop -t 60 id-fake-agent-1' "$trap_dir/calls" || true)"
-
-# Ids can overlap as names: project app-agent-interactive-tools names
-# its first agent app-agent-interactive-tools-agent-1.  Even from the
-# same checkout, app's stop must leave that container alone.
+PROJECT=fake IMAGE_NAME=fake-agent SWARM_STOP_TIMEOUT=007 run_stop
+assert_eq "SWARM_STOP_TIMEOUT=007: docker stop -t 7" "4" "$(stopped 7)"
+for _st_bad in 1.5 abc -1 1000000 " 5"; do
+    : > "$trap_dir/calls"
+    PROJECT=fake IMAGE_NAME=fake-agent SWARM_STOP_TIMEOUT="$_st_bad" run_stop
+    assert_eq "SWARM_STOP_TIMEOUT='${_st_bad}': refused" "true" \
+        "$(grep -q 'SWARM_STOP_TIMEOUT must be a whole number' \
+                "$TMPDIR/stop.out" \
+            && grep -qx 'rc=1' "$TMPDIR/stop.out" && echo true || echo false)"
+    assert_eq "SWARM_STOP_TIMEOUT='${_st_bad}': stops nothing" "0" \
+        "$(wc -l < "$trap_dir/calls" | tr -d ' ')"
+done
+# --numbered: only <image>-<digits>.
 : > "$trap_dir/calls"
-_tools_name="app-agent-interactive-tools-agent-1"
-NUM_AGENTS=1 PROJECT="app" IMAGE_NAME="app-agent" \
-    STOP_LIST="${_tools_name} app-agent-interactive-tools" run_stop
-assert_eq "overlapping id: the other project's container is not stopped" \
-    "0" "$(grep -cF 'interactive-tools' "$trap_dir/calls" || true)"
+PROJECT=fake IMAGE_NAME=fake-agent run_stop --numbered
+assert_eq "--numbered stops the numbered agents only" "2" "$(stopped 60)"
+assert_eq "--numbered leaves post-process running" "0" \
+    "$(grep -cF 'id-fake-agent-post' "$trap_dir/calls" || true)"
+# Only this checkout's and this engagement's.
+printf '%s\n' "a.b-agent-1 a.b /checkout tok1" \
+    "a.b-agent-2 a.b /elsewhere tok1" "a.b-agent-3 a.b /checkout tok9" \
+    > "$_sr/list"
+: > "$trap_dir/calls"
+PROJECT=a.b IMAGE_NAME=a.b-agent run_stop
+assert_eq "another checkout's container is not stopped" "0" \
+    "$(grep -cF 'id-a.b-agent-2' "$trap_dir/calls" || true)"
+assert_eq "another engagement's container is not stopped" "0" \
+    "$(grep -cF 'id-a.b-agent-3' "$trap_dir/calls" || true)"
+assert_eq "this engagement's container is" "1" "$(stopped 60)"
+# A new engagement with the same names takes this one's place after the
+# first docker stop: none of its containers is stopped.
+printf '%s\n' "fake-agent-1 fake /checkout tok1" \
+    "fake-agent-2 fake /checkout tok1" "fake-agent-3 fake /checkout tok1" \
+    > "$_sr/list"
+rm -f "$_sr/switched"
+: > "$trap_dir/calls"
+PROJECT=fake IMAGE_NAME=fake-agent STOP_SWITCH=1 run_stop
+assert_eq "an engagement that takes this one's place mid-stop: one stop" \
+    "1" "$(stopped 60)"
+rm -f "$_sr/switched"
+# Refusals, with nothing stopped.
+printf '%s\n' "fake-agent-1 fake /checkout tok1" > "$_sr/list"
+stop_state "$_stop_engaged"
+for _sv in daemon token legacy; do
+    : > "$trap_dir/calls"
+    case "$_sv" in
+        daemon) PROJECT=fake IMAGE_NAME=fake-agent STOP_DAEMON=d2 run_stop ;;
+        token) PROJECT=fake IMAGE_NAME=fake-agent \
+                   SWARM_ENGAGEMENT_TOKEN=tok7 run_stop ;;
+        legacy)
+            stop_state '{"schema":"swarm-core.state/v1","engagement_id":"e1"}'
+            PROJECT=fake IMAGE_NAME=fake-agent run_stop ;;
+    esac
+    assert_eq "stop refuses (${_sv})" "1" \
+        "$(grep -c '^rc=1$' "$TMPDIR/stop.out" || true)"
+    assert_eq "and stops nothing (${_sv})" "0" "$(stopped 60)"
+done
+assert_eq "an earlier release's engagement: says how to finish it" "1" \
+    "$(grep -c 'release that made it' "$TMPDIR/stop.out" || true)"
+stop_state '{"schema":"swarm-core.state/v1"}'
+: > "$trap_dir/calls"
+PROJECT=fake IMAGE_NAME=fake-agent run_stop
+assert_eq "no engagement: nothing to stop" "0" "$(stopped 60)"
 
 # stop never creates the runtime directory and leaves the state file in
 # place, since it names the owner.
 run_stop_with_runtime() {
     (
-        eval "$cmd_stop_src"
-        NUM_AGENTS=1
+        eval "$CMD_STOP_BODY"
+        eval "$STOP_HELPERS"
+        SWARM_TMP_FILES=()
         IMAGE_NAME="stop-fake"
         PROJECT="fake"
         RUNTIME_DIR="$1"
@@ -2075,7 +2195,7 @@ run_stop_with_runtime() {
         # shellcheck disable=SC2329
         docker() { return 0; }
         cmd_stop >/dev/null 2>&1 || true
-    )
+    ) || true
 }
 _stop_target="$TMPDIR/stop-target"
 _stop_rt="$TMPDIR/stop-runtime"
@@ -2108,9 +2228,9 @@ CMD_INTERACTIVE_BODY=$(awk '
     p && /^\}[[:space:]]*$/ { exit }
 ' "$LAUNCH_FILE")
 
-assert_eq "interactive uses docker run -it" "1" \
+assert_eq "interactive execs docker run -it" "1" \
     "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
-        | grep -cF 'docker run -it')"
+        | grep -cF 'exec docker run -it')"
 assert_eq "interactive uses dedicated entrypoint" "1" \
     "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
         | grep -cF -- '--entrypoint /interactive.sh')"
@@ -2325,8 +2445,9 @@ assert_eq "no fixed /tmp paths" "" \
 echo ""
 echo "=== 46. Recovery hints quote the bare repo path ==="
 
-# The runtime directory can contain shell metacharacters, so a printed
-# removal hint must name the same path when it is pasted.
+# A bare repo whose agent-work is behind the checkout's HEAD (stale):
+# interactive refuses and points to cleanup, with no removal command,
+# even in a runtime directory with shell metacharacters in its path.
 _hint_fn="$TMPDIR/ensure_bare_repo_for_interactive.sh"
 awk '/^ensure_bare_repo_for_interactive\(\)[[:space:]]*\{/ { p = 1 }
      p { print }
@@ -2349,14 +2470,24 @@ _hint_out=$(
     RUNTIME_DIR="$(dirname "$_hint_bare")"
     BARE_REPO="$_hint_bare"
     STATE_FILE="$TMPDIR/hint-state.json"
+    printf '%s\n' '{"schema":"swarm-core.state/v1","engagement_id":"e1",
+        "engagement_token":"t1","docker_daemon":"d1"}' > "$STATE_FILE"
+    # Called by the engagement's daemon check.
+    # shellcheck disable=SC2329
+    docker() {
+        # (Patterns with their opening parenthesis: Bash 3.2 cannot
+        # parse a case inside $(...) otherwise.)
+        case "$1 ${2:-}" in
+            ("info -f") echo d1 ;;
+            ("context show") echo default ;;
+        esac
+    }
     ensure_bare_repo_for_interactive 2>&1
 ) || true
-_hint=$(printf '%s\n' "$_hint_out" | grep 'docker run ' || true)
-_hint="${_hint#*docker run }"
-eval "set -- $_hint"
-assert_eq "stale bare hint quotes the path for the shell" \
-    "$(dirname "$_hint_bare"):/runtime /runtime/upstream.git" \
-    "${3:-} ${7:-}"
+assert_eq "a stale bare repo: the hint names cleanup" "1" \
+    "$(printf '%s\n' "$_hint_out" | grep -c 'launch.sh cleanup' || true)"
+assert_eq "and offers no removal command" "0" \
+    "$(printf '%s\n' "$_hint_out" | grep -cE 'docker run|rm -rf' || true)"
 
 # ============================================================
 echo ""
@@ -2413,9 +2544,19 @@ _st_bin="$TMPDIR/start-bin"
 _st_repo="$TMPDIR/start-repo"
 _st_rt="$TMPDIR/start-runtime"
 mkdir -p "$_st_bin" "$_st_repo/sub/configs"
-# Like the real CLI, inspecting a missing container fails.
-printf '#!/bin/bash\n[ "$1 $2" = "container inspect" ] && exit 1\nexit 0\n' \
-    > "$_st_bin/docker"
+# Like the real CLI, inspecting a missing container fails, and info and
+# context show answer.
+cat > "$_st_bin/docker" <<'EOF'
+#!/bin/bash
+[ "$1" = volume ] && exec "$FAKE_DOCKER_VOLUME" "$@"
+if [ "$1 $2" = "container inspect" ]; then
+    echo "Error: No such container: ${*: -1}" >&2
+    exit 1
+fi
+[ "$1" = info ] && echo d1
+[ "$1 $2" = "context show" ] && echo default
+exit 0
+EOF
 chmod +x "$_st_bin/docker"
 git init -q "$_st_repo"
 echo "Prompt." > "$_st_repo/prompt.md"
@@ -2494,6 +2635,9 @@ _lbl_log="$TMPDIR/label-docker.log"
 mkdir -p "$_lbl_bin"
 : > "$_lbl_log"
 printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"
+[ "$1" = volume ] && exec "$FAKE_DOCKER_VOLUME" "$@"
+[ "$1" = info ] && { echo d1; exit 0; }
+[ "$1 $2" = "context show" ] && { echo default; exit 0; }
 [ "$1 $2" = "container inspect" ] && exit 1\nexit 0\n' \
     "$_lbl_log" > "$_lbl_bin/docker"
 chmod +x "$_lbl_bin/docker"
@@ -2556,6 +2700,9 @@ mkdir -p "$_id_bin"
 : > "$_id_log"
 cat > "$_id_bin/docker" <<EOF
 #!/bin/bash
+[ "\$1" = volume ] && exec "\$FAKE_DOCKER_VOLUME" "\$@"
+[ "\$1" = info ] && { echo d1; exit 0; }
+[ "\$1 \$2" = "context show" ] && { echo default; exit 0; }
 echo "\$*" >> "$_id_log"
 if [ "\$1" = ps ]; then
     jq -nc --arg o "$(cd -P "$_id_a" && pwd -P)" \
@@ -2582,6 +2729,15 @@ assert_eq "B creates no runtime directory" "false" \
 # another checkout owns it.  start must not remove it.
 cat > "$_id_bin/docker" <<EOF
 #!/bin/bash
+[ "\$1" = volume ] && exec "\$FAKE_DOCKER_VOLUME" "\$@"
+[ "\$1" = info ] && { echo d1; exit 0; }
+[ "\$1 \$2" = "context show" ] && { echo default; exit 0; }
+# Docker refuses to make a container under a name another one holds.
+if [ "\$1" = run ]; then
+    echo "run refused: the name is in use" >> "$_id_log"
+    echo "docker: Error response from daemon: Conflict." >&2
+    exit 125
+fi
 echo "\$*" >> "$_id_log"
 if [ "\$1 \$2" = "container inspect" ]; then
     jq -nc --arg o "/elsewhere/start-repo" \
@@ -2596,7 +2752,8 @@ _id_rc=0
     SWARM_RUNTIME_DIR="$TMPDIR/id-b-runtime-2" \
     SWARM_CONFIG=sub/configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
     bash "$_LAUNCH_SH" start >/dev/null 2>&1) || _id_rc=$?
-assert_eq "a container that appears later stops start" "1" "$_id_rc"
+assert_eq "a container that appears later stops start" "1" \
+    "$([ "$_id_rc" -ne 0 ] && echo 1 || echo 0)"
 assert_eq "the late container is not removed" "0" \
     "$(grep -c '^rm ' "$_id_log" || true)"
 assert_eq "no agent container is started" "0" \
@@ -2607,6 +2764,9 @@ assert_eq "no agent container is started" "0" \
 # logs, status and wait must not read it.
 cat > "$_id_bin/docker" <<EOF
 #!/bin/bash
+[ "\$1" = volume ] && exec "\$FAKE_DOCKER_VOLUME" "\$@"
+[ "\$1" = info ] && { echo d1; exit 0; }
+[ "\$1 \$2" = "context show" ] && { echo default; exit 0; }
 echo "\$*" >> "$_id_log"
 if [ "\$1 \$2" = "container inspect" ]; then
     jq -nc '{id: "other-id", labels: {"swarm-core.project": "other",
@@ -2675,6 +2835,9 @@ _eng_log="$TMPDIR/eng-docker.log"
 _eng_bin="$TMPDIR/eng-bin"
 mkdir -p "$_eng_bin"
 printf '#!/bin/bash\necho "$*" >> "%s"
+[ "$1" = volume ] && exec "$FAKE_DOCKER_VOLUME" "$@"
+[ "$1" = info ] && { echo d1; exit 0; }
+[ "$1 $2" = "context show" ] && { echo default; exit 0; }
 [ "$1 $2" = "container inspect" ] && exit 1\nexit 0\n' \
     "$_eng_log" > "$_eng_bin/docker"
 chmod +x "$_eng_bin/docker"
@@ -2703,22 +2866,29 @@ mkdir -p "$_lk_bin"
 mkdir -m 700 "$_lk_rt"
 cat > "$_lk_bin/docker" <<EOF
 #!/bin/bash
+[ "\$1" = volume ] && exec "\$FAKE_DOCKER_VOLUME" "\$@"
+[ "\$1" = info ] && { echo d1; exit 0; }
+[ "\$1 \$2" = "context show" ] && { echo default; exit 0; }
 echo "\$*" >> "$_lk_log"
 [ "\$1 \$2" = "container inspect" ] && exit 1
-# The interactive container reports "created" until the session marks
-# itself running.  The session checks the lock before that and again
-# while it runs, prints a line, and exits with FAKE_EXIT.  With
-# FAKE_NEVER_RUNS the container never starts.
-if [ "\$1" = inspect ]; then
-    if [ -e "$_lk_rt.running" ]; then echo running; else echo created; fi
-    exit 0
-fi
+# docker run -it checks that the session record for its --name names
+# its own pid (exec keeps launch.sh's) and logs its arguments, checks
+# the lock while the session runs, prints a line and exits with
+# FAKE_EXIT.  With FAKE_NEVER_RUNS the container never starts.
+[ "\$1" = info ] && { echo d1; exit 0; }
+[ "\$1 \$2" = "context show" ] && { echo default; exit 0; }
 if [ "\$1 \$2" = "run -it" ]; then
-    if flock -n 6 6>>"$_lk_rt/engagement.lock"; then
-        echo "lock free before the container runs" >> "$_lk_log"
+    _name=""
+    _prev=""
+    for _a in "\$@"; do
+        [ "\$_prev" = --name ] && _name="\$_a"
+        _prev="\$_a"
+    done
+    if grep -qx "pid=\$\$" "$_lk_rt/interactive-\$_name.pending" 2>/dev/null
+    then
+        echo "record names the session" >> "$_lk_log"
     fi
     [ -n "\${FAKE_NEVER_RUNS:-}" ] && exit 3
-    : > "$_lk_rt.running"
     for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         if flock -n 6 6>>"$_lk_rt/engagement.lock"; then
             echo "lock free during session" >> "$_lk_log"
@@ -2727,7 +2897,6 @@ if [ "\$1 \$2" = "run -it" ]; then
         sleep 0.1
     done
     echo "SESSION OUTPUT"
-    rm -f "$_lk_rt.running"
     exit "\${FAKE_EXIT:-0}"
 fi
 exit 0
@@ -2756,23 +2925,45 @@ _lk_rc=0
 assert_eq "start with the holder's SWARM_LOCK_FD runs" "0" "$_lk_rc"
 exec 8>&-
 
-# An interactive session keeps the lock until its container runs (its
-# mounts are then in place) and gives it up for the rest of the
-# session; docker run keeps the terminal, so output and exit status
-# come straight from the container.
+# An interactive session records itself under the lock, gives the lock
+# up and execs docker run, which keeps the terminal and the exit status.
 : > "$_lk_log"
 _lk_rc=0
 _lk_out=$(FAKE_EXIT=4 run_lock interactive --agent-index 1) || _lk_rc=$?
-assert_eq "the lock is held until the container runs" "0" \
-    "$(grep -c 'lock free before the container runs' "$_lk_log" || true)"
+assert_eq "the session is recorded before docker run" "1" \
+    "$(grep -c 'record names the session' "$_lk_log" || true)"
 assert_eq "the lock is free once the container runs" "1" \
     "$(grep -c 'lock free during session' "$_lk_log" || true)"
 assert_eq "the session's output reaches the terminal" "true" \
     "$(grep -q 'SESSION OUTPUT' <<< "$_lk_out" \
         && echo true || echo false)"
 assert_eq "interactive returns the container's exit status" "4" "$_lk_rc"
-# A container that never starts: docker run fails, launch.sh exits, and
-# the helper lets the lock go once it sees that.
+# docker_args reach docker run unchanged, run-only options included,
+# and a --name among them does not replace the recorded name: the fake
+# takes the last --name, as Docker does, and checks its record.
+_lk_cfg="$_st_repo/sub/configs/docker-args.json"
+jq '. + {docker_args: ["--detach-keys=ctrl-x", "--label", "-itd",
+    "--name", "custom-session"]}' \
+    "$_st_repo/sub/configs/swarm.json" > "$_lk_cfg"
+: > "$_lk_log"
+(cd "$_st_repo" && PATH="$_lk_bin:$PATH" SWARM_RUNTIME_DIR="$_lk_rt" \
+    SWARM_CONFIG=sub/configs/docker-args.json SWARM_SKIP_DEP_CHECK=1 \
+    "$BASH" "$_LAUNCH_SH" interactive --agent-index 1 >/dev/null 2>&1) \
+    || true
+assert_eq "docker_args reach docker run unchanged" "1" \
+    "$(grep '^run -it ' "$_lk_log" \
+        | grep -c -- ' --detach-keys=ctrl-x --label -itd --name custom' \
+        || true)"
+assert_eq "the container gets the recorded name" "1" \
+    "$(grep -c 'record names the session' "$_lk_log" || true)"
+assert_eq "the session label follows docker_args too" "1" \
+    "$(grep '^run -it ' "$_lk_log" | grep -cE -- \
+        ' --name custom-session .* --name [^ ]+ --label swarm-core\.session=' \
+        || true)"
+rm -f "$_lk_cfg"
+
+# A container that never starts: docker run fails, and the lock is
+# already free.
 : > "$_lk_log"
 _lk_rc=0
 FAKE_NEVER_RUNS=1 run_lock interactive --agent-index 1 >/dev/null \
@@ -2814,6 +3005,1770 @@ assert_eq "start --dashboard unlocks before exec" "1" \
         || true)"
 
 # ============================================================
+echo ""
+echo "=== 52. A new bare repo records its base and drops old agent refs ==="
+
+# The checkout has a stale local agent-work and branches in the
+# namespaces harvest and the preservation checks read.  None of them may
+# reach the new bare repo; agent-work and refs/swarm/base start at HEAD,
+# and the state file records HEAD as the base.
+_br_dir="$TMPDIR/base-refs"
+_br_src="$_br_dir/src"
+mkdir -p "$_br_dir"
+git init -q "$_br_src"
+_br_git() {
+    git -C "$_br_src" -c user.name=t -c user.email=t@t \
+        -c commit.gpgsign=false "$@"
+}
+_br_git commit -q --allow-empty -m one
+_br_old=$(git -C "$_br_src" rev-parse HEAD)
+_br_git commit -q --allow-empty -m two
+_br_head=$(git -C "$_br_src" rev-parse HEAD)
+for _br_ref in refs/heads/agent-work refs/heads/swarm/abc/interactive-x \
+        refs/heads/agent-parked/1-20260101T000000Z refs/swarm-runs/r1 \
+        refs/heads/feature; do
+    git -C "$_br_src" update-ref "$_br_ref" "$_br_old"
+done
+awk '$0 ~ /^(create_bare_repo|prepare_bare_repo|begin_engagement)\(\)[[:space:]]*\{/ { p = 1 }
+     p { print }
+     p && /^\}[[:space:]]*$/ { p = 0 }' "$_LAUNCH_SH" > "$_br_dir/funcs.sh"
+_br_run() {
+    (
+        # shellcheck source=/dev/null
+        source "$_br_dir/funcs.sh"
+        # No Docker here: the daemon id is made up.
+        # shellcheck disable=SC2329
+        swarm_docker_daemon_id() { printf 'TEST:DAEMON'; }
+        REPO_ROOT="$1"
+        BARE_REPO="$_br_dir/bare-$2.git"
+        STATE_FILE="$_br_dir/state-$2.json"
+        create_bare_repo
+    ) >/dev/null 2>&1
+}
+_br_rc=0
+_br_run "$_br_src" 1 || _br_rc=$?
+_br_bare="$_br_dir/bare-1.git"
+assert_eq "bare repo is created" "0" "$_br_rc"
+assert_eq "agent-work starts at HEAD, not the old local branch" \
+    "$_br_head" "$(git -C "$_br_bare" rev-parse agent-work 2>/dev/null)"
+assert_eq "refs/swarm/base is HEAD" "$_br_head" \
+    "$(git -C "$_br_bare" rev-parse refs/swarm/base 2>/dev/null)"
+assert_eq "the state file records HEAD as the base" "$_br_head" \
+    "$(jq -r .base_commit "$_br_dir/state-1.json" 2>/dev/null)"
+assert_eq "old interactive, parked and run refs are not copied" "" \
+    "$(git -C "$_br_bare" for-each-ref --format='%(refname)' \
+        refs/heads/swarm/ refs/heads/agent-parked/ refs/swarm-runs/)"
+assert_eq "other branches are copied as before" "$_br_old" \
+    "$(git -C "$_br_bare" rev-parse feature 2>/dev/null)"
+assert_eq "the bare repo's HEAD is agent-work" "refs/heads/agent-work" \
+    "$(git -C "$_br_bare" symbolic-ref HEAD 2>/dev/null)"
+assert_eq "the state file records the Docker daemon" "TEST:DAEMON" \
+    "$(jq -r .docker_daemon "$_br_dir/state-1.json" 2>/dev/null)"
+assert_eq "and a token of 16 hex digits" "true" \
+    "$(jq -r .engagement_token "$_br_dir/state-1.json" 2>/dev/null \
+        | grep -qE '^[0-9a-f]{16}$' && echo true || echo false)"
+assert_eq "no upstream.git.new is left" "false" \
+    "$([ -e "$_br_bare.new" ] && echo true || echo false)"
+
+# The engagement is recorded before the clone starts.  A failure while
+# the clone is prepared must not leave a bare repo that later commands
+# would join with old agent branches in it, nor the half-made clone:
+# cleanup is the next step.  FAIL names the step that fails.
+_br_fail() {
+    local n="$1" fail="$2"
+    (
+        # shellcheck source=/dev/null
+        source "$_br_dir/funcs.sh"
+        # No Docker here: the daemon id is made up.
+        # shellcheck disable=SC2329
+        swarm_docker_daemon_id() { printf 'TEST:DAEMON'; }
+        # shellcheck disable=SC2329
+        git() {
+            case "$fail $*" in
+                "list "*" for-each-ref "*) return 128 ;;
+                "delete "*" update-ref -d "*) return 128 ;;
+            esac
+            command git "$@"
+        }
+        if [ "$fail" = state ]; then
+            # shellcheck disable=SC2329
+            swarm_state_update() { return 1; }
+        fi
+        REPO_ROOT="$_br_src"
+        BARE_REPO="$_br_dir/bare-$n.git"
+        STATE_FILE="$_br_dir/state-$n.json"
+        create_bare_repo
+    ) >/dev/null 2>&1
+}
+for _br_case in 3:list:true 4:delete:true 5:state:false; do
+    _br_n="${_br_case%%:*}"
+    _br_step="${_br_case#*:}"
+    _br_recorded="${_br_step#*:}"
+    _br_step="${_br_step%%:*}"
+    _br_rc=0
+    _br_fail "$_br_n" "$_br_step" || _br_rc=$?
+    assert_eq "$_br_step failure stops bare creation" "1" "$_br_rc"
+    assert_eq "$_br_step failure leaves no bare repo to join" "false" \
+        "$([ -e "$_br_dir/bare-$_br_n.git" ] && echo true || echo false)"
+    assert_eq "$_br_step failure leaves no upstream.git.new" "false" \
+        "$([ -e "$_br_dir/bare-$_br_n.git.new" ] && echo true || echo false)"
+    assert_eq "$_br_step failure: engagement recorded is $_br_recorded" \
+        "$_br_recorded" \
+        "$([ -n "$(jq -r '.engagement_id // empty' \
+            "$_br_dir/state-$_br_n.json" 2>/dev/null)" ] \
+            && echo true || echo false)"
+done
+
+# A bare repo that is there already is refused, never replaced; so is
+# an upstream.git.new that a run stopped half way left.
+mkdir -p "$_br_dir/bare-6.git" "$_br_dir/bare-7.git.new"
+touch "$_br_dir/bare-6.git/marker" "$_br_dir/bare-7.git.new/marker"
+for _br_n in 6 7; do
+    _br_rc=0
+    _br_fail "$_br_n" none || _br_rc=$?
+    assert_eq "an existing bare repo or .new ($_br_n) is refused" "1" \
+        "$_br_rc"
+    assert_eq "and records no engagement ($_br_n)" "false" \
+        "$([ -e "$_br_dir/state-$_br_n.json" ] && echo true || echo false)"
+done
+assert_eq "the bare repo is left as it was" "true" \
+    "$([ -e "$_br_dir/bare-6.git/marker" ] && echo true || echo false)"
+assert_eq "so is the .new" "true" \
+    "$([ -e "$_br_dir/bare-7.git.new/marker" ] && echo true || echo false)"
+assert_eq "and no bare repo is made next to the .new" "false" \
+    "$([ -e "$_br_dir/bare-7.git" ] && echo true || echo false)"
+
+# A new engagement drops what harvests of an earlier one merged.
+printf '%s\n' '{"schema":"swarm-core.state/v1",
+    "harvested":["0123456789abcdef0123456789abcdef01234567"],
+    "harvest_pending":["0123456789abcdef0123456789abcdef01234567"]}' \
+    > "$_br_dir/state-9.json"
+_br_run "$_br_src" 9 || true
+assert_eq "a new engagement drops the record of harvests" "null null" \
+    "$(jq -r '"\(.harvested) \(.harvest_pending)"' \
+        "$_br_dir/state-9.json" 2>/dev/null)"
+
+# A checkout without a commit has nothing to start from.
+git init -q "$_br_dir/empty"
+_br_rc=0
+_br_run "$_br_dir/empty" 2 || _br_rc=$?
+assert_eq "a checkout without commits is refused" "1" "$_br_rc"
+assert_eq "no state is written for it" "false" \
+    "$([ -e "$_br_dir/state-2.json" ] && echo true || echo false)"
+
+
+# ============================================================
+echo ""
+echo "=== 53. Open interactive sessions keep the bare repo and the mirrors ==="
+
+# The session record names a process and its start time.  It is live
+# while that process runs; a record whose process is gone, or whose
+# pid now belongs to a newer process, is removed.
+_pd_dir="$TMPDIR/pending"
+mkdir -p "$_pd_dir"
+# The caller's Docker selectors would steer the stub below; the cases
+# that set them come last.
+unset DOCKER_CONTEXT DOCKER_HOST
+# Docker's answers once a session's process is gone.  Two contexts: A
+# (daemon PD_DAEMON) and B (daemon d2, where no session container
+# exists).  The current context is in a file, as docker context use
+# keeps it; DOCKER_CONTEXT overrides it.  With PD_SWITCH set, docker
+# info switches the current context to B, as another terminal could.
+# PD_STATE is the state of the container with the session's label on
+# A, "gone" for none, "error" for a failed listing.  A lookup by name
+# finds nothing, as after a rename of the detached container.
+PD_STATE=gone
+PD_DAEMON=d1
+PD_SWITCH=""
+_pd_ctx="$TMPDIR/pending-context"
+echo A > "$_pd_ctx"
+# shellcheck disable=SC2329
+docker() {
+    local ctx
+    ctx="${DOCKER_CONTEXT:-$(cat "$_pd_ctx")}"
+    if [ "$1 $2" = "context show" ]; then
+        cat "$_pd_ctx"
+        return 0
+    fi
+    if [ "$1" = info ]; then
+        [ -z "$PD_SWITCH" ] || echo B > "$_pd_ctx"
+        if [ "$ctx" = A ]; then echo "$PD_DAEMON"; else echo d2; fi
+        return 0
+    fi
+    if [ "$1" != ps ]; then
+        echo "Error: No such container: ${*: -1}" >&2
+        return 1
+    fi
+    [ "$ctx" = A ] || return 0
+    case "$PD_STATE" in
+        gone) ;;
+        error) echo "Cannot connect to the Docker daemon" >&2; return 1 ;;
+        *)
+            case "$*" in
+                *" label=swarm-core.session="*) echo "$PD_STATE" ;;
+            esac ;;
+    esac
+}
+_pd_id_a="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+_pd_id_b="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+sleep 60 &
+_pd_live=$!
+sh -c 'exit 0' &
+_pd_dead=$!
+wait "$_pd_dead" 2>/dev/null || true
+swarm_pending_write "$_pd_dir" "$_pd_id_a" "$_pd_live" d1
+swarm_pending_write "$_pd_dir" "$_pd_id_b" "$_pd_dead" d1
+assert_eq "the record names the pid" "pid=$_pd_live" \
+    "$(grep '^pid=' "$_pd_dir/interactive-$_pd_id_a.pending")"
+assert_eq "only the running session is live" "$_pd_id_a" \
+    "$(swarm_pending_live "$_pd_dir")"
+assert_eq "the record of the ended session is removed" "false" \
+    "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+        && echo true || echo false)"
+printf 'pid=%s\nstarted=Thu Jan  1 00:00:00 1970\ndaemon=d1\n' \
+    "$_pd_live" > "$_pd_dir/interactive-$_pd_id_b.pending"
+assert_eq "a pid with another start time is not the session" \
+    "$_pd_id_a" "$(swarm_pending_live "$_pd_dir")"
+assert_eq "its record is removed" "false" \
+    "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+        && echo true || echo false)"
+printf 'pid=x\n' > "$_pd_dir/interactive-$_pd_id_b.pending"
+_pd_rc=0
+swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+assert_eq "a record without a pid fails the check" "1" "$_pd_rc"
+rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+ln -s "$_pd_dir/interactive-$_pd_id_a.pending" \
+    "$_pd_dir/interactive-$_pd_id_b.pending"
+_pd_rc=0
+swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+assert_eq "a symlinked record fails the check" "1" "$_pd_rc"
+rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+_pd_rc=0
+swarm_pending_write "$_pd_dir" "-bad name" "$_pd_live" d1 2>/dev/null \
+    || _pd_rc=$?
+assert_eq "a malformed container name is not recorded" "1" "$_pd_rc"
+printf 'pid=%s\nstarted=\ndaemon=d1\n' "$_pd_live" \
+    > "$_pd_dir/interactive--x.pending"
+_pd_rc=0
+swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+assert_eq "a record whose file name is no container name fails" "1" \
+    "$_pd_rc"
+rm -f "$_pd_dir/interactive--x.pending"
+_pd_rc=0
+swarm_pending_write "$_pd_dir" "$_pd_id_b" "$_pd_live" "" 2>/dev/null \
+    || _pd_rc=$?
+assert_eq "a record without a daemon id is not written" "1" "$_pd_rc"
+
+# The start time is read the same way whatever the caller's time zone
+# and locale, so a live session is not taken for a reused pid.
+TZ=UTC LC_ALL=C swarm_pending_write "$_pd_dir" "$_pd_id_b" "$_pd_live" d1
+assert_eq "a session recorded in UTC is live from another zone" \
+    "$_pd_id_a $_pd_id_b" \
+    "$(TZ=Pacific/Kiritimati LC_TIME=fr_FR.UTF-8 \
+        swarm_pending_live "$_pd_dir" | sort | tr '\n' ' ' | sed 's/ $//')"
+rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+
+# A session can detach and leave the container running, and the
+# container can be renamed: the session is still open after its
+# process ended, found by its label.
+swarm_pending_write "$_pd_dir" "$_pd_id_b" "$_pd_dead" d1
+PD_STATE=running
+assert_eq "a detached session whose container runs stays open" \
+    "$_pd_id_a $_pd_id_b" \
+    "$(swarm_pending_live "$_pd_dir" | sort | tr '\n' ' ' | sed 's/ $//')"
+PD_STATE=error
+_pd_rc=0
+swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+assert_eq "a container state Docker cannot give fails the check" "1" \
+    "$_pd_rc"
+assert_eq "and keeps the record" "true" \
+    "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+        && echo true || echo false)"
+# Container ids mean something only on their daemon: after a switch to
+# another daemon, "no such container" proves nothing.
+PD_STATE=gone
+echo B > "$_pd_ctx"
+_pd_rc=0
+swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+assert_eq "a record from another Docker daemon fails the check" "1" \
+    "$_pd_rc"
+assert_eq "and stays" "true" \
+    "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+        && echo true || echo false)"
+# A switch between reading the daemon id and inspecting the container
+# must not send the inspect to the other daemon.
+echo A > "$_pd_ctx"
+PD_STATE=running
+PD_SWITCH=1
+assert_eq "a context switch during the check keeps the session open" \
+    "$_pd_id_a $_pd_id_b" \
+    "$(swarm_pending_live "$_pd_dir" 2>/dev/null | sort | tr '\n' ' ' \
+        | sed 's/ $//')"
+PD_SWITCH=""
+echo A > "$_pd_ctx"
+assert_eq "the pin does not outlive the check" "unset" \
+    "${DOCKER_CONTEXT-unset}"
+# A created container can still start after its client died.
+PD_STATE=created
+assert_eq "a session whose container is only created stays open" \
+    "$_pd_id_a $_pd_id_b" \
+    "$(swarm_pending_live "$_pd_dir" | sort | tr '\n' ' ' | sed 's/ $//')"
+PD_STATE=exited
+assert_eq "an ended session whose container exited is closed" \
+    "$_pd_id_a" "$(swarm_pending_live "$_pd_dir")"
+assert_eq "its record is removed" "false" \
+    "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+        && echo true || echo false)"
+PD_STATE=gone
+
+# Records that are not exactly "pid=N" and "started=T" fail the check
+# and stay, even with a live pid.
+_pd_bad() {
+    local label="$1" content="$2" rc=0
+    printf '%s' "$content" > "$_pd_dir/interactive-$_pd_id_b.pending"
+    swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || rc=$?
+    assert_eq "$label fails the check" "1" "$rc"
+    assert_eq "$label is kept" "true" \
+        "$([ -e "$_pd_dir/interactive-$_pd_id_b.pending" ] \
+            && echo true || echo false)"
+    rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+}
+_pd_nl=$'\n'
+_pd_ok_tail="started=${_pd_nl}daemon=d1${_pd_nl}"
+_pd_bad "a garbage start time" \
+    "pid=$_pd_live${_pd_nl}started=garbage${_pd_nl}daemon=d1${_pd_nl}"
+_pd_bad "a garbage day" "pid=$_pd_live${_pd_nl}started=Thu Jan garbage\
+ 00:00:00 1970${_pd_nl}daemon=d1${_pd_nl}"
+_pd_bad "a second start time" "pid=$_pd_live${_pd_nl}started=${_pd_nl}\
+started=Thu Jan  1 00:00:00 1970${_pd_nl}daemon=d1${_pd_nl}"
+_pd_bad "an extra line" "pid=$_pd_live${_pd_nl}${_pd_ok_tail}other=1${_pd_nl}"
+_pd_bad "a missing start line" "pid=$_pd_live${_pd_nl}daemon=d1${_pd_nl}"
+_pd_bad "a missing daemon line" "pid=$_pd_live${_pd_nl}started=${_pd_nl}"
+_pd_bad "a garbage daemon id" \
+    "pid=$_pd_live${_pd_nl}started=${_pd_nl}daemon=a b${_pd_nl}"
+_pd_bad "a second pid" "pid=$_pd_live${_pd_nl}pid=1${_pd_nl}${_pd_ok_tail}"
+_pd_bad "trailing blank lines" \
+    "pid=$_pd_live${_pd_nl}${_pd_ok_tail}${_pd_nl}${_pd_nl}"
+_pd_bad "no final newline" "pid=$_pd_live${_pd_nl}started=${_pd_nl}daemon=d1"
+# Root reads any file, so the unreadable case needs another user.
+if [ "$(id -u)" != 0 ]; then
+    printf 'pid=%s\n%s' "$_pd_live" "$_pd_ok_tail" \
+        > "$_pd_dir/interactive-$_pd_id_b.pending"
+    chmod 000 "$_pd_dir/interactive-$_pd_id_b.pending"
+    _pd_rc=0
+    swarm_pending_live "$_pd_dir" >/dev/null 2>&1 || _pd_rc=$?
+    assert_eq "an unreadable record fails the check" "1" "$_pd_rc"
+    chmod 600 "$_pd_dir/interactive-$_pd_id_b.pending"
+    rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+fi
+
+# A selector the caller set already pins the daemon: DOCKER_CONTEXT is
+# kept, DOCKER_HOST is left alone.  Docker allows "+" in context names.
+# Print the context swarm_docker_pin leaves, or "unset".
+_pd_pinned() {
+    swarm_docker_pin && printf '%s' "${DOCKER_CONTEXT-unset}"
+}
+echo dev+local > "$_pd_ctx"
+assert_eq "a context name with + is pinned" "dev+local" "$(_pd_pinned)"
+echo B > "$_pd_ctx"
+assert_eq "a caller's DOCKER_CONTEXT is kept" "A" \
+    "$(DOCKER_CONTEXT=A _pd_pinned)"
+assert_eq "with DOCKER_HOST no context is pinned" "unset" \
+    "$(DOCKER_HOST=unix:///x _pd_pinned)"
+# With the caller's DOCKER_CONTEXT=A, a context switch of the current
+# context changes nothing either.
+echo A > "$_pd_ctx"
+swarm_pending_write "$_pd_dir" "$_pd_id_b" "$_pd_dead" d1
+PD_STATE=running
+PD_SWITCH=1
+assert_eq "with the caller's DOCKER_CONTEXT a switch keeps it open" \
+    "$_pd_id_a $_pd_id_b" \
+    "$(DOCKER_CONTEXT=A swarm_pending_live "$_pd_dir" 2>/dev/null \
+        | sort | tr '\n' ' ' | sed 's/ $//')"
+PD_SWITCH=""
+PD_STATE=gone
+echo A > "$_pd_ctx"
+rm -f "$_pd_dir/interactive-$_pd_id_b.pending"
+
+unset -f docker
+
+# Every place that creates a bare repo checks for a clean runtime
+# (which counts open sessions) first, then builds the image, and
+# interactive mirrors only when it creates the bare repo.
+assert_eq "each bare repo creation checks for a clean runtime" "3" \
+    "$(grep -B2 '^ *create_bare_repo "' "$_LAUNCH_SH" \
+        | grep -c '^ *require_clean_runtime$')"
+assert_eq "and builds the image between the two" "3" \
+    "$(grep -B1 '^ *create_bare_repo "' "$_LAUNCH_SH" \
+        | grep -c '^ *build_image$')"
+assert_eq "cmd_interactive mirrors only through the bare repo step" "0" \
+    "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
+        | grep -c 'mirror_submodules' || true)"
+
+# Every bare repo creation mirrors the submodules.  A joining session
+# adds missing mirrors and leaves existing ones alone.
+assert_eq "each bare repo creation mirrors the submodules" "3" \
+    "$(grep -A3 '^ *create_bare_repo "' "$_LAUNCH_SH" \
+        | grep -c '^ *mirror_submodules$')"
+_mm_dir="$TMPDIR/mirror-missing"
+mkdir -p "$_mm_dir"
+git init -q "$_mm_dir/sub"
+git -C "$_mm_dir/sub" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m sub
+git init -q "$_mm_dir/src"
+git -C "$_mm_dir/src" -c protocol.file.allow=always submodule add -q \
+    "$_mm_dir/sub" lib >/dev/null 2>&1
+git -C "$_mm_dir/src" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q -m add-sub
+for _mm_fn in engagement_base mirror_submodules; do
+    awk -v fn="$_mm_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
+         p { print }
+         p && /^\}[[:space:]]*$/ { exit }' "$_LAUNCH_SH"
+done > "$_mm_dir/funcs.sh"
+# The engagement's base, as begin_engagement records it.
+jq -n --arg schema "$SWARM_STATE_SCHEMA" \
+    --arg base "$(git -C "$_mm_dir/src" rev-parse HEAD)" \
+    '{schema: $schema, base_commit: $base}' > "$_mm_dir/state.json"
+_mm_run() {
+    (
+        # shellcheck source=/dev/null
+        source "$_mm_dir/funcs.sh"
+        REPO_ROOT="$_mm_dir/src"
+        MIRROR_DIR="$_mm_dir/mirrors"
+        STATE_FILE="$_mm_dir/state.json"
+        mirror_submodules "$@"
+    ) >/dev/null 2>&1
+}
+_mm_run
+assert_eq "the submodule is mirrored" "true" \
+    "$([ -d "$_mm_dir/mirrors/lib.git" ] && echo true || echo false)"
+touch "$_mm_dir/mirrors/lib.git/keep"
+_mm_run missing
+assert_eq "a joining session leaves an existing mirror alone" "true" \
+    "$([ -e "$_mm_dir/mirrors/lib.git/keep" ] && echo true || echo false)"
+rm -rf "$_mm_dir/mirrors/lib.git"
+_mm_run missing
+assert_eq "a joining session adds a missing mirror" "true" \
+    "$(git -C "$_mm_dir/mirrors/lib.git" rev-parse --is-bare-repository \
+        2>/dev/null || echo false)"
+assert_eq "a mirror is made under .new and then renamed" "false" \
+    "$([ -e "$_mm_dir/mirrors/lib.git.new" ] && echo true || echo false)"
+touch "$_mm_dir/mirrors/lib.git/keep"
+_mm_rc=0
+_mm_run || _mm_rc=$?
+assert_eq "a new engagement never replaces a mirror: refused" "1" \
+    "$([ "$_mm_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_eq "and the mirror stays" "true" \
+    "$([ -e "$_mm_dir/mirrors/lib.git/keep" ] && echo true || echo false)"
+rm -rf "$_mm_dir/mirrors/lib.git"
+mkdir "$_mm_dir/mirrors/lib.git.new"
+_mm_rc=0
+_mm_run missing || _mm_rc=$?
+assert_eq "a .new a stopped run left: refused" "1" \
+    "$([ "$_mm_rc" -ne 0 ] && echo 1 || echo 0)"
+rmdir "$_mm_dir/mirrors/lib.git.new"
+
+# Through launch.sh: with a session open, start leaves the bare repo
+# alone, and another interactive session still joins it.  Once the
+# session ends, start still refuses: a new engagement waits for
+# ./launch.sh cleanup.
+_pd_rt="$TMPDIR/pending-runtime"
+run_pd() {
+    (cd "$_st_repo" && PATH="$_st_bin:$PATH" SWARM_RUNTIME_DIR="$_pd_rt" \
+        SWARM_CONFIG=sub/configs/swarm.json SWARM_SKIP_DEP_CHECK=1 \
+        "$BASH" "$_LAUNCH_SH" "$@" 2>&1)
+}
+run_pd start >/dev/null
+touch "$_pd_rt/upstream.git/keep"
+swarm_pending_write "$_pd_rt" "$_pd_id_a" "$_pd_live" d1
+_pd_rc=0
+_pd_out=$(run_pd start) || _pd_rc=$?
+assert_eq "start refuses while a session is open" "1" "$_pd_rc"
+assert_eq "start names the open session" "true" \
+    "$(grep -q "$_pd_id_a" <<< "$_pd_out" \
+        && echo true || echo false)"
+assert_eq "the bare repo stays" "true" \
+    "$([ -e "$_pd_rt/upstream.git/keep" ] && echo true || echo false)"
+_pd_rc=0
+run_pd interactive --agent-index 1 >/dev/null || _pd_rc=$?
+assert_eq "another interactive session joins meanwhile" "0" "$_pd_rc"
+kill "$_pd_live" 2>/dev/null || true
+wait "$_pd_live" 2>/dev/null || true
+_pd_rc=0
+_pd_out=$(run_pd start) || _pd_rc=$?
+assert_eq "after the session ends start still refuses" "1" "$_pd_rc"
+assert_eq "and says cleanup comes first" "true" \
+    "$(grep -q 'launch.sh cleanup' <<< "$_pd_out" \
+        && echo true || echo false)"
+assert_eq "and the bare repo stays" "true" \
+    "$([ -e "$_pd_rt/upstream.git/keep" ] && echo true || echo false)"
+assert_eq "the old record is gone" "false" \
+    "$([ -e "$_pd_rt/interactive-$_pd_id_a.pending" ] \
+        && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 54. No temporary file outlives launch.sh ==="
+
+# interactive stopped by an agent index that does not exist, start
+# stopped by a driver that does not exist once it wrote the agents'
+# list, and interactive stopped by a Ctrl-C while the image builds:
+# every file mktemp made for them is gone when they exit.  A mktemp
+# first on PATH logs what the real one makes, NUL-terminated.
+_tf_bin="$TMPDIR/tf-bin"
+_tf_sig="$TMPDIR/tf-sig"
+_tf_log="$TMPDIR/tf-mktemp.log"
+_tf_rt="$TMPDIR/tf-runtime"
+mkdir -p "$_tf_bin" "$_tf_sig"
+cat > "$_tf_bin/mktemp" <<'EOF'
+#!/bin/bash
+out=$(PATH="$TF_PATH" mktemp "$@") || exit $?
+printf '%s\0' "$out" >> "$TF_LOG"
+printf '%s\n' "$out"
+EOF
+# docker build runs until a signal ends it, as a long build would;
+# every other call goes to the start tests' docker.
+cat > "$_tf_sig/docker" <<'EOF'
+#!/bin/bash
+[ "$1" != build ] || exec sleep 30
+exec "$TF_DOCKER" "$@"
+EOF
+chmod +x "$_tf_bin/mktemp" "$_tf_sig/docker"
+run_tf() {
+    local orig="$PATH"
+    : > "$_tf_log"
+    (cd "$_st_repo" && TF_PATH="$orig" TF_LOG="$_tf_log" \
+        PATH="$_tf_bin:$_st_bin:$orig" SWARM_RUNTIME_DIR="$_tf_rt" \
+        SWARM_SKIP_DEP_CHECK=1 "$@" 2>&1)
+}
+# Print how many of the files mktemp made (the log) are still there.
+tf_left() {
+    local f n=0
+    while IFS= read -r -d '' f; do
+        [ ! -e "$f" ] || n=$((n + 1))
+    done < "$_tf_log"
+    printf '%s' "$n"
+}
+# Remove what is left of them.
+tf_drop() {
+    local f
+    while IFS= read -r -d '' f; do
+        rm -f -- "$f"
+    done < "$_tf_log"
+}
+_tf_rc=0
+run_tf env SWARM_CONFIG=sub/configs/swarm.json \
+    bash "$_LAUNCH_SH" interactive --agent-index 9 >/dev/null || _tf_rc=$?
+assert_eq "interactive with an unknown agent index fails" "1" "$_tf_rc"
+assert_eq "it made a temporary file" "true" \
+    "$([ -s "$_tf_log" ] && echo true || echo false)"
+assert_eq "which is gone" "0" "$(tf_left)"
+tf_drop
+# A relative TMPDIR is made absolute first (a run may change directory
+# before it exits), whatever CDPATH says.
+mkdir -p "$_st_repo/sub/tf-rel"
+_tf_rc=0
+run_tf env SWARM_CONFIG=sub/configs/swarm.json TMPDIR=sub/tf-rel CDPATH=. \
+    bash "$_LAUNCH_SH" interactive --agent-index 9 >/dev/null || _tf_rc=$?
+assert_eq "so does a run with a relative TMPDIR" "1" "$_tf_rc"
+_tf_first=""
+IFS= read -r -d '' _tf_first < "$_tf_log" || true
+assert_eq "whose file had an absolute path in it" \
+    "$(cd -P "$_st_repo/sub/tf-rel" && pwd -P)" "${_tf_first%/swarm-profile.*}"
+assert_eq "and is gone" "0" "$(tf_left)"
+tf_drop
+rmdir "$_st_repo/sub/tf-rel"
+jq '.agents[0].driver = "no-such-driver"' \
+    "$_st_repo/sub/configs/swarm.json" > "$_st_repo/sub/configs/tf.json"
+_tf_rc=0
+_tf_out=$(run_tf env SWARM_CONFIG=sub/configs/tf.json \
+    bash "$_LAUNCH_SH" start) || _tf_rc=$?
+assert_eq "start with an unknown driver fails" "1" "$_tf_rc"
+assert_eq "once it wrote the agents' list" "true" \
+    "$(grep -q 'unknown driver' <<< "$_tf_out" && echo true || echo false)"
+assert_eq "every temporary file it made is gone" "0" "$(tf_left)"
+tf_drop
+rm -f "$_st_repo/sub/configs/tf.json"
+# A Ctrl-C at the terminal while the image builds: SIGINT to the
+# process group of launch.sh, run in one of its own with /bin/bash
+# (Bash 3.2 on macOS), once docker build runs.
+if ! (sigint_works); then
+    echo "  SKIP: a Ctrl-C while the image builds (SIGINT is ignored here)"
+else
+    _tf_rc=0
+    _tf_orig="$PATH"
+    : > "$_tf_log"
+    set -m
+    (cd "$_st_repo" && TF_PATH="$_tf_orig" TF_LOG="$_tf_log" \
+        TF_DOCKER="$_st_bin/docker" \
+        PATH="$_tf_sig:$_tf_bin:$_st_bin:$_tf_orig" \
+        SWARM_RUNTIME_DIR="$_tf_rt" SWARM_SKIP_DEP_CHECK=1 \
+        SWARM_CONFIG=sub/configs/swarm.json \
+        exec /bin/bash "$_LAUNCH_SH" interactive --agent-index 1 \
+        > "$TMPDIR/tf-int.out" 2>&1) &
+    _tf_pid=$!
+    set +m
+    _tf_tries=0
+    while [ "$_tf_tries" -lt 200 ] \
+            && ! pgrep -g "$_tf_pid" -x sleep >/dev/null 2>&1; do
+        sleep 0.05
+        _tf_tries=$((_tf_tries + 1))
+    done
+    kill -INT -- "-$_tf_pid" 2>/dev/null
+    wait "$_tf_pid" || _tf_rc=$?
+    assert_eq "a Ctrl-C while the image builds stops interactive" "130" \
+        "$_tf_rc"
+    assert_eq "after it made its temporary file" "true" \
+        "$([ -s "$_tf_log" ] && echo true || echo false)"
+    assert_eq "which is gone" "0" "$(tf_left)"
+    tf_drop
+fi
+
+# ============================================================
+echo ""
+echo "=== 55. Workspace volumes, one daemon, clean runtimes ==="
+
+# start, post-process, interactive, stop and wait against a fake docker
+# that keeps its world in files under V_DIR, one directory per case:
+#   context     the current context, a or b (DOCKER_CONTEXT overrides
+#               it); the daemon behind context X has id daemon-X
+#   switch      when there, the first "context show" switches the
+#               current context to b right after it answers, as another
+#               terminal could
+#   containers  one JSON object per line: id, name, state, labels
+#   volumes     the names "volume ls" prints
+#   fail        calls that fail, one per line: ps (every listing), ps3
+#               (from the third listing on), volume-ls, run, build,
+#               stop (the container keeps running), stop-exits (it
+#               stops anyway), stop-gone (it is removed meanwhile),
+#               inspect
+#   spawn       a count: while it is above 0, each container docker stop
+#               stops makes a new running one of the same engagement
+#               appear (as a start launching its agents would), and the
+#               count goes down
+#   newtoken    when there, wait's first listing gives the state file
+#               (V_STATE) another engagement token, as a cleanup and a
+#               new start in another terminal would
+#   at.N        containers that replace containers right before wait's
+#               Nth listing (the polls and the recount under the lock)
+#   lock-probe  when there, each listing made once a flock call has
+#               waited for the lock (a "-w" line in flock.log) tries the
+#               engagement lock itself and logs to lock-probe.log whether
+#               another process held it ("held") or not ("free")
+# Every call is logged to V_DIR/log as "<DOCKER_CONTEXT>|<arguments>".
+# volume create and inspect go to the shared fake, which keeps this
+# case's volumes in V_DIR/vols.
+unset DOCKER_HOST DOCKER_CONTEXT SWARM_ENGAGEMENT_TOKEN
+_v_bin="$TMPDIR/v55-bin"
+_v_root="$TMPDIR/v55"
+mkdir -p "$_v_bin" "$_v_root"
+cat > "$_v_bin/docker" <<'EOF'
+#!/bin/bash
+d="$V_DIR"
+ctx="${DOCKER_CONTEXT:-$(cat "$d/context")}"
+printf '%s|%s\n' "${DOCKER_CONTEXT:-}" "$*" >> "$d/log"
+fails() { grep -qx "$1" "$d/fail" 2>/dev/null; }
+case "$1" in
+    context)
+        cat "$d/context"
+        if [ -e "$d/switch" ]; then
+            rm -f "$d/switch"
+            echo b > "$d/context"
+        fi ;;
+    info) echo "daemon-$ctx" ;;
+    volume)
+        if [ "$2" = ls ]; then
+            fails volume-ls && exit 1
+            cat "$d/volumes" 2>/dev/null
+            exit 0
+        fi
+        FAKE_DOCKER_VOLUME_DIR="$d/vols" exec "$FAKE_DOCKER_VOLUME" "$@" ;;
+    ps)
+        n=$(( $(cat "$d/ps-count" 2>/dev/null || echo 0) + 1 ))
+        echo "$n" > "$d/ps-count"
+        if [ -e "$d/lock-probe" ] \
+                && grep -q '^-w ' "$d/flock.log" 2>/dev/null; then
+            if (exec 7>>"$SWARM_RUNTIME_DIR/engagement.lock" \
+                    && flock -n 7); then
+                echo free >> "$d/lock-probe.log"
+            else
+                echo held >> "$d/lock-probe.log"
+            fi
+        fi
+        fails ps && exit 1
+        if fails ps3 && [ "$n" -ge 3 ]; then exit 1; fi
+        shift
+        all=false quiet=false fmt="" filters=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -a) all=true ;;
+                -q) quiet=true ;;
+                --filter) filters="${filters}$2"$'\n'; shift ;;
+                --format) fmt="$2"; shift ;;
+            esac
+            shift
+        done
+        if [ "$fmt" = '{{.Names}} {{.State}}' ]; then
+            w=$(( $(cat "$d/wait-listed" 2>/dev/null || echo 0) + 1 ))
+            echo "$w" > "$d/wait-listed"
+            if [ -f "$d/at.$w" ]; then
+                mv "$d/at.$w" "$d/containers"
+            fi
+        fi
+        if [ "$fmt" = '{{.Names}} {{.State}}' ] && [ -e "$d/newtoken" ]; then
+            rm -f "$d/newtoken"
+            jq -c '.engagement_token = "ffffffffffffffff"' "$V_STATE" \
+                > "$V_STATE.x" && mv "$V_STATE.x" "$V_STATE"
+        fi
+        [ -s "$d/containers" ] || exit 0
+        jq -r --argjson all "$all" --argjson quiet "$quiet" \
+            --arg fmt "$fmt" --arg filters "$filters" '
+            ($filters | split("\n") | map(select(length > 0))) as $f
+            | select($all or .state == "running")
+            | . as $c
+            | select(all($f[]; . as $x
+                | if startswith("label=") then
+                      $x[6:] as $kv | ($kv | index("=")) as $i
+                      | if $i == null then ($c.labels | has($kv))
+                        else ($c.labels[$kv[:$i]] // null) == $kv[$i + 1:]
+                        end
+                  elif startswith("name=") then ($c.name | contains($x[5:]))
+                  elif startswith("id=") then ($c.id | startswith($x[3:]))
+                  else false end))
+            | if $quiet then .id
+              elif ($fmt | contains("\"owner\":")) then
+                  {id, name,
+                   project: (.labels["swarm-core.project"] // ""),
+                   owner: (.labels["swarm-core.checkout"] // "")} | tojson
+              elif $fmt == "{{.State}}" then .state
+              elif $fmt == "{{.Names}} {{.State}}" then "\(.name) \(.state)"
+              else .name end' "$d/containers" ;;
+    container|inspect)
+        if fails inspect; then
+            echo "Cannot connect to the Docker daemon" >&2
+            exit 1
+        fi
+        [ "$1" = container ] && shift
+        shift
+        fmt=""
+        if [ "$1" = -f ] || [ "$1" = --format ]; then
+            fmt="$2"
+            shift 2
+        fi
+        c=$(jq -c --arg t "$1" 'select(.name == $t or .id == $t)' \
+            "$d/containers" 2>/dev/null | head -n 1)
+        if [ -z "$c" ]; then
+            echo "Error: No such container: $1" >&2
+            exit 1
+        fi
+        case "$fmt" in
+            *'"labels":'*) jq -c '{id, labels}' <<< "$c" ;;
+            *.State.Status*) jq -r .state <<< "$c" ;;
+            *.State.Running*) jq -r '.state == "running"' <<< "$c" ;;
+            *.State.ExitCode*) echo 0 ;;
+            *'{{.Name}}|'*)
+                jq -r '"/\(.name)|\(.labels["swarm-core.project"] // "")|\(.labels["swarm-core.checkout"] // "")|\(.labels["swarm-core.engagement-token"] // "")"' <<< "$c" ;;
+            *) printf '%s\n' "$c" ;;
+        esac ;;
+    run)
+        fails run && exit 125
+        case " $* " in
+            *" -d "*) echo "cid-run" ;;
+        esac ;;
+    build) fails build && exit 1 ;;
+    stop)
+        id="${*: -1}"
+        if fails stop-gone; then
+            jq -c --arg i "$id" 'select(.id != $i)' "$d/containers" \
+                > "$d/containers.x" && mv "$d/containers.x" "$d/containers"
+            exit 42
+        fi
+        if fails stop-exits; then
+            jq -c --arg i "$id" \
+                'if .id == $i then .state = "exited" else . end' \
+                "$d/containers" > "$d/containers.x" \
+                && mv "$d/containers.x" "$d/containers"
+            exit 42
+        fi
+        fails stop && exit 42
+        jq -c --arg i "$id" \
+            'if .id == $i then .state = "exited" else . end' \
+            "$d/containers" > "$d/containers.x" \
+            && mv "$d/containers.x" "$d/containers"
+        left=$(cat "$d/spawn" 2>/dev/null || echo 0)
+        if [ "$left" -gt 0 ]; then
+            echo $((left - 1)) > "$d/spawn"
+            n=$(( $(wc -l < "$d/containers") + 1 ))
+            jq -c --arg i "$id" --arg n "$n" 'select(.id == $i)
+                | .id = ("id-spawn-" + $n) | .state = "running"
+                | .name = (.name | sub("-[0-9]+$"; "-" + $n))' \
+                "$d/containers" > "$d/containers.x" \
+                && cat "$d/containers.x" >> "$d/containers"
+        fi ;;
+esac
+exit 0
+EOF
+chmod +x "$_v_bin/docker"
+
+_v_checkout=$(swarm_checkout_path "$_st_repo")
+_v_img="start-repo-agent"
+# Two agents in slim context, a post-process, and docker_args that try
+# to replace what the engine sets: auto-remove, a restart policy, a
+# name.
+V_CFG="$_v_root/swarm.json"
+cat > "$V_CFG" <<'EOF'
+{ "prompt": "prompt.md", "title": "v55", "driver": "fake",
+  "docker_args": ["--rm", "--restart", "always", "--name", "other"],
+  "agents": [{ "count": 2, "model": "fake", "context": "slim" }],
+  "post_process": { "prompt": "prompt.md", "model": "fake" } }
+EOF
+_v_n=0
+# A new case: a fresh fake Docker world on context a and a fresh
+# runtime directory V_RT.
+v_new() {
+    _v_n=$((_v_n + 1))
+    V_DIR="$_v_root/case-$_v_n"
+    V_RT="$_v_root/rt-$_v_n"
+    V_STATE="$V_RT/state.json"
+    mkdir -p "$V_DIR/vols"
+    echo a > "$V_DIR/context"
+    : > "$V_DIR/log"
+}
+# Run launch.sh with ARGS in the start tests' checkout against this
+# case's fake Docker; print its output.  Variables set on the call
+# reach it; the lock descriptor of the test, 8, does not.
+v_run() {
+    (cd "$_st_repo" && PATH="$_v_bin:$PATH" V_DIR="$V_DIR" \
+        V_STATE="$V_STATE" SWARM_RUNTIME_DIR="$V_RT" \
+        SWARM_CONFIG="$V_CFG" SWARM_SKIP_DEP_CHECK=1 SWARM_WAIT_POLL=0 \
+        "$BASH" "$_LAUNCH_SH" "$@" 8>&- 2>&1)
+}
+# What a refused command must leave as it was: the runtime directory's
+# entries (the lock file aside, which taking the lock creates) and the
+# state file.
+v_snap() {
+    (cd "$V_RT" 2>/dev/null && find . ! -name engagement.lock -print \
+        | LC_ALL=C sort)
+    cat "$V_STATE" 2>/dev/null || true
+}
+# Count the logged Docker calls that make, change or remove something.
+v_writes() {
+    grep -cE '^[^|]*[|](run|start|stop|kill|rm|commit|build|volume create|volume rm|container (start|stop|kill|rm)) ' \
+        "$V_DIR/log" || true
+}
+v_has() {
+    grep -qF -- "$1" <<< "$2" && echo true || echo false
+}
+# Print the names of this case's volumes that match extended regular
+# expression RE.
+v_volume() {
+    local f
+    for f in "$V_DIR/vols"/*; do
+        [ -e "$f" ] || continue
+        f="${f##*/}"
+        if grep -qE -- "$1" <<< "$f"; then
+            printf '%s\n' "$f"
+        fi
+    done
+}
+v_container() {
+    # NAME STATE TOKEN: one container of this checkout.
+    jq -cn --arg n "$1" --arg s "$2" --arg t "$3" --arg c "$_v_checkout" \
+        '{id: ("id-" + $n), name: $n, state: $s,
+          labels: ({"swarm-core.project": "start-repo",
+                    "swarm-core.checkout": $c}
+                   + (if $t == "" then {}
+                      else {"swarm-core.engagement-token": $t} end))}' \
+        >> "$V_DIR/containers"
+}
+
+# --- start: one volume per agent, the pin, the recorded daemon -------
+v_new
+touch "$V_DIR/switch"
+_v_rc=0
+_v_out=$(v_run start) || _v_rc=$?
+assert_eq "start on a clean runtime succeeds" "0" "$_v_rc"
+assert_eq "the first Docker call reads the context" "|context show" \
+    "$(head -n 1 "$V_DIR/log")"
+assert_eq "every later call goes to that context" "0" \
+    "$(awk 'NR > 1 && !/^a[|]/ { n++ } END { print n + 0 }' "$V_DIR/log")"
+assert_eq "even though the current context changed after that call" "b" \
+    "$(cat "$V_DIR/context")"
+assert_eq "the engagement records the daemon of the pinned context" \
+    "daemon-a" "$(jq -r .docker_daemon "$V_STATE" 2>/dev/null)"
+_v_eng=$(jq -r .engagement_id "$V_STATE" 2>/dev/null)
+_v_tok=$(jq -r .engagement_token "$V_STATE" 2>/dev/null)
+assert_eq "and a token of 16 hex digits" "true" \
+    "$(grep -qE '^[0-9a-f]{16}$' <<< "$_v_tok" && echo true || echo false)"
+assert_eq "one volume per agent" "2" \
+    "$(find "$V_DIR/vols" -type f | wc -l | tr -d ' ')"
+for _v_i in 1 2; do
+    _v_vol=$(v_volume "^${_v_img}-${_v_i}-ws-[0-9a-f]{8}$")
+    assert_eq "agent $_v_i: its volume is named after it" "true" \
+        "$([ -n "$_v_vol" ] && echo true || echo false)"
+    assert_eq "agent $_v_i: the volume carries every label" "true" \
+        "$(jq -e --arg c "$_v_checkout" --arg e "$_v_eng" \
+            --arg t "$_v_tok" --arg n "${_v_img}-${_v_i}" '
+            .["swarm-core.project"] == "start-repo"
+            and .["swarm-core.checkout"] == $c
+            and .["swarm-core.engagement"] == $e
+            and .["swarm-core.engagement-token"] == $t
+            and .["swarm-core.container"] == $n
+            and .["swarm-core.kind"] == "agent"
+            and .["swarm-core.context"] == "slim"
+            and (.["swarm-core.nonce"] | test("^[0-9a-f]{16}$"))' \
+            "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
+            && echo true || echo false)"
+    assert_eq "agent $_v_i: mount, labels, policies and name follow docker_args" \
+        "1" "$(grep -F -- '|run -d ' "$V_DIR/log" | grep -cF -- " --rm --restart always --name other --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-${_v_i} " || true)"
+done
+assert_eq "start builds the image once" "1" \
+    "$(grep -c '|build ' "$V_DIR/log" || true)"
+_v_start_dir="$V_DIR"
+_v_start_rt="$V_RT"
+
+# --- interactive and post-process join it, each with its volume ------
+# The current context is b now: switch back first.
+echo a > "$V_DIR/context"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run interactive --agent-index 1) || _v_rc=$?
+assert_eq "interactive joins the engagement" "0" "$_v_rc"
+_v_sess=$(grep -F -- '|run -it ' "$V_DIR/log" \
+    | sed -n 's/.* --rm=false --name \([^ ]*\) .*/\1/p')
+assert_eq "the session's name ends in UTC time and 8 hex digits" "true" \
+    "$(grep -qE "^${_v_img}-interactive-[a-z0-9._-]+-[0-9]{14}-[0-9a-f]{8}$" \
+        <<< "$_v_sess" && echo true || echo false)"
+_v_vol=$(v_volume "^${_v_sess:-none}-ws-[0-9a-f]{8}$")
+assert_eq "the session gets a volume of its own" "true" \
+    "$(jq -e --arg n "$_v_sess" --arg t "$_v_tok" '
+        .["swarm-core.container"] == $n
+        and .["swarm-core.kind"] == "interactive"
+        and .["swarm-core.context"] == "slim"
+        and .["swarm-core.engagement-token"] == $t' \
+        "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
+        && echo true || echo false)"
+assert_eq "mounted after docker_args, with the policies and its name" "1" \
+    "$(grep -F -- '|run -it ' "$V_DIR/log" | grep -cF -- " --rm --restart always --name other --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_sess} " || true)"
+assert_eq "its session record names the daemon" "daemon=daemon-a" \
+    "$(grep '^daemon=' "$V_RT/interactive-${_v_sess}.pending" 2>/dev/null)"
+assert_eq "joining builds the image too" "1" \
+    "$(grep -c '|build ' "$V_DIR/log" || true)"
+
+# post-process: docker run fails here, which ends it before it waits.
+: > "$V_DIR/log"
+echo run > "$V_DIR/fail"
+_v_rc=0
+_v_out=$(v_run post-process) || _v_rc=$?
+rm -f "$V_DIR/fail"
+assert_eq "post-process reached docker run" "125" "$_v_rc"
+_v_vol=$(v_volume "^${_v_img}-post-ws-[0-9a-f]{8}$")
+assert_eq "post-process gets a volume of its own" "true" \
+    "$(jq -e --arg t "$_v_tok" '
+        .["swarm-core.container"] == "start-repo-agent-post"
+        and .["swarm-core.kind"] == "agent"
+        and .["swarm-core.context"] == "full"
+        and .["swarm-core.engagement-token"] == $t' \
+        "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
+        && echo true || echo false)"
+assert_eq "mounted after docker_args, with the policies and its name" "1" \
+    "$(grep -F -- '|run -d ' "$V_DIR/log" | grep -cF -- " --rm --restart always --name other --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-post " || true)"
+
+# --- volume failures stop before any docker run ----------------------
+# Creation fails; the labels read back are not the ones set (another
+# volume of that name); the name is taken; Docker cannot say.
+for _v_case in "create:cannot create Docker volume" \
+        "labels:is not the one just created" \
+        "exists:already exists" "error:cannot check Docker volume"; do
+    v_new
+    _v_rc=0
+    _v_out=$(FAKE_VOLUME_FAIL="${_v_case%%:*}" v_run start) || _v_rc=$?
+    assert_eq "volume ${_v_case%%:*}: start fails" "1" "$_v_rc"
+    assert_eq "volume ${_v_case%%:*}: saying why" "true" \
+        "$(v_has "${_v_case#*:}" "$_v_out")"
+    assert_eq "volume ${_v_case%%:*}: before any docker run" "0" \
+        "$(grep -c '|run ' "$V_DIR/log" || true)"
+done
+
+# An unknown context mode stops start before anything is made.
+_v_cfg_ok="$V_CFG"
+V_CFG="$_v_root/bad-context.json"
+jq '.agents[0].context = "weird"' "$_v_cfg_ok" > "$V_CFG"
+v_new
+_v_rc=0
+_v_out=$(v_run start) || _v_rc=$?
+assert_eq "an unknown context mode stops start" "1" "$_v_rc"
+assert_eq "saying so" "true" "$(v_has "unknown context mode" "$_v_out")"
+assert_eq "before the runtime directory is made" "false" \
+    "$([ -e "$V_RT" ] && echo true || echo false)"
+assert_eq "and before any Docker write" "0" "$(v_writes)"
+v_new
+_v_rc=0
+_v_out=$(v_run interactive --agent-index 1) || _v_rc=$?
+assert_eq "an unknown context mode stops interactive" "1" "$_v_rc"
+assert_eq "saying so" "true" "$(v_has "unknown context mode" "$_v_out")"
+assert_eq "before the runtime directory is made" "false" \
+    "$([ -e "$V_RT" ] && echo true || echo false)"
+V_CFG="$_v_cfg_ok"
+
+# The volume helper itself refuses an unknown kind or context before it
+# asks Docker anything.
+_v_vlog="$_v_root/helper.log"
+: > "$_v_vlog"
+_v_rc=0
+(docker() { echo "$*" >> "$_v_vlog"; }
+ swarm_workspace_volume_create n p /c e t other full) >/dev/null 2>&1 \
+    || _v_rc=$?
+assert_eq "an unknown volume kind is refused" "1" "$_v_rc"
+_v_rc=0
+(docker() { echo "$*" >> "$_v_vlog"; }
+ swarm_workspace_volume_create n p /c e t agent weird) >/dev/null 2>&1 \
+    || _v_rc=$?
+assert_eq "an unknown context is refused" "1" "$_v_rc"
+assert_eq "both before any Docker call" "0" \
+    "$(wc -l < "$_v_vlog" | tr -d ' ')"
+
+# --- another daemon: nothing joins, nothing is stopped ---------------
+V_DIR="$_v_start_dir"
+V_RT="$_v_start_rt"
+V_STATE="$V_RT/state.json"
+# The ended session's record would be pruned by a later check.
+rm -f "$V_RT"/interactive-*.pending
+# The agents as stop and wait would see them: stop has one to stop; wait
+# would go on at once to post-process (it would poll a running one
+# forever).
+v_agents() {
+    : > "$V_DIR/containers"
+    v_container "${_v_img}-1" "$1" "$_v_tok"
+    v_container "${_v_img}-2" exited "$_v_tok"
+}
+echo b > "$V_DIR/context"
+_v_before=$(v_snap)
+for _v_cmd in stop wait post-process "interactive --agent-index 1"; do
+    if [ "$_v_cmd" = stop ]; then v_agents running; else v_agents exited; fi
+    : > "$V_DIR/log"
+    _v_rc=0
+    # shellcheck disable=SC2086
+    _v_out=$(v_run $_v_cmd) || _v_rc=$?
+    assert_eq "another daemon: $_v_cmd refused" "1" "$_v_rc"
+    assert_eq "another daemon: $_v_cmd says which" "true" \
+        "$(v_has "runs on Docker daemon daemon-a, but Docker now talks to daemon-b" "$_v_out")"
+    assert_eq "another daemon: $_v_cmd changes nothing" "0" "$(v_writes)"
+done
+assert_eq "another daemon: runtime and state as they were" "$_v_before" \
+    "$(v_snap)"
+echo a > "$V_DIR/context"
+
+# The daemon check refuses a state file it cannot read, and one with no
+# daemon, without asking Docker.
+printf '{' > "$_v_root/bad-state.json"
+_v_rc=0
+(docker() { echo "$*" >> "$_v_vlog"; }
+ swarm_engagement_daemon_check "$_v_root/bad-state.json") >/dev/null 2>&1 \
+    || _v_rc=$?
+assert_eq "an unreadable state file fails the daemon check" "1" "$_v_rc"
+jq -n '{schema: "swarm-core.state/v1", engagement_id: "e"}' \
+    > "$_v_root/no-daemon.json"
+_v_rc=0
+(docker() { echo "$*" >> "$_v_vlog"; }
+ swarm_engagement_daemon_check "$_v_root/no-daemon.json") >/dev/null 2>&1 \
+    || _v_rc=$?
+assert_eq "so does a state file with no daemon" "1" "$_v_rc"
+assert_eq "neither asks Docker" "0" "$(wc -l < "$_v_vlog" | tr -d ' ')"
+
+# --- stop and the lock; wait follows one engagement -------------------
+# A post-process holds the lock for its whole run: stop still stops
+# what runs, then waits for the lock, up to the grace, before it can
+# say that nothing more is starting.  Past the grace, it fails.
+v_agents running
+: > "$V_DIR/log"
+exec 8>>"$V_RT/engagement.lock"
+flock -n 8
+_v_rc=0
+_v_out=$(SWARM_STOP_TIMEOUT=1 v_run stop) || _v_rc=$?
+exec 8>&-
+assert_eq "stop while another command holds the lock: fails" "1" "$_v_rc"
+assert_eq "once it stopped the running agent by its id" "1" \
+    "$(grep -c "^a|stop -t 1 id-${_v_img}-1$" "$V_DIR/log" || true)"
+assert_eq "saying why" "true" \
+    "$(v_has "without the engagement lock, stop cannot tell" "$_v_out")"
+# A flock first on PATH logs each call to V_DIR/flock.log.
+_v_flk="$TMPDIR/v55-flock"
+mkdir -p "$_v_flk"
+_v_real_flock=$(command -v flock)
+cat > "$_v_flk/flock" <<EOF
+#!/bin/bash
+echo "\$*" >> "\$V_DIR/flock.log"
+exec "$_v_real_flock" "\$@"
+EOF
+chmod +x "$_v_flk/flock"
+# Hold the lock in the background, as another command would, until a
+# flock call waits for it, then run FUNCTION and let the lock go.  When
+# no call waits for it within ten seconds, the holder leaves
+# V_DIR/holder-timeout and goes on all the same.
+v_hold() {
+    rm -f "$V_DIR/flock.log" "$V_DIR/holder-timeout"
+    exec 8>>"$V_RT/engagement.lock"
+    flock -n 8
+    (
+        _v_seen=false
+        for _ in $(seq 100); do
+            if grep -q '^-w ' "$V_DIR/flock.log" 2>/dev/null; then
+                _v_seen=true
+                break
+            fi
+            sleep 0.1
+        done
+        $_v_seen || : > "$V_DIR/holder-timeout"
+        "$1"
+    ) &
+    _v_holder=$!
+    exec 8>&-
+}
+v_holder_waited() {
+    [ -e "$V_DIR/holder-timeout" ] && echo false || echo true
+}
+# A start that recorded the engagement holds the lock while it launches
+# its agents: one it launches once stop waits for the lock is stopped
+# too, before stop succeeds.
+v_late() { v_container "${_v_img}-3" running "$_v_tok"; }
+v_agents running
+: > "$V_DIR/log"
+touch "$V_DIR/lock-probe"
+rm -f "$V_DIR/lock-probe.log"
+v_hold v_late
+_v_rc=0
+_v_out=$(PATH="$_v_flk:$PATH" v_run stop) || _v_rc=$?
+wait "$_v_holder"
+rm -f "$V_DIR/lock-probe"
+assert_eq "stop while a start launches one more agent: a success" "0" \
+    "$_v_rc"
+assert_eq "the start went on once stop waited for the lock" "true" \
+    "$(v_holder_waited)"
+assert_eq "once it had the lock" "1" \
+    "$(grep -c '^-w 60 ' "$V_DIR/flock.log" || true)"
+# Its two listings under the lock (one that stops the late agent, one
+# that finds nothing): the lock was held, by stop, for both.
+_v_probe="$(grep -c '^held$' "$V_DIR/lock-probe.log" || true)"
+_v_probe+=" $(grep -c '^free$' "$V_DIR/lock-probe.log" || true)"
+assert_eq "stop holds the lock for its listings under it" "2 0" "$_v_probe"
+assert_eq "that agent stopped too" "1" \
+    "$(grep -c "^a|stop -t 60 id-${_v_img}-3$" "$V_DIR/log" || true)"
+assert_eq "none of the engagement's agents runs then" "0" \
+    "$(jq -r 'select(.state == "running") | .id' "$V_DIR/containers" \
+        | grep -c . || true)"
+# wait takes the lock once the agents are done, which a stop holds for
+# a moment then: wait waits for it rather than give up.
+v_agents exited
+echo run > "$V_DIR/fail"
+: > "$V_DIR/log"
+v_hold :
+_v_rc=0
+_v_out=$(PATH="$_v_flk:$PATH" v_run wait) || _v_rc=$?
+wait "$_v_holder"
+rm -f "$V_DIR/fail"
+assert_eq "wait: the lock held a moment, it waits for it" "1" \
+    "$(grep -c '^-w 60 ' "$V_DIR/flock.log" || true)"
+assert_eq "the holder let it go once wait waited" "true" \
+    "$(v_holder_waited)"
+assert_eq "then post-process starts" "1" \
+    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+assert_eq "and ends at the failed docker run" "125" "$_v_rc"
+# A stop that fails without the lock fails at once, without waiting for
+# the lock first.
+v_agents running
+echo stop > "$V_DIR/fail"
+rm -f "$V_DIR/flock.log"
+exec 8>>"$V_RT/engagement.lock"
+flock -n 8
+_v_rc=0
+_v_out=$(PATH="$_v_flk:$PATH" SWARM_STOP_TIMEOUT=2 v_run stop) || _v_rc=$?
+exec 8>&-
+rm -f "$V_DIR/fail"
+assert_eq "stop that cannot stop an agent: fails" "1" "$_v_rc"
+assert_eq "without waiting for the lock" "0" \
+    "$(cat "$V_DIR/flock.log" 2>/dev/null | grep -c '^-w ' || true)"
+
+# stop and wait take every check from one copy of the state: the state
+# file replaced right after that copy (a cleanup and a new start with
+# the same engagement id elsewhere) changes neither the engagement they
+# check nor the token they act on.  A cp first on PATH replaces it.
+_v_cp="$TMPDIR/v55-cp"
+mkdir -p "$_v_cp"
+cat > "$_v_cp/cp" <<'EOF'
+#!/bin/bash
+/bin/cp "$@" || exit $?
+if [ "${*: -2:1}" = "$V_STATE" ] && [ -e "$V_DIR/replace-state" ]; then
+    rm -f "$V_DIR/replace-state"
+    jq -c '.engagement_token = "ffffffffffffffff"' "$V_STATE" \
+        > "$V_STATE.x" && mv "$V_STATE.x" "$V_STATE"
+fi
+EOF
+chmod +x "$_v_cp/cp"
+cp "$V_STATE" "$_v_root/state.saved"
+v_agents running
+jq -c --arg c "$_v_checkout" '{id: "id-new-1", name: "start-repo-agent-1",
+    state: "running", labels: {"swarm-core.project": "start-repo",
+    "swarm-core.checkout": $c,
+    "swarm-core.engagement-token": "ffffffffffffffff"}}' \
+    -n >> "$V_DIR/containers"
+: > "$V_DIR/replace-state"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(PATH="$_v_cp:$PATH" SWARM_ENGAGEMENT_ID="$_v_eng" v_run stop) \
+    || _v_rc=$?
+assert_eq "stop: the state replaced after its copy: still stops" "0" \
+    "$_v_rc"
+assert_eq "the engagement it checked" "1" \
+    "$(grep -c "|stop -t 60 id-${_v_img}-1$" "$V_DIR/log" || true)"
+assert_eq "and not the new one's container" "0" \
+    "$(grep -c '|stop -t 60 id-new-1$' "$V_DIR/log" || true)"
+cp "$_v_root/state.saved" "$V_STATE"
+v_agents exited
+: > "$V_DIR/replace-state"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(PATH="$_v_cp:$PATH" SWARM_ENGAGEMENT_ID="$_v_eng" v_run wait) \
+    || _v_rc=$?
+assert_eq "wait: the state replaced after its copy: refused under the lock" \
+    "1" "$_v_rc"
+assert_eq "for that reason" "true" \
+    "$(v_has "the engagement changed while waiting" "$_v_out")"
+assert_eq "with no post-process" "0" "$(grep -c '|run ' "$V_DIR/log" || true)"
+cp "$_v_root/state.saved" "$V_STATE"
+# Neither command reads the state file itself before its checks.
+for _v_fn in cmd_stop cmd_wait; do
+    assert_eq "$_v_fn checks a copy of the state" "true" \
+        "$(awk -v fn="$_v_fn" '$0 ~ "^" fn "\\(\\)" { p = 1 } p { print }
+               p && /^}/ { exit }' "$_LAUNCH_SH" \
+            | awk '/state_snapshot snap/ { s = 1 }
+                   /swarm_engagement_daemon_check/ { exit }
+                   s && /"\$STATE_FILE"/ { bad = 1 }
+                   END { print (s && !bad) ? "true" : "false" }')"
+done
+
+# A start can still be launching agents of the engagement while stop
+# runs (it holds the lock; stop's first phase does not take it): stop
+# lists them again after each pass and stops those too; when they keep
+# appearing even under the lock, it fails rather than leave one running
+# behind a success.
+v_agents running
+echo 1 > "$V_DIR/spawn"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run stop) || _v_rc=$?
+assert_eq "stop: an agent launched while it stops is stopped too" "0" \
+    "$_v_rc"
+assert_eq "in a second pass" "2" "$(grep -c '|stop -t 60 ' "$V_DIR/log" || true)"
+assert_eq "none of the engagement's agents runs then" "0" \
+    "$(jq -r 'select(.state == "running") | .id' "$V_DIR/containers" \
+        | grep -c . || true)"
+# Three passes that stop, then one that only checks: two more batches
+# that appear are stopped too.
+v_agents running
+echo 2 > "$V_DIR/spawn"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run stop) || _v_rc=$?
+assert_eq "stop: two more batches during stop are stopped too" "0" "$_v_rc"
+assert_eq "in three passes" "3" "$(grep -c '|stop -t 60 ' "$V_DIR/log" || true)"
+# More than three passes' worth without the lock is no failure yet:
+# under the lock, stop stops the rest.
+v_agents running
+echo 4 > "$V_DIR/spawn"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run stop) || _v_rc=$?
+assert_eq "stop: agents that appear for four passes: a success" "0" \
+    "$_v_rc"
+assert_eq "three stops without the lock, two under it" "5" \
+    "$(grep -c '|stop -t 60 ' "$V_DIR/log" || true)"
+v_agents running
+echo 99 > "$V_DIR/spawn"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run stop) || _v_rc=$?
+rm -f "$V_DIR/spawn"
+assert_eq "stop: agents that keep appearing fail it" "1" "$_v_rc"
+assert_eq "after three passes without the lock and three under it" "6" \
+    "$(grep -c '|stop -t 60 ' "$V_DIR/log" || true)"
+assert_eq "saying so" "true" \
+    "$(v_has "keep starting, even under the engagement lock" "$_v_out")"
+# post-process, under the lock, finds every numbered agent done (no
+# start can be launching more then) or refuses: the dashboard's p
+# stops them first without the lock.
+v_agents running
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run post-process) || _v_rc=$?
+assert_eq "post-process while a numbered agent runs: refused" "1" "$_v_rc"
+assert_eq "with the next step" "true" \
+    "$(v_has "stop them (./launch.sh stop --numbered) or wait for them" \
+        "$_v_out")"
+assert_eq "and nothing made" "0" "$(v_writes)"
+: > "$V_DIR/containers"
+
+# A stop Docker cannot do fails the command, so that the dashboard's p
+# does not go on to post-process while an agent may still run; one that
+# stopped or went meanwhile is fine.  So is the label check: a container
+# Docker cannot describe, though it is there, fails the stop.
+for _v_case in stop:1:"cannot stop ${_v_img}-1" \
+        stop-exits:0:"${_v_img}-1 not running" \
+        stop-gone:0:"${_v_img}-1 not running" \
+        inspect:1:"cannot inspect container id-${_v_img}-1"; do
+    _v_mode="${_v_case%%:*}"
+    _v_want="${_v_case#*:}"
+    _v_msg="${_v_want#*:}"
+    _v_want="${_v_want%%:*}"
+    v_agents running
+    echo "$_v_mode" > "$V_DIR/fail"
+    _v_rc=0
+    _v_out=$(v_run stop) || _v_rc=$?
+    rm -f "$V_DIR/fail"
+    assert_eq "stop, $_v_mode: status" "$_v_want" "$_v_rc"
+    assert_eq "stop, $_v_mode: says what happened" "true" \
+        "$(v_has "$_v_msg" "$_v_out")"
+done
+
+# A token that is not the engagement's refuses.
+for _v_cmd in stop wait post-process; do
+    if [ "$_v_cmd" = stop ]; then v_agents running; else v_agents exited; fi
+    : > "$V_DIR/log"
+    _v_rc=0
+    _v_out=$(SWARM_ENGAGEMENT_TOKEN=0123456789abcdef v_run "$_v_cmd") \
+        || _v_rc=$?
+    assert_eq "another token: $_v_cmd refused" "1" "$_v_rc"
+    assert_eq "another token: $_v_cmd says the engagement is gone" "true" \
+        "$(v_has "the engagement this command was started for is gone" \
+            "$_v_out")"
+    assert_eq "another token: $_v_cmd changes nothing" "0" "$(v_writes)"
+done
+
+# A token names an engagement: once it is gone (cleaned up, or no state
+# file at all), a stop bound to it refuses instead of finding nothing
+# to stop.
+cp "$V_STATE" "$_v_root/state.saved"
+for _v_st in cleaned missing; do
+    case "$_v_st" in
+        cleaned)
+            jq -c 'del(.engagement_id, .engagement_started_at,
+                .base_commit, .docker_daemon, .engagement_token)' \
+                "$_v_root/state.saved" > "$V_STATE" ;;
+        missing) rm -f "$V_STATE" ;;
+    esac
+    : > "$V_DIR/log"
+    _v_rc=0
+    _v_out=$(SWARM_ENGAGEMENT_TOKEN="$_v_tok" v_run stop) || _v_rc=$?
+    assert_eq "a token-bound stop, engagement $_v_st: refused" "1" "$_v_rc"
+    assert_eq "a token-bound stop, engagement $_v_st: says it is gone" \
+        "true" "$(v_has "the engagement this command was started for is gone" "$_v_out")"
+    assert_eq "a token-bound stop, engagement $_v_st: stops nothing" "0" \
+        "$(v_writes)"
+done
+cp "$_v_root/state.saved" "$V_STATE"
+chmod 600 "$V_STATE"
+
+# wait reads the token once; an engagement started again while it polls
+# makes it stop before post-process and harvest.
+v_agents exited
+cp "$V_STATE" "$_v_root/state.saved"
+touch "$V_DIR/newtoken"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run wait) || _v_rc=$?
+assert_eq "wait: an engagement replaced while it polls stops it" "1" \
+    "$_v_rc"
+assert_eq "saying so" "true" \
+    "$(v_has "the engagement changed while waiting" "$_v_out")"
+assert_eq "no post-process starts" "0" \
+    "$(grep -c '|run ' "$V_DIR/log" || true)"
+assert_eq "and no harvest" "false" "$(v_has "Harvesting results" "$_v_out")"
+cp "$_v_root/state.saved" "$V_STATE"
+# Without the switch, wait goes on to post-process with the token.
+echo run > "$V_DIR/fail"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run wait) || _v_rc=$?
+rm -f "$V_DIR/fail"
+assert_eq "wait: all agents done, post-process starts" "1" \
+    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+assert_eq "wait: post-process ended at the failed docker run" "125" \
+    "$_v_rc"
+
+# wait goes on only once no numbered agent runs: one that runs for two
+# more listings keeps it waiting for them (then one more listing, under
+# the lock).
+v_agents exited
+mv "$V_DIR/containers" "$V_DIR/at.3"
+v_agents running
+rm -f "$V_DIR/wait-listed"
+echo run > "$V_DIR/fail"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run wait) || _v_rc=$?
+rm -f "$V_DIR/fail"
+# Four listings by wait, one by post-process under its lock.
+assert_eq "wait: a running agent keeps it waiting" "5" \
+    "$(cat "$V_DIR/wait-listed" 2>/dev/null)"
+assert_eq "wait: then post-process starts" "1" \
+    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+# A start records the engagement before it launches the agents, and
+# holds the lock until they run: agents that run by the time wait has
+# the lock are waited for too.
+: > "$V_DIR/containers"
+v_agents running
+mv "$V_DIR/containers" "$V_DIR/at.2"
+v_agents exited
+cp "$V_DIR/containers" "$V_DIR/at.4"
+: > "$V_DIR/containers"
+rm -f "$V_DIR/wait-listed"
+echo run > "$V_DIR/fail"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run wait) || _v_rc=$?
+rm -f "$V_DIR/fail"
+assert_eq "wait: agents launched while it took the lock are waited for" \
+    "6" "$(cat "$V_DIR/wait-listed" 2>/dev/null)"
+assert_eq "wait: post-process only after them" "1" \
+    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+# The count itself: numbered agents only, any state that may still run.
+awk '/^wait_count\(\)[[:space:]]*\{/ { p = 1 } p { print }
+     p && /^\}[[:space:]]*$/ { exit }' "$_LAUNCH_SH" > "$_v_root/wait_count.sh"
+assert_eq "wait counts the numbered agents that run or may" "3 2" \
+    "$(IMAGE_NAME="$_v_img"
+       # shellcheck source=/dev/null
+       source "$_v_root/wait_count.sh"
+       wait_count "${_v_img}-1 running
+${_v_img}-2 exited
+${_v_img}-3 created
+${_v_img}-4 paused
+${_v_img}-10 dead
+${_v_img}-post running
+${_v_img}-interactive-x-1 running
+other-agent-1 running")"
+# No read loop over a here-string (Bash 3.2 makes a temporary file for
+# it that can fail to be made, and a failed read ends the loop early).
+assert_eq "wait reads no listing through a here-string" "0" \
+    "$(awk '/^cmd_wait\(\)[[:space:]]*\{/ { p = 1 } p { print }
+            p && /^\}[[:space:]]*$/ { exit }' "$_LAUNCH_SH" \
+        | grep -c '<<<' || true)"
+
+# --- post-process with this checkout's -post container ---------------
+for _v_state in running exited; do
+    : > "$V_DIR/containers"
+    v_container "${_v_img}-post" "$_v_state" "$_v_tok"
+    : > "$V_DIR/log"
+    _v_before=$(v_snap)
+    _v_rc=0
+    _v_out=$(v_run post-process) || _v_rc=$?
+    assert_eq "a $_v_state -post container: post-process refused" "1" \
+        "$_v_rc"
+    case "$_v_state" in
+        running) _v_next="stop it first (./launch.sh stop)" ;;
+        *) _v_next="retire it first: ./launch.sh retire --post-process" ;;
+    esac
+    assert_eq "a $_v_state -post container: the next step" "true" \
+        "$(v_has "$_v_next" "$_v_out")"
+    assert_eq "a $_v_state -post container: nothing removed or made" "0" \
+        "$(v_writes)"
+    assert_eq "a $_v_state -post container: runtime as it was" \
+        "$_v_before" "$(v_snap)"
+done
+: > "$V_DIR/containers"
+
+# A token names an engagement to join: with the bare repo gone,
+# post-process and interactive do not make a new one.
+mv "$V_RT/upstream.git" "$_v_root/upstream.saved"
+for _v_cmd in post-process "interactive --agent-index 1"; do
+    : > "$V_DIR/log"
+    _v_rc=0
+    # shellcheck disable=SC2086
+    _v_out=$(SWARM_ENGAGEMENT_TOKEN="$_v_tok" v_run $_v_cmd) || _v_rc=$?
+    assert_eq "token, no bare repo: $_v_cmd refused" "1" "$_v_rc"
+    assert_eq "token, no bare repo: $_v_cmd says why" "true" \
+        "$(v_has "has no bare repo any more" "$_v_out")"
+    assert_eq "token, no bare repo: $_v_cmd makes nothing" "0" \
+        "$(v_writes)"
+done
+mv "$_v_root/upstream.saved" "$V_RT/upstream.git"
+
+# --- a new engagement only on a clean runtime -------------------------
+# The leftovers: the bare repo (with and without agent work the checkout
+# lacks), upstream.git.new, mirrors/, a remnant in the runtime
+# directory, a hidden one, a container of this checkout in any state, a
+# volume, an open interactive session.  Each makes start refuse and
+# change nothing; post-process and interactive, which would create the
+# engagement when there is no bare repo, refuse the same.
+sleep 60 &
+_v_live=$!
+# A runtime with a recorded engagement and, of what start made, only
+# leftover KIND; "work" keeps the bare repo, with a commit on agent-work
+# that the checkout lacks.
+v_leftover() {
+    v_new
+    v_run start >/dev/null || true
+    if [ "$1" = work ]; then
+        git -C "$V_RT/upstream.git" -c user.name=t -c user.email=t@t \
+            -c commit.gpgsign=false commit-tree -m work -p agent-work \
+            "$(git -C "$V_RT/upstream.git" rev-parse 'agent-work^{tree}')" \
+            > "$_v_root/work-commit"
+        git -C "$V_RT/upstream.git" update-ref refs/heads/agent-work \
+            "$(cat "$_v_root/work-commit")"
+    else
+        rm -rf "$V_RT/upstream.git" "$V_RT/mirrors"
+        rm -f "$V_RT"/interactive-*.pending
+    fi
+    case "$1" in
+        new) mkdir "$V_RT/upstream.git.new" ;;
+        mirrors) mkdir "$V_RT/mirrors" ;;
+        remnant) mkdir "$V_RT/x.removing" ;;
+        hidden) mkdir "$V_RT/.x.removing" ;;
+        container) v_container "${_v_img}-1" exited "" ;;
+        volume) echo "${_v_img}-1-ws-0123abcd" > "$V_DIR/volumes" ;;
+        session)
+            swarm_pending_write "$V_RT" "${_v_img}-interactive-x-1" \
+                "$_v_live" daemon-a ;;
+    esac
+    : > "$V_DIR/log"
+}
+for _v_kind in work new mirrors remnant hidden container volume session; do
+    v_leftover "$_v_kind"
+    _v_before=$(v_snap)
+    _v_cmds="start post-process interactive"
+    [ "$_v_kind" = work ] && _v_cmds="start"
+    for _v_cmd in $_v_cmds; do
+        _v_rc=0
+        if [ "$_v_cmd" = interactive ]; then
+            _v_out=$(v_run interactive --agent-index 1) || _v_rc=$?
+        else
+            _v_out=$(v_run "$_v_cmd") || _v_rc=$?
+        fi
+        assert_eq "$_v_kind left: $_v_cmd refused" "1" "$_v_rc"
+        assert_eq "$_v_kind left: $_v_cmd names the clean runtime rule" \
+            "true" "$(v_has "a new engagement starts only on a clean runtime" "$_v_out")"
+        assert_eq "$_v_kind left: $_v_cmd gives the way out" "true" \
+            "$(v_has "then ./launch.sh cleanup" "$_v_out")"
+        assert_eq "$_v_kind left: $_v_cmd changes nothing" "$_v_before" \
+            "$(v_snap)"
+        assert_eq "$_v_kind left: $_v_cmd makes nothing in Docker" "0" \
+            "$(v_writes)"
+        if [ "$_v_kind" = work ]; then
+            assert_eq "agent work the checkout lacks is named" "true" \
+                "$(v_has "agent-work $(cut -c1-12 "$_v_root/work-commit"): run ./harvest.sh" "$_v_out")"
+        fi
+    done
+done
+kill "$_v_live" 2>/dev/null || true
+wait "$_v_live" 2>/dev/null || true
+# A bare repo whose work the checkout has: refused, without that list.
+v_new
+v_run start >/dev/null || true
+: > "$V_DIR/log"
+_v_before=$(v_snap)
+_v_rc=0
+_v_out=$(v_run start) || _v_rc=$?
+assert_eq "a second start on the same runtime is refused" "1" "$_v_rc"
+assert_eq "naming the bare repo" "true" \
+    "$(v_has "  $V_RT/upstream.git" "$_v_out")"
+assert_eq "with nothing to harvest listed" "false" \
+    "$(v_has "does not contain this agent work" "$_v_out")"
+assert_eq "and changes nothing" "$_v_before" "$(v_snap)"
+assert_eq "nor makes anything in Docker" "0" "$(v_writes)"
+
+# Listings that fail refuse, after the lock and before anything is
+# made.
+for _v_case in ps3:"cannot list Docker containers" \
+        volume-ls:"cannot list Docker volumes"; do
+    v_new
+    echo "${_v_case%%:*}" > "$V_DIR/fail"
+    _v_rc=0
+    _v_out=$(v_run start) || _v_rc=$?
+    assert_eq "${_v_case%%:*} fails: start refused" "1" "$_v_rc"
+    assert_eq "${_v_case%%:*} fails: saying so" "true" \
+        "$(v_has "${_v_case#*:}" "$_v_out")"
+    assert_eq "${_v_case%%:*} fails: in the gate (the runtime is claimed)" \
+        "true" "$(jq -e '.repo_root != null' "$V_STATE" >/dev/null 2>&1 \
+            && echo true || echo false)"
+    assert_eq "${_v_case%%:*} fails: no engagement made" "" \
+        "$(jq -r '.engagement_id // empty' "$V_STATE" 2>/dev/null)"
+    assert_eq "${_v_case%%:*} fails: nothing made in Docker" "0" \
+        "$(v_writes)"
+done
+
+# --- creation stopped half way ------------------------------------------
+# The clone fails: only the .new it made goes; the engagement stays
+# recorded, and the runtime is clean for the next start.
+_v_git="$TMPDIR/v55-git"
+mkdir -p "$_v_git"
+cat > "$_v_git/git" <<EOF
+#!/bin/bash
+for a in "\$@"; do
+    case "\$a" in
+        *upstream.git.new)
+            if [ "\$1" = clone ]; then
+                mkdir -p "\$a/objects" && echo partial > "\$a/objects/x"
+                exit 128
+            fi ;;
+    esac
+done
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$_v_git/git"
+v_new
+_v_rc=0
+_v_out=$(PATH="$_v_git:$PATH" v_run start) || _v_rc=$?
+assert_eq "a clone that fails stops start" "1" "$_v_rc"
+assert_eq "its upstream.git.new is removed" "false" \
+    "$([ -e "$V_RT/upstream.git.new" ] && echo true || echo false)"
+assert_eq "no bare repo is left" "false" \
+    "$([ -e "$V_RT/upstream.git" ] && echo true || echo false)"
+assert_eq "the engagement was recorded first" "true" \
+    "$([ -n "$(jq -r '.engagement_id // empty' "$V_STATE" 2>/dev/null)" ] \
+        && echo true || echo false)"
+assert_eq "no container was started" "0" \
+    "$(grep -c '|run ' "$V_DIR/log" || true)"
+_v_rc=0
+v_run start >/dev/null || _v_rc=$?
+assert_eq "the next start finds the runtime clean" "0" "$_v_rc"
+
+# A run killed during the clone leaves upstream.git.new: the gate
+# refuses it (cleanup preserves and removes it, see test_cleanup.sh).
+v_leftover new
+_v_out=$(v_run start || true)
+assert_eq "a .new left by a killed run is named" "true" \
+    "$(v_has "  $V_RT/upstream.git.new" "$_v_out")"
+
+# A failed image build leaves the runtime clean too.
+v_new
+echo build > "$V_DIR/fail"
+_v_rc=0
+_v_out=$(v_run start) || _v_rc=$?
+rm -f "$V_DIR/fail"
+assert_eq "a failed image build stops start" "1" "$_v_rc"
+assert_eq "before an engagement is recorded" "" \
+    "$(jq -r '.engagement_id // empty' "$V_STATE" 2>/dev/null)"
+assert_eq "and before a bare repo is made" "false" \
+    "$([ -e "$V_RT/upstream.git" ] && echo true || echo false)"
+_v_rc=0
+v_run start >/dev/null || _v_rc=$?
+assert_eq "the next start works" "0" "$_v_rc"
+
+# --- a runtime inside the checkout ----------------------------------
+v_new
+V_RT="$_st_repo/.swarm-v55"
+V_STATE="$V_RT/state.json"
+_v_rc=0
+_v_out=$(v_run start) || _v_rc=$?
+assert_eq "a runtime inside the checkout: start refused" "1" "$_v_rc"
+assert_eq "saying so" "true" \
+    "$(v_has "is inside the checkout or its git dir" "$_v_out")"
+assert_eq "and nothing is made there" "false" \
+    "$([ -e "$V_RT" ] && echo true || echo false)"
+assert_eq "nor in Docker" "0" "$(v_writes)"
+
+# --- an engagement of an earlier release ------------------------------
+# Its state file records no daemon and no token, and its containers
+# (one started with --rm, one with an anonymous /workspace volume) keep
+# their files themselves.  Every command but status and logs refuses
+# it, says how to finish it, and changes nothing.
+v_new
+v_run start >/dev/null || true
+jq -c 'del(.docker_daemon, .engagement_token)' "$V_STATE" \
+    > "$V_STATE.x" && mv "$V_STATE.x" "$V_STATE"
+find "$V_DIR/vols" -type f -exec rm -f {} +
+v_container "${_v_img}-1" running ""
+v_container "${_v_img}-2" running ""
+v_container "${_v_img}-post" exited ""
+v_container "${_v_img}-interactive-x-20260101000000-0" running ""
+: > "$V_DIR/log"
+_v_before=$(v_snap)
+for _v_cmd in start post-process "interactive --agent-index 1" stop wait \
+        retire cleanup; do
+    _v_rc=0
+    # shellcheck disable=SC2086
+    _v_out=$(v_run $_v_cmd) || _v_rc=$?
+    assert_eq "earlier release: $_v_cmd refused" "1" "$_v_rc"
+    assert_eq "earlier release: $_v_cmd says how to finish it" "true" \
+        "$(v_has "Finish it with the release that made it" "$_v_out")"
+    assert_eq "earlier release: $_v_cmd changes nothing" "$_v_before" \
+        "$(v_snap)"
+    assert_eq "earlier release: $_v_cmd stops, removes or makes nothing" \
+        "0" "$(v_writes)"
+done
+_v_rc=0
+_v_out=$(v_run status) || _v_rc=$?
+assert_eq "earlier release: status still answers" "0" "$_v_rc"
+assert_eq "with the agents' states" "true" \
+    "$(v_has "running" "$_v_out")"
+_v_rc=0
+v_run logs 1 >/dev/null || _v_rc=$?
+assert_eq "earlier release: logs still answer" "0" "$_v_rc"
+assert_eq "earlier release: the runtime is as it was" "$_v_before" \
+    "$(v_snap)"
+
+# Leftovers with no engagement recorded come from an earlier release.
+v_new
+v_run start >/dev/null || true
+jq -c 'del(.engagement_id, .engagement_started_at, .base_commit,
+    .docker_daemon, .engagement_token)' "$V_STATE" \
+    > "$V_STATE.x" && mv "$V_STATE.x" "$V_STATE"
+: > "$V_DIR/log"
+_v_before=$(v_snap)
+_v_rc=0
+_v_out=$(v_run start) || _v_rc=$?
+assert_eq "leftovers without an engagement: start refused" "1" "$_v_rc"
+assert_eq "as an earlier release's" "true" \
+    "$(v_has "Finish it with the release that made it" "$_v_out")"
+assert_eq "naming what is left" "true" \
+    "$(v_has "  $V_RT/upstream.git" "$_v_out")"
+assert_eq "and changes nothing" "$_v_before" "$(v_snap)"
+
+# --- launch.sh removes nothing by force ---------------------------------
+assert_eq "launch.sh has no docker rm -f" "0" \
+    "$(grep -c 'docker rm -f' "$_LAUNCH_SH" || true)"
+assert_eq "no alpine helper" "0" "$(grep -c 'alpine' "$_LAUNCH_SH" || true)"
+assert_eq "no rm_docker_dir" "0" \
+    "$(grep -c 'rm_docker_dir' "$_LAUNCH_SH" || true)"
+
+# A session record is never written over another.
+_v_pd="$_v_root/pending"
+mkdir -p "$_v_pd"
+swarm_pending_write "$_v_pd" "${_v_img}-interactive-y-1" "$$" daemon-a
+_v_rec=$(cat "$_v_pd/interactive-${_v_img}-interactive-y-1.pending")
+_v_rc=0
+swarm_pending_write "$_v_pd" "${_v_img}-interactive-y-1" 1 daemon-b \
+    2>/dev/null || _v_rc=$?
+assert_eq "a second record of the same name is refused" "1" "$_v_rc"
+assert_eq "and the first stays as it was" "$_v_rec" \
+    "$(cat "$_v_pd/interactive-${_v_img}-interactive-y-1.pending")"
+
+# ============================================================
+echo ""
+echo "=== 56. A run stopped on an unset variable does not end with 0 ==="
+
+# Bash 3.2 (macOS's /bin/bash, which runs these tests there) runs an
+# EXIT trap with $? at 0 when set -u stops the script on an unset
+# variable.  A flock that names one, through BASH_ENV, stops launch.sh in
+# swarm_lock, in the main shell and after its EXIT trap is set.
+_u_hook="$TMPDIR/unset-hook.sh"
+cat > "$_u_hook" <<'EOF'
+flock() { : "$swarm_test_unset_variable"; }
+EOF
+v_new
+_v_rc=0
+_v_out=$(BASH_ENV="$_u_hook" v_run start) || _v_rc=$?
+assert_eq "start stopped on an unset variable: not status 0" "true" \
+    "$([ "$_v_rc" -ne 0 ] && echo true || echo false)"
+assert_eq "having made no engagement" "" \
+    "$(jq -r '.engagement_id // empty' "$V_STATE" 2>/dev/null)"
+# The ends a run means keep status 0: help, and a run's last line.
+_v_rc=0
+v_run interactive --help >/dev/null || _v_rc=$?
+assert_eq "interactive --help ends with 0" "0" "$_v_rc"
+_v_rc=0
+v_run status >/dev/null || _v_rc=$?
+assert_eq "status ends with 0" "0" "$_v_rc"
+
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"

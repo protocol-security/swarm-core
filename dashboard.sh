@@ -52,6 +52,13 @@ PROJECT="$(swarm_project_resolve "$REPO_ROOT")" || exit 1
 RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
 BARE_REPO="${RUNTIME_DIR}/upstream.git"
 
+# Git on the bare repo, which agents write: no transport (a missing
+# object must not make it fetch from a remote the repo names) and no
+# signature check (log.showSignature would run the repo's gpg.program).
+bare_git() {
+    swarm_no_fetch git -c log.showSignature=false -C "$BARE_REPO" "$@"
+}
+
 # Read nothing from the runtime directory unless only the current user
 # can reach it: the bare repo inside is writable for every UID.
 runtime_ok() {
@@ -88,7 +95,6 @@ own_ref() {
 }
 
 identity_ok || exit 1
-CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")"
 
 IMAGE_NAME="${PROJECT}-agent"
 START_TIME=$(date +%s)
@@ -119,8 +125,14 @@ state_value() {
         else "n" end'
 }
 
+# The engagement the dashboard shows, by its token (empty for none);
+# s and p act on it alone.  DASH_CLEANUP is true while the state holds
+# the checkpoint of a cleanup that has not finished (running, or stopped
+# before the end; only cleanup may go on).  Both set by load_state.
+DASH_TOKEN=""
+DASH_CLEANUP=false
 load_state() {
-    local state title config agents summary label
+    local state title config agents summary label token cleanup
     if [ ! -f "$STATE_FILE" ] || ! runtime_ok; then
         return 1
     fi
@@ -134,6 +146,8 @@ load_state() {
     agents=$(state_value "$state" num_agents) || return 1
     summary=$(state_value "$state" model_summary clean) || return 1
     label=$(state_value "$state" config_label clean) || return 1
+    token=$(state_value "$state" engagement_token) || return 1
+    cleanup=$(printf '%s' "$state" | jq -r 'has("cleanup")') || return 1
     case "$title" in y*) title="${title#y}"; SWARM_TITLE="${title%x}" ;; esac
     case "$config" in
         y*) config="${config#y}"; SWARM_CONFIG="${config%x}" ;;
@@ -147,8 +161,78 @@ load_state() {
     case "$label" in
         y*) label="${label#y}"; SWARM_CONFIG_LABEL="${label%x}" ;;
     esac
+    # Unlike the fields above, a token the state no longer has (the
+    # engagement was cleaned up) is no engagement.
+    case "$token" in
+        y*) token="${token#y}"; DASH_TOKEN="${token%x}" ;;
+        *) DASH_TOKEN="" ;;
+    esac
+    if [ "$cleanup" = true ]; then
+        DASH_CLEANUP=true
+    else
+        DASH_CLEANUP=false
+    fi
 }
 load_state || true
+
+# The workspace volumes of this checkout, as "<container> <token>" lines
+# (the labels naming the container a volume was made for and its
+# engagement), read once per refresh by refresh_volumes.  DASH_VOLUMES_OK
+# is false when Docker could not list them: the dashboard then says
+# nothing about volumes rather than guess.
+CHECKOUT_PATH="$(swarm_checkout_path "$REPO_ROOT")" || exit 1
+DASH_VOLUMES=""
+DASH_VOLUMES_OK=false
+refresh_volumes() {
+    local fmt
+    fmt="{{.Label \"${SWARM_CONTAINER_LABEL}\"}} {{.Label \"${SWARM_TOKEN_LABEL}\"}}"
+    if DASH_VOLUMES=$(docker volume ls \
+            --filter "label=${SWARM_PROJECT_LABEL}=${PROJECT}" \
+            --filter "label=${SWARM_CHECKOUT_LABEL}=${CHECKOUT_PATH}" \
+            --format "$fmt" 2>/dev/null); then
+        DASH_VOLUMES_OK=true
+    else
+        DASH_VOLUMES=""
+        DASH_VOLUMES_OK=false
+    fi
+}
+
+# Succeed when container NAME is not there (not in this refresh's list
+# of the checkout's containers) and the engagement shown has a workspace
+# volume made for it: retire removed the container and kept its files,
+# or the container was never made (docker run failed).
+volume_only() {
+    $DASH_VOLUMES_OK && [ -n "$DASH_TOKEN" ] || return 1
+    [ -z "$(own_ref "$1")" ] || return 1
+    case "${NL}${DASH_VOLUMES}${NL}" in
+        *"${NL}${1} ${DASH_TOKEN}${NL}"*) return 0 ;;
+    esac
+    return 1
+}
+
+# Print the line under the recent commits about what is left of the
+# engagement shown, or nothing: a cleanup that has not finished (it is
+# running, or it stopped before the end), or, once no container of this
+# checkout is there, its workspace volumes.
+engagement_note() {
+    local kept
+    if $DASH_CLEANUP; then
+        printf ' %sA cleanup has not finished%s: %s\n' \
+            "$YELLOW" "$RESET" \
+            "if it is not running, run ./launch.sh cleanup again."
+        return 0
+    fi
+    $DASH_VOLUMES_OK && [ -n "$DASH_TOKEN" ] || return 0
+    [ -z "${OWN_CONTAINERS//$NL/}" ] || return 0
+    # Compared as strings: a token can look like a number to awk.
+    kept=$(printf '%s\n' "$DASH_VOLUMES" \
+        | awk -v t="$DASH_TOKEN" 'NF == 2 && ("x" $2) == ("x" t) { n++ }
+                                  END { print n + 0 }')
+    [ "$kept" -gt 0 ] || return 0
+    printf ' %s%s workspace volume(s), no container: %s%s\n' \
+        "$DIM" "$kept" \
+        "harvest, then ./launch.sh cleanup ends the engagement." "$RESET"
+}
 
 DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
 
@@ -462,17 +546,6 @@ interactive_container_names() {
         | sort || true
 }
 
-# Stop this checkout's container NAME by ID after checking its label
-# again; another checkout's container under that name is left alone.
-stop_own_container() {
-    local name="$1" id
-    id=$(swarm_own_container_id "$name" "$CHECKOUT_PATH" "$PROJECT") \
-        || return 0
-    if [ -n "$id" ] && docker stop "$id" >/dev/null 2>&1; then
-        echo "  stopped ${name}"
-    fi
-}
-
 read_interactive_state_value() {
     local name="$1" key="$2"
     local tmpf="${DASH_TMPDIR}/interactive-${name}.state"
@@ -502,11 +575,11 @@ interactive_branch_status() {
     [ "$dirty" = "dirty" ] && { printf 'dirty'; return; }
 
     if [ -n "$branch" ] && runtime_ok \
-            && git -C "$BARE_REPO" rev-parse --verify \
+            && bare_git rev-parse --verify \
             --quiet "refs/heads/${branch}" >/dev/null 2>&1; then
         local tip
-        tip=$(git -C "$BARE_REPO" rev-parse "refs/heads/${branch}")
-        if git -C "$REPO_ROOT" merge-base --is-ancestor \
+        tip=$(bare_git rev-parse "refs/heads/${branch}")
+        if swarm_no_fetch git -C "$REPO_ROOT" merge-base --is-ancestor \
                 "$tip" HEAD 2>/dev/null; then
             printf 'harvested'
         else
@@ -586,6 +659,7 @@ draw() {
             fi
         fi
     fi
+    refresh_volumes
 
     local now elapsed uptime_str
     now=$(date +%s)
@@ -651,6 +725,10 @@ draw() {
                     agent_driver <<< "$configured_fields"
                 model="${model:-unknown}"
                 state="configured"
+            fi
+            # Its files are on its workspace volume until cleanup.
+            if volume_only "$name"; then
+                state="volume only"
             fi
         fi
 
@@ -827,12 +905,15 @@ draw() {
         pp_driver=$(jq -r '.post_process.driver // .driver // "claude-code"' \
             "$CONFIG_FILE" 2>/dev/null || echo "claude-code")
 
-        local pp_rule
+        local pp_rule pp_status="configured"
+        if volume_only "$pp_name"; then
+            pp_status="volume only"
+        fi
         pp_rule=$(printf '%.0s·' $(seq 1 $((TERM_COLS - 4))))
         printf "  ${DIM}%s${RESET}\n" "$pp_rule"
         emit_row "P" "$(format_model "$pp_model" "$pp_effort")" \
             "$(short_driver "$pp_driver")" "$pp_auth_mode" \
-            "$DIM" "configured" \
+            "$DIM" "$pp_status" \
             "" "" "" "" "" "" "$pp_tag"
     fi
 
@@ -853,9 +934,9 @@ draw() {
     # Recent commits.
     if [ -d "$BARE_REPO" ] && runtime_ok; then
         local commit_count
-        commit_count=$(git -C "$BARE_REPO" rev-list --count refs/heads/agent-work 2>/dev/null || echo 0)
+        commit_count=$(bare_git rev-list --count refs/heads/agent-work 2>/dev/null || echo 0)
         printf " ${BOLD}Recent commits${RESET} ${DIM}(%s total):${RESET}\n" "$commit_count"
-        git -C "$BARE_REPO" log refs/heads/agent-work --oneline -8 2>/dev/null | \
+        bare_git log refs/heads/agent-work --oneline -8 2>/dev/null | \
         while IFS= read -r line; do
             printf "   ${DIM}%s${RESET}\n" "$line"
         done
@@ -869,6 +950,12 @@ draw() {
     fi
 
     echo ""
+
+    local note
+    note=$(engagement_note)
+    if [ -n "$note" ]; then
+        printf '%s\n\n' "$note"
+    fi
 
     if [ "$running_count" -eq 0 ] && [ "$exited_count" -gt 0 ]; then
         printf " ${BOLD}${GREEN}Swarm complete${RESET} -- all %s agents exited.\n" "$exited_count"
@@ -937,15 +1024,17 @@ while true; do
             s|S)
                 leave_alt_screen
                 identity_ok || exit 1
-                echo "--- Stopping all agents ---"
-                for i in $(seq 1 "$NUM_AGENTS"); do
-                    stop_own_container "${IMAGE_NAME}-${i}"
-                done
-                while IFS= read -r int_name; do
-                    [ -n "$int_name" ] || continue
-                    stop_own_container "$int_name"
-                done < <(interactive_container_names)
-                stop_own_container "${IMAGE_NAME}-post"
+                # launch.sh stop, with its checks, on the engagement
+                # shown (its token, from the last refresh): never a
+                # later one, and nothing when none is shown.
+                _token="$DASH_TOKEN"
+                if [ -z "$_token" ]; then
+                    echo "(no engagement shown; nothing stopped)"
+                else
+                    SWARM_CONFIG="$CONFIG_FILE" \
+                        SWARM_ENGAGEMENT_TOKEN="$_token" \
+                        "$SWARM_DIR/launch.sh" stop || echo "(stop failed)"
+                fi
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
                 enter_alt_screen
@@ -972,7 +1061,12 @@ while true; do
                     continue
                 fi
                 if post_process_container_exists; then
-                    echo "(previous post-process container will be replaced)"
+                    echo "(${_pp_name} is still there; retire it first:" \
+                         "./launch.sh retire --post-process)"
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
+                    enter_alt_screen
+                    continue
                 fi
                 _pp_prompt="Start post-processing now? [y/N] "
                 read -r -p "$_pp_prompt" _pp_confirm || _pp_confirm=""
@@ -987,14 +1081,29 @@ while true; do
                         ;;
                 esac
                 identity_ok || exit 1
+                # Both steps on the engagement shown (its token, from
+                # the last refresh): a cleanup and a new start since make
+                # them refuse, and nothing runs when none is shown.
+                _token="$DASH_TOKEN"
+                if [ -z "$_token" ]; then
+                    echo "(no engagement shown; post-processing not started)"
+                    echo ""
+                    read -rp "Press Enter to return to dashboard..." _
+                    enter_alt_screen
+                    continue
+                fi
                 echo "--- Stopping agents ---"
-                for i in $(seq 1 "$NUM_AGENTS"); do
-                    stop_own_container "${IMAGE_NAME}-${i}" >/dev/null
-                done
-                echo "--- Starting post-processing ---"
-                SWARM_CONFIG="$CONFIG_FILE" \
-                    "$SWARM_DIR/launch.sh" post-process || \
-                    echo "(post-processing failed)"
+                if ! SWARM_CONFIG="$CONFIG_FILE" \
+                        SWARM_ENGAGEMENT_TOKEN="$_token" \
+                        "$SWARM_DIR/launch.sh" stop --numbered >/dev/null; then
+                    echo "(agents not stopped; post-processing not started)"
+                else
+                    echo "--- Starting post-processing ---"
+                    SWARM_CONFIG="$CONFIG_FILE" \
+                        SWARM_ENGAGEMENT_TOKEN="$_token" \
+                        "$SWARM_DIR/launch.sh" post-process || \
+                        echo "(post-processing failed)"
+                fi
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
                 enter_alt_screen
