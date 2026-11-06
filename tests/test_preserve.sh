@@ -499,15 +499,15 @@ assert_eq "a root ending in a newline fails the scan" "rc=3" \
     "$(cat "$_nlout/.rc" 2>/dev/null)"
 
 # A root whose path holds find pattern characters still finds nested
-# repositories (the prune of its .git matches only that .git).
+# repositories.
 GL="$TMPDIR/glob*root"
 git init -q "$GL"
 g -C "$GL" commit -q --allow-empty -m g
 mkdir -p "$GL/agent_logs"
-# Unescaped, ".../glob*root/.git" would also match this repo's .git.
 git init -q "$GL/agent_logs/root"
-assert_eq "a nested repo under a root with * in its path blocks" "1" \
-    "$(has_line "$(scan worktree "$GL" full)" 'block embedded agent_logs/root')"
+assert_eq "a nested repo under a root with * in its path is found" "1" \
+    "$(grep -cE '^gitdir [0-9]+ agent_logs/root/[.]git$' \
+        "$(scan worktree "$GL" full)/report" || true)"
 
 # Repositories under other names inside the workspace block, also under
 # engine paths.
@@ -621,8 +621,8 @@ ln -s /tmp "$GLK/.git"
 assert_eq "a .git symlink is a gitlink, not nogit" "1" \
     "$(has_line "$(scan worktree "$GLK" full)" 'block gitlink')"
 git init -q "$W/inner"
-assert_eq "an embedded repository blocks" "1" \
-    "$(has_line "$(scan worktree "$W" full)" 'block embedded inner')"
+assert_eq "an ordinary repository nested in the workspace does not block" \
+    "0" "$(has_line "$(scan worktree "$W" full)" 'block embedded inner')"
 rm -rf "$W/inner"
 git -C "$W" worktree add -q "$TMPDIR/outside-wt" 2>/dev/null
 assert_eq "a linked worktree outside the volume blocks" "1" \
@@ -1920,6 +1920,354 @@ for _qw in queue report; do
     assert_eq "a failed write to the ${_qw} ends the scan, tested or not" \
         "3" "$_qrc"
 done
+
+# ============================================================
+echo ""
+echo "=== 16. Repositories nested in a workspace ==="
+
+# An ordinary repository cloned or initialized inside a workspace is a
+# repository location of its own: its git dir is checked like the
+# workspace's, everything Git keeps there goes into the bundle (its
+# objects under refs/v/<n>, its files under refs/v/<n>/files, its path
+# as refs/v/<n>/path), its work tree is checked for content outside
+# Git's history, and the parent's one untracked or ignored entry for its
+# directory is not reported as the parent's.
+# A committed workspace named NAME; print its path.
+nr_ws() {
+    local w="$TMPDIR/nr-$1"
+    git init -q "$w"
+    echo top > "$w/top.txt"
+    g -C "$w" add top.txt
+    g -C "$w" commit -q -m top
+    printf '%s' "$w"
+}
+# A repository at PATH with one commit of file F.
+nr_repo() {
+    git init -q "$1"
+    echo "$2" > "$1/$2"
+    g -C "$1" add "$2"
+    g -C "$1" commit -q -m "$2"
+}
+# The number of the git dir at PATH (relative to the root) in scan OUT.
+nr_n() {
+    awk -v p="$2" '$1 == "gitdir" && $3 == p { print $2 }' "$1/report"
+}
+# The findings of scan OUT to keep or discard, or why it failed.
+nr_clean() {
+    if [ -e "$1/.rc" ]; then
+        echo "failed: $(cat "$1/.rc")"
+        return
+    fi
+    grep -cE '^(block|uncommitted) ' "$1/report" || true
+}
+
+NR=$(nr_ws unborn)
+git init -q "$NR/inner"
+out=$(scan worktree "$NR" full)
+assert_eq "an unborn repository nested in a workspace: the scan completes" \
+    "" "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "nothing blocks, nothing is left to discard" "0" "$(nr_clean "$out")"
+n=$(nr_n "$out" inner/.git)
+assert_eq "its git dir is in the inventory" "true" \
+    "$([ -n "$n" ] && echo true || echo false)"
+dst=$(imported "$out")
+assert_eq "under a path the import keeps" "inner/.git" \
+    "$(git -C "$dst" cat-file blob "refs/r/$n/path" 2>/dev/null)"
+assert_eq "with its git dir's files (HEAD among them)" "1" \
+    "$(git -C "$dst" cat-file blob "refs/r/$n/files" 2>/dev/null \
+        | tr '\0' '\n' | grep -c ' HEAD$' || true)"
+assert_eq "the workspace's own git dir has its path too" ".git" \
+    "$(git -C "$dst" cat-file blob "refs/r/$(nr_n "$out" .git)/path" \
+        2>/dev/null)"
+
+# A clone with a commit and a git-dir file of its own.
+NR=$(nr_ws clone)
+nr_repo "$TMPDIR/nr-src" s
+git clone -q --no-local "$TMPDIR/nr-src" "$NR/engagement_target"
+echo mine > "$NR/engagement_target/poc.txt"
+g -C "$NR/engagement_target" add poc.txt
+g -C "$NR/engagement_target" commit -q -m poc
+NPOC=$(git -C "$NR/engagement_target" rev-parse HEAD)
+echo note > "$NR/engagement_target/.git/info/notes.txt"
+out=$(scan worktree "$NR" full)
+assert_eq "a clone in the workspace, committed: nothing to discard" "0" \
+    "$(nr_clean "$out")"
+dst=$(imported "$out")
+assert_eq "the clone's own commit is carried" "commit" \
+    "$(git -C "$dst" cat-file -t "$NPOC" 2>/dev/null)"
+n=$(nr_n "$out" engagement_target/.git)
+k=$(git -C "$dst" cat-file blob "refs/r/$n/files" 2>/dev/null | tr '\0' '\n' \
+    | awk '$4 == "info/notes.txt" { print $1 }')
+assert_eq "and a file of its git dir, under its number" "note" \
+    "$(git -C "$dst" cat-file blob "refs/r/$n/f/$k" 2>/dev/null)"
+assert_eq "a layer checkout holding the same is carried too" "0" \
+    "$(nr_clean "$(scan worktree "$NR" layer)")"
+
+# Siblings, a prefix of a name, and a repository nested in a nested one.
+NR=$(nr_ws depth)
+for r in a ab a/b; do
+    nr_repo "$NR/$r" "f-${r%%/*}"
+done
+out=$(scan worktree "$NR" full)
+assert_eq "siblings and a repository in a nested one: nothing to discard" \
+    "0" "$(nr_clean "$out")"
+assert_eq "each one is in the inventory once" "1 1 1" \
+    "$(for r in a ab a/b; do
+           awk -v p="$r/.git" '$1 == "gitdir" && $3 == p' "$out/report" \
+               | grep -c .
+       done | tr '\n' ' ' | sed 's/ $//')"
+
+# What the parent shows beside a nested repository is still its own.
+NR=$(nr_ws boundary)
+git init -q "$NR/inner"
+echo stray > "$NR/stray.txt"
+mkdir -p "$NR/dir"
+echo x > "$NR/dir/x"
+out=$(scan worktree "$NR" full)
+assert_eq "beside a nested repository, an untracked file is reported" "1" \
+    "$(has_line "$out" 'uncommitted dirty .: ?? stray.txt')"
+assert_eq "so is one in a plain directory" "1" \
+    "$(has_line "$out" 'uncommitted dirty .: ?? dir/x')"
+assert_eq "but not the nested repository's directory" "0" \
+    "$(has_line "$out" 'uncommitted dirty .: ?? inner/')"
+
+# Ignored: the repository's own directory, and a directory around one.
+NR=$(nr_ws ignored)
+printf 'engagement_target/\ntargets/\n' > "$NR/.gitignore"
+g -C "$NR" add .gitignore
+g -C "$NR" commit -q -m ignore
+git init -q "$NR/engagement_target"
+mkdir -p "$NR/targets"
+git init -q "$NR/targets/a"
+out=$(scan worktree "$NR" full)
+assert_eq "an ignored nested repository's directory is not reported" "0" \
+    "$(has_line "$out" 'uncommitted ignored .: engagement_target/')"
+assert_eq "an ignored directory around one is reported whole" "1" \
+    "$(has_line "$out" 'uncommitted ignored .: targets/')"
+assert_eq "and the repository in it is carried all the same" "true" \
+    "$([ -n "$(nr_n "$out" targets/a/.git)" ] && echo true || echo false)"
+
+# Work in a nested repository is reported with its path, engine paths
+# included (only the workspace's own checkout has those).
+NR=$(nr_ws dirty)
+git init -q "$NR/inner"
+echo tracked > "$NR/inner/t"
+echo gone > "$NR/inner/d"
+echo '*.log' > "$NR/inner/.gitignore"
+g -C "$NR/inner" add t d .gitignore
+g -C "$NR/inner" commit -q -m inner
+echo changed > "$NR/inner/t"
+rm "$NR/inner/d"
+echo new > "$NR/inner/new.txt"
+echo staged > "$NR/inner/staged.txt"
+g -C "$NR/inner" add staged.txt
+echo log > "$NR/inner/run.log"
+mkdir -p "$NR/inner/agent_logs"
+echo x > "$NR/inner/agent_logs/x"
+out=$(scan worktree "$NR" full)
+for want in 'uncommitted dirty inner:  M t' 'uncommitted dirty inner:  D d' \
+        'uncommitted dirty inner: ?? new.txt' \
+        'uncommitted dirty inner: A  staged.txt' \
+        'uncommitted ignored inner: run.log' \
+        'uncommitted dirty inner: ?? agent_logs/x'; do
+    assert_eq "nested work reported: ${want#uncommitted }" "1" \
+        "$(has_line "$out" "$want")"
+done
+NR=$(nr_ws hidden)
+nr_repo "$NR/inner" h
+git -C "$NR/inner" update-index --skip-worktree h
+assert_eq "a hidden index entry in a nested repository is reported" "1" \
+    "$(has_line "$(scan worktree "$NR" full)" 'uncommitted hidden inner: S h')"
+NR=$(nr_ws op)
+nr_repo "$NR/inner" i
+git -C "$NR/inner" rev-parse HEAD > "$NR/inner/.git/MERGE_HEAD"
+assert_eq "an unfinished operation in a nested repository is reported" "1" \
+    "$(has_line "$(scan worktree "$NR" full)" \
+        'uncommitted operation inner/.git/MERGE_HEAD')"
+
+# A file the workspace tracks inside what became a nested repository's
+# directory is still the workspace's.
+NR=$(nr_ws overlap)
+mkdir -p "$NR/sub"
+echo p > "$NR/sub/p"
+g -C "$NR" add sub/p
+g -C "$NR" commit -q -m p
+git init -q "$NR/sub"
+echo q > "$NR/sub/p"
+assert_eq "a tracked file inside a nested repository's directory" "1" \
+    "$(has_line "$(scan worktree "$NR" full)" 'uncommitted dirty .:  M sub/p')"
+
+# A nested repository's submodule: its module repo is inventoried and
+# its checkout checked.
+NR=$(nr_ws module)
+nr_repo "$TMPDIR/nr-msrc" m
+nr_repo "$NR/inner" i
+g -C "$NR/inner" -c protocol.file.allow=always submodule add -q \
+    "$TMPDIR/nr-msrc" sub >/dev/null 2>&1
+g -C "$NR/inner" commit -q -m sub
+echo dirty > "$NR/inner/sub/m"
+out=$(scan worktree "$NR" full)
+assert_eq "a nested repository's module repo is in the inventory" "true" \
+    "$([ -n "$(nr_n "$out" inner/.git/modules/sub)" ] && echo true || echo false)"
+assert_eq "and its checkout is checked, with its path" "1" \
+    "$(has_line "$out" 'uncommitted dirty inner/sub:  M m')"
+
+# What is not an ordinary repository still blocks: a bare repository at
+# a .git, a .git directory without one, a .git symlink.
+NR=$(nr_ws invalid)
+mkdir -p "$NR/b" "$NR/e/.git" "$NR/l"
+git init -q --bare "$NR/b/.git"
+git init -q "$TMPDIR/nr-real"
+ln -s "$TMPDIR/nr-real/.git" "$NR/l/.git"
+out=$(scan worktree "$NR" full)
+assert_eq "a bare repository at a checkout's .git blocks" "1" \
+    "$(has_line "$out" 'block embedded b')"
+assert_eq "so does a .git directory that holds no repository" "1" \
+    "$(has_line "$out" 'block embedded e')"
+assert_eq "and a .git that is a symlink" "1" \
+    "$(has_line "$out" 'block embedded l')"
+NR=$(nr_ws headonly)
+mkdir -p "$NR/h/.git"
+echo 'ref: refs/heads/main' > "$NR/h/.git/HEAD"
+assert_eq "a .git with a HEAD but no objects/ blocks too" "1" \
+    "$(has_line "$(scan worktree "$NR" full)" 'block embedded h')"
+
+# A nested repository's config is checked like the workspace's.
+NR=$(nr_ws config)
+for c in include filter hooks wt-in wt-out; do
+    git init -q "$NR/$c"
+done
+printf '[core]\n\tabbrev = 12\n' > "$TMPDIR/nr-included"
+git -C "$NR/include" config include.path "$TMPDIR/nr-included"
+git -C "$NR/filter" config filter.x.clean cat
+git -C "$NR/hooks" config core.hooksPath "$TMPDIR"
+git -C "$NR/wt-in" config core.worktree "$NR/.git"
+git -C "$NR/wt-out" config core.worktree "$TMPDIR"
+out=$(scan worktree "$NR" full)
+assert_eq "a nested repository's include blocks" "1" \
+    "$(has_line "$out" 'block config-include include/.git')"
+assert_eq "so does its filter driver" "1" \
+    "$(has_line "$out" 'block filter-driver filter/.git')"
+assert_eq "its hooksPath" "1" \
+    "$(has_line "$out" 'block core-hookspath hooks/.git')"
+assert_eq "a work tree inside another git dir" "1" \
+    "$(has_line "$out" 'block gitdir-worktree wt-in/.git')"
+assert_eq "and one outside the volume" "1" \
+    "$(has_line "$out" 'block core-worktree wt-out/.git')"
+NR=$(nr_ws wt-nested)
+nr_repo "$NR/a" fa
+nr_repo "$NR/b" fb
+git -C "$NR/b" config core.worktree "$NR/a/.git/info"
+assert_eq "a work tree inside a nested repository's git dir blocks" "1" \
+    "$(has_line "$(scan worktree "$NR" full)" 'block gitdir-worktree b/.git')"
+
+# Linked worktrees of a nested repository: inside the volume they are
+# checked, outside it they block.
+NR=$(nr_ws linked)
+nr_repo "$NR/inner" i
+git -C "$NR/inner" worktree add -q "$NR/inner-wt" 2>/dev/null
+echo wip > "$NR/inner-wt/i"
+assert_eq "a nested repository's linked worktree in the volume is checked" \
+    "1" "$(has_line "$(scan worktree "$NR" full)" 'uncommitted dirty inner-wt:  M i')"
+NR=$(nr_ws linked-in-gitdir)
+nr_repo "$NR/a" fa
+nr_repo "$NR/b" fb
+git -C "$NR/b" worktree add -q "$NR/a/.git/wt" 2>/dev/null
+assert_eq "a linked worktree inside a nested repository's git dir blocks" \
+    "1" "$(has_line "$(scan worktree "$NR" full)" 'block gitdir-worktree a/.git/wt')"
+NR=$(nr_ws linked-out)
+nr_repo "$NR/inner" i
+git -C "$NR/inner" worktree add -q "$TMPDIR/nr-outside-wt" 2>/dev/null
+assert_eq "one outside the volume blocks" "1" \
+    "$(has_line "$(scan worktree "$NR" full)" 'block external')"
+
+# The size limits count across every git dir tree of the scan: with the
+# total just below what the workspace's and the nested repository's
+# files hold together, some of the nested ones are reported.
+NR=$(nr_ws limits)
+nr_repo "$NR/inner" i
+head -c 2000 /dev/zero > "$NR/inner/.git/info/filler"
+_nr_sum() {
+    find "$1" -type f -print0 | xargs -0 cat | wc -c | tr -d ' '
+}
+_nr_total=$(( $(_nr_sum "$NR/.git") + $(_nr_sum "$NR/inner/.git") - 1 ))
+out=$(scan worktree "$NR" full SWARM_SCAN_TOTAL_LIMIT="$_nr_total")
+assert_eq "the total counts across the workspace and nested git dirs" \
+    "true" "$(grep -qE '^uncommitted large-file inner/[.]git/' "$out/report" \
+        && echo true || echo false)"
+out=$(scan worktree "$NR" full SWARM_SCAN_FILE_LIMIT=1500)
+assert_eq "a nested git-dir file over the file limit is reported" "1" \
+    "$(has_line "$out" 'uncommitted large-file inner/.git/info/filler 2000')"
+
+# A nested repository's filter driver blocks, and never runs: neither
+# in the repository itself nor in its module.
+NR=$(nr_ws filter-run)
+fl_repo "$NR/inner"
+git -C "$NR/inner" config filter.x.clean "touch $FLM; cat"
+echo b > "$NR/inner/f"
+rm -f "$FLM"
+out=$(scan worktree "$NR" full)
+assert_eq "a nested repository's filter driver blocks" "1" \
+    "$(has_line "$out" 'block filter-driver inner/.git filter.x.clean')"
+assert_eq "and the scan never runs it" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+assert_eq "nor makes a bundle" "false" \
+    "$([ -e "$out/bundle" ] && echo true || echo false)"
+NR=$(nr_ws filter-module)
+fl_repo "$TMPDIR/nr-fsrc"
+nr_repo "$NR/inner" i
+g -C "$NR/inner" -c protocol.file.allow=always submodule add -q \
+    "$TMPDIR/nr-fsrc" sub >/dev/null 2>&1
+g -C "$NR/inner" commit -q -m sub
+git -C "$NR/inner/sub" config filter.x.clean "touch $FLM; cat"
+echo b > "$NR/inner/sub/f"
+rm -f "$FLM"
+out=$(scan worktree "$NR" full)
+assert_eq "a filter driver in a nested repository's module blocks" "1" \
+    "$(has_line "$out" 'block filter-driver inner/.git/modules/sub filter.x.clean')"
+assert_eq "and never runs either" "false" \
+    "$([ -e "$FLM" ] && echo true || echo false)"
+
+# The hangs of section 15, with nested repositories: a FIFO index in
+# one, a nested config that includes a FIFO, and the workspace's own
+# FIFO config with a nested repository to look at (its core.bare is read
+# before the special-file check).
+NR=$(nr_ws fifo-index)
+nr_repo "$NR/inner" i
+rm "$NR/inner/.git/index"
+mkfifo "$NR/inner/.git/index"
+out=$(sf_timed_scan "$NR")
+assert_eq "a FIFO for a nested repository's index: the scan ends" "" \
+    "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "blocking on it" "1" \
+    "$(has_line "$out" 'block special-file inner/.git/index')"
+NR=$(nr_ws fifo-include)
+nr_repo "$NR/inner" i
+mkfifo "$TMPDIR/nr-include-fifo"
+git -C "$NR/inner" config include.path "$TMPDIR/nr-include-fifo"
+out=$(sf_timed_scan "$NR")
+assert_eq "a nested repository including a FIFO: the scan ends" "" \
+    "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "blocking on the include" "1" \
+    "$(has_line "$out" 'block config-include inner/.git')"
+NR=$(nr_ws fifo-cwd)
+git init -q "$NR/inner"
+rm "$NR/.git/config"
+mkfifo "$NR/.git/config"
+out=$(sf_timed_scan "$NR")
+assert_eq "the workspace's FIFO config beside a nested repository: it ends" \
+    "" "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "blocking on that config" "1" \
+    "$(has_line "$out" 'block special-file .git/config')"
+
+# One object format per scan.
+if git init -q --object-format=sha256 "$TMPDIR/nr-sha256-probe" 2>/dev/null
+then
+    NR=$(nr_ws format)
+    git init -q --object-format=sha256 "$NR/inner"
+    assert_eq "a nested repository with another object format fails the scan" \
+        "rc=3" "$(cat "$(scan worktree "$NR" full)/.rc" 2>/dev/null)"
+fi
 
 echo ""
 echo "==============================="
