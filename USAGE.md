@@ -1195,7 +1195,12 @@ or recovery refs keep. A mirror also keeps the commit the base records
 for its submodule, under `refs/swarm/gitlink`, fetched by id when the
 submodule's own checkout has moved on; when the submodule does not
 have that commit at all, `start` warns, since the containers cannot
-check that submodule out.
+check that submodule out. Each mirror is cloned from the Git directory
+the submodule uses, which Git keeps under `.git/modules/` by the
+submodule's name (not its path) or in the submodule's work tree. A
+submodule whose Git directory Git cannot find or read stops the
+commands that mirror submodules, an interactive session that joins
+included, even when its mirror is there already.
 
 The state file also records the Docker daemon (`docker info` ID) the
 engagement runs on, and a token of 16 random hex digits that
