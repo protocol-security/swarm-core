@@ -46,7 +46,22 @@ if [ "${1:-}" = "--json" ]; then
 fi
 
 COSTS_TMPDIR=$(mktemp -d)
-trap 'rm -rf "$COSTS_TMPDIR"' EXIT
+# Set when the run gets to its end (its last line).
+COSTS_EXIT_OK=false
+# The EXIT trap: remove the scratch directory, and never let a run that
+# stopped short end with status 0.  Bash 3.2 (macOS's /bin/bash) runs an
+# EXIT trap with $? at 0 when set -u stops the script on an unset
+# variable, so that stop would pass for success.  Any other status
+# stays, a signal's too.
+costs_exit_trap() {
+    local rc=$?
+    rm -rf "$COSTS_TMPDIR"
+    if [ "$rc" -eq 0 ] && ! $COSTS_EXIT_OK; then
+        echo "ERROR: costs.sh stopped before the end of its run." >&2
+        exit 1
+    fi
+}
+trap costs_exit_trap EXIT
 
 read_agent_stats() {
     local name=$1 agent_id=$2 id=$3
@@ -188,3 +203,5 @@ else
     printf "\n%d agents, %d sessions, \$%.4f total cost\n" \
         "$(echo "$containers" | wc -l)" "$total_sessions" "$total_cost"
 fi
+# The run got to its end (see costs_exit_trap).
+COSTS_EXIT_OK=true

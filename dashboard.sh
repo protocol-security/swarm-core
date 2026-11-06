@@ -242,10 +242,22 @@ handle_resize
 # Private scratch directory for files copied out of containers.
 DASH_TMPDIR=$(mktemp -d)
 
+# Set when the dashboard quits on purpose (q).
+DASH_EXIT_OK=false
+# The EXIT trap: restore the terminal, remove the scratch directory, and
+# never let a run that stopped short end with status 0.  Bash 3.2
+# (macOS's /bin/bash) runs an EXIT trap with $? at 0 when set -u stops
+# the script on an unset variable, so that stop would pass for success.
+# Any other status stays, a signal's too.
 cleanup() {
+    local rc=$?
     tput rmcup 2>/dev/null || true
     tput cnorm 2>/dev/null || true
     rm -rf "$DASH_TMPDIR"
+    if [ "$rc" -eq 0 ] && ! $DASH_EXIT_OK; then
+        echo "ERROR: dashboard.sh stopped before the end of its run." >&2
+        exit 1
+    fi
 }
 trap cleanup EXIT
 
@@ -898,6 +910,7 @@ while true; do
     if read -rsn1 -t 3 key 2>/dev/null; then
         case "$key" in
             q|Q)
+                DASH_EXIT_OK=true
                 exit 0
                 ;;
             [1-9])
