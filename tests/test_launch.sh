@@ -2106,6 +2106,27 @@ assert_eq "default grace: by ID" "1" \
 PROJECT=fake IMAGE_NAME=fake-agent SWARM_STOP_TIMEOUT=120 run_stop
 assert_eq "SWARM_STOP_TIMEOUT=120 propagates to docker stop -t 120" "4" \
     "$(stopped 120)"
+# Whole seconds: 0 stops at once (and tries the lock once, which flock
+# -w 0 would refuse on macOS), and leading zeros go.  Anything else
+# stops nothing.
+: > "$trap_dir/calls"
+PROJECT=fake IMAGE_NAME=fake-agent SWARM_STOP_TIMEOUT=0 run_stop
+assert_eq "SWARM_STOP_TIMEOUT=0: docker stop -t 0" "4" "$(stopped 0)"
+assert_eq "SWARM_STOP_TIMEOUT=0: a success" "0" \
+    "$(grep -c '^rc=1$' "$TMPDIR/stop.out" || true)"
+: > "$trap_dir/calls"
+PROJECT=fake IMAGE_NAME=fake-agent SWARM_STOP_TIMEOUT=007 run_stop
+assert_eq "SWARM_STOP_TIMEOUT=007: docker stop -t 7" "4" "$(stopped 7)"
+for _st_bad in 1.5 abc -1 1000000 " 5"; do
+    : > "$trap_dir/calls"
+    PROJECT=fake IMAGE_NAME=fake-agent SWARM_STOP_TIMEOUT="$_st_bad" run_stop
+    assert_eq "SWARM_STOP_TIMEOUT='${_st_bad}': refused" "true" \
+        "$(grep -q 'SWARM_STOP_TIMEOUT must be a whole number' \
+                "$TMPDIR/stop.out" \
+            && grep -qx 'rc=1' "$TMPDIR/stop.out" && echo true || echo false)"
+    assert_eq "SWARM_STOP_TIMEOUT='${_st_bad}': stops nothing" "0" \
+        "$(wc -l < "$trap_dir/calls" | tr -d ' ')"
+done
 # --numbered: only <image>-<digits>.
 : > "$trap_dir/calls"
 PROJECT=fake IMAGE_NAME=fake-agent run_stop --numbered
@@ -3630,6 +3651,10 @@ echo "=== 55. Workspace volumes, one daemon, clean runtimes ==="
 #               new start in another terminal would
 #   at.N        containers that replace containers right before wait's
 #               Nth listing (the polls and the recount under the lock)
+#   lock-probe  when there, each listing made once a flock call has
+#               waited for the lock (a "-w" line in flock.log) tries the
+#               engagement lock itself and logs to lock-probe.log whether
+#               another process held it ("held") or not ("free")
 # Every call is logged to V_DIR/log as "<DOCKER_CONTEXT>|<arguments>".
 # volume create and inspect go to the shared fake, which keeps this
 # case's volumes in V_DIR/vols.
@@ -3661,6 +3686,15 @@ case "$1" in
     ps)
         n=$(( $(cat "$d/ps-count" 2>/dev/null || echo 0) + 1 ))
         echo "$n" > "$d/ps-count"
+        if [ -e "$d/lock-probe" ] \
+                && grep -q '^-w ' "$d/flock.log" 2>/dev/null; then
+            if (exec 7>>"$SWARM_RUNTIME_DIR/engagement.lock" \
+                    && flock -n 7); then
+                echo free >> "$d/lock-probe.log"
+            else
+                echo held >> "$d/lock-probe.log"
+            fi
+        fi
         fails ps && exit 1
         if fails ps3 && [ "$n" -ge 3 ]; then exit 1; fi
         shift
@@ -4042,18 +4076,118 @@ _v_rc=0
 assert_eq "so does a state file with no daemon" "1" "$_v_rc"
 assert_eq "neither asks Docker" "0" "$(wc -l < "$_v_vlog" | tr -d ' ')"
 
-# --- stop takes no lock; wait follows one engagement ------------------
-# A post-process holds the lock for its whole run; stop still stops.
+# --- stop and the lock; wait follows one engagement -------------------
+# A post-process holds the lock for its whole run: stop still stops
+# what runs, then waits for the lock, up to the grace, before it can
+# say that nothing more is starting.  Past the grace, it fails.
 v_agents running
 : > "$V_DIR/log"
 exec 8>>"$V_RT/engagement.lock"
 flock -n 8
 _v_rc=0
-_v_out=$(v_run stop) || _v_rc=$?
+_v_out=$(SWARM_STOP_TIMEOUT=1 v_run stop) || _v_rc=$?
 exec 8>&-
-assert_eq "stop works while another command holds the lock" "0" "$_v_rc"
-assert_eq "and stops the running agent by its id" "1" \
-    "$(grep -c "^a|stop -t 60 id-${_v_img}-1$" "$V_DIR/log" || true)"
+assert_eq "stop while another command holds the lock: fails" "1" "$_v_rc"
+assert_eq "once it stopped the running agent by its id" "1" \
+    "$(grep -c "^a|stop -t 1 id-${_v_img}-1$" "$V_DIR/log" || true)"
+assert_eq "saying why" "true" \
+    "$(v_has "without the engagement lock, stop cannot tell" "$_v_out")"
+# A flock first on PATH logs each call to V_DIR/flock.log.
+_v_flk="$TMPDIR/v55-flock"
+mkdir -p "$_v_flk"
+_v_real_flock=$(command -v flock)
+cat > "$_v_flk/flock" <<EOF
+#!/bin/bash
+echo "\$*" >> "\$V_DIR/flock.log"
+exec "$_v_real_flock" "\$@"
+EOF
+chmod +x "$_v_flk/flock"
+# Hold the lock in the background, as another command would, until a
+# flock call waits for it, then run FUNCTION and let the lock go.  When
+# no call waits for it within ten seconds, the holder leaves
+# V_DIR/holder-timeout and goes on all the same.
+v_hold() {
+    rm -f "$V_DIR/flock.log" "$V_DIR/holder-timeout"
+    exec 8>>"$V_RT/engagement.lock"
+    flock -n 8
+    (
+        _v_seen=false
+        for _ in $(seq 100); do
+            if grep -q '^-w ' "$V_DIR/flock.log" 2>/dev/null; then
+                _v_seen=true
+                break
+            fi
+            sleep 0.1
+        done
+        $_v_seen || : > "$V_DIR/holder-timeout"
+        "$1"
+    ) &
+    _v_holder=$!
+    exec 8>&-
+}
+v_holder_waited() {
+    [ -e "$V_DIR/holder-timeout" ] && echo false || echo true
+}
+# A start that recorded the engagement holds the lock while it launches
+# its agents: one it launches once stop waits for the lock is stopped
+# too, before stop succeeds.
+v_late() { v_container "${_v_img}-3" running "$_v_tok"; }
+v_agents running
+: > "$V_DIR/log"
+touch "$V_DIR/lock-probe"
+rm -f "$V_DIR/lock-probe.log"
+v_hold v_late
+_v_rc=0
+_v_out=$(PATH="$_v_flk:$PATH" v_run stop) || _v_rc=$?
+wait "$_v_holder"
+rm -f "$V_DIR/lock-probe"
+assert_eq "stop while a start launches one more agent: a success" "0" \
+    "$_v_rc"
+assert_eq "the start went on once stop waited for the lock" "true" \
+    "$(v_holder_waited)"
+assert_eq "once it had the lock" "1" \
+    "$(grep -c '^-w 60 ' "$V_DIR/flock.log" || true)"
+# Its two listings under the lock (one that stops the late agent, one
+# that finds nothing): the lock was held, by stop, for both.
+_v_probe="$(grep -c '^held$' "$V_DIR/lock-probe.log" || true)"
+_v_probe+=" $(grep -c '^free$' "$V_DIR/lock-probe.log" || true)"
+assert_eq "stop holds the lock for its listings under it" "2 0" "$_v_probe"
+assert_eq "that agent stopped too" "1" \
+    "$(grep -c "^a|stop -t 60 id-${_v_img}-3$" "$V_DIR/log" || true)"
+assert_eq "none of the engagement's agents runs then" "0" \
+    "$(jq -r 'select(.state == "running") | .id' "$V_DIR/containers" \
+        | grep -c . || true)"
+# wait takes the lock once the agents are done, which a stop holds for
+# a moment then: wait waits for it rather than give up.
+v_agents exited
+echo run > "$V_DIR/fail"
+: > "$V_DIR/log"
+v_hold :
+_v_rc=0
+_v_out=$(PATH="$_v_flk:$PATH" v_run wait) || _v_rc=$?
+wait "$_v_holder"
+rm -f "$V_DIR/fail"
+assert_eq "wait: the lock held a moment, it waits for it" "1" \
+    "$(grep -c '^-w 60 ' "$V_DIR/flock.log" || true)"
+assert_eq "the holder let it go once wait waited" "true" \
+    "$(v_holder_waited)"
+assert_eq "then post-process starts" "1" \
+    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+assert_eq "and ends at the failed docker run" "125" "$_v_rc"
+# A stop that fails without the lock fails at once, without waiting for
+# the lock first.
+v_agents running
+echo stop > "$V_DIR/fail"
+rm -f "$V_DIR/flock.log"
+exec 8>>"$V_RT/engagement.lock"
+flock -n 8
+_v_rc=0
+_v_out=$(PATH="$_v_flk:$PATH" SWARM_STOP_TIMEOUT=2 v_run stop) || _v_rc=$?
+exec 8>&-
+rm -f "$V_DIR/fail"
+assert_eq "stop that cannot stop an agent: fails" "1" "$_v_rc"
+assert_eq "without waiting for the lock" "0" \
+    "$(cat "$V_DIR/flock.log" 2>/dev/null | grep -c '^-w ' || true)"
 
 # stop and wait take every check from one copy of the state: the state
 # file replaced right after that copy (a cleanup and a new start with
@@ -4114,9 +4248,10 @@ for _v_fn in cmd_stop cmd_wait; do
 done
 
 # A start can still be launching agents of the engagement while stop
-# runs (it holds the lock, stop does not): stop lists them again after
-# each pass and stops those too; when they keep appearing, it fails
-# rather than leave one running behind a success.
+# runs (it holds the lock; stop's first phase does not take it): stop
+# lists them again after each pass and stops those too; when they keep
+# appearing even under the lock, it fails rather than leave one running
+# behind a success.
 v_agents running
 echo 1 > "$V_DIR/spawn"
 : > "$V_DIR/log"
@@ -4137,6 +4272,17 @@ _v_rc=0
 _v_out=$(v_run stop) || _v_rc=$?
 assert_eq "stop: two more batches during stop are stopped too" "0" "$_v_rc"
 assert_eq "in three passes" "3" "$(grep -c '|stop -t 60 ' "$V_DIR/log" || true)"
+# More than three passes' worth without the lock is no failure yet:
+# under the lock, stop stops the rest.
+v_agents running
+echo 4 > "$V_DIR/spawn"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run stop) || _v_rc=$?
+assert_eq "stop: agents that appear for four passes: a success" "0" \
+    "$_v_rc"
+assert_eq "three stops without the lock, two under it" "5" \
+    "$(grep -c '|stop -t 60 ' "$V_DIR/log" || true)"
 v_agents running
 echo 99 > "$V_DIR/spawn"
 : > "$V_DIR/log"
@@ -4144,10 +4290,10 @@ _v_rc=0
 _v_out=$(v_run stop) || _v_rc=$?
 rm -f "$V_DIR/spawn"
 assert_eq "stop: agents that keep appearing fail it" "1" "$_v_rc"
-assert_eq "after three passes" "3" \
+assert_eq "after three passes without the lock and three under it" "6" \
     "$(grep -c '|stop -t 60 ' "$V_DIR/log" || true)"
 assert_eq "saying so" "true" \
-    "$(v_has "keep starting; run stop again once start is done" "$_v_out")"
+    "$(v_has "keep starting, even under the engagement lock" "$_v_out")"
 # post-process, under the lock, finds every numbered agent done (no
 # start can be launching more then) or refuses: the dashboard's p
 # stops them first without the lock.

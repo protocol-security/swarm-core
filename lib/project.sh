@@ -1027,14 +1027,16 @@ swarm_fd_is_file() {
     [ -e "/dev/fd/$fd" ] && [ "/dev/fd/$fd" -ef "$file" ]
 }
 
-# Take the engagement lock of runtime directory DIR, or fail at once
-# when another operation holds it.  flock(1) keeps the lock for as long
-# as the descriptor stays open, so children that inherit it share it.
+# Take the engagement lock of runtime directory DIR, or fail when
+# another operation holds it: at once, or after waiting up to WAIT
+# seconds when WAIT is given and above 0.  flock(1) keeps the lock for
+# as long as the descriptor stays open, so children that inherit it
+# share it.
 # A caller that already holds the lock passes its descriptor in
 # SWARM_LOCK_FD: the engine checks that the descriptor is this lock
 # file and locks through it.
 swarm_lock() {
-    local dir="$1" lock fd
+    local dir="$1" wait="${2:-}" lock fd
     lock="$dir/engagement.lock"
     if ! command -v flock >/dev/null 2>&1; then
         echo "ERROR: flock is required to lock ${lock}" \
@@ -1060,7 +1062,13 @@ swarm_lock() {
         fd=9
         exec 9>>"$lock" || return 1
     fi
-    if ! flock -n "$fd"; then
+    # flock -w 0 is one try on Linux and an error on macOS.
+    if [ -n "$wait" ] && [ "$wait" != 0 ]; then
+        if ! flock -w "$wait" "$fd"; then
+            echo "ERROR: another swarm-core operation holds ${lock}." >&2
+            return 1
+        fi
+    elif ! flock -n "$fd"; then
         echo "ERROR: another swarm-core operation holds ${lock}." >&2
         return 1
     fi
