@@ -60,6 +60,20 @@ status_of() {
 }
 
 # ============================================================
+echo "=== 0. The tests run without the caller's swarm-core settings ==="
+
+# An embedder's environment (an engagement it is running, say) must not
+# reach the tests, which make engagements of their own.
+assert_eq "_test_env.sh unsets every engagement and runtime setting" \
+    "unset unset unset unset unset" \
+    "$(SWARM_PROJECT=p SWARM_RUNTIME_DIR=/r SWARM_ENGAGEMENT_ID=e \
+        SWARM_LOCK_FD=9 SWARM_ENGAGEMENT_TOKEN=outside "$BASH" -c \
+        'source "$1"; for v in SWARM_PROJECT SWARM_RUNTIME_DIR \
+            SWARM_ENGAGEMENT_ID SWARM_LOCK_FD SWARM_ENGAGEMENT_TOKEN; do
+            printf "%s\n" "${!v-unset}"; done' _ \
+        "$TESTS_DIR/_test_env.sh" | paste -sd ' ' -)"
+
+# ============================================================
 echo "=== 1. Runtime directory location ==="
 
 assert_eq "XDG_STATE_HOME is used when absolute" \
