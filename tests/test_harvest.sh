@@ -1174,7 +1174,7 @@ p_rc=0
 p_out=$(bash "$HARVEST_SH" 2>&1) || p_rc=$?
 assert_eq "a merge given up: harvest refuses" "1" "$p_rc"
 assert_eq "naming --again" "true" \
-    "$(grep -qF "harvest started merging: that merge stopped" \
+    "$(grep -qF "harvest left to merge: that merge stopped" \
         <<< "$p_out" && grep -qF "./harvest.sh --again" <<< "$p_out" \
         && echo true || echo false)"
 p_rc=0
@@ -1309,7 +1309,7 @@ k_rc=0
 k_out=$(bash "$HARVEST_SH" 2>&1) || k_rc=$?
 assert_eq "that merge dropped: refused" "1" "$k_rc"
 assert_eq "naming --again" "true" \
-    "$(grep -qF "harvest started merging: that merge stopped" <<< "$k_out" \
+    "$(grep -qF "harvest left to merge: that merge stopped" <<< "$k_out" \
         && grep -qF "./harvest.sh --again" <<< "$k_out" \
         && echo true || echo false)"
 k_rc=0
@@ -1442,6 +1442,193 @@ assert_eq "no base recorded: refused" "1" "$n_rc"
 assert_eq "saying so" "true" \
     "$(grep -qF "records no base commit" <<< "$n_out" \
         && echo true || echo false)"
+
+# ============================================================
+echo ""
+echo "=== 23. Behavioural: --again merges again what no branch brings back ==="
+
+# An earlier harvest merged agent work and was undone (git reset --hard
+# to its restore tag); then the bare repo stopped bringing that work
+# back: agent-work moved back, an interactive branch was deleted.
+# Without --again, harvest refuses; with it, what the record holds is
+# merged by id from this checkout, and recorded.  A recorded commit the
+# checkout does not have refuses and stays recorded; a harvest --again
+# stopped half way keeps what it has not merged in the record.
+AG_WORK="$TMPDIR/swarmtest-harvest-again-$$"
+use_runtime restore
+AG_BARE="$SWARM_RUNTIME_DIR/upstream.git"
+AG_AGENT="$TMPDIR/harvest-again-agent"
+ag() {
+    git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"
+}
+git init -q "$AG_WORK"
+git -C "$AG_WORK" config user.name test
+git -C "$AG_WORK" config user.email t@t
+git -C "$AG_WORK" config commit.gpgsign false
+printf 'one\n' > "$AG_WORK/f"
+ag -C "$AG_WORK" add f
+ag -C "$AG_WORK" commit -qm start
+git clone -q --bare "$AG_WORK" "$AG_BARE"
+git -C "$AG_BARE" branch agent-work HEAD
+record_base "$AG_BARE"
+AG_BASE=$(git -C "$AG_BARE" rev-parse HEAD)
+git clone -q "$AG_BARE" "$AG_AGENT"
+git -C "$AG_AGENT" checkout -q agent-work
+# Commit FILE CONTENT on BRANCH of the agent's clone and push it; print
+# the commit.
+ag_commit() {
+    git -C "$AG_AGENT" checkout -q "$1" 2>/dev/null \
+        || git -C "$AG_AGENT" checkout -q -b "$1" "$AG_BASE"
+    printf '%s\n' "$3" > "$AG_AGENT/$2"
+    ag -C "$AG_AGENT" add "$2"
+    ag -C "$AG_AGENT" commit -qm "$2"
+    git -C "$AG_AGENT" push -q origin "$1"
+    git -C "$AG_AGENT" rev-parse HEAD
+}
+# Run harvest.sh ARGS in the checkout; print its status.
+ag_harvest() {
+    local rc=0
+    (cd "$AG_WORK" && bash "$HARVEST_SH" "$@" > "$TMPDIR/ag.out" 2>&1) \
+        || rc=$?
+    printf '%s' "$rc"
+}
+ag_in_head() {
+    git -C "$AG_WORK" merge-base --is-ancestor "$1" HEAD 2>/dev/null \
+        && echo yes || echo no
+}
+ag_state() {  # JQ-FILTER ARGS...: change the state file
+    local f="$SWARM_RUNTIME_DIR/state.json"
+    jq "$@" "$f" > "$f.x" && mv "$f.x" "$f" && chmod 600 "$f"
+}
+ag_field() {  # FIELD COMMIT: true when the record's FIELD lists COMMIT
+    jq -r --arg f "$1" --arg c "$2" '(.[$f] // []) | index($c) != null' \
+        "$SWARM_RUNTIME_DIR/state.json"
+}
+# agent-work, harvested, undone, then moved back in the bare repo.
+AG_A=$(ag_commit agent-work a.txt a)
+assert_eq "agent-work harvested" "0 yes" "$(ag_harvest) $(ag_in_head "$AG_A")"
+git -C "$AG_WORK" reset -q --hard \
+    "$(git -C "$AG_WORK" tag --list 'swarm-harvest-*' | tail -1)"
+git -C "$AG_BARE" update-ref refs/heads/agent-work "$AG_BASE"
+assert_eq "undone and agent-work moved back: harvest refuses" "1 no" \
+    "$(ag_harvest) $(ag_in_head "$AG_A")"
+assert_eq "--again merges the recorded commit by id" "0 yes" \
+    "$(ag_harvest --again) $(ag_in_head "$AG_A")"
+assert_eq "and keeps it recorded" "true" "$(ag_field harvested "$AG_A")"
+assert_eq "a harvest after that has nothing to refuse" "0" "$(ag_harvest)"
+# An interactive branch, harvested, undone, then deleted.
+AG_I=$(ag_commit swarm/again/interactive-x-1 i.txt i)
+assert_eq "the interactive branch harvested" "0 yes" \
+    "$(ag_harvest) $(ag_in_head "$AG_I")"
+git -C "$AG_WORK" reset -q --hard \
+    "$(git -C "$AG_WORK" tag --list 'swarm-harvest-*' | tail -1)"
+git -C "$AG_BARE" update-ref -d refs/heads/swarm/again/interactive-x-1
+assert_eq "undone and the branch deleted: --again brings it back" "0 yes" \
+    "$(ag_harvest --again) $(ag_in_head "$AG_I")"
+# A recorded commit this checkout does not have: refused, still recorded.
+AG_GONE=$(printf '%040d' 7)
+ag_state --arg c "$AG_GONE" '.harvested += [$c]'
+assert_eq "--again with a recorded commit no one has: refused" "1" \
+    "$(ag_harvest --again)"
+assert_eq "naming it" "1" \
+    "$(grep -c "cannot merge ${AG_GONE:0:12}" "$TMPDIR/ag.out" || true)"
+assert_eq "and leaving it recorded" "true" "$(ag_field harvested "$AG_GONE")"
+ag_state --arg c "$AG_GONE" '.harvested -= [$c]'
+# Two recorded commits, neither in the other's history, both gone from
+# the bare repo, the agent-work one in conflict with HEAD: --again stops
+# on that conflict and keeps whatever it has not merged in the record;
+# once the conflict is resolved, --again finishes.
+AG_B=$(ag_commit agent-work f two)
+AG_J=$(ag_commit swarm/again/interactive-y-1 j.txt j)
+assert_eq "both harvested" "0 yes yes" \
+    "$(ag_harvest) $(ag_in_head "$AG_B") $(ag_in_head "$AG_J")"
+git -C "$AG_WORK" reset -q --hard \
+    "$(git -C "$AG_WORK" tag --list 'swarm-harvest-*' | tail -1)"
+git -C "$AG_BARE" update-ref refs/heads/agent-work "$AG_A"
+git -C "$AG_BARE" update-ref -d refs/heads/swarm/again/interactive-y-1
+printf 'local\n' > "$AG_WORK/f"
+ag -C "$AG_WORK" commit -qam "local change to f"
+assert_eq "--again stops on the conflict" "1" "$(ag_harvest --again)"
+assert_eq "what it has not merged stays in the record" "true true" \
+    "$(ag_field harvest_pending "$AG_B") $( [ "$(ag_in_head "$AG_J")" = yes ] \
+        && ag_field harvested "$AG_J" || ag_field harvest_pending "$AG_J")"
+printf 'merged\n' > "$AG_WORK/f"
+ag -C "$AG_WORK" add f
+ag -C "$AG_WORK" commit -qm "Resolve the conflict"
+assert_eq "once resolved, --again finishes" "0 yes yes" \
+    "$(ag_harvest --again) $(ag_in_head "$AG_B") $(ag_in_head "$AG_J")"
+assert_eq "with nothing left pending" "[]" \
+    "$(jq -c '.harvest_pending // []' "$SWARM_RUNTIME_DIR/state.json")"
+# While --again merges the first of two recorded commits, the record
+# keeps the second (a harvest killed during that merge loses neither):
+# a pre-merge-commit hook copies the state during the first merge.
+AG_K=$(ag_commit swarm/again/interactive-k-1 k.txt k)
+AG_L=$(ag_commit swarm/again/interactive-l-1 l.txt l)
+assert_eq "two more harvested" "0 yes yes" \
+    "$(ag_harvest) $(ag_in_head "$AG_K") $(ag_in_head "$AG_L")"
+git -C "$AG_WORK" reset -q --hard \
+    "$(git -C "$AG_WORK" tag --list 'swarm-harvest-*' | tail -1)"
+git -C "$AG_BARE" update-ref -d refs/heads/swarm/again/interactive-k-1
+git -C "$AG_BARE" update-ref -d refs/heads/swarm/again/interactive-l-1
+cat > "$AG_WORK/.git/hooks/pre-merge-commit" <<EOF
+#!/bin/sh
+[ -e "$TMPDIR/ag-during.json" ] \
+    || cp "$SWARM_RUNTIME_DIR/state.json" "$TMPDIR/ag-during.json"
+EOF
+chmod +x "$AG_WORK/.git/hooks/pre-merge-commit"
+assert_eq "--again merges both" "0 yes yes" \
+    "$(ag_harvest --again) $(ag_in_head "$AG_K") $(ag_in_head "$AG_L")"
+assert_eq "during the first merge, both were in the record" "true true" \
+    "$(jq -r --arg k "$AG_K" --arg l "$AG_L" '
+        [((.harvested // []) + (.harvest_pending // [])) | index($k),
+         index($l)] | map(. != null) | map(tostring) | join(" ")' \
+        "$TMPDIR/ag-during.json" 2>/dev/null)"
+rm -f "$AG_WORK/.git/hooks/pre-merge-commit"
+# A harvest stopped on a conflict, the merge given up and the branch
+# deleted: the commit is only pending in the record, and --again merges
+# it by id.
+AG_P=$(ag_commit swarm/again/interactive-p-1 f pee)
+assert_eq "a harvest that stops on a conflict" "1" "$(ag_harvest)"
+git -C "$AG_WORK" merge --abort
+git -C "$AG_BARE" update-ref -d refs/heads/swarm/again/interactive-p-1
+assert_eq "its commit only pending" "true false" \
+    "$(ag_field harvest_pending "$AG_P") $(ag_field harvested "$AG_P")"
+assert_eq "a plain harvest refuses" "1" "$(ag_harvest)"
+assert_eq "--again shows it as recorded" "1" \
+    "$(ag_harvest --again --dry >/dev/null; grep -c \
+        "from ${AG_P:0:12}, which an earlier harvest recorded" \
+        "$TMPDIR/ag.out" || true)"
+printf 'p merged\n' > "$TMPDIR/ag-f"
+assert_eq "--again merges it, stopping on the same conflict" "1" \
+    "$(ag_harvest --again)"
+cp "$TMPDIR/ag-f" "$AG_WORK/f"
+ag -C "$AG_WORK" add f
+ag -C "$AG_WORK" commit -qm "Resolve the conflict again"
+assert_eq "resolved: in HEAD, and recorded as harvested" "yes true" \
+    "$(ag_in_head "$AG_P") $( (cd "$AG_WORK" && bash "$HARVEST_SH" \
+        >/dev/null 2>&1); ag_field harvested "$AG_P")"
+# A recorded commit not built on the engagement's base: refused.
+AG_ORPHAN=$(ag -C "$AG_WORK" commit-tree -m orphan \
+    "$(git -C "$AG_WORK" mktree < /dev/null)")
+ag_state --arg c "$AG_ORPHAN" '.harvested += [$c]'
+assert_eq "--again with a recorded commit off the base: refused" "1" \
+    "$(ag_harvest --again)"
+assert_eq "saying why" "1" \
+    "$(grep -c 'not built on the commit this engagement started from' \
+        "$TMPDIR/ag.out" || true)"
+ag_state --arg c "$AG_ORPHAN" '.harvested -= [$c]'
+# Undone with agent-work still bringing the recorded commit back:
+# --again merges the branch, and does not list that commit on its own.
+AG_C=$(ag_commit agent-work c.txt c)
+assert_eq "agent-work harvested once more" "0 yes" \
+    "$(ag_harvest) $(ag_in_head "$AG_C")"
+git -C "$AG_WORK" reset -q --hard \
+    "$(git -C "$AG_WORK" tag --list 'swarm-harvest-*' | tail -1)"
+assert_eq "undone, the branch still there: --again merges it" "0 yes" \
+    "$(ag_harvest --again) $(ag_in_head "$AG_C")"
+assert_eq "through the branch, not by id" "1 0" \
+    "$(grep -c '^--- Merging agent-work ---$' "$TMPDIR/ag.out" || true) $(
+        grep -c 'no branch brings back' "$TMPDIR/ag.out" || true)"
 
 # ============================================================
 echo ""
