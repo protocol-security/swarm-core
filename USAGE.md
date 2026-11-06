@@ -592,7 +592,11 @@ hand, it counts as merged; given up, or cut short with the harvest
 (killed, say), the next harvest refuses as well, as does one run while
 the merge is still in progress. After undoing a harvest on purpose
 (`git reset --hard <tag>`, below) or giving up such a merge,
-`./harvest.sh --again` merges that work again.
+`./harvest.sh --again` merges that work again, also what the bare
+repo's branches no longer bring back (a branch deleted there, or
+`agent-work` moved back): it merges the recorded commits by id from
+this checkout, which keeps them recorded until HEAD has them, and
+refuses one the checkout no longer has.
 
 Before merging, `harvest.sh` tags the current branch tip with a
 local `swarm-harvest-<date>-<time>` tag (`-2`, `-3` and so on for
