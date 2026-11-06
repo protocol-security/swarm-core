@@ -1835,6 +1835,92 @@ else
     unset SWARM_HELPER_OUTPUT_LIMIT_MB
 fi
 
+# ============================================================
+echo ""
+echo "=== 15. A workspace scan stops instead of hanging ==="
+
+# A special file among a git dir's own files (HEAD, config, index,
+# pointers, alternates) stops the scan before any of them is read: a
+# FIFO would hang it.  No git command reads a checkout's config, includes
+# and all, before the config checks have passed, and none looks for the
+# repository around the current directory (the helper runs the scan from
+# inside the workspace).  perl's alarm ends a hang.
+# A committed workspace named NAME; print its path.
+sf_ws() {
+    local w="$TMPDIR/sf-$1"
+    git init -q "$w"
+    echo top > "$w/top.txt"
+    g -C "$w" add top.txt
+    g -C "$w" commit -q -m top
+    printf '%s' "$w"
+}
+# Scan workspace DIR, from inside it, under a 30-second alarm; print the
+# output directory (its .rc holds a failure).
+sf_timed_scan() {
+    local o
+    o=$(mktemp -d "$TMPDIR/scan.XXXXXX")
+    (cd "$1" && perl -e 'alarm 30; exec @ARGV' bash "$SCAN" worktree \
+        "$1" full "$o") >/dev/null 2>&1 || echo "rc=$?" > "$o/.rc"
+    printf '%s' "$o"
+}
+SF=$(sf_ws config)
+rm "$SF/.git/config"
+mkfifo "$SF/.git/config"
+out=$(sf_timed_scan "$SF")
+assert_eq "a FIFO for the workspace's config: the scan ends" "" \
+    "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "blocking on it" "1" \
+    "$(has_line "$out" 'block special-file .git/config')"
+SF=$(sf_ws index)
+rm "$SF/.git/index"
+mkfifo "$SF/.git/index"
+out=$(sf_timed_scan "$SF")
+assert_eq "a FIFO for the workspace's index: the scan ends" "" \
+    "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "blocking on it too" "1" \
+    "$(has_line "$out" 'block special-file .git/index')"
+SF=$(sf_ws include)
+mkfifo "$TMPDIR/sf-include-fifo"
+git -C "$SF" config include.path "$TMPDIR/sf-include-fifo"
+out=$(sf_timed_scan "$SF")
+assert_eq "the workspace's config including a FIFO: the scan ends" "" \
+    "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "blocking on the include" "1" \
+    "$(has_line "$out" 'block config-include .git')"
+# In gitdir mode (a repository the engine made), lfs.storage counts also
+# when an include sets it.
+LB="$TMPDIR/sf-lfs-bare.git"
+git init -q --bare "$LB"
+printf '[lfs]\n\tstorage = /elsewhere\n' > "$TMPDIR/sf-lfs-inc"
+git --git-dir="$LB" config include.path "$TMPDIR/sf-lfs-inc"
+assert_eq "gitdir mode: lfs.storage set through an include blocks" "1" \
+    "$(grep -c '^block lfs-storage .* /elsewhere$' \
+        "$(scan gitdir "$LB" -)/report" || true)"
+# A write that fails ends the scan with status 3, also where the caller
+# tests the result (errexit does not apply there): the checkout queue
+# and the report, here directories that cannot be appended to.
+_qc=$(mktemp -d "$TMPDIR/qc.XXXXXX")
+mkdir "$_qc/.checkouts" "$_qc/report"
+cat > "$_qc/t.sh" <<'EOF_QC'
+eval "$(awk '/^fail\(\) \{/,/^\}/' "$1")"
+eval "$(awk '/^oneline\(\) \{/,/^\}/' "$1")"
+eval "$(awk '/^report\(\) \{/,/^\}/' "$1")"
+eval "$(awk '/^queue_checkout\(\) \{/,/^\}/' "$1")"
+if [ "$2" = queue ]; then
+    if queue_checkout a b c; then exit 0; fi
+elif report "block x"; then
+    exit 0
+fi
+exit 1
+EOF_QC
+for _qw in queue report; do
+    _qrc=0
+    OUT="$_qc" REPORT="$_qc/report" bash "$_qc/t.sh" "$SCAN" "$_qw" \
+        >/dev/null 2>&1 || _qrc=$?
+    assert_eq "a failed write to the ${_qw} ends the scan, tested or not" \
+        "3" "$_qrc"
+done
+
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"

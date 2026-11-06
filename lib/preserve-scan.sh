@@ -47,8 +47,9 @@
 # the object list (except after a block that keeps a worktree scan from
 # reading the work tree: a filter driver, an include, an embedded
 # repository, a git dir or repository whose path holds a newline, a
-# core.worktree outside, a mismatched worktree, a common dir elsewhere;
-# the scan then stops there, with no bundle); 3 when the scan cannot
+# core.worktree outside, a mismatched worktree, a common dir elsewhere,
+# a special file among a git dir's own files; the scan then stops
+# there, with no bundle); 3 when the scan cannot
 # tell (message on stderr).  Compatible with Bash 3.2.
 
 set -euo pipefail
@@ -274,8 +275,19 @@ gw() {
     [ ! -s "$ERR" ] || fail "git $* in ${dir}: $(cat "$ERR")"
 }
 
+# A write that fails ends the scan, also where a caller tests the
+# result (errexit does not apply there).
 report() {
-    printf '%s\n' "$*" >> "$REPORT"
+    printf '%s\n' "$*" >> "$REPORT" || fail "cannot write the report"
+}
+
+# git config on the file that -f names, with no repository looked for
+# around the current directory: Git would read that one's config first
+# (the workspace's own, where the helper runs the scan).  The global and
+# system files are whatever this scan sets for every git command (none,
+# outside userconfig mode).
+cfg() {
+    GIT_DIR="$OUT/.no-repository" git config "$@"
 }
 
 # Print the size of file $1 in bytes.
@@ -507,7 +519,7 @@ if [ "$MODE" = userconfig ]; then
             continue
         fi
         rc=0
-        git config -f "$r" --name-only --get-regexp \
+        cfg -f "$r" --name-only --get-regexp \
             '^(lfs\.storage|core\.worktree|core\.hookspath|include\..*|includeif\..*)$' \
             > "$OUT/.uk" 2>"$OUT/.ue" || rc=$?
         if [ -s "$OUT/.ue" ]; then
@@ -663,6 +675,23 @@ GITDIRS="$OUT/.gitdirs"
 list_gitdirs "$TOP" > "$GITDIRS"
 grep -qx "$TOP" "$GITDIRS" || printf '%s\n' "$TOP" >> "$GITDIRS"
 
+# The files of a git dir that Git, or this scan, opens before anything
+# else is read must not be special files: a FIFO there would hang the
+# scan, and a device or a socket is no repository data.  (A symlink is
+# followed; links that lead out of ROOT are checked further on.)  This
+# stops the scan at once, before any of them is read.
+while IFS= read -r d; do
+    for f in HEAD config config.worktree index commondir gitdir \
+            objects/info/alternates; do
+        if [ -e "$d/$f" ] && [ ! -f "$d/$f" ] && [ ! -d "$d/$f" ]; then
+            report "block special-file $(oneline "${d#"$ROOT"/}/${f}")"
+        fi
+    done
+done < "$GITDIRS"
+if grep -q '^block special-file ' "$REPORT"; then
+    exit 0
+fi
+
 # Git follows a config include wherever it points, and opening a FIFO
 # there would hang the scan.  Before any git command reads a git dir's
 # config, each of its config files must be a regular file that
@@ -691,11 +720,22 @@ while IFS= read -r d; do
 done < "$GITDIRS"
 [ -z "$_cfg_stop" ] || exit 0
 
-# Unsupported layouts that keep history outside these git dirs.
+# Unsupported layouts that keep history outside these git dirs.  In a
+# workspace the config files are read on their own; a repository the
+# engine made (gitdir mode) is read as Git reads it.
 while IFS= read -r d; do
     [ ! -f "$d/shallow" ] || report "block shallow ${d#"$ROOT"/}"
-    _lfs=$(git --git-dir="$d" -c safe.directory='*' config \
-        --get lfs.storage 2>/dev/null || true)
+    _lfs=""
+    if [ "$MODE" = worktree ]; then
+        for cf in "$d/config" "$d/config.worktree"; do
+            [ -f "$cf" ] || continue
+            _v=$(cfg -f "$cf" --get lfs.storage 2>/dev/null) || _v=""
+            [ -z "$_v" ] || _lfs="$_v"
+        done
+    else
+        _lfs=$(git --git-dir="$d" -c safe.directory='*' config \
+            --get lfs.storage 2>/dev/null || true)
+    fi
     [ -z "$_lfs" ] || report "block lfs-storage ${d#"$ROOT"/} ${_lfs}"
 done < "$GITDIRS"
 
@@ -741,7 +781,7 @@ if [ "$MODE" = worktree ]; then
             # rather than being switched off, which would make every
             # filtered file look modified.
             rc=0
-            git config -f "$cf" --name-only --get-regexp '^filter\.' \
+            cfg -f "$cf" --name-only --get-regexp '^filter\.' \
                 > "$OUT/.flt" 2>/dev/null || rc=$?
             case "$rc" in
                 0) report "block filter-driver ${rel} $(oneline "$(head -n 1 "$OUT/.flt")")" ;;
@@ -752,7 +792,7 @@ if [ "$MODE" = worktree ]; then
             # against a base that depends on the repository layout; the
             # engine never sets it, so any value blocks.
             rc=0
-            git config -f "$cf" --get core.hooksPath >/dev/null 2>&1 \
+            cfg -f "$cf" --get core.hooksPath >/dev/null 2>&1 \
                 || rc=$?
             case "$rc" in
                 0) report "block core-hookspath ${rel}" ;;
@@ -762,7 +802,7 @@ if [ "$MODE" = worktree ]; then
             # core.worktree is relative to the git dir; submodule git
             # dirs set it to their checkout inside ROOT.
             rc=0
-            wtv=$(git config -f "$cf" --get core.worktree 2>/dev/null \
+            wtv=$(cfg -f "$cf" --get core.worktree 2>/dev/null \
                 && printf x) || rc=$?
             # git prints the value and a newline; any other newline is
             # part of the value.
@@ -1051,7 +1091,8 @@ check_index_paths() {
 # Queue checkout $1 (shown as $2, git dir $3) for check_checkout, which
 # runs only once every repository below ROOT has been validated.
 queue_checkout() {
-    printf '%s\0%s\0%s\0' "$1" "$2" "$3" >> "$OUT/.checkouts"
+    printf '%s\0%s\0%s\0' "$1" "$2" "$3" >> "$OUT/.checkouts" \
+        || fail "cannot queue the checkout $(oneline "$2")"
 }
 
 if [ "$MODE" = worktree ]; then
@@ -1211,14 +1252,19 @@ if [ "$MODE" = worktree ]; then
     # search for repositories below ROOT skips the git dir, so any such
     # entry, in any checkout's index, blocks.  ls-files reads the index
     # without refreshing it.
+    # ls-files reads each checkout's config, includes and all: it runs
+    # only once none of those findings is there.
+    if [ -n "$UNCHECKED_REPO" ] \
+            || grep -qE '^block (filter-driver|config-include|embedded|core-worktree|gitdir-worktree|mismatched-worktree|commondir) ' \
+            "$REPORT"; then
+        exit 0
+    fi
     check_index_paths "$ROOT" "." "$TOP"
     while IFS= read -r -d '' wt && IFS= read -r -d '' rel \
             && IFS= read -r -d '' gd; do
         check_index_paths "$wt" "$rel" "$gd"
     done < "$OUT/.checkouts"
-    if [ -n "$UNCHECKED_REPO" ] \
-            || grep -qE '^block (filter-driver|config-include|embedded|core-worktree|gitdir-worktree|index-in-gitdir|mismatched-worktree|commondir) ' \
-            "$REPORT"; then
+    if grep -q '^block index-in-gitdir ' "$REPORT"; then
         exit 0
     fi
     check_checkout "$ROOT" "." "$TOP"

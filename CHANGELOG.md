@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A workspace scan stops instead of hanging on what an agent left.**
+  A FIFO or another special file as a git dir's `HEAD`, `config`,
+  `index`, pointer or alternates file, or a config that includes one,
+  could hang cleanup's scan (in the workspace's own repository too):
+  such a file now refuses before anything reads it, and no Git command
+  reads a checkout's config, includes and all, before the config
+  checks have passed. A failed write to the scan's report or queue
+  ends the scan instead of being missed.
 - **Fix: each submodule mirror comes from that submodule's Git
   directory.** Mirrors were cloned from `.git/modules/<path>`, but Git
   keeps a submodule's directory there by name, or in its work tree, so
