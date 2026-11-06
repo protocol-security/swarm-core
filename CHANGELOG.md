@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fix: each submodule mirror comes from that submodule's Git
+  directory.** Mirrors were cloned from `.git/modules/<path>`, but Git
+  keeps a submodule's directory there by name, or in its work tree, so
+  `start` failed for a submodule moved with `git mv` or added from a
+  repository already in place, and two submodules whose names were
+  each other's paths got each other's repositories. Git now gives the
+  directory; a submodule whose Git directory Git cannot find or read
+  stops the commands that mirror submodules, an interactive session
+  that joins included.
 - **The bare repo and the mirrors hold what the checkout's branches,
   tags and HEAD reach.** They were local clones, which copy the whole
   object store, so objects that only remote-tracking branches, the
