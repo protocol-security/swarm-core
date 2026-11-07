@@ -2352,6 +2352,56 @@ then
         "rc=3" "$(cat "$(scan worktree "$NR" full)/.rc" 2>/dev/null)"
 fi
 
+# ============================================================
+echo ""
+echo "=== 17. Partial clones refuse ==="
+
+# A partial clone's history is not all in its git dir (the rest is its
+# promisor remote's), and the scan never fetches: a partial-clone
+# setting, a promisor remote or a promisor pack refuses, before status
+# runs, in the workspace's repository and in one nested in it.
+PC=$(sf_ws partial)
+git -C "$PC" config core.repositoryformatversion 1
+git -C "$PC" config extensions.partialClone origin
+out=$(scan worktree "$PC" full)
+assert_eq "extensions.partialClone refuses" "1" \
+    "$(has_line "$out" 'block promisor .git extensions.partialClone')"
+assert_eq "the scan stops before status, completing its report" "" \
+    "$(cat "$out/.rc" 2>/dev/null)"
+PC=$(sf_ws promisor-remote)
+git -C "$PC" config remote.origin.url /nowhere
+git -C "$PC" config remote.origin.promisor true
+assert_eq "a promisor remote refuses" "1" \
+    "$(has_line "$(scan worktree "$PC" full)" 'block promisor .git remote.origin.promisor')"
+PC=$(sf_ws promisor-pack)
+mkdir -p "$PC/.git/objects/pack"
+: > "$PC/.git/objects/pack/pack-$(printf '%040d' 1).promisor"
+assert_eq "a promisor pack refuses" "1" \
+    "$(has_line "$(scan worktree "$PC" full)" 'block promisor .git/objects pack-')"
+PC=$(sf_ws promisor-worktree-config)
+git -C "$PC" config core.repositoryformatversion 1
+git -C "$PC" config extensions.worktreeConfig true
+printf '[remote "origin"]\n\tpromisor = true\n' > "$PC/.git/config.worktree"
+assert_eq "a promisor remote in config.worktree refuses" "1" \
+    "$(has_line "$(scan worktree "$PC" full)" 'block promisor .git remote.origin.promisor')"
+PC=$(sf_ws partial-filter)
+git -C "$PC" config remote.origin.url /nowhere
+git -C "$PC" config remote.origin.partialCloneFilter blob:none
+assert_eq "a remote's partialCloneFilter alone refuses" "1" \
+    "$(has_line "$(scan worktree "$PC" full)" 'block promisor .git remote.origin.partialclonefilter')"
+PC=$(sf_ws promisor-alternate)
+mkdir -p "$PC/.git/pool/pack"
+: > "$PC/.git/pool/pack/.hidden.promisor"
+echo ../pool > "$PC/.git/objects/info/alternates"
+assert_eq "a promisor pack, dot-named, in an alternate store refuses" "1" \
+    "$(has_line "$(scan worktree "$PC" full)" 'block promisor .git/pool .hidden.promisor')"
+PC=$(sf_ws partial-nested)
+git init -q "$PC/inner"
+git -C "$PC/inner" config core.repositoryformatversion 1
+git -C "$PC/inner" config extensions.partialClone origin
+assert_eq "so does a nested repository that is a partial clone" "1" \
+    "$(has_line "$(scan worktree "$PC" full)" 'block promisor inner/.git extensions.partialClone')"
+
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"

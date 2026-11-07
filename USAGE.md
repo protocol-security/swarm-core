@@ -1441,6 +1441,8 @@ It stops, and deletes nothing, when
   history (uncommitted or ignored files, files too large to copy):
   commit or copy it out, or pass `--discard-uncommitted`, which drops
   exactly what it lists;
+- a repository in a workspace is a partial clone (its history is not
+  all there, and cleanup never fetches);
 - `mirrors/` holds anything that is not a mirror;
 - the checkout cannot keep the copies by itself (a shallow or partial
   clone, alternates, an object store inside what cleanup deletes), or
