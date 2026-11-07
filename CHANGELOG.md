@@ -25,6 +25,9 @@
   files instead of asking git, which read them first, and gives
   `git var` a time limit for the system file; scans in a container
   read no global file on any Git version.
+- **Cleanup refuses a partial clone in a workspace.** Its history is
+  not all there and cleanup never fetches: a partial-clone setting or
+  a promisor pack refuses before anything else reads the repository.
   ends the scan instead of being missed.
 - **Fix: each submodule mirror comes from that submodule's Git
   directory.** Mirrors were cloned from `.git/modules/<path>`, but Git

@@ -48,8 +48,8 @@
 # reading the work tree: a filter driver, an include, an embedded
 # repository, a git dir or repository whose path holds a newline, a
 # core.worktree outside, a mismatched worktree, a common dir elsewhere,
-# a special file among a git dir's own files; the scan then stops
-# there, with no bundle); 3 when the scan cannot
+# a special file among a git dir's own files, a partial clone; the scan
+# then stops there, with no bundle); 3 when the scan cannot
 # tell (message on stderr).  Compatible with Bash 3.2.
 
 set -euo pipefail
@@ -1069,6 +1069,46 @@ if [ "$MODE" = worktree ]; then
             esac
         done < "$od/info/alternates"
     done
+
+    # A partial clone leaves objects to its promisor remote: its history
+    # is not all here, and this scan never fetches.  A partial-clone
+    # setting (extensions.partialClone, a remote's promisor or
+    # partialCloneFilter) in either config file of any git dir, or a
+    # promisor pack in any object store this scan reads (alternates
+    # included, whatever the pack's name), refuses, also when every
+    # object happens to be there.
+    while IFS= read -r d; do
+        rel="${d#"$ROOT"/}"
+        for cf in "$d/config" "$d/config.worktree"; do
+            [ -f "$cf" ] || continue
+            rc=0
+            cfg -f "$cf" --get extensions.partialClone >/dev/null 2>&1 \
+                || rc=$?
+            case "$rc" in
+                0) report "block promisor ${rel} extensions.partialClone" ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+            rc=0
+            cfg -f "$cf" --name-only --get-regexp \
+                '^remote\..*\.(promisor|partialclonefilter)$' \
+                > "$OUT/.prom" 2>/dev/null || rc=$?
+            case "$rc" in
+                0) report "block promisor ${rel} $(oneline "$(head -n 1 "$OUT/.prom")")" ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+        done
+    done < "$GITDIRS"
+    while IFS= read -r od; do
+        [ -d "$od/pack" ] || continue
+        find -H "$od/pack" -mindepth 1 -maxdepth 1 -name '*.promisor' \
+            -print 2>"$ERR" > "$OUT/.promp" || fail "cannot list ${od}/pack"
+        [ ! -s "$ERR" ] || fail "cannot list ${od}/pack: $(cat "$ERR")"
+        if [ -s "$OUT/.promp" ]; then
+            report "block promisor $(oneline "${od#"$ROOT"/}") $(oneline "$(head -n 1 "$OUT/.promp" | sed 's|.*/||')")"
+        fi
+    done < "$OUT/.alt-seen"
 fi
 
 # Engine files and the deletions the context mode makes: in the
@@ -1400,7 +1440,7 @@ if [ "$MODE" = worktree ]; then
     # ls-files reads each checkout's config, includes and all: it runs
     # only once none of those findings is there.
     if [ -n "$UNCHECKED_REPO" ] \
-            || grep -qE '^block (filter-driver|config-include|embedded|core-worktree|gitdir-worktree|mismatched-worktree|commondir) ' \
+            || grep -qE '^block (filter-driver|config-include|embedded|core-worktree|gitdir-worktree|mismatched-worktree|commondir|promisor) ' \
             "$REPORT"; then
         exit 0
     fi
