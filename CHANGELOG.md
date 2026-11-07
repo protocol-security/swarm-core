@@ -9,6 +9,7 @@
 
 
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -57,6 +58,22 @@
   that is set but empty is refused by every command, as it named no
   engagement and let `post-process` and `interactive` create one.
 
+- **Only a complete engagement is joined.** `post-process` and
+  `interactive` chose between creating and joining by whether the bare
+  repo existed. A state file that recorded an engagement with nothing
+  of it left on disk (a run stopped right after recording it) let
+  `start`, `post-process` or `interactive` record a new engagement
+  over it, and an `upstream.git` that was an empty directory or a link
+  was joined. The state file now decides: a recorded engagement is
+  joined, never created again, and only when its bare repo is a usable
+  bare repository; otherwise `post-process`, `interactive` and `wait`
+  refuse and point to `./launch.sh cleanup`, as `start` does for a
+  record with nothing left. Containers mount the bare repo with
+  `--mount`, which fails on a missing source instead of creating an
+  empty directory. Agents can write the bare repo: the check refuses a
+  config that includes other files and gives each Git read of it 60
+  seconds (a FIFO there would hang it with the engagement lock held).
+  perl is now required.
 - **Retire and cleanup let a linked worktree outside the volume
   through when it can be checked.** An agent that ran `git worktree
   add /tmp/<dir>` in a repository under `/workspace` (to build or test

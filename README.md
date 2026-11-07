@@ -20,7 +20,7 @@ Based on the agent-team pattern from
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/)
-- bash (5.0+), git, jq, bc
+- bash (5.0+), git, jq, bc, perl
 - flock (util-linux on Linux; `brew install flock` on macOS)
 - tput (ncurses) — used by the dashboard
 - Credentials for the selected [agent/provider](USAGE.md#auth-modes)

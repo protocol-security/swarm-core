@@ -66,7 +66,7 @@ HELP
 fi
 
 source "$SWARM_DIR/lib/check-deps.sh"
-check_deps git jq docker
+check_deps git jq docker perl
 # shellcheck source=lib/project.sh
 source "$SWARM_DIR/lib/project.sh"
 # shellcheck source=lib/preserve.sh
@@ -221,13 +221,14 @@ prepare_runtime() {
     swarm_runtime_claim "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
 }
 
-# Stop unless the runtime directory holds nothing of an engagement: no
-# bare repo, no upstream.git.new, no mirrors/, no remnant of a cleanup,
-# no container or workspace volume of this checkout, no interactive
-# session open or starting.  A new engagement starts only there, after
-# ./launch.sh cleanup has preserved and removed the last one.  Called
-# under the lock and the pin, by start, and by post-process and
-# interactive when they would create the engagement.
+# Stop unless the runtime directory holds nothing of an engagement and
+# the state file records none: no bare repo, no upstream.git.new, no
+# mirrors/, no remnant of a cleanup, no container or workspace volume of
+# this checkout, no interactive session open or starting.  A new
+# engagement starts only there, after ./launch.sh cleanup has preserved
+# and removed the last one.  Called under the lock and the pin, by
+# start, and by post-process and interactive when they would create the
+# engagement.
 require_clean_runtime() {
     local left live engaged rc=0 tmp
     left=$(swarm_runtime_leftovers "$RUNTIME_DIR" "$PROJECT" "$REPO_ROOT" \
@@ -237,8 +238,17 @@ require_clean_runtime() {
         left="${left:+${left}$'\n'}  interactive sessions: $(printf '%s\n' \
             "$live" | tr '\n' ' ')"
     fi
-    [ -n "$left" ] || return 0
     engaged=$(swarm_engagement_recorded "$STATE_FILE") || exit 1
+    if [ -z "$left" ]; then
+        [ -n "$engaged" ] || return 0
+        # A run cut off right after recording its engagement leaves the
+        # record alone; it still stands for that engagement.
+        echo "ERROR: ${STATE_FILE} still records engagement ${engaged}," \
+             "with nothing of it left in ${RUNTIME_DIR}.  Run" \
+             "./launch.sh cleanup to finish it before a new one" \
+             "starts." >&2
+        exit 1
+    fi
     if [ -z "$engaged" ]; then
         swarm_legacy_explain "$RUNTIME_DIR" \
             "what is left of an engagement it never recorded"
@@ -415,11 +425,15 @@ workspace_args() {
 # image is built once the checks passed, and before an engagement is
 # created, so a failed build leaves the runtime directory clean.
 ensure_bare_repo_for_interactive() {
-    if [ ! -d "$BARE_REPO" ]; then
+    local engaged
+    # The state decides: a recorded engagement is joined, never made
+    # again, and only a complete one is joined.
+    engaged=$(swarm_engagement_recorded "$STATE_FILE") || exit 1
+    if [ -z "$engaged" ]; then
         # A token names an engagement to join, never a new one.
         if [ -n "${SWARM_ENGAGEMENT_TOKEN:-}" ]; then
             echo "ERROR: the engagement this session was started for" \
-                 "has no bare repo any more." >&2
+                 "is not recorded any more." >&2
             exit 1
         fi
         require_clean_runtime
@@ -430,6 +444,7 @@ ensure_bare_repo_for_interactive() {
     fi
     swarm_engagement_join "$STATE_FILE" || exit 1
     swarm_engagement_daemon_check "$STATE_FILE" || exit 1
+    swarm_engagement_complete "$engaged" "$BARE_REPO" || exit 1
 
     local bare_head local_head
     bare_head=$(swarm_no_fetch git -C "$BARE_REPO" rev-parse --verify \
@@ -977,7 +992,7 @@ HELP
     # --name and the session label come after docker_args: the last
     # one wins, and the record must find the container Docker makes.
     exec docker run -it \
-        -v "${BARE_REPO}:/upstream:rw" \
+        --mount "type=bind,src=${BARE_REPO},dst=/upstream" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
         "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
         "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
@@ -1151,7 +1166,7 @@ cmd_start() {
         # The workspace, its labels, no restart policy, no auto-remove
         # and the name come after docker_args: the last value wins.
         docker run -d \
-            -v "${BARE_REPO}:/upstream:rw" \
+            --mount "type=bind,src=${BARE_REPO},dst=/upstream" \
             "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
             "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
             "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
@@ -1523,6 +1538,10 @@ cmd_wait() {
             swarm_unlock
         fi
     done
+    # What comes next needs the engagement complete (under the lock).
+    local engaged
+    engaged=$(swarm_engagement_recorded "$STATE_FILE") || exit 1
+    swarm_engagement_complete "$engaged" "$BARE_REPO" || exit 1
     SWARM_ENGAGEMENT_TOKEN="$token"
     export SWARM_ENGAGEMENT_TOKEN
 
@@ -1578,12 +1597,15 @@ cmd_post_process() {
     fi
 
     prepare_runtime
-    local NAME="${IMAGE_NAME}-post" pp_state
-    if [ ! -d "$BARE_REPO" ]; then
+    local NAME="${IMAGE_NAME}-post" pp_state pp_engaged
+    # The state decides: a recorded engagement is joined, never made
+    # again, and only a complete one is joined.
+    pp_engaged=$(swarm_engagement_recorded "$STATE_FILE") || exit 1
+    if [ -z "$pp_engaged" ]; then
         # A token names an engagement to join, never a new one.
         if [ -n "${SWARM_ENGAGEMENT_TOKEN:-}" ]; then
             echo "ERROR: the engagement post-process was started for" \
-                 "has no bare repo any more." >&2
+                 "is not recorded any more." >&2
             exit 1
         fi
         # The image is built before the engagement is created, so a
@@ -1595,6 +1617,7 @@ cmd_post_process() {
     else
         swarm_engagement_join "$STATE_FILE" || exit 1
         swarm_engagement_daemon_check "$STATE_FILE" || exit 1
+        swarm_engagement_complete "$pp_engaged" "$BARE_REPO" || exit 1
         # The numbered agents must be done: post-process works on what
         # they pushed, and under the lock no start can be launching more
         # of them (the dashboard's p stops them first, without the lock).
@@ -1669,7 +1692,7 @@ cmd_post_process() {
     # As for the agents: the workspace, its labels, the policies and the
     # name come after docker_args.
     pp_id=$(docker run -d \
-        -v "${BARE_REPO}:/upstream:rw" \
+        --mount "type=bind,src=${BARE_REPO},dst=/upstream" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
         "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
         "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \

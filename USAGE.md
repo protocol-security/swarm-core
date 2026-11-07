@@ -1201,7 +1201,8 @@ then deletes the volumes.
 
 An engagement is one life of the bare repo. It begins when `start`
 creates the bare repo, or when `post-process` or `interactive` creates
-it because none exists, and the state file records its id: the value
+it because the state file records no engagement, and the state file
+records its id: the value
 of `SWARM_ENGAGEMENT_ID` (1-64 letters, digits, `.`, `_` or `-`,
 starting with a letter or digit), or a generated
 `<UTC time>-<random hex>` id. `post-process`, `interactive`, `stop`,
@@ -1255,19 +1256,33 @@ to the post-process or harvest it runs; the dashboard passes it to each
 `launch.sh` it runs.
 
 A new engagement starts only on a clean runtime directory. `start`, and
-`post-process` or `interactive` when there is no bare repo to join,
-refuse while the runtime directory holds a bare repo, an
+`post-process` or `interactive` when the state file records no
+engagement, refuse while the runtime directory holds a bare repo, an
 `upstream.git.new`, `mirrors/` or a remnant of a cleanup, while a
 container or a workspace volume of this checkout exists, or while an
-interactive session is open. The error lists what it found and, when
-the bare repo holds agent work the checkout lacks, what to harvest.
-End the engagement first: stop the agents, run `harvest.sh`, then
-`./launch.sh cleanup`. Nothing is removed by force. The engagement is
-recorded before anything is made, and a bare repo or a mirror is cloned
-to `<name>.new` and renamed once ready, so a run stopped half way
-leaves at most a `.new`, which `cleanup` preserves and deletes. A
-mistake in the swarmfile (an unknown driver or context mode) or a
-failed image build stops `start` before the engagement is created.
+interactive session is open; `start` also refuses while the state file
+still records an engagement, even with nothing of it left on disk. The
+error lists what it found and, when the bare repo holds agent work the
+checkout lacks, what to harvest. End the engagement first: stop the
+agents, run `harvest.sh`, then `./launch.sh cleanup`. Nothing is
+removed by force.
+
+The state file decides between creating and joining: an engagement it
+records is joined, never created again, and only when it is complete,
+that is when its bare repo is a usable bare repository (Git, given its
+path, takes it for one, and its `HEAD` names a commit). `post-process`
+and `interactive`, and `wait` before it goes on to post-process or
+`harvest.sh`, refuse an incomplete engagement and point to
+`./launch.sh cleanup`; a recorded engagement's bare repo is never made
+again. The
+engagement is recorded before anything is made, and a bare repo or a
+mirror is cloned to `<name>.new` and renamed once ready, so a run
+stopped half way leaves the record and at most a `.new`, which
+`cleanup` preserves and deletes. A mistake in the swarmfile (an
+unknown driver or context mode) or a failed image build stops `start`
+before the engagement is created. Containers mount the bare repo with
+`--mount`, which fails on a missing source rather than creating an
+empty directory there.
 
 ### Engagements of earlier releases
 
