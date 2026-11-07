@@ -898,6 +898,105 @@ swarm_engagement_recorded() {
     printf '%s' "$state" | jq -r '.engagement_id // empty'
 }
 
+# Succeed when the config files of git dir DIR are safe for the host's
+# git to read: each one there is a regular file that includes no other.
+# Git follows an include wherever it points, and opening a FIFO there
+# would hang; agents can write the bare repo (and swap a file for a FIFO
+# once it is checked: the read is bounded).  Say why on stderr
+# otherwise.
+swarm_gitdir_config_plain() {
+    local dir="$1" f rc
+    for f in "$dir/config" "$dir/config.worktree"; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        if [ ! -f "$f" ]; then
+            echo "ERROR: ${f} is not a regular file." >&2
+            return 1
+        fi
+        rc=0
+        swarm_bounded "$_SWARM_GIT_READ_SECS" git config -f "$f" \
+            --name-only --get-regexp '^(include|includeif)\.' \
+            >/dev/null 2>&1 < /dev/null || rc=$?
+        case "$rc" in
+            0)
+                echo "ERROR: ${f} includes other files." >&2
+                return 1 ;;
+            1) ;;
+            142)
+                echo "ERROR: reading ${f} took over" \
+                     "${_SWARM_GIT_READ_SECS} seconds." >&2
+                return 1 ;;
+            *)
+                echo "ERROR: cannot parse ${f}." >&2
+                return 1 ;;
+        esac
+    done
+}
+
+# Run command ARGS ($2...) for at most SECS ($1) seconds: perl sets
+# SIGALRM to its default action and unblocks it (an inherited ignore or
+# block would defeat the alarm), arms the alarm, then execs; the alarm
+# survives exec.  A command still running then ends by SIGALRM.
+swarm_bounded() {
+    local secs="$1"
+    shift
+    perl -e 'use POSIX ();
+        my $secs = shift @ARGV;
+        $SIG{ALRM} = "DEFAULT";
+        POSIX::sigprocmask(POSIX::SIG_UNBLOCK(),
+            POSIX::SigSet->new(POSIX::SIGALRM())) or exit 126;
+        alarm($secs);
+        exec { $ARGV[0] } @ARGV;
+        print STDERR "cannot run $ARGV[0]: $!\n";
+        exit 127;' -- "$secs" "$@"
+}
+
+# How long a git command reading a git dir agents can write may take.
+_SWARM_GIT_READ_SECS=60
+
+# Succeed when bare repo DIR is published and usable: a directory, not
+# a link, whose config files include no other (swarm_gitdir_config_plain;
+# agents can write it), that Git, given it explicitly (so no repository
+# is looked for around it), takes for a bare repository whose HEAD names
+# a commit, none of the caller's GIT_* variables applying but the choice
+# of config files.  Each git command is bounded: a FIFO or a device an
+# agent left where Git reads would block it, with the engagement lock
+# held.  DIR.new beside it never counts.
+swarm_bare_repo_ready() {
+    local dir="$1" phys
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+    phys=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || return 1
+    swarm_gitdir_config_plain "$phys" || return 1
+    (
+        for v in "${!GIT_@}"; do
+            case "$v" in
+                GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM) ;;
+                *) unset "$v" ;;
+            esac
+        done
+        export GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=''
+        [ "$(swarm_bounded "$_SWARM_GIT_READ_SECS" git --git-dir="$phys" \
+            rev-parse --is-bare-repository 2>/dev/null < /dev/null)" = true ] \
+            || exit 1
+        swarm_bounded "$_SWARM_GIT_READ_SECS" git --git-dir="$phys" \
+            rev-parse --verify --quiet 'HEAD^{commit}' > /dev/null 2>&1 \
+            < /dev/null
+    )
+}
+
+# Fail, saying how to finish it, unless recorded engagement ENGAGEMENT
+# has every part it needs: its bare repo BARE, published and usable.  A
+# run cut off once the engagement was recorded leaves it incomplete, and
+# nothing makes its parts again.
+swarm_engagement_complete() {
+    local engagement="$1" bare="$2"
+    swarm_bare_repo_ready "$bare" && return 0
+    echo "ERROR: engagement ${engagement} is incomplete: ${bare} is" \
+         "missing or is no usable bare repository.  Run ./launch.sh" \
+         "cleanup to finish it (it refuses, and says why, what it" \
+         "cannot preserve)." >&2
+    return 1
+}
+
 # Print the engagement token state file FILE records (empty when none,
 # or when there is no state file).  Fails when the file cannot be read.
 swarm_engagement_token() {

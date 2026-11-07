@@ -2771,6 +2771,8 @@ _hint_out=$(
     }
     ensure_bare_repo_for_interactive 2>&1
 ) || true
+assert_eq "a stale bare repo: refused as stale" "1" \
+    "$(printf '%s\n' "$_hint_out" | grep -c 'is stale (agent-work' || true)"
 assert_eq "a stale bare repo: the hint names cleanup" "1" \
     "$(printf '%s\n' "$_hint_out" | grep -c 'launch.sh cleanup' || true)"
 assert_eq "and offers no removal command" "0" \
@@ -4860,8 +4862,9 @@ assert_eq "wait: an agent that failed to start is not waited for" "1" \
     "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 : > "$V_DIR/containers"
 
-# A token names an engagement to join: with the bare repo gone,
-# post-process and interactive do not make a new one.
+# A token names an engagement to join: with the bare repo gone, the
+# engagement recorded is incomplete; post-process and interactive do not
+# make a new one or its parts.
 mv "$V_RT/upstream.git" "$_v_root/upstream.saved"
 for _v_cmd in post-process "interactive --agent-index 1"; do
     : > "$V_DIR/log"
@@ -4870,7 +4873,9 @@ for _v_cmd in post-process "interactive --agent-index 1"; do
     _v_out=$(SWARM_ENGAGEMENT_TOKEN="$_v_tok" v_run $_v_cmd) || _v_rc=$?
     assert_eq "token, no bare repo: $_v_cmd refused" "1" "$_v_rc"
     assert_eq "token, no bare repo: $_v_cmd says why" "true" \
-        "$(v_has "has no bare repo any more" "$_v_out")"
+        "$(v_has "is incomplete: $V_RT/upstream.git is missing" "$_v_out")"
+    assert_eq "token, no bare repo: $_v_cmd gives the way out" "true" \
+        "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
     assert_eq "token, no bare repo: $_v_cmd makes nothing" "0" \
         "$(v_writes)"
 done
@@ -4881,8 +4886,9 @@ mv "$_v_root/upstream.saved" "$V_RT/upstream.git"
 # lacks), upstream.git.new, mirrors/, a remnant in the runtime
 # directory, a hidden one, a container of this checkout in any state, a
 # volume, an open interactive session.  Each makes start refuse and
-# change nothing; post-process and interactive, which would create the
-# engagement when there is no bare repo, refuse the same.
+# change nothing; post-process and interactive join the engagement the
+# state records, which is incomplete without its bare repo, and refuse
+# too.
 sleep 60 &
 _v_live=$!
 # A runtime with a recorded engagement and, of what start made, only
@@ -4928,10 +4934,19 @@ for _v_kind in work new mirrors remnant hidden container volume session; do
             _v_out=$(v_run "$_v_cmd") || _v_rc=$?
         fi
         assert_eq "$_v_kind left: $_v_cmd refused" "1" "$_v_rc"
-        assert_eq "$_v_kind left: $_v_cmd names the clean runtime rule" \
-            "true" "$(v_has "a new engagement starts only on a clean runtime" "$_v_out")"
-        assert_eq "$_v_kind left: $_v_cmd gives the way out" "true" \
-            "$(v_has "then ./launch.sh cleanup" "$_v_out")"
+        if [ "$_v_cmd" = start ]; then
+            assert_eq "$_v_kind left: $_v_cmd names the clean runtime rule" \
+                "true" "$(v_has \
+                    "a new engagement starts only on a clean runtime" \
+                    "$_v_out")"
+            assert_eq "$_v_kind left: $_v_cmd gives the way out" "true" \
+                "$(v_has "then ./launch.sh cleanup" "$_v_out")"
+        else
+            assert_eq "$_v_kind left: $_v_cmd finds it incomplete" "true" \
+                "$(v_has "is incomplete: $V_RT/upstream.git" "$_v_out")"
+            assert_eq "$_v_kind left: $_v_cmd gives the way out" "true" \
+                "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
+        fi
         assert_eq "$_v_kind left: $_v_cmd changes nothing" "$_v_before" \
             "$(v_snap)"
         assert_eq "$_v_kind left: $_v_cmd makes nothing in Docker" "0" \
@@ -4981,7 +4996,7 @@ done
 
 # --- creation stopped half way ------------------------------------------
 # The clone fails: only the .new it made goes; the engagement stays
-# recorded, and the runtime is clean for the next start.
+# recorded, so the next start refuses until cleanup finishes it.
 _v_git="$TMPDIR/v55-git"
 mkdir -p "$_v_git"
 cat > "$_v_git/git" <<EOF
@@ -5011,9 +5026,244 @@ assert_eq "the engagement was recorded first" "true" \
         && echo true || echo false)"
 assert_eq "no container was started" "0" \
     "$(grep -c '|run ' "$V_DIR/log" || true)"
+_v_before=$(v_snap)
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run start) || _v_rc=$?
+assert_eq "the next start refuses" "1" "$_v_rc"
+assert_eq "naming the engagement still recorded" "true" \
+    "$(v_has "still records engagement" "$_v_out")"
+assert_eq "and the way out" "true" \
+    "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
+assert_eq "and changes nothing" "$_v_before" "$(v_snap)"
+assert_eq "nor makes anything in Docker" "0" "$(v_writes)"
+_v_rc=0
+v_run cleanup > "$_v_root/cleanup.out" || _v_rc=$?
+assert_eq "cleanup finishes that engagement" "0" "$_v_rc"
+assert_eq "its record goes" "" \
+    "$(jq -r '.engagement_id // empty' "$V_STATE" 2>/dev/null)"
 _v_rc=0
 v_run start >/dev/null || _v_rc=$?
-assert_eq "the next start finds the runtime clean" "0" "$_v_rc"
+assert_eq "then a start works" "0" "$_v_rc"
+
+# --- only a complete engagement is joined -------------------------------
+# swarm_bare_repo_ready: a bare repository at that very path, given to
+# Git explicitly, whose HEAD names a commit.
+_rb="$_v_root/ready"
+mkdir -p "$_rb"
+git clone -q --bare "$_st_repo" "$_rb/bare.git"
+ln -s "$_rb/bare.git" "$_rb/link.git"
+mkdir "$_rb/empty.git" "$_st_repo/inside.git"
+git clone -q "$_st_repo" "$_rb/work.git"
+git init -q --bare "$_rb/unborn.git"
+rb() {
+    swarm_bare_repo_ready "$1" && echo ready || echo no
+}
+assert_eq "a bare repo is ready" ready "$(rb "$_rb/bare.git")"
+assert_eq "a missing path is not" no "$(rb "$_rb/missing.git")"
+assert_eq "a link to a bare repo is not" no "$(rb "$_rb/link.git")"
+assert_eq "an empty directory is not" no "$(rb "$_rb/empty.git")"
+assert_eq "nor one inside another repository (no discovery)" no \
+    "$(rb "$_st_repo/inside.git")"
+assert_eq "a repository with a work tree is not" no "$(rb "$_rb/work.git")"
+assert_eq "its git dir is not bare either" no "$(rb "$_rb/work.git/.git")"
+assert_eq "a bare repo whose HEAD names no commit is not" no \
+    "$(rb "$_rb/unborn.git")"
+assert_eq "the caller's GIT_DIR does not stand in" no \
+    "$(GIT_DIR="$_rb/bare.git" rb "$_rb/empty.git")"
+assert_eq "nor its GIT_OBJECT_DIRECTORY get in the way" ready \
+    "$(GIT_OBJECT_DIRECTORY="$_rb/empty.git" rb "$_rb/bare.git")"
+rmdir "$_st_repo/inside.git"
+# Agents can write the bare repo.  A config that includes another file
+# is refused before Git reads it (an include of a FIFO would block the
+# read; a regular file here, so that following it fails the test rather
+# than hanging it), and a FIFO where Git reads makes the read end once
+# its time is up.
+git clone -q --bare "$_st_repo" "$_rb/include.git"
+printf '[core]\n\tbare = true\n' > "$_rb/include.git/extra"
+git config -f "$_rb/include.git/config" include.path extra
+assert_eq "a bare repo whose config includes another file is not" no \
+    "$(rb "$_rb/include.git" 2>/dev/null)"
+assert_eq "saying so" 1 \
+    "$(rb "$_rb/include.git" 2>&1 >/dev/null \
+        | grep -c 'config includes other files' || true)"
+git clone -q --bare "$_st_repo" "$_rb/fifo.git"
+rm "$_rb/fifo.git/HEAD"
+mkfifo "$_rb/fifo.git/HEAD"
+# In the background, watched: a read that never ends would hang the
+# tests.
+(
+    _SWARM_GIT_READ_SECS=1
+    rb "$_rb/fifo.git" > "$TMPDIR/rb-fifo.out" 2>/dev/null
+) &
+_rb_pid=$!
+_rb_i=0
+while kill -0 "$_rb_pid" 2>/dev/null && [ "$_rb_i" -lt 150 ]; do
+    sleep 0.1
+    _rb_i=$((_rb_i + 1))
+done
+if kill -0 "$_rb_pid" 2>/dev/null; then
+    # Still reading: a writer opening the FIFO lets the read end.
+    perl -e 'alarm 5; open(my $f, ">", $ARGV[0])' "$_rb/fifo.git/HEAD" \
+        || true
+    _rb_fifo=hung
+else
+    _rb_fifo=$(cat "$TMPDIR/rb-fifo.out")
+fi
+wait "$_rb_pid" 2>/dev/null || true
+assert_eq "a bare repo whose HEAD is a FIFO is not, once the read times out" \
+    no "$_rb_fifo"
+# Each of these reads is bounded: a git that does not return (here a
+# stand-in that sleeps on the call named, and runs Git otherwise) ends
+# within a second or two (under 15 s allows for a slow host; without
+# the bound it takes 30).
+_rb_slow="$TMPDIR/rb-slow"
+mkdir -p "$_rb_slow"
+cat > "$_rb_slow/git" <<'EOF'
+#!/bin/sh
+for a in "$@"; do
+    [ "$a" = "$RB_SLOW_ON" ] && exec sleep 30
+done
+exec "$RB_REAL_GIT" "$@"
+EOF
+chmod +x "$_rb_slow/git"
+_rb_git=$(command -v git)
+rb_slow() {  # ARGUMENT REPO: the result, then 1 when it took under 15 s
+    local t0=$SECONDS out
+    out=$(PATH="$_rb_slow:$PATH" RB_SLOW_ON="$1" RB_REAL_GIT="$_rb_git" \
+        _SWARM_GIT_READ_SECS=1 rb "$2" 2>"$TMPDIR/rb-slow.err")
+    echo "$out $((SECONDS - t0 < 15))"
+}
+assert_eq "a config check that does not return ends" "no 1" \
+    "$(rb_slow --get-regexp "$_rb/bare.git")"
+assert_eq "saying it took too long" 1 \
+    "$(grep -c 'took over 1 seconds' "$TMPDIR/rb-slow.err" || true)"
+assert_eq "a bare repository check that does not return ends" "no 1" \
+    "$(rb_slow --is-bare-repository "$_rb/bare.git")"
+assert_eq "a HEAD commit check that does not return ends" "no 1" \
+    "$(rb_slow --verify "$_rb/bare.git")"
+assert_eq "with the stand-in sleeping on nothing, it is ready" "ready 1" \
+    "$(rb_slow --no-such-argument "$_rb/bare.git")"
+assert_eq "each read gets 60 seconds (as CHANGELOG.md says)" 60 \
+    "$_SWARM_GIT_READ_SECS"
+# The bound holds where the caller ignores SIGALRM.
+assert_eq "swarm_bounded ends a command whose SIGALRM was ignored" "142 1" \
+    "$(trap '' ALRM
+        _t0=$SECONDS _rc=0
+        swarm_bounded 1 sleep 30 || _rc=$?
+        echo "$_rc $((SECONDS - _t0 < 15))")"
+# And where it comes blocked (a signal mask exec passes on).
+assert_eq "swarm_bounded ends a command whose SIGALRM was blocked" "142 1" \
+    "$(perl -MPOSIX -e 'sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGALRM))
+            or exit 126; exec @ARGV' \
+        "$BASH" -c 'source "$1"; t0=$SECONDS rc=0
+            swarm_bounded 1 sleep 30 2>/dev/null || rc=$?
+            echo "$rc $((SECONDS - t0 < 15))"' _ "$TESTS_DIR/../lib/project.sh")"
+# Git reads no stdin here, even with its global config there (a pipe
+# that never ends would hold the read until the bound).
+assert_eq "Git's reads get no stdin" "ready" \
+    "$(yes '' | GIT_CONFIG_GLOBAL=/dev/stdin _SWARM_GIT_READ_SECS=2 \
+        rb "$_rb/bare.git" 2>/dev/null)"
+
+# A recorded engagement whose bare repo is KIND: missing (state, with
+# nothing else left either), a link, an empty directory, a repository
+# with a work tree, a bare repo with no commit, one whose config
+# includes another file.
+v_incomplete() {
+    v_new
+    v_run start >/dev/null || true
+    rm -rf "$V_RT/upstream.git" "$V_RT/mirrors"
+    rm -f "$V_RT"/interactive-*.pending
+    case "$1" in
+        link)
+            git clone -q --bare "$_st_repo" "$_v_root/elsewhere-$_v_n.git"
+            ln -s "$_v_root/elsewhere-$_v_n.git" "$V_RT/upstream.git" ;;
+        empty) mkdir "$V_RT/upstream.git" ;;
+        worktree) git clone -q "$_st_repo" "$V_RT/upstream.git" ;;
+        unborn) git init -q --bare "$V_RT/upstream.git" ;;
+        include)
+            git clone -q --bare "$_st_repo" "$V_RT/upstream.git"
+            printf '[core]\n\tbare = true\n' > "$V_RT/upstream.git/extra"
+            git config -f "$V_RT/upstream.git/config" include.path extra ;;
+    esac
+    : > "$V_DIR/log"
+}
+for _v_kind in state link empty worktree unborn include; do
+    v_incomplete "$_v_kind"
+    _v_before=$(v_snap)
+    for _v_cmd in post-process "interactive --agent-index 1"; do
+        _v_rc=0
+        # shellcheck disable=SC2086
+        _v_out=$(v_run $_v_cmd) || _v_rc=$?
+        assert_eq "bare repo $_v_kind: $_v_cmd refused" "1" "$_v_rc"
+        assert_eq "bare repo $_v_kind: $_v_cmd finds it incomplete" "true" \
+            "$(v_has "is incomplete: $V_RT/upstream.git" "$_v_out")"
+        assert_eq "bare repo $_v_kind: $_v_cmd changes nothing" \
+            "$_v_before" "$(v_snap)"
+        assert_eq "bare repo $_v_kind: $_v_cmd makes nothing in Docker" "0" \
+            "$(v_writes)"
+    done
+done
+# A record with nothing left: start refuses it too.
+v_incomplete state
+_v_before=$(v_snap)
+_v_rc=0
+_v_out=$(v_run start) || _v_rc=$?
+assert_eq "a record alone: start refused" "1" "$_v_rc"
+assert_eq "a record alone: start names it" "true" \
+    "$(v_has "still records engagement" "$_v_out")"
+assert_eq "a record alone: start changes nothing" "$_v_before" "$(v_snap)"
+assert_eq "a record alone: start makes nothing in Docker" "0" "$(v_writes)"
+
+# wait: once the agents are done, an incomplete engagement stops it
+# before post-process, and before harvest without one.
+_v_tok_saved="$_v_tok"
+for _v_cfg in post harvest; do
+    v_incomplete state
+    # Agents of this engagement, done.
+    _v_tok=$(jq -r .engagement_token "$V_STATE" 2>/dev/null)
+    v_agents exited
+    _v_cfg_saved="$V_CFG"
+    if [ "$_v_cfg" = harvest ]; then
+        V_CFG="$_v_root/no-post.json"
+        jq 'del(.post_process)' "$_v_cfg_saved" > "$V_CFG"
+    fi
+    _v_rc=0
+    _v_out=$(v_run wait) || _v_rc=$?
+    V_CFG="$_v_cfg_saved"
+    assert_eq "wait ($_v_cfg next), incomplete engagement: refused" "1" \
+        "$_v_rc"
+    assert_eq "wait ($_v_cfg next): finds it incomplete" "true" \
+        "$(v_has "is incomplete: $V_RT/upstream.git" "$_v_out")"
+    assert_eq "wait ($_v_cfg next): no post-process starts" "0" \
+        "$(grep -c '|run ' "$V_DIR/log" || true)"
+    assert_eq "wait ($_v_cfg next): no harvest" "false" \
+        "$(v_has "Harvesting results" "$_v_out")"
+    assert_eq "wait ($_v_cfg next): it listed this engagement's agents" \
+        "true" "$(v_has "0 running, 2 exited" "$_v_out")"
+done
+_v_tok="$_v_tok_saved"
+
+# The bare repo is mounted with --mount, which fails on a missing source
+# rather than making one, at each docker run that mounts it.
+v_new
+v_run start >/dev/null || true
+assert_eq "start mounts the bare repo with --mount" "2" \
+    "$(grep -cF -- "--mount type=bind,src=$V_RT/upstream.git,dst=/upstream" \
+        "$V_DIR/log" || true)"
+v_agents exited
+: > "$V_DIR/log"
+v_run post-process >/dev/null || true
+assert_eq "post-process mounts it with --mount" "1" \
+    "$(grep -cF -- "--mount type=bind,src=$V_RT/upstream.git,dst=/upstream" \
+        "$V_DIR/log" || true)"
+: > "$V_DIR/log"
+v_run interactive --agent-index 1 >/dev/null || true
+assert_eq "interactive mounts it with --mount" "1" \
+    "$(grep -cF -- "--mount type=bind,src=$V_RT/upstream.git,dst=/upstream" \
+        "$V_DIR/log" || true)"
+assert_eq "and no -v names /upstream any more" "0" \
+    "$(grep -c ':/upstream' "$_LAUNCH_SH" || true)"
 
 # A run killed during the clone leaves upstream.git.new: the gate
 # refuses it (cleanup preserves and removes it, see test_cleanup.sh).
