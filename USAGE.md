@@ -1336,9 +1336,10 @@ refuses when one
 - has anything but its own workspace volume at `/workspace`, or
   another mount or a tmpfs below it;
 - belongs to an open interactive session;
-- has global or system git config (the files the container's git
-  names with `git var`, which needs Git 2.42 or later in the image,
-  read as the container's user with its `HOME` and `XDG_CONFIG_HOME`)
+- has global or system git config (the global files where Git looks
+  for them under the container's `HOME` and `XDG_CONFIG_HOME`, and the
+  system file the container's git names with `git var`, which needs
+  Git 2.42 or later in the image; read as the container's user)
   that sets `lfs.storage`, `core.worktree` or `core.hooksPath`,
   includes other files, cannot be parsed, or lies on a mount; or has
   Git environment variables of its own, or a `HOME` that is empty,

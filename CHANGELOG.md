@@ -20,6 +20,11 @@
   such a file now refuses before anything reads it, and no Git command
   reads a checkout's config, includes and all, before the config
   checks have passed. A failed write to the scan's report or queue
+  ends the scan instead of being missed. Retire's check of a
+  container's own git config works out where Git looks for the global
+  files instead of asking git, which read them first, and gives
+  `git var` a time limit for the system file; scans in a container
+  read no global file on any Git version.
   ends the scan instead of being missed.
 - **Fix: each submodule mirror comes from that submodule's Git
   directory.** Mirrors were cloned from `.git/modules/<path>`, but Git
