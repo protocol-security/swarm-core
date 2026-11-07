@@ -71,6 +71,8 @@ check_deps git jq docker perl
 source "$SWARM_DIR/lib/project.sh"
 # shellcheck source=lib/preserve.sh
 source "$SWARM_DIR/lib/preserve.sh"
+# shellcheck source=lib/target.sh
+source "$SWARM_DIR/lib/target.sh"
 
 # retire and cleanup read and write Git data: none of the caller's GIT_*
 # variables may point them at another repository or inject settings
@@ -718,6 +720,7 @@ GIT_SIGNING_KEY="$(expand_env_ref "$GIT_SIGNING_KEY")"
 # Resolve signing key path and build volume mount.
 SIGNING_KEY_ARGS=()
 if [ -n "$GIT_SIGNING_KEY" ]; then
+    # shellcheck disable=SC2031  # lib/target.sh sets HOME in subshells only
     GIT_SIGNING_KEY="${GIT_SIGNING_KEY/#\~/$HOME}"
     if [ ! -f "$GIT_SIGNING_KEY" ]; then
         echo "ERROR: signing key not found: $GIT_SIGNING_KEY" >&2

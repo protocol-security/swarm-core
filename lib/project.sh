@@ -784,14 +784,64 @@ swarm_own_containers() {
         'select(.owner == $root) | "\(.name) \(.id)"'
 }
 
+# Print the mount points of this host under directory DIR (canonical),
+# and with AT set, at DIR as well; one per line.  Fails when the mount
+# table cannot be read.
+swarm_mounts_under() {
+    local dir="$1" at="${2:-}" table
+    if [ -r /proc/self/mountinfo ]; then
+        # Field 5 is the mount point, with a space, a tab, a newline and
+        # a backslash written as \040, \011, \012 and \134.
+        D="$dir" AT="$at" awk '{
+            m = $5
+            gsub(/\\040/, " ", m); gsub(/\\011/, "\t", m)
+            gsub(/\\012/, "\n", m); gsub(/\\134/, "\\", m)
+            d = ENVIRON["D"]
+            if (index(m, d "/") == 1 || (ENVIRON["AT"] != "" && m == d))
+                print m
+        }' /proc/self/mountinfo
+    else
+        # mount prints "<device> on <mount point> (<options>)".
+        table=$(mount) || return 1
+        printf '%s\n' "$table" | D="$dir" AT="$at" awk '{
+            d = ENVIRON["D"]
+            if (index($0, " on " d "/") ||
+                    (ENVIRON["AT"] != "" && index($0, " on " d " (")))
+                print
+        }'
+    fi
+}
+
+# Fail when something is mounted under PATH, or with AT set, at PATH:
+# deleting there would delete what the mount shows (a bind mount of the
+# checkout's git dir, say).  PATH need not exist on this host.  The
+# message names cleanup, its first user.
+swarm_no_mounts() {
+    local path="$1" at="${2:-}" canon found
+    canon=$(swarm_path_resolve "$path") || return 1
+    if ! found=$(swarm_mounts_under "$canon" "$at"); then
+        echo "ERROR: cannot read this host's mount table." >&2
+        return 1
+    fi
+    if [ -n "$found" ]; then
+        echo "ERROR: something is mounted in ${path}; cleanup will not" \
+             "delete through a mount:" >&2
+        printf '%s\n' "$found" | sed 's/^/  /' >&2
+        return 1
+    fi
+}
+
 # Print what runtime directory DIR holds of an engagement, one entry per
-# line: its bare repo and upstream.git.new, mirrors/, any remnant of a
-# cleanup (hidden names too), and the containers and workspace volumes
-# of the checkout at ROOT (canonical path CHECKOUT) under project id
-# PROJECT.  Fails, saying so, when Docker cannot list them.
+# line: its bare repo and upstream.git.new, mirrors/, its target
+# snapshot, any remnant of a cleanup (hidden names too), and the
+# containers and workspace volumes of the checkout at ROOT (canonical
+# path CHECKOUT) under project id PROJECT.  Fails, saying so, when
+# Docker cannot list them.  Target scratch (.target-fetch.*,
+# .target-prep.*) is never part of an engagement.
 swarm_runtime_leftovers() {
     local dir="$1" project="$2" root="$3" checkout="$4" e containers vols
     for e in "$dir/upstream.git" "$dir/upstream.git.new" "$dir/mirrors" \
+            "$dir/target.git" \
             "$dir"/*.removing "$dir"/.[!.]*.removing \
             "$dir"/..?*.removing; do
         if [ -e "$e" ] || [ -L "$e" ]; then

@@ -1483,11 +1483,22 @@ a `.git` that is a link, a `.git` file that leads anywhere but a git
 dir the scan copies, a repository with another object format) stops
 cleanup.
 
+The target snapshot, `target.git` in the runtime directory (the
+engagement's copy of the audit target), holds none of the engagement's
+work: cleanup deletes it without copying it, after the repository
+locations, with a record of its own in the checkpoint, so a run cut off
+resumes from what is left on disk. What a target resolution cut off
+left (`.target-fetch.*` and `.target-prep.*` in the runtime directory)
+is never part of an engagement: every cleanup deletes it first, best
+effort, and names what it leaves (something mounted in it, files this
+user cannot delete). Something mounted in the runtime directory still
+stops the cleanup of an engagement, as below.
+
 ```bash
 ./launch.sh cleanup [--discard-uncommitted] [--allow-unharvested]
 ```
 
-It stops, and deletes nothing, when
+It stops, and deletes nothing of the engagement, when
 
 - the bare repo holds agent work that HEAD's history does not have yet
   (`agent-work`, `swarm/*`, `agent-parked/*`): harvest first. When it
@@ -1507,6 +1518,8 @@ It stops, and deletes nothing, when
 - a repository in a workspace is a partial clone (its history is not
   all there, and cleanup never fetches);
 - `mirrors/` holds anything that is not a mirror;
+- `target.git` or `target.git.removing` is a link, is not a directory
+  or is another user's, or both are there;
 - the checkout cannot keep the copies by itself (a shallow or partial
   clone, alternates, an object store inside what cleanup deletes), or
   `git fsck --full` finds problems in it;
