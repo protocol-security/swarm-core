@@ -103,6 +103,14 @@ fi
 if [ "$MODE" != userconfig ]; then
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 fi
+# Git before 2.32 ignores GIT_CONFIG_GLOBAL: in a container (whose home
+# files the agent may have written), no home to read either.  The
+# host's own repositories (gitdir mode) keep it, so that an include of
+# ~/... in their config resolves as Git resolves it.
+if [ "$MODE" = worktree ]; then
+    export HOME="${OUT:-/nonexistent}/.no-home" \
+        XDG_CONFIG_HOME="${OUT:-/nonexistent}/.no-home"
+fi
 [ "$MODE" = userconfig ] || [ -d "$ROOT" ] || fail "not a directory: ${ROOT}"
 [ -d "$OUT" ] || fail "not a directory: ${OUT}"
 
@@ -281,13 +289,39 @@ report() {
     printf '%s\n' "$*" >> "$REPORT" || fail "cannot write the report"
 }
 
-# git config on the file that -f names, with no repository looked for
-# around the current directory: Git would read that one's config first
-# (the workspace's own, where the helper runs the scan).  The global and
-# system files are whatever this scan sets for every git command (none,
-# outside userconfig mode).
+# git config on the file that -f names, and on nothing else: no
+# repository looked for around the current directory (the workspace's
+# own, where the helper runs the scan), no global or system file (Git
+# reads those first, includes and all, whatever -f names).
 cfg() {
-    GIT_DIR="$OUT/.no-repository" git config "$@"
+    GIT_DIR="$OUT/.no-repository" GIT_CONFIG_NOSYSTEM=1 \
+        GIT_CONFIG_GLOBAL=/dev/null HOME="$OUT/.no-home" \
+        XDG_CONFIG_HOME="$OUT/.no-home" git config "$@"
+}
+
+# Run a command, killing it once SWARM_SCAN_GIT_TIMEOUT seconds (default
+# 30) have passed; OUT/.timed-out then says so.  The watchdog stops at
+# its next tick once the command has ended.
+bounded() {
+    local secs="${SWARM_SCAN_GIT_TIMEOUT:-30}" pid wpid rc=0
+    rm -f "$OUT/.timed-out" "$OUT/.bounded-done"
+    "$@" &
+    pid=$!
+    (
+        i=0
+        while [ "$i" -lt "$secs" ]; do
+            sleep 1
+            [ ! -e "$OUT/.bounded-done" ] || exit 0
+            i=$((i + 1))
+        done
+        : > "$OUT/.timed-out"
+        kill -9 "$pid" 2>/dev/null
+    ) >/dev/null 2>&1 &
+    wpid=$!
+    wait "$pid" || rc=$?
+    : > "$OUT/.bounded-done"
+    wait "$wpid" 2>/dev/null || true
+    return "$rc"
 }
 
 # Print the size of file $1 in bytes.
@@ -464,15 +498,31 @@ if [ "$MODE" = userconfig ]; then
         mr=$(real_path "$m" && printf x) || fail "cannot resolve mount ${m}"
         printf '%s\n' "${mr%x}" >> "$OUT/.um"
     done < "$OUT/.um0"
-    # The files Git reads for its global and system settings, as the
-    # git on this PATH names them: a git built with another prefix
-    # reads its system file elsewhere than /etc/gitconfig.  A git that
-    # cannot name them (older than 2.42, or stopped by a config file it
-    # cannot parse) is refused, with its first message.
-    if ! git var GIT_CONFIG_GLOBAL > "$OUT/.uf" 2>"$OUT/.ue" \
-            || ! git var GIT_CONFIG_SYSTEM >> "$OUT/.uf" 2>>"$OUT/.ue" \
+    # The files Git reads for its global settings, worked out here as
+    # Git does (XDG_CONFIG_HOME, else HOME/.config; then HOME): git
+    # would read them before it named them.  The system file is named
+    # by git var, run with no global file and no repository, and within
+    # a time limit (it reads that file first): a git built with another
+    # prefix reads it elsewhere than /etc/gitconfig.  A git that cannot
+    # name it (older than 2.42, stopped by a file it cannot parse, or
+    # out of time) is refused, with its first message.
+    : > "$OUT/.uf"
+    if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+        printf '%s\n' "$XDG_CONFIG_HOME/git/config" >> "$OUT/.uf"
+    elif [ "${HOME+set}" = set ]; then
+        printf '%s\n' "$HOME/.config/git/config" >> "$OUT/.uf"
+    fi
+    [ "${HOME+set}" != set ] || printf '%s\n' "$HOME/.gitconfig" >> "$OUT/.uf"
+    : > "$OUT/.ue"
+    if ! bounded env HOME="$OUT/.no-home" XDG_CONFIG_HOME="$OUT/.no-home" \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_DIR="$OUT/.no-repository" \
+            git var GIT_CONFIG_SYSTEM >> "$OUT/.uf" 2>"$OUT/.ue" \
             || [ -s "$OUT/.ue" ]; then
-        report "block config-paths-unknown $(oneline "$(head -n 1 "$OUT/.ue")")"
+        if [ -e "$OUT/.timed-out" ]; then
+            report "block config-paths-unknown (git var did not answer in time)"
+        else
+            report "block config-paths-unknown $(oneline "$(head -n 1 "$OUT/.ue")")"
+        fi
         exit 0
     fi
     while IFS= read -r f; do
@@ -526,7 +576,7 @@ if [ "$MODE" = userconfig ]; then
             '^(lfs\.storage|core\.worktree|core\.hookspath|include\..*|includeif\..*)$' \
             > "$OUT/.uk" 2>"$OUT/.ue" || rc=$?
         if [ -s "$OUT/.ue" ]; then
-            report "block config-unreadable $(oneline "$f")"
+            report "block config-unreadable $(oneline "$f"): $(oneline "$(head -n 1 "$OUT/.ue")")"
             continue
         fi
         case "$rc" in

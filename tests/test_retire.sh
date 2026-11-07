@@ -624,7 +624,7 @@ case_setup
 mkdir -p "$H/e"
 printf '[lfs]\n\tstorage = /x\n[broken\n' > "$H/e/.gitconfig"
 edit proj-agent-2 --arg h "$H/e" '.[0].Config.Env = ["HOME=" + $h]'
-refused "a config file that does not parse" "config-paths-unknown fatal: bad config line 3 in file $H/e/.gitconfig"
+refused "a config file that does not parse" "config-unreadable $H/e/.gitconfig: fatal: bad config line 3"
 # Config on a mount, or reached through a link onto one, cannot be
 # read from the snapshot; Docker's own mounts count too.
 case_setup

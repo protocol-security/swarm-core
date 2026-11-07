@@ -1896,6 +1896,89 @@ git --git-dir="$LB" config include.path "$TMPDIR/sf-lfs-inc"
 assert_eq "gitdir mode: lfs.storage set through an include blocks" "1" \
     "$(grep -c '^block lfs-storage .* /elsewhere$' \
         "$(scan gitdir "$LB" -)/report" || true)"
+LB2="$TMPDIR/sf-lfs-bare2.git"
+git init -q --bare "$LB2"
+mkdir -p "$TMPDIR/sf-lfs-home"
+printf '[lfs]\n\tstorage = /elsewhere2\n' > "$TMPDIR/sf-lfs-home/storage.conf"
+# shellcheck disable=SC2088  # the config holds the ~ itself, for Git
+git --git-dir="$LB2" config include.path '~/storage.conf'
+assert_eq "also an include under ~, the host's own home" "1" \
+    "$(grep -c '^block lfs-storage .* /elsewhere2$' \
+        "$(scan gitdir "$LB2" - HOME="$TMPDIR/sf-lfs-home")/report" || true)"
+# userconfig mode (retire's check of the container user's git config):
+# a FIFO where Git reads the global file, a global file that includes
+# one, and a system file that keeps git var from answering (a git built
+# with another prefix, here a shim) all end the check instead of hanging
+# it.
+uc_scan() {
+    local o
+    o=$(mktemp -d "$TMPDIR/scan.XXXXXX")
+    env -i PATH="$1" HOME="$2" SWARM_SCAN_GIT_TIMEOUT=2 \
+        perl -e 'alarm 60; exec @ARGV' bash "$SCAN" userconfig - - "$o" \
+        >/dev/null 2>&1 || echo "rc=$?" > "$o/.rc"
+    printf '%s' "$o"
+}
+UH="$TMPDIR/sf-uc-fifo"
+mkdir -p "$UH"
+mkfifo "$UH/.gitconfig"
+out=$(uc_scan "$PATH" "$UH")
+assert_eq "userconfig, a FIFO for the global file: the check ends" "" \
+    "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "refusing it" "1" \
+    "$(has_line "$out" "block config-unreadable $UH/.gitconfig")"
+UH="$TMPDIR/sf-uc-inc"
+mkdir -p "$UH"
+mkfifo "$TMPDIR/sf-uc-inc-fifo"
+printf '[include]\n\tpath = %s\n' "$TMPDIR/sf-uc-inc-fifo" > "$UH/.gitconfig"
+out=$(uc_scan "$PATH" "$UH")
+assert_eq "userconfig, a global file including a FIFO: the check ends" "" \
+    "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "refusing the include" "1" \
+    "$(has_line "$out" 'include.path')"
+# An empty HOME is a home to Git (it reads /.gitconfig): that path is
+# checked too (here against a mount there).
+_o=$(mktemp -d "$TMPDIR/scan.XXXXXX")
+env -i PATH="$PATH" HOME= SWARM_SCAN_MOUNTS=/.gitconfig \
+    bash "$SCAN" userconfig - - "$_o" >/dev/null 2>&1 || echo "rc=$?" > "$_o/.rc"
+assert_eq "userconfig with an empty HOME checks /.gitconfig" "1" \
+    "$(has_line "$_o" 'block config-on-mount /.gitconfig')"
+mkdir -p "$TMPDIR/sf-uc-shim" "$TMPDIR/sf-uc-home"
+mkfifo "$TMPDIR/sf-uc-sys-fifo"
+cat > "$TMPDIR/sf-uc-shim/git" <<EOF_SHIM
+#!/bin/bash
+GIT_CONFIG_SYSTEM='$TMPDIR/sf-uc-sys-fifo' exec '$(command -v git)' "\$@"
+EOF_SHIM
+chmod +x "$TMPDIR/sf-uc-shim/git"
+out=$(uc_scan "$TMPDIR/sf-uc-shim:$PATH" "$TMPDIR/sf-uc-home")
+assert_eq "userconfig, a system file that hangs git var: the check ends" \
+    "" "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "refusing, out of time" "1" \
+    "$(has_line "$out" 'block config-paths-unknown (git var did not answer in time)')"
+
+# Git before 2.32 ignores GIT_CONFIG_GLOBAL, so the scan gives git no
+# home either: a git that drops the variable (a shim) still reads no
+# global file (here one naming a template directory, which git init
+# would copy into the scan's scratch repository).
+mkdir -p "$TMPDIR/sf-old-shim" "$TMPDIR/sf-old-home" "$TMPDIR/sf-tmpl"
+echo marker > "$TMPDIR/sf-tmpl/sf-marker"
+printf '[init]\n\ttemplateDir = %s\n' "$TMPDIR/sf-tmpl" \
+    > "$TMPDIR/sf-old-home/.gitconfig"
+cat > "$TMPDIR/sf-old-shim/git" <<EOF_OLD
+#!/bin/bash
+unset GIT_CONFIG_GLOBAL
+exec '$(command -v git)' "\$@"
+EOF_OLD
+chmod +x "$TMPDIR/sf-old-shim/git"
+SF=$(sf_ws oldgit)
+_o=$(mktemp -d "$TMPDIR/scan.XXXXXX")
+env PATH="$TMPDIR/sf-old-shim:$PATH" HOME="$TMPDIR/sf-old-home" \
+    bash "$SCAN" worktree "$SF" full "$_o" >/dev/null 2>&1 \
+    || echo "rc=$?" > "$_o/.rc"
+assert_eq "a git that ignores GIT_CONFIG_GLOBAL: the scan completes" "" \
+    "$(cat "$_o/.rc" 2>/dev/null)"
+assert_eq "reading no global file (no template copied)" "false" \
+    "$([ -e "$_o/scratch.git/sf-marker" ] && echo true || echo false)"
+
 # A write that fails ends the scan with status 3, also where the caller
 # tests the result (errexit does not apply there): the checkout queue
 # and the report, here directories that cannot be appended to.
