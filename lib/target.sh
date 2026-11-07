@@ -566,13 +566,26 @@ _swarm_target_id_fits() {
 
 # Delete every scratch directory an earlier run left in runtime
 # directory $1, best effort (a helper of a killed run may still write
-# into one; it is garbage either way), and name those that stay.
+# into one; it is garbage either way), and name those that stay.  One
+# with something mounted at or under it, or when the mount table cannot
+# be read, stays (swarm_mounts_under and swarm_path_resolve, from
+# lib/project.sh).
 swarm_target_scratch_clean() {
-    local dir="$1" d
+    local dir="$1" d canon found
     for d in "$dir"/.target-fetch.* "$dir"/.target-prep.*; do
         [ -e "$d" ] || [ -L "$d" ] || continue
         if [ -L "$d" ] || [ ! -d "$d" ]; then
             echo "WARNING: ${d} is not a directory; left alone." >&2
+            continue
+        fi
+        if ! canon=$(swarm_path_resolve "$d") \
+                || ! found=$(swarm_mounts_under "$canon" at); then
+            echo "WARNING: cannot read this host's mount table; ${d}" \
+                 "left alone." >&2
+            continue
+        fi
+        if [ -n "$found" ]; then
+            echo "WARNING: something is mounted in ${d}; left alone." >&2
             continue
         fi
         rm -rf -- "$d" 2>/dev/null || true

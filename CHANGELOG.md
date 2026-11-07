@@ -10,6 +10,7 @@
 
 
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -58,6 +59,16 @@
   that is set but empty is refused by every command, as it named no
   engagement and let `post-process` and `interactive` create one.
 
+- **Cleanup deletes a target snapshot.** `target.git` in the runtime
+  directory, a copy of the audit target, holds none of the engagement's
+  work: cleanup deletes it without copying it, after the repository
+  locations, with a record of its own in the checkpoint, and refuses
+  before it retires anything when it is a link, is not a directory or
+  is another user's, or when `target.git.removing` is there too. What a
+  target resolution cut off leaves (`.target-fetch.*`,
+  `.target-prep.*`) is never part of an engagement and goes at the
+  start of every cleanup, best effort; nothing is deleted through a
+  mount.
 - **Only a complete engagement is joined.** `post-process` and
   `interactive` chose between creating and joining by whether the bare
   repo existed. A state file that recorded an engagement with nothing

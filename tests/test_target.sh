@@ -30,6 +30,8 @@ trap cleanup EXIT
 
 unset GIT_SSH GIT_SSH_COMMAND GIT_SSH_VARIANT GIT_EXEC_PATH
 
+# shellcheck source=../lib/project.sh
+source "$REPO_ROOT/lib/project.sh"
 # shellcheck source=../lib/target.sh
 source "$REPO_ROOT/lib/target.sh"
 
@@ -1133,6 +1135,43 @@ fi
 mkdir -p "$TMPDIR/empty-rt"
 assert_eq "nothing to clean is quiet" "" \
     "$(swarm_target_scratch_clean "$TMPDIR/empty-rt" 2>&1)"
+
+# Nothing is deleted through a mount: a scratch directory with
+# something mounted at or under it stays, and so does every one when the
+# mount table cannot be read.  (swarm_mounts_under is replaced in a
+# subshell, after lib/project.sh defined it.)
+SM="$TMPDIR/scratch-mounts"
+mkdir -p "$SM/.target-fetch.m/objects" "$SM/.target-prep.n"
+: > "$SM/.target-fetch.m/objects/x"
+out=$(
+    # shellcheck disable=SC2329  # called by swarm_target_scratch_clean
+    swarm_mounts_under() {
+        # (A pattern with its opening parenthesis: Bash 3.2 cannot
+        # parse a case inside $(...) otherwise.)
+        case "$1" in
+            (*/.target-fetch.m) printf '%s\n' "$1/objects" ;;
+        esac
+    }
+    swarm_target_scratch_clean "$SM" 2>&1
+)
+assert_eq "a scratch directory with a mount under it stays" yes \
+    "$([ -e "$SM/.target-fetch.m/objects/x" ] && echo yes || echo no)"
+assert_contains "  named" \
+    "something is mounted in $SM/.target-fetch.m; left alone" "$out"
+assert_eq "one without stays deleted" no \
+    "$([ -e "$SM/.target-prep.n" ] && echo yes || echo no)"
+mkdir -p "$SM/.target-prep.n"
+out=$(
+    # shellcheck disable=SC2329  # called by swarm_target_scratch_clean
+    swarm_mounts_under() { return 1; }
+    swarm_target_scratch_clean "$SM" 2>&1
+)
+assert_eq "an unreadable mount table leaves every one" \
+    ".target-fetch.m .target-prep.n" "$(names_in "$SM")"
+assert_contains "  saying so" "cannot read this host's mount table" "$out"
+# The real table: nothing is mounted there.
+swarm_target_scratch_clean "$SM" 2>/dev/null
+assert_eq "with the real mount table both go" "" "$(names_in "$SM")"
 
 echo ""
 echo "==============================="

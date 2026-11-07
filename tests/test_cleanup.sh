@@ -1269,6 +1269,393 @@ assert_eq "saying the engagement is gone" "1" \
     "$(said "the engagement this command was started for is gone")"
 
 echo ""
+echo "=== 7. The target snapshot and target scratch ==="
+# target.git in the runtime directory is a copy of the audit target:
+# cleanup deletes it without copying it, with its own record in the
+# checkpoint (.cleanup.target), after the repository locations.
+add_target() {
+    git init -q --bare "$RT/target.git"
+    git --git-dir="$RT/target.git" fetch -q "$REPO" "+HEAD:refs/swarm/target"
+    chmod -R a+rX "$RT/target.git"
+}
+setup
+add_target
+assert_eq "an engagement with a target snapshot: cleanup succeeds" "0" \
+    "$(cleanup)"
+assert_eq "the snapshot is gone" "no no" \
+    "$(present "$RT/target.git") $(present "$RT/target.git.removing")"
+assert_eq "it says so" "1" "$(said "deleted $RT/target.git")"
+assert_eq "it was not copied: the sources name the two others only" \
+    "s1 s2" \
+    "$(git -C "$REPO" for-each-ref --format='%(refname)' \
+        'refs/swarm-recovery/*/*/sources' | head -n 1 \
+        | xargs -I{} git -C "$REPO" cat-file blob {} | cut -d' ' -f1 \
+        | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "nor does any of them name it" "0" \
+    "$(git -C "$REPO" for-each-ref --format='%(refname)' \
+        'refs/swarm-recovery/*/*/sources' | head -n 1 \
+        | xargs -I{} git -C "$REPO" cat-file blob {} \
+        | grep -c 'target.git' || true)"
+assert_eq "the state keeps only the claim" '["project","repo_root","schema"]' \
+    "$(jq -c 'keys' "$RT/state.json")"
+
+# A failed write of each step of the snapshot's deletion, and of the
+# final reset, stops cleanup there; the next run resumes from what is on
+# disk.  A jq on PATH fails the write that STEP names (the record's
+# state, or "reset") and notes that it did.
+REAL_JQ=$(command -v jq)
+mkdir -p "$TMPDIR/bin-jq"
+cat > "$TMPDIR/bin-jq/jq" <<EOF
+#!/bin/bash
+step=""
+case "\$*" in
+    *'.cleanup.target = {state: \$s'*)
+        prev=""
+        for a in "\$@"; do
+            [ "\$prev" != s ] || step="\$a"
+            prev="\$a"
+        done ;;
+    *'{schema: .schema, project: .project,'*)
+        step=reset ;;
+esac
+if [ -n "\$step" ] && [ "\$step" = "\${JQ_FAIL_STEP:-}" ]; then
+    echo "\$step" >> "\$JQ_FIRED"
+    exit 1
+fi
+if [ -n "\$step" ] && [ "\$step" = "\${JQ_MKDIR_STEP:-}" ]; then
+    mkdir -p "\$JQ_MKDIR"
+fi
+if [ -n "\$step" ] && [ "\$step" = "\${JQ_BIND_STEP:-}" ]; then
+    mount --bind "\$JQ_BIND_SRC" "\$JQ_BIND_DST" && echo bound >> "\$JQ_FIRED"
+fi
+exec "$REAL_JQ" "\$@"
+EOF
+chmod +x "$TMPDIR/bin-jq/jq"
+for step in removing renamed deleting deleted reset; do
+    setup
+    add_target
+    rm -f "$TMPDIR/jq.fired"
+    SHIM_DIR="$TMPDIR/bin-jq"
+    rc=$(JQ_FAIL_STEP="$step" JQ_FIRED="$TMPDIR/jq.fired" cleanup)
+    SHIM_DIR=""
+    assert_eq "a failed '$step' write: cleanup stops" "1" "$rc"
+    assert_eq "  (that write did fail)" "$step" \
+        "$(cat "$TMPDIR/jq.fired" 2>/dev/null)"
+    case "$step" in
+        removing) want="yes no" ;;
+        renamed|deleting) want="no yes" ;;
+        *) want="no no" ;;
+    esac
+    assert_eq "  target.git, target.git.removing" "$want" \
+        "$(present "$RT/target.git") $(present "$RT/target.git.removing")"
+    assert_eq "  the engagement stays recorded" "e1" \
+        "$(jq -r '.engagement_id' "$RT/state.json")"
+    assert_eq "  the next run finishes" "0" "$(cleanup)"
+    assert_eq "  and the snapshot is gone" "no no" \
+        "$(present "$RT/target.git") $(present "$RT/target.git.removing")"
+    assert_eq "  with the engagement's records" "" \
+        "$(jq -r '.engagement_id // empty' "$RT/state.json")"
+done
+
+# Before anything is retired: both names at once, a link, something
+# that is not a directory, refuse.
+setup
+add_target
+mkdir "$RT/target.git.removing"
+refused "target.git and target.git.removing both there" "both $RT/target.git"
+assert_eq "both stay" "yes yes" \
+    "$(present "$RT/target.git") $(present "$RT/target.git.removing")"
+setup
+mkdir -p "$TMPDIR/case/elsewhere"
+: > "$TMPDIR/case/elsewhere/keep"
+ln -s "$TMPDIR/case/elsewhere" "$RT/target.git"
+refused "target.git a link" "$RT/target.git is a link"
+assert_eq "what it points to stays" "yes" \
+    "$(present "$TMPDIR/case/elsewhere/keep")"
+setup
+: > "$RT/target.git"
+refused "target.git a file" "$RT/target.git is not a directory"
+setup
+add_target
+mv "$RT/target.git" "$RT/target.git.removing"
+assert_eq "a remnant of the snapshot alone: cleanup finishes it" "0" \
+    "$(cleanup)"
+assert_eq "  gone" "no" "$(present "$RT/target.git.removing")"
+
+# A target.git.removing that shows up between the check and the rename
+# stops it: nothing is renamed into it.
+setup
+add_target
+SHIM_DIR="$TMPDIR/bin-jq"
+rc=$(JQ_MKDIR_STEP=removing JQ_MKDIR="$RT/target.git.removing" cleanup)
+SHIM_DIR=""
+assert_eq "target.git.removing appearing before the rename: refused" "1" \
+    "$rc"
+assert_eq "  for that reason" "1" \
+    "$(said "$RT/target.git.removing exists; cleanup will not rename")"
+assert_eq "  target.git was not moved into it" "yes no" \
+    "$(present "$RT/target.git") \
+$(present "$RT/target.git.removing/target.git")"
+# A remnant left by a stopped run is not copied either.
+setup
+add_target
+SHIM_DIR="$TMPDIR/bin-jq"
+rc=$(JQ_FAIL_STEP=deleting JQ_FIRED="$TMPDIR/jq.fired" cleanup)
+SHIM_DIR=""
+assert_eq "the snapshot's remnant left by a stopped run" "yes" \
+    "$(present "$RT/target.git.removing")"
+assert_eq "  the next run finishes" "0" "$(cleanup)"
+assert_eq "  without copying it" "0" \
+    "$(git -C "$REPO" for-each-ref --format='%(refname)' \
+        'refs/swarm-recovery/*/*/sources' \
+        | xargs -I{} git -C "$REPO" cat-file blob {} \
+        | grep -c 'target.git' || true)"
+
+# Files of the snapshot this user cannot delete stop cleanup (no Docker
+# helper: only the launcher writes it, and containers mount it
+# read-only); the next run finishes once they can go.
+mkdir -p "$TMPDIR/bin-rm-target"
+cat > "$TMPDIR/bin-rm-target/rm" <<'EOF'
+#!/bin/bash
+if [ -e "$FAKE_DOCKER/rm-target-fails" ]; then
+    for a in "$@"; do
+        [ "$a" != "$FAKE_RT/target.git.removing" ] || exit 1
+    done
+fi
+exec /bin/rm "$@"
+EOF
+chmod +x "$TMPDIR/bin-rm-target/rm"
+setup
+add_target
+: > "$F/rm-target-fails"
+SHIM_DIR="$TMPDIR/bin-rm-target"
+assert_eq "a snapshot this user cannot delete: cleanup stops" "1" "$(cleanup)"
+SHIM_DIR=""
+rm -f "$F/rm-target-fails"
+assert_eq "  for that reason" "1" \
+    "$(said "cannot delete $RT/target.git.removing")"
+assert_eq "  its remnant stays" "yes" "$(present "$RT/target.git.removing")"
+assert_eq "  the next run finishes" "0" "$(cleanup)"
+assert_eq "  and it is gone" "no" "$(present "$RT/target.git.removing")"
+
+# A mirror's remnant named like the snapshot's is a mirror remnant:
+# copied and deleted as before, never taken for the snapshot.
+setup
+git init -q --bare "$RT/mirrors/target.git.removing"
+assert_eq "mirrors/target.git.removing: cleanup succeeds" "0" "$(cleanup)"
+assert_eq "  it is gone" "no" "$(present "$RT/mirrors/target.git.removing")"
+assert_eq "  it was copied first" "1" \
+    "$(git -C "$REPO" for-each-ref --format='%(refname)' \
+        'refs/swarm-recovery/*/*/sources' | head -n 1 \
+        | xargs -I{} git -C "$REPO" cat-file blob {} \
+        | grep -c 'mirrors/target.git.removing' || true)"
+
+# The evidence of an earlier run still counts when only the snapshot is
+# left to delete.
+setup
+add_target
+SHIM_DIR="$TMPDIR/bin-jq"
+rc=$(JQ_FAIL_STEP=deleting JQ_FIRED="$TMPDIR/jq.fired" cleanup)
+SHIM_DIR=""
+assert_eq "a run stopped with only the snapshot left" "1" "$rc"
+assert_eq "  the bare repo is gone already" "no" \
+    "$(present "$RT/upstream.git")"
+git -C "$REPO" update-ref -d "$(git -C "$REPO" for-each-ref \
+    --format='%(refname)' 'refs/swarm-recovery/' | grep -v '/sources$' \
+    | head -n 1)"
+assert_eq "recovery refs it wrote changed: the next run refuses" "1" \
+    "$(cleanup)"
+assert_eq "  for that reason" "1" \
+    "$(said "recovery refs an earlier cleanup wrote changed or went")"
+assert_eq "  the snapshot's remnant stays" "yes" \
+    "$(present "$RT/target.git.removing")"
+
+# A snapshot that shows up again before the engagement's records go
+# keeps them.
+setup
+add_target
+SHIM_DIR="$TMPDIR/bin-jq"
+rc=$(JQ_MKDIR_STEP=deleted JQ_MKDIR="$RT/target.git" cleanup)
+SHIM_DIR=""
+assert_eq "target.git back before the final inventory: refused" "1" "$rc"
+assert_eq "  for that reason" "1" "$(said "left these in place")"
+assert_eq "  naming it" "1" "$(said "  $RT/target.git")"
+assert_eq "  the engagement stays recorded" "e1" \
+    "$(jq -r '.engagement_id' "$RT/state.json")"
+
+# What a target resolution cut off left goes at the start of every
+# cleanup, best effort, and never counts as part of the engagement.
+setup
+mkdir -p "$RT/.target-fetch.abc/objects/pack" "$RT/.target-prep.def/refs"
+: > "$RT/.target-fetch.abc/objects/pack/tmp_pack_x"
+assert_eq "target scratch beside an engagement: cleanup succeeds" "0" \
+    "$(cleanup)"
+assert_eq "  the scratch is gone" "no no" \
+    "$(present "$RT/.target-fetch.abc") $(present "$RT/.target-prep.def")"
+mkdir -p "$RT/.target-prep.ghi"
+assert_eq "with no engagement recorded: nothing to clean up" "0" "$(cleanup)"
+assert_eq "  said" "1" "$(said "nothing to clean up")"
+assert_eq "  and the scratch went first" "no" \
+    "$(present "$RT/.target-prep.ghi")"
+# swarm_runtime_leftovers lists the snapshot, never the scratch.
+setup
+add_target
+mkdir -p "$RT/.target-fetch.zzz"
+rm -rf "$RT/upstream.git" "$RT/mirrors"
+left=$(PATH="$TMPDIR/bin:$PATH" FAKE_DOCKER="$F" FAKE_CK="$CK" \
+    swarm_runtime_leftovers "$RT" "$P" "$REPO" "$CK")
+assert_eq "the snapshot is an engagement's leftover" "  $RT/target.git" \
+    "$left"
+
+# Nothing is deleted through a mount: with something mounted in a
+# scratch directory, cleanup with no engagement leaves it and says so;
+# with something mounted in the snapshot, cleanup refuses before
+# anything is retired.
+if [ ! -r /proc/self/mountinfo ]; then
+    mkdir -p "$TMPDIR/bin-mount2"
+    cat > "$TMPDIR/bin-mount2/mount" <<'EOF'
+#!/bin/bash
+rt=$(cd -P "$FAKE_RT" && pwd -P)
+echo "/dev/disk9 on ${rt}/${FAKE_MOUNTED} (nullfs, local)"
+EOF
+    chmod +x "$TMPDIR/bin-mount2/mount"
+    setup
+    rm -rf "$RT/upstream.git" "$RT/mirrors"
+    swarm_state_update "$RT/state.json" 'del(.engagement_id)'
+    mkdir -p "$RT/.target-fetch.mnt/x"
+    SHIM_DIR="$TMPDIR/bin-mount2"
+    rc=$(FAKE_MOUNTED=.target-fetch.mnt/x cleanup)
+    SHIM_DIR=""
+    assert_eq "a mount in a scratch directory, no engagement: cleanup ends" \
+        "0" "$rc"
+    assert_eq "  the scratch directory stays" "yes" \
+        "$(present "$RT/.target-fetch.mnt/x")"
+    assert_eq "  named" "1" \
+        "$(said "something is mounted in $RT/.target-fetch.mnt; left alone")"
+    setup
+    add_target
+    SHIM_DIR="$TMPDIR/bin-mount2"
+    FAKE_MOUNTED=target.git/objects refused "a mount in the snapshot" \
+        "something is mounted in"
+    SHIM_DIR=""
+    assert_eq "  the snapshot stays" "yes" "$(present "$RT/target.git")"
+    # One that shows up once the passes are over (at the "removing"
+    # write) stops the rename: each step checks again.
+    mkdir -p "$TMPDIR/bin-mount3"
+    cat > "$TMPDIR/bin-mount3/mount" <<'EOF'
+#!/bin/bash
+[ -e "$FAKE_DOCKER/mount-now" ] || exit 0
+rt=$(cd -P "$FAKE_RT" && pwd -P)
+echo "/dev/disk9 on ${rt}/target.git/objects (nullfs, local)"
+EOF
+    chmod +x "$TMPDIR/bin-mount3/mount"
+    setup
+    add_target
+    SHIM_DIR="$TMPDIR/bin-mount3:$TMPDIR/bin-jq"
+    rc=$(JQ_MKDIR_STEP=removing JQ_MKDIR="$F/mount-now" cleanup)
+    SHIM_DIR=""
+    assert_eq "a mount in the snapshot right before its rename: refused" \
+        "1" "$rc"
+    assert_eq "  for that reason" "1" \
+        "$(said "something is mounted in $RT/target.git")"
+    assert_eq "  the snapshot was not renamed" "yes no" \
+        "$(present "$RT/target.git") $(present "$RT/target.git.removing")"
+    # And under the remnant right before its deletion (at the
+    # "deleting" write).
+    mkdir -p "$TMPDIR/bin-mount4"
+    cat > "$TMPDIR/bin-mount4/mount" <<'EOF'
+#!/bin/bash
+[ -e "$FAKE_DOCKER/mount-now" ] || exit 0
+rt=$(cd -P "$FAKE_RT" && pwd -P)
+echo "/dev/disk9 on ${rt}/target.git.removing/objects (nullfs, local)"
+EOF
+    chmod +x "$TMPDIR/bin-mount4/mount"
+    setup
+    add_target
+    SHIM_DIR="$TMPDIR/bin-mount4:$TMPDIR/bin-jq"
+    rc=$(JQ_MKDIR_STEP=deleting JQ_MKDIR="$F/mount-now" cleanup)
+    SHIM_DIR=""
+    assert_eq "a mount in the remnant right before its deletion: refused" \
+        "1" "$rc"
+    assert_eq "  for that reason" "1" \
+        "$(said "something is mounted in $RT/target.git.removing")"
+    assert_eq "  the remnant was not deleted" "yes" \
+        "$(present "$RT/target.git.removing/objects")"
+elif unshare -rm true 2>/dev/null; then
+    setup
+    rm -rf "$RT/upstream.git" "$RT/mirrors"
+    swarm_state_update "$RT/state.json" 'del(.engagement_id)'
+    mkdir -p "$RT/.target-fetch.mnt/x" "$TMPDIR/case/shown"
+    : > "$TMPDIR/case/shown/keep"
+    rc=0
+    orig="$PATH"
+    (cd "$REPO" && PATH="$TMPDIR/bin:$PATH" ORIG_PATH="$orig" \
+        FAKE_DOCKER="$F" FAKE_CK="$CK" FAKE_RT="$RT" \
+        SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" SWARM_SKIP_DEP_CHECK=1 \
+        unshare -rm "$BASH" -c \
+            'mount --bind "$1" "$2" && exec "$BASH" "$3" cleanup' sh \
+            "$TMPDIR/case/shown" "$RT/.target-fetch.mnt/x" "$LAUNCH") \
+        > "$TMPDIR/out" 2>&1 || rc=$?
+    assert_eq "a bind mount in a scratch directory, no engagement: ends" \
+        "0" "$rc"
+    assert_eq "  what the mount showed stays" "yes" \
+        "$(present "$TMPDIR/case/shown/keep")"
+    assert_eq "  named" "1" \
+        "$(said "something is mounted in $RT/.target-fetch.mnt; left alone")"
+    # A bind mount in the snapshot once the passes are over (made at the
+    # "removing" write) stops the rename: each step checks again.
+    setup
+    add_target
+    mkdir -p "$TMPDIR/case/shown"
+    : > "$TMPDIR/case/shown/keep"
+    rm -f "$TMPDIR/jq.fired"
+    rc=0
+    (cd "$REPO" && PATH="$TMPDIR/bin-jq:$TMPDIR/bin:$PATH" ORIG_PATH="$orig" \
+        FAKE_DOCKER="$F" FAKE_CK="$CK" FAKE_RT="$RT" \
+        SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" SWARM_SKIP_DEP_CHECK=1 \
+        JQ_BIND_STEP=removing JQ_BIND_SRC="$TMPDIR/case/shown" \
+        JQ_BIND_DST="$RT/target.git/objects" JQ_FIRED="$TMPDIR/jq.fired" \
+        unshare -rm "$BASH" "$LAUNCH" cleanup) > "$TMPDIR/out" 2>&1 \
+        || rc=$?
+    assert_eq "  (the bind mount was made)" "bound" \
+        "$(cat "$TMPDIR/jq.fired" 2>/dev/null)"
+    assert_eq "a bind mount in the snapshot right before its rename:" \
+        "1" "$rc"
+    assert_eq "  for that reason" "1" \
+        "$(said "something is mounted in $RT/target.git")"
+    assert_eq "  what the mount showed stays" "yes" \
+        "$(present "$TMPDIR/case/shown/keep")"
+    assert_eq "  the snapshot was not renamed" "yes no" \
+        "$(present "$RT/target.git") $(present "$RT/target.git.removing")"
+    # And under the remnant right before its deletion (at the
+    # "deleting" write).
+    setup
+    add_target
+    mkdir -p "$TMPDIR/case/shown"
+    : > "$TMPDIR/case/shown/keep"
+    rm -f "$TMPDIR/jq.fired"
+    rc=0
+    (cd "$REPO" && PATH="$TMPDIR/bin-jq:$TMPDIR/bin:$PATH" ORIG_PATH="$orig" \
+        FAKE_DOCKER="$F" FAKE_CK="$CK" FAKE_RT="$RT" \
+        SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" SWARM_SKIP_DEP_CHECK=1 \
+        JQ_BIND_STEP=deleting JQ_BIND_SRC="$TMPDIR/case/shown" \
+        JQ_BIND_DST="$RT/target.git.removing/objects" \
+        JQ_FIRED="$TMPDIR/jq.fired" \
+        unshare -rm "$BASH" "$LAUNCH" cleanup) > "$TMPDIR/out" 2>&1 \
+        || rc=$?
+    assert_eq "  (the bind mount under the remnant was made)" "bound" \
+        "$(cat "$TMPDIR/jq.fired" 2>/dev/null)"
+    assert_eq "a bind mount in the remnant right before its deletion:" \
+        "1" "$rc"
+    assert_eq "  for that reason" "1" \
+        "$(said "something is mounted in $RT/target.git.removing")"
+    assert_eq "  what the mount showed stays" "yes" \
+        "$(present "$TMPDIR/case/shown/keep")"
+else
+    echo "  SKIP: no mount table to fake and no bind mount (unshare -rm)"
+fi
+
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="
