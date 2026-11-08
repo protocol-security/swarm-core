@@ -797,6 +797,54 @@ assert_eq "under the lock Git starts nothing in the background" \
         _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" "$_lk_repo" \
         2>/dev/null | paste -sd ' ' -)"
 
+# Where Git has its fsmonitor daemon (macOS), git status in a checkout
+# with core.fsmonitor on starts it, and the daemon keeps every
+# descriptor it inherits, the lock's too.  The control holds the lock
+# without swarm_lock's settings; the check takes it with swarm_lock.
+_fm_repo="$TMPDIR/fm-repo"
+git init -q "$_fm_repo"
+echo a > "$_fm_repo/a"
+git -C "$_fm_repo" add a
+git -C "$_fm_repo" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q -m a
+git -C "$_fm_repo" config core.fsmonitor true
+_fm_out=$(git -C "$_fm_repo" fsmonitor--daemon status 2>&1 || true)
+if grep -q 'not supported' <<< "$_fm_out"; then
+    echo "  SKIP: Git has no fsmonitor daemon on this platform"
+else
+    _fm_lock() {
+        env -u SWARM_LOCK_FD "$BASH" -c 'source "$1"; swarm_lock "$2"' \
+            _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" >/dev/null 2>&1 \
+            && echo free || echo held
+    }
+    _fm_daemon() {
+        if git -C "$_fm_repo" fsmonitor--daemon status >/dev/null 2>&1
+        then
+            echo running
+        else
+            echo stopped
+        fi
+    }
+    "$BASH" -c 'exec 9>>"$1" && flock -n 9 && git -C "$2" status' \
+        _ "$_lk_file" "$_fm_repo" >/dev/null 2>&1 || true
+    if [ "$(_fm_daemon)" != running ]; then
+        echo "  SKIP: git status started no fsmonitor daemon"
+    else
+        assert_eq "control: the daemon keeps a lock it inherits" "held" \
+            "$(_fm_lock)"
+        git -C "$_fm_repo" fsmonitor--daemon stop >/dev/null 2>&1 || true
+        assert_eq "control: stopping the daemon frees the lock" \
+            "stopped free" "$(_fm_daemon) $(_fm_lock)"
+        env -u SWARM_LOCK_FD "$BASH" -c \
+            'source "$1"; swarm_lock "$2" && git -C "$3" status' \
+            _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" "$_fm_repo" \
+            >/dev/null 2>&1 || true
+        assert_eq "under swarm_lock git status starts no daemon" \
+            "stopped free" "$(_fm_daemon) $(_fm_lock)"
+    fi
+    git -C "$_fm_repo" fsmonitor--daemon stop >/dev/null 2>&1 || true
+fi
+
 _fd_check='source "$1"; exec 5>>"$2"; swarm_fd_is_file 5 "$3"; echo $?'
 assert_eq "swarm_fd_is_file: same file" "0" \
     "$("$BASH" -c "$_fd_check" _ "$TESTS_DIR/../lib/project.sh" \
