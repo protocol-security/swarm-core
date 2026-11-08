@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -17,6 +18,14 @@
   `core.fsmonitor=false`, `gc.auto=0` and `maintenance.auto=false`,
   passed through the environment, so it starts no daemon, detached gc
   or background maintenance.
+- **Fix: a signal that ends `launch.sh`, retire or cleanup no longer
+  prints that the run stopped before its end, on Bash 4.1 and later.**
+  Bash can run the EXIT trap with status 0 when a signal ends a script,
+  as Bash 3.2 does when `set -u` stops one, so the check for such stops
+  also fired for a `kill`, a closed terminal or a pipe closed while the
+  script writes to it. It now runs only on Bash before 4.1, which can
+  end a stopped run with status 0 itself; there a signal can print the
+  line too. A signal's status stays on every version.
 - **Feature: `PI_COMPACTION_RESERVE_TOKENS` sets Pi's compaction
   reserve.** Pi caps a compaction summary at a share of
   `compaction.reserveTokens` (16384 by default) and of `maxTokens`; a

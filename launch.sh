@@ -608,15 +608,18 @@ swarm_tmp_cleanup() {
         rm -f "${SWARM_TMP_FILES[@]}"
     fi
 }
-# The EXIT trap: remove the temporary files, and never let a run that
-# stopped short end with status 0.  Bash 3.2 (macOS's /bin/bash) runs an
-# EXIT trap with $? at 0 when set -u stops the script on an unset
-# variable, so that stop would pass for success.  Any other status
-# stays, a signal's too.
+# The EXIT trap: remove the temporary files, and where Bash needs it
+# (swarm_stop_guard_needed), never let a run that stopped short end with
+# status 0.  Bash can also run this trap with $? at 0 when a signal ends
+# the script, so the check is only made where Bash can end a stopped run
+# with 0 itself; there a signal can print the line too.  Any other
+# status stays, a signal's too.
 swarm_exit_trap() {
     local rc=$?
     swarm_tmp_cleanup
-    if [ "$rc" -eq 0 ] && ! $SWARM_EXIT_OK; then
+    if [ "$rc" -eq 0 ] && ! $SWARM_EXIT_OK \
+            && swarm_stop_guard_needed "${BASH_VERSINFO[0]}" \
+                "${BASH_VERSINFO[1]}"; then
         echo "ERROR: launch.sh stopped before the end of its run." >&2
         exit 1
     fi

@@ -536,6 +536,16 @@ swarm_random_hex() {
     printf '%s' "$hex"
 }
 
+# Whether Bash MAJOR.MINOR needs the stop check of the EXIT traps of
+# launch.sh, retire, cleanup, costs.sh, progress.sh and dashboard.sh:
+# before 4.1, Bash (macOS's /bin/bash is 3.2) runs an EXIT trap with $?
+# at 0 when set -u stops the script on an unset variable, so that stop
+# would pass for success; later versions end such a run with a nonzero
+# status themselves.
+swarm_stop_guard_needed() {
+    [ "$1" -lt 4 ] || { [ "$1" -eq 4 ] && [ "$2" -lt 1 ]; }
+}
+
 # Create the workspace volume for container NAME of the engagement with
 # id ENGAGEMENT and token TOKEN, and print its name.  Each container gets
 # a new volume, so a later container never starts from the files of an

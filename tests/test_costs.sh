@@ -309,20 +309,21 @@ assert_eq "the same run without the stop ends with 0" "0" "$_stop_rc"
 
 # The check is made only on Bash before 4.1: later versions end a run
 # that set -u stops with a nonzero status themselves, and every version
-# runs the EXIT trap with $? at 0 when a signal ends the script.  The
-# script's own version test and trap, extracted.
+# can run the EXIT trap with $? at 0 when a signal ends the script.  The
+# shared version test (lib/project.sh) and the script's trap, extracted.
 _extract() {  # FUNCTION FILE
     awk -v f="$1" '$0 ~ "^" f "\\(\\)[[:space:]]*\\{" { p = 1 }
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' "$2"
 }
-_extract costs_stop_guard_needed "$_costs_sh" > "$TMPDIR/stop-guard.sh"
+_extract swarm_stop_guard_needed "$(dirname "$_costs_sh")/lib/project.sh" \
+    > "$TMPDIR/stop-guard.sh"
 _extract costs_exit_trap "$_costs_sh" > "$TMPDIR/exit-trap.sh"
 _guard() {
     (
         # shellcheck source=/dev/null
         source "$TMPDIR/stop-guard.sh"
-        if costs_stop_guard_needed "$1" "$2"; then echo yes; else echo no; fi
+        if swarm_stop_guard_needed "$1" "$2"; then echo yes; else echo no; fi
     )
 }
 _guards="$(_guard 3 2) $(_guard 4 0) $(_guard 4 1) $(_guard 4 4)"
@@ -357,7 +358,7 @@ mkdir -p "\$COSTS_TMPDIR"
 COSTS_EXIT_OK=false
 # shellcheck source=/dev/null
 source "$TMPDIR/exit-trap.sh"
-costs_stop_guard_needed() { return $2; }
+swarm_stop_guard_needed() { return $2; }
 trap costs_exit_trap EXIT
 $3
 EOF

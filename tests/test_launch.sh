@@ -3859,6 +3859,9 @@ echo "=== 55. Workspace volumes, one daemon, clean runtimes ==="
 #               waited for the lock (a "-w" line in flock.log) tries the
 #               engagement lock itself and logs to lock-probe.log whether
 #               another process held it ("held") or not ("free")
+#   hold-build  when there, docker build writes its pid to V_DIR/ready
+#               and waits until a SIGTERM, then exits with 0 (after 30
+#               seconds with none, it fails)
 # Every call is logged to V_DIR/log as "<DOCKER_CONTEXT>|<arguments>".
 # volume create and inspect go to the shared fake, which keeps this
 # case's volumes in V_DIR/vols.
@@ -3981,7 +3984,17 @@ case "$1" in
         case " $* " in
             *" -d "*) echo "cid-run" ;;
         esac ;;
-    build) fails build && exit 1 ;;
+    build)
+        if [ -e "$d/hold-build" ]; then
+            trap 'kill "$s" 2>/dev/null; exit 0' TERM
+            sleep 30 &
+            s=$!
+            printf '%s\n' "$$" > "$d/ready.tmp"
+            mv "$d/ready.tmp" "$d/ready"
+            wait "$s"
+            exit 1
+        fi
+        fails build && exit 1 ;;
     stop)
         id="${*: -1}"
         if fails stop-gone; then
@@ -5001,6 +5014,223 @@ assert_eq "interactive --help ends with 0" "0" "$_v_rc"
 _v_rc=0
 v_run status >/dev/null || _v_rc=$?
 assert_eq "status ends with 0" "0" "$_v_rc"
+
+# The check is made only on Bash before 4.1 (swarm_stop_guard_needed):
+# later versions end a run that set -u stops with a nonzero status
+# themselves, and every version can run the EXIT trap with $? at 0 when
+# a signal ends the script.
+_sg_guard() {
+    if swarm_stop_guard_needed "$1" "$2"; then echo yes; else echo no; fi
+}
+_sg_all="$(_sg_guard 3 2) $(_sg_guard 4 0) $(_sg_guard 4 1)"
+_sg_all="$_sg_all $(_sg_guard 4 4) $(_sg_guard 5 2) $(_sg_guard 10 0)"
+assert_eq "the check is made on Bash 3.2 and 4.0, not from 4.1 on" \
+    "yes yes no no no no" "$_sg_all"
+# Every Bash the runner has: /bin/bash, and on macOS the Homebrew bash
+# (required on CI).
+_sg_bashes="/bin/bash"
+_sg_brew=""
+if command -v brew >/dev/null 2>&1; then
+    _sg_brew="$(brew --prefix)/bin/bash"
+fi
+if [ -n "$_sg_brew" ] && [ -x "$_sg_brew" ]; then
+    _sg_bashes="$_sg_bashes $_sg_brew"
+elif [ "$(uname)" = Darwin ]; then
+    if [ -n "${CI:-}" ]; then
+        assert_eq "CI has the Homebrew bash" "yes" "no"
+    else
+        echo "  SKIP: no Homebrew bash, so only /bin/bash is checked"
+    fi
+fi
+# launch.sh's EXIT trap and its temp-file cleanup, extracted, in a child
+# Bash with the version test stubbed both ways: a run that ends without
+# the flag prints the line and ends with 1 only where the check is made;
+# the flag, or another status, is kept; the temp files go every time.
+_sg_extract() {  # FUNCTION FILE
+    awk -v f="$1" '$0 ~ "^" f "\\(\\)[[:space:]]*\\{" { p = 1 }
+         p { print }
+         p && /^\}[[:space:]]*$/ { exit }' "$2"
+}
+{
+    _sg_extract swarm_tmp_cleanup "$_LAUNCH_SH"
+    _sg_extract swarm_exit_trap "$_LAUNCH_SH"
+} > "$TMPDIR/sg-trap.sh"
+assert_eq "launch.sh's trap and its cleanup are extracted" "2" \
+    "$(grep -cE '^(swarm_tmp_cleanup|swarm_exit_trap)\(\)' \
+        "$TMPDIR/sg-trap.sh")"
+_sg_run() {  # BASH NEEDED(0 yes, 1 no) END
+    mkdir -p "$TMPDIR/sg-files"
+    : > "$TMPDIR/sg-files/a"
+    : > "$TMPDIR/sg-files/b"
+    cat > "$TMPDIR/sg-run.sh" <<EOF
+set -euo pipefail
+SWARM_TMP_FILES=("$TMPDIR/sg-files/a" "$TMPDIR/sg-files/b")
+SWARM_EXIT_OK=false
+# shellcheck source=/dev/null
+source "$TMPDIR/sg-trap.sh"
+swarm_stop_guard_needed() { return $2; }
+trap swarm_exit_trap EXIT
+$3
+EOF
+    "$1" "$TMPDIR/sg-run.sh" 2>&1
+}
+_sg_gone() {
+    if [ -e "$TMPDIR/sg-files/a" ] || [ -e "$TMPDIR/sg-files/b" ]; then
+        echo no
+    else
+        echo yes
+    fi
+}
+_sg_line='launch.sh stopped before the end of its run'
+for _sg_b in $_sg_bashes; do
+    _sg_rc=0
+    _sg_out=$(_sg_run "$_sg_b" 0 ':') || _sg_rc=$?
+    assert_eq "$_sg_b: no flag where the check is made: status 1" "1" \
+        "$_sg_rc"
+    assert_eq "$_sg_b:   saying so once" "1" \
+        "$(grep -c "$_sg_line" <<< "$_sg_out")"
+    assert_eq "$_sg_b:   the temp files go" "yes" "$(_sg_gone)"
+    _sg_rc=0
+    _sg_out=$(_sg_run "$_sg_b" 1 ':') || _sg_rc=$?
+    assert_eq "$_sg_b: no flag where it is not: status 0" "0" "$_sg_rc"
+    assert_eq "$_sg_b:   no line" "0" \
+        "$(grep -c 'stopped before the end' <<< "$_sg_out")"
+    assert_eq "$_sg_b:   the temp files go" "yes" "$(_sg_gone)"
+    _sg_rc=0
+    _sg_out=$(_sg_run "$_sg_b" 0 'SWARM_EXIT_OK=true') || _sg_rc=$?
+    assert_eq "$_sg_b: the flag: status 0" "0" "$_sg_rc"
+    assert_eq "$_sg_b:   no line" "0" \
+        "$(grep -c 'stopped before the end' <<< "$_sg_out")"
+    assert_eq "$_sg_b:   the temp files go" "yes" "$(_sg_gone)"
+    _sg_rc=0
+    _sg_out=$(_sg_run "$_sg_b" 0 'exit 3') || _sg_rc=$?
+    assert_eq "$_sg_b: another status stays" "3" "$_sg_rc"
+    assert_eq "$_sg_b:   with no line" "0" \
+        "$(grep -c 'stopped before the end' <<< "$_sg_out")"
+    assert_eq "$_sg_b:   the temp files go" "yes" "$(_sg_gone)"
+done
+# End to end: SIGTERM and SIGHUP to launch.sh start while it waits in
+# docker build (the hold-build knob), which comes after its EXIT trap is
+# set and after it made its agents file, a temp file in TMPDIR.  python3
+# starts the run in a session of its own, signals launch.sh only, then
+# lets the held fake go (Bash may hold the signal until it returns), and
+# kills the whole session at the end.  On Bash 4.1 and later no line, on
+# earlier versions the line; death by the signal and the temp file gone
+# on every version.
+_sg_py=yes
+if ! command -v python3 >/dev/null 2>&1; then
+    _sg_py=no
+    if [ -n "${CI:-}" ]; then
+        assert_eq "CI has python3" "yes" "no"
+    else
+        echo "  SKIP: no python3, so no signal is sent"
+    fi
+fi
+cat > "$TMPDIR/sg-sigrun.py" <<'EOF'
+import glob, os, signal, subprocess, sys, time
+bash, script, cwd, ready, errfile, signame, watch = sys.argv[1:8]
+args = sys.argv[8:]
+def made():
+    return "yes" if glob.glob(watch) else "no"
+p = None
+held = None
+def release(sig=signal.SIGTERM):
+    # The held command traps SIGTERM and exits with 0.
+    if held is not None:
+        try:
+            os.kill(held, sig)
+        except ProcessLookupError:
+            pass
+def killgroup():
+    release(signal.SIGKILL)
+    if p is None:
+        return
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+# A TERM, HUP or INT to this supervisor (a test run cancelled) ends it
+# through the finally block, which kills the run's session.  They are
+# blocked while the run is made, and unblocked in the run before exec.
+def stop(signum, frame):
+    raise SystemExit(128 + signum)
+caught = {signal.SIGTERM, signal.SIGHUP, signal.SIGINT}
+for s in caught:
+    signal.signal(s, stop)
+try:
+    signal.pthread_sigmask(signal.SIG_BLOCK, caught)
+    try:
+        with open(errfile, "w") as err:
+            p = subprocess.Popen(
+                [bash, script] + args, cwd=cwd, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=err,
+                start_new_session=True,
+                preexec_fn=lambda: signal.pthread_sigmask(
+                    signal.SIG_UNBLOCK, caught))
+    finally:
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, caught)
+    deadline = time.time() + 20
+    while time.time() < deadline and not os.path.exists(ready):
+        if p.poll() is not None:
+            break
+        time.sleep(0.1)
+    if not os.path.exists(ready):
+        print("ready no")
+        sys.exit(0)
+    with open(ready) as f:
+        held = int(f.read().strip())
+    print("ready yes")
+    print("before", made())
+    # Then let the held command end with 0 at once: whether Bash acts
+    # on its signal before or after it sees that end, the status it
+    # has is 0, as it would be in a run the signal stops there.
+    os.kill(p.pid, getattr(signal, signame))
+    release()
+    try:
+        rc = p.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        print("rc timeout")
+        sys.exit(0)
+    print("rc", rc)
+    print("after", made())
+finally:
+    killgroup()
+EOF
+if [ "$_sg_py" = yes ]; then
+    for _sg_b in $_sg_bashes; do
+        _sg_v=$("$_sg_b" -c 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"')
+        # shellcheck disable=SC2086  # major and minor as two words
+        if [ "$(_sg_guard $_sg_v)" = yes ]; then _sg_n=1; else _sg_n=0; fi
+        for _sg_sig in TERM:-15 HUP:-1; do
+            _sg_name="$_sg_b, SIG${_sg_sig%%:*}"
+            v_new
+            touch "$V_DIR/hold-build"
+            mkdir "$V_DIR/tmp"
+            _sg_out=$(cd "$_st_repo" && env PATH="$_v_bin:$PATH" \
+                V_DIR="$V_DIR" V_STATE="$V_STATE" SWARM_RUNTIME_DIR="$V_RT" \
+                SWARM_CONFIG="$V_CFG" SWARM_SKIP_DEP_CHECK=1 \
+                SWARM_WAIT_POLL=0 TMPDIR="$V_DIR/tmp" \
+                python3 "$TMPDIR/sg-sigrun.py" "$_sg_b" "$_LAUNCH_SH" \
+                    "$_st_repo" "$V_DIR/ready" "$V_DIR/err" \
+                    "SIG${_sg_sig%%:*}" "$V_DIR/tmp/swarm-agents.*" \
+                    start 8>&- 2>&1)
+            assert_eq "$_sg_name: start waits in docker build" "yes" \
+                "$(sed -n 's/^ready //p' <<< "$_sg_out")"
+            assert_eq "$_sg_name:   its agents file there" "yes" \
+                "$(sed -n 's/^before //p' <<< "$_sg_out")"
+            assert_eq "$_sg_name:   it dies of the signal" \
+                "${_sg_sig#*:}" "$(sed -n 's/^rc //p' <<< "$_sg_out")"
+            assert_eq "$_sg_name:   the line only before Bash 4.1" \
+                "$_sg_n" "$(grep -c "$_sg_line" "$V_DIR/err" || true)"
+            assert_eq "$_sg_name:   the agents file goes" "no" \
+                "$(sed -n 's/^after //p' <<< "$_sg_out")"
+        done
+    done
+fi
 
 echo ""
 echo "==============================="

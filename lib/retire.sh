@@ -107,14 +107,20 @@ EOF
 }
 
 # The EXIT trap of retire and cleanup.  It fires only when the run
-# stops short (its normal end removes it first): clean up, and never end
-# with status 0 then.  Bash 3.2 runs an EXIT trap with $? at 0 when set
-# -u stops the script on an unset variable, so that stop would pass for
-# success; any other status stays.
+# stops short (its normal end removes it first, and HUP, INT and TERM
+# have traps of their own): clean up, and where Bash needs it
+# (swarm_stop_guard_needed), never end with status 0 then.  Bash can
+# also run it with $? at 0 when a signal those traps leave alone ends
+# the run, such as the SIGPIPE of a pipe closed while the run writes to
+# it, so the check is only made where Bash can end a stopped run with 0
+# itself; there such a signal can print the line too.  Any other status
+# stays, a signal's too.
 retire_stopped() {
     local rc=$?
     retire_cleanup
-    if [ "$rc" -eq 0 ]; then
+    if [ "$rc" -eq 0 ] \
+            && swarm_stop_guard_needed "${BASH_VERSINFO[0]}" \
+                "${BASH_VERSINFO[1]}"; then
         echo "ERROR: the run stopped before its end." >&2
         exit 1
     fi
