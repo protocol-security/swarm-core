@@ -129,7 +129,7 @@ Per-group fields in `swarm.json` `agents` array:
 | `auth` | `apikey`, `oauth`, `chatgpt`, omit | Which host credential to inject (see [Auth modes](#auth-modes)). |
 | `api_key` | key or `$VAR` | Per-group API key for third-party endpoints. |
 | `auth_token` | key or `$VAR` | Per-group Bearer token (OpenRouter-style). |
-| `base_url` | URL | Per-group API endpoint. Registers the provider (built-in or custom) with full model metadata; tune via `PI_API_KIND`, `PI_CONTEXT_WINDOW`, `PI_MAX_TOKENS`. |
+| `base_url` | URL | Per-group API endpoint. Registers the provider (built-in or custom) with full model metadata; tune via `PI_API_KIND`, `PI_CONTEXT_WINDOW`, `PI_MAX_TOKENS`, `PI_REASONING`. |
 | `tag` | string or `$VAR` | Label for grouping runs (default: top-level). |
 | `driver` | driver name | Agent driver override (default: top-level or `claude-code`). |
 
@@ -811,10 +811,14 @@ An extra-usage rejection is fatal, not a reason to retry indefinitely.
 (`openrouter/...`) get their endpoint redirected, and custom prefixes
 (`ethereum-foundation/...`) resolve as first-class providers with the
 model declared (`api` defaults to `openai-completions`; metadata via
-`PI_API_KIND`, `PI_CONTEXT_WINDOW`, `PI_MAX_TOKENS`). This override is
-not allowed with `auth: "chatgpt"`. For API-key/token modes, secrets
-stay in environment variables; generated auth files contain
-environment references outside the worktree.
+`PI_API_KIND`, `PI_CONTEXT_WINDOW`, `PI_MAX_TOKENS`). Pi treats a model
+it does not know as non-reasoning and ignores `effort` for it; set
+`PI_REASONING=1` to declare it a reasoning model. On
+`openai-completions`, `effort: "none"` then sends `reasoning_effort:
+"none"`, which endpoints that reason by default need to stop. This
+override is not allowed with `auth: "chatgpt"`. For API-key/token
+modes, secrets stay in environment variables; generated auth files
+contain environment references outside the worktree.
 
 Headless runs use fresh, unsaved sessions with `read`, `write`, `edit`,
 and `bash`. Project Pi settings/extensions are not automatically trusted;

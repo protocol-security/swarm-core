@@ -201,6 +201,19 @@ agent_settings() {
             # providers instead of failing. Model metadata defaults
             # suit OpenAI-compatible GLM-class endpoints; override per
             # run with PI_API_KIND, PI_CONTEXT_WINDOW, PI_MAX_TOKENS.
+            # PI_REASONING=1 declares a model Pi does not know as a
+            # reasoning model, so that effort reaches it; on the
+            # OpenAI-compatible API, effort none then sends
+            # reasoning_effort "none", which such endpoints need to
+            # stop reasoning.
+            local reasoning=false
+            case "${PI_REASONING:-}" in
+                ''|0) ;;
+                1) reasoning=true ;;
+                *)
+                    echo "ERROR: PI_REASONING must be 0 or 1." >&2
+                    exit 1 ;;
+            esac
             local api_kind="${PI_API_KIND:-openai-completions}"
             if [ "$provider" = anthropic ] && [ -z "${PI_API_KIND:-}" ]; then
                 api_kind="anthropic-messages"
@@ -232,6 +245,7 @@ agent_settings() {
                 --argjson catalog "$catalog_model" \
                 --argjson ctx "${PI_CONTEXT_WINDOW:-128000}" \
                 --argjson max "${PI_MAX_TOKENS:-8192}" \
+                --argjson reasoning "$reasoning" \
                 --arg api_key "${PI_API_KEY:-}" \
                 '{
                     providers: {
@@ -257,7 +271,11 @@ agent_settings() {
                                 contextWindow: $ctx,
                                 maxTokens: $max,
                                 cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}
-                            }]
+                            } + (if $reasoning then {reasoning: true}
+                                + (if $api == "openai-completions" then
+                                    {thinkingLevelMap: {off: "none"}}
+                                else {} end)
+                            else {} end)]
                         } end) + (if $api_key != "" then
                             {apiKey: "$PI_API_KEY"}
                         else {} end))
@@ -383,7 +401,7 @@ agent_docker_auth() {
     local api_key="$1" auth_token="$2" auth_mode="$3" base_url="$4"
     local oauth="${ANTHROPIC_OAUTH_TOKEN:-${CLAUDE_CODE_OAUTH_TOKEN:-}}"
     local label="" _pv
-    for _pv in PI_API_KIND PI_CONTEXT_WINDOW PI_MAX_TOKENS; do
+    for _pv in PI_API_KIND PI_CONTEXT_WINDOW PI_MAX_TOKENS PI_REASONING; do
         if [ -n "${!_pv:-}" ]; then
             printf -- '-e\n%s=%s\n' "$_pv" "${!_pv}"
         fi
