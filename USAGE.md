@@ -1336,9 +1336,10 @@ refuses when one
 - has anything but its own workspace volume at `/workspace`, or
   another mount or a tmpfs below it;
 - belongs to an open interactive session;
-- has global or system git config (the files the container's git
-  names with `git var`, which needs Git 2.42 or later in the image,
-  read as the container's user with its `HOME` and `XDG_CONFIG_HOME`)
+- has global or system git config (the global files where Git looks
+  for them under the container's `HOME` and `XDG_CONFIG_HOME`, and the
+  system file the container's git names with `git var`, which needs
+  Git 2.42 or later in the image; read as the container's user)
   that sets `lfs.storage`, `core.worktree` or `core.hooksPath`,
   includes other files, cannot be parsed, or lies on a mount; or has
   Git environment variables of its own, or a `HOME` that is empty,
@@ -1346,8 +1347,9 @@ refuses when one
 - has repository data outside `/workspace`: a worktree registered
   elsewhere, a `.git` that is a link or a gitfile, repository config
   that includes files or sets `core.worktree` outside, `core.hooksPath`,
-  `lfs.storage` or a filter driver, alternates outside, or a nested
-  repository;
+  `lfs.storage` or a filter driver, alternates outside, or a
+  repository inside the volume that the scan cannot carry (see
+  [Cleanup](#cleanup));
 - has a symlink in the volume that leads to data the container wrote
   itself, or to an image file it changed (links into the unchanged
   image, such as a virtualenv's `python`, are fine);
@@ -1365,8 +1367,9 @@ only then removes the container. Work outside Git's history in it
 (uncommitted, untracked or ignored files, the agent's `agent_logs`
 included) stops retire, unless `./launch.sh retire
 --discard-uncommitted` (or cleanup's) drops exactly what it lists; so
-does a repository below it that is not a submodule checkout, and a
-link that leads out of it into what the container wrote. A container's
+does a repository below it that the scan cannot carry, and a link that
+leads out of it into what the container wrote. A repository nested in
+it is kept with it, the way cleanup keeps one in a volume. A container's
 checkouts may take `SWARM_RETIRE_LAYER_LIMIT_MB` megabytes (default
 100) as bundles; above that, copy out what you need and remove the
 container yourself.
@@ -1407,6 +1410,15 @@ loses nothing Git kept there: before it deletes a repository location
 it copies everything Git keeps in it (every ref and reflog entry,
 every object, stashes, unfinished operations, and every file of the
 git dir) into the checkout as recovery refs, and checks them there.
+A repository cloned or initialized inside a workspace (a setup hook's
+clone of the code under audit, say) is copied the same way, with its
+submodules: its git dir is checked like the workspace's, its work
+outside Git's history is listed with its path, and the workspace's
+entry for its directory is not counted as the workspace's own. A
+repository there that is not an ordinary checkout (a bare repository,
+a `.git` that is a link, a `.git` file that leads anywhere but a git
+dir the scan copies, a repository with another object format) stops
+cleanup.
 
 ```bash
 ./launch.sh cleanup [--discard-uncommitted] [--allow-unharvested]
@@ -1429,6 +1441,8 @@ It stops, and deletes nothing, when
   history (uncommitted or ignored files, files too large to copy):
   commit or copy it out, or pass `--discard-uncommitted`, which drops
   exactly what it lists;
+- a repository in a workspace is a partial clone (its history is not
+  all there, and cleanup never fetches);
 - `mirrors/` holds anything that is not a mirror;
 - the checkout cannot keep the copies by itself (a shallow or partial
   clone, alternates, an object store inside what cleanup deletes), or
@@ -1458,7 +1472,14 @@ The recovery refs are `refs/swarm-recovery/e<hex>/<snapshot>/s<n>/...`
 (cleanup) and `.../l<n>/...` (the checkouts retire keeps), `<hex>`
 being the engagement id in hex;
 `git cat-file blob refs/swarm-recovery/e<hex>/<snapshot>/sources`
-says what each `s<n>` or `l<n>` was. That sources ref is written only
+says what each `s<n>` or `l<n>` was. Under each, every git dir copied
+has a number `<k>`: `<k>/path` holds where it was (`.git`, or
+`engagement_target/.git` for a repository nested in the workspace),
+`<k>/t/...` hold its objects. The files of the workspace's `.git` are
+under `0/files` and `0/f/...`, and those of a nested repository's
+`.git` under the number of that `.git`; the git dirs of its submodules
+and linked worktrees have their own `<k>/path` and objects, their
+files being part of that `.git`. That sources ref is written only
 once every copy of its snapshot is in the checkout and `git fsck`
 passed, so a snapshot with one is a verified copy; one without it was
 stopped before (its refs may be partial), and the next run copies again
