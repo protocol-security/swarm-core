@@ -190,6 +190,12 @@ own_container_state() {
         printf 'not found'
         return 0
     fi
+    # A created container whose start failed reads "failed": nothing
+    # runs, and retire takes it.
+    if swarm_start_failed "$id"; then
+        printf 'failed'
+        return 0
+    fi
     docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null \
         || printf 'not found'
 }
@@ -1403,9 +1409,10 @@ wait_count() {
 }
 
 # Print "<running> <exited>" for the numbered agents of the engagement
-# with token TOKEN, as Docker lists them now.
+# with token TOKEN, as Docker lists them now.  A created agent whose
+# start failed counts as exited: it never runs.
 wait_agents() {
-    local states
+    local states name state listing=""
     if ! states=$(docker ps -a \
             --filter "label=${SWARM_TOKEN_LABEL}=${1}" \
             --filter "label=${SWARM_PROJECT_LABEL}=${PROJECT}" \
@@ -1414,7 +1421,20 @@ wait_agents() {
         echo "ERROR: cannot list Docker containers." >&2
         return 1
     fi
-    wait_count "$states"
+    # Pairs of words: names and states hold no blanks or glob
+    # characters.
+    # shellcheck disable=SC2086
+    set -- $states
+    while [ $# -ge 2 ]; do
+        name="$1"
+        state="$2"
+        shift 2
+        if [ "$state" = created ] && swarm_start_failed "$name"; then
+            state=failed
+        fi
+        listing+="${name} ${state}"$'\n'
+    done
+    wait_count "$listing"
 }
 
 cmd_wait() {
