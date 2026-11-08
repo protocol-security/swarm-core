@@ -241,6 +241,32 @@ PI_API_KEY='!not-a-shell-command' PI_BASE_URL=https://example.test \
 assert_eq "custom model keeps zero-cost metadata" \
     "0" "$(jq -r '.providers.openai.models[0].cost.input' \
         "$PI_CODING_AGENT_DIR/models.json")"
+_pr_model='.providers.openai.models[0]
+    | "\(.reasoning) \(.thinkingLevelMap)"'
+assert_eq "custom model is not declared reasoning by default" "null null" \
+    "$(jq -r "$_pr_model" "$PI_CODING_AGENT_DIR/models.json")"
+# PI_REASONING=1: effort reaches a model Pi does not know, and on the
+# OpenAI-compatible API effort none sends reasoning_effort "none".
+PI_API_KEY='!not-a-shell-command' PI_BASE_URL=https://example.test \
+    PI_REASONING=1 SWARM_MODEL=openai/custom-model \
+    agent_settings "$WORK/workspace"
+assert_eq "PI_REASONING=1 declares the custom model reasoning" \
+    'true {"off":"none"}' \
+    "$(jq -rc "$_pr_model" "$PI_CODING_AGENT_DIR/models.json")"
+PI_API_KEY='!not-a-shell-command' PI_BASE_URL=https://example.test \
+    PI_REASONING=1 PI_API_KIND=anthropic-messages \
+    SWARM_MODEL=openai/custom-model agent_settings "$WORK/workspace"
+assert_eq "other APIs get reasoning without the OpenAI off value" \
+    "true null" \
+    "$(jq -r "$_pr_model" "$PI_CODING_AGENT_DIR/models.json")"
+_pr_rc=0
+PI_API_KEY='!not-a-shell-command' PI_BASE_URL=https://example.test \
+    PI_REASONING=yes SWARM_MODEL=openai/custom-model \
+    agent_settings "$WORK/workspace" 2>/dev/null || _pr_rc=$?
+assert_eq "PI_REASONING other than 0 or 1 is refused" 1 "$_pr_rc"
+assert_eq "PI_REASONING is forwarded to the container" $'-e\nPI_REASONING=1' \
+    "$(PI_REASONING=1 agent_docker_auth '' '' '' '' 2>/dev/null \
+        | head -n 2)"
 assert_eq "retries delegated to harness" false \
     "$(jq -r '.retry.enabled' "$PI_CODING_AGENT_DIR/settings.json")"
 assert_eq "cache warming disabled" off \
