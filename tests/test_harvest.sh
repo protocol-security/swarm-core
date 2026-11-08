@@ -918,6 +918,95 @@ progress_rc=0
 BASH_ENV="$TMPDIR/progress-stop-env.sh" "$REPO_ROOT/progress.sh" \
     >/dev/null 2>&1 || progress_rc=$?
 assert_eq "the same run without the stop ends with 0" "0" "$progress_rc"
+# The check is made only on Bash before 4.1 (later versions end a run
+# that set -u stops with a nonzero status themselves; every version runs
+# the EXIT trap with $? at 0 when a signal ends the script).  The
+# script's own version test and trap, extracted; the trap runs in a
+# child of each Bash the runner has, with the version test stubbed both
+# ways.
+_px_extract() {  # FUNCTION FILE
+    awk -v f="$1" '$0 ~ "^" f "\\(\\)[[:space:]]*\\{" { p = 1 }
+         p { print }
+         p && /^\}[[:space:]]*$/ { exit }' "$2"
+}
+_px_extract progress_stop_guard_needed "$REPO_ROOT/progress.sh" \
+    > "$TMPDIR/progress-guard.sh"
+_px_extract progress_exit_trap "$REPO_ROOT/progress.sh" \
+    > "$TMPDIR/progress-trap.sh"
+_px_guard() {
+    (
+        # shellcheck source=/dev/null
+        source "$TMPDIR/progress-guard.sh"
+        if progress_stop_guard_needed "$1" "$2"; then
+            echo yes
+        else
+            echo no
+        fi
+    )
+}
+_px_guards="$(_px_guard 3 2) $(_px_guard 4 0) $(_px_guard 4 1)"
+_px_guards="$_px_guards $(_px_guard 4 4) $(_px_guard 5 2) $(_px_guard 10 0)"
+assert_eq "the check is made on Bash 3.2 and 4.0, not from 4.1 on" \
+    "yes yes no no no no" "$_px_guards"
+_px_bashes="/bin/bash"
+_px_brew=""
+if command -v brew >/dev/null 2>&1; then
+    _px_brew="$(brew --prefix)/bin/bash"
+fi
+if [ -n "$_px_brew" ] && [ -x "$_px_brew" ]; then
+    _px_bashes="$_px_bashes $_px_brew"
+elif [ "$(uname)" = Darwin ]; then
+    if [ -n "${CI:-}" ]; then
+        assert_eq "CI has the Homebrew bash" "yes" "no"
+    else
+        echo "  SKIP: no Homebrew bash, so only /bin/bash is checked"
+    fi
+fi
+_px_run() {  # BASH NEEDED(0 yes, 1 no) END
+    cat > "$TMPDIR/progress-trap-run.sh" <<EOF
+set -euo pipefail
+CHECK_DIR="$TMPDIR/progress-trap-scratch"
+mkdir -p "\$CHECK_DIR"
+PROGRESS_EXIT_OK=false
+# shellcheck source=/dev/null
+source "$TMPDIR/progress-trap.sh"
+progress_stop_guard_needed() { return $2; }
+trap progress_exit_trap EXIT
+$3
+EOF
+    "$1" "$TMPDIR/progress-trap-run.sh" 2>&1
+}
+_px_gone() {
+    if [ -e "$TMPDIR/progress-trap-scratch" ]; then echo no; else echo yes; fi
+}
+for _px_b in $_px_bashes; do
+    _px_rc=0
+    _px_out=$(_px_run "$_px_b" 0 ':') || _px_rc=$?
+    assert_eq "$_px_b: no flag where the check is made: status 1" "1" \
+        "$_px_rc"
+    assert_eq "$_px_b:   saying so once" "1" \
+        "$(grep -c 'progress.sh stopped before the end of its run' \
+            <<< "$_px_out")"
+    assert_eq "$_px_b:   the clone goes" "yes" "$(_px_gone)"
+    _px_rc=0
+    _px_out=$(_px_run "$_px_b" 1 ':') || _px_rc=$?
+    assert_eq "$_px_b: no flag where it is not: status 0" "0" "$_px_rc"
+    assert_eq "$_px_b:   no line" "0" \
+        "$(grep -c 'stopped before the end' <<< "$_px_out")"
+    assert_eq "$_px_b:   the clone goes" "yes" "$(_px_gone)"
+    _px_rc=0
+    _px_out=$(_px_run "$_px_b" 0 'PROGRESS_EXIT_OK=true') || _px_rc=$?
+    assert_eq "$_px_b: the flag: status 0" "0" "$_px_rc"
+    assert_eq "$_px_b:   no line" "0" \
+        "$(grep -c 'stopped before the end' <<< "$_px_out")"
+    assert_eq "$_px_b:   the clone goes" "yes" "$(_px_gone)"
+    _px_rc=0
+    _px_out=$(_px_run "$_px_b" 0 'exit 3') || _px_rc=$?
+    assert_eq "$_px_b: another status stays" "3" "$_px_rc"
+    assert_eq "$_px_b:   with no line" "0" \
+        "$(grep -c 'stopped before the end' <<< "$_px_out")"
+    assert_eq "$_px_b:   the clone goes" "yes" "$(_px_gone)"
+done
 
 # ============================================================
 echo ""
