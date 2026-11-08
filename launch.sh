@@ -1186,7 +1186,7 @@ cmd_stop() {
     #   SWARM_STOP_TIMEOUT=120 ./launch.sh stop
     local stop_timeout="${SWARM_STOP_TIMEOUT:-60}" numbered=false
     local snap token list id info name rest state failed=0 pass=0 found
-    local labels phase
+    local labels phase locked=false
     while [ $# -gt 0 ]; do
         case "$1" in
             --numbered) numbered=true; shift ;;
@@ -1205,18 +1205,31 @@ cmd_stop() {
     # its token: every check reads the same copy of the state, and a
     # container of a later engagement, under a reused name or engagement
     # id, is never stopped.
-    state_snapshot snap || exit 1
-    swarm_cleanup_pending_check "$snap" || exit 1
-    swarm_legacy_refuse "$RUNTIME_DIR" "$snap" || exit 1
-    swarm_engagement_join "$snap" || exit 1
-    # A token names an engagement: one that is gone, or replaced, refuses
-    # (also when none is recorded any more).
-    swarm_engagement_token_check "$snap" || exit 1
-    token=$(swarm_engagement_token "$snap") || exit 1
-    if [ -z "$token" ]; then
-        echo "No engagement recorded; nothing to stop."
-        return 0
-    fi
+    while :; do
+        state_snapshot snap || exit 1
+        swarm_cleanup_pending_check "$snap" || exit 1
+        swarm_legacy_refuse "$RUNTIME_DIR" "$snap" || exit 1
+        swarm_engagement_join "$snap" || exit 1
+        # A token names an engagement: one that is gone, or replaced,
+        # refuses (also when none is recorded any more).
+        swarm_engagement_token_check "$snap" || exit 1
+        token=$(swarm_engagement_token "$snap") || exit 1
+        [ -z "$token" ] || break
+        if $locked; then
+            swarm_unlock
+            echo "No engagement recorded; nothing to stop."
+            return 0
+        fi
+        # A start holds the lock while it builds the image, before it
+        # records its token: no token says nothing until it is done.
+        if ! swarm_lock "$RUNTIME_DIR" "$stop_timeout"; then
+            echo "ERROR: without the engagement lock, stop cannot tell" \
+                 "that no engagement is about to start; run stop" \
+                 "again." >&2
+            exit 1
+        fi
+        locked=true
+    done
     swarm_engagement_daemon_check "$snap" || exit 1
     echo "--- Stopping agents (grace ${stop_timeout}s) ---"
     # What a container's labels must read before it is stopped.

@@ -2178,6 +2178,21 @@ stop_state '{"schema":"swarm-core.state/v1"}'
 : > "$trap_dir/calls"
 PROJECT=fake IMAGE_NAME=fake-agent run_stop
 assert_eq "no engagement: nothing to stop" "0" "$(stopped 60)"
+assert_eq "no engagement: a success" "0" \
+    "$(grep -c '^rc=1$' "$TMPDIR/stop.out" || true)"
+# A start holds the lock while it builds the image, before it records
+# its token: with none recorded, stop waits for the lock and fails when
+# another operation keeps it.
+exec 8>>"$_sr/engagement.lock"
+flock -n 8
+: > "$trap_dir/calls"
+PROJECT=fake IMAGE_NAME=fake-agent SWARM_STOP_TIMEOUT=1 run_stop
+exec 8>&-
+assert_eq "no engagement, lock held: stop fails" "1" \
+    "$(grep -c '^rc=1$' "$TMPDIR/stop.out" || true)"
+assert_eq "no engagement, lock held: says to run stop again" "1" \
+    "$(grep -c 'no engagement is about to start' "$TMPDIR/stop.out" \
+        || true)"
 
 # stop never creates the runtime directory and leaves the state file in
 # place, since it names the owner.
