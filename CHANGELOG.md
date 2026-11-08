@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fix: a signal that ends costs.sh, progress.sh or dashboard.sh no
+  longer prints "stopped before the end of its run" on Bash 4.1 and
+  later.** Bash runs the EXIT trap with status 0 when a signal ends a
+  script, as Bash 3.2 does when `set -u` stops one, so the check below
+  also fired for `./costs.sh | head`, a `kill` or a closed terminal.
+  It now runs only on Bash before 4.1, which can end a stopped run
+  with status 0 itself (a stop in the script's own shell, after its
+  trap is set); there a signal can print the line too. A signal's
+  status stays on every version.
 - **Fix: costs.sh, progress.sh and dashboard.sh no longer end with
   status 0 when Bash 3.2 stops them on an unset variable.** macOS's
   `/bin/bash` runs an EXIT trap with status 0 when `set -u` stops a
