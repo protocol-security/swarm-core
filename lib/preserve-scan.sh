@@ -47,8 +47,9 @@
 # the object list (except after a block that keeps a worktree scan from
 # reading the work tree: a filter driver, an include, an embedded
 # repository, a git dir or repository whose path holds a newline, a
-# core.worktree outside, a mismatched worktree, a common dir elsewhere;
-# the scan then stops there, with no bundle); 3 when the scan cannot
+# core.worktree outside, a mismatched worktree, a common dir elsewhere,
+# a special file among a git dir's own files, a partial clone; the scan
+# then stops there, with no bundle); 3 when the scan cannot
 # tell (message on stderr).  Compatible with Bash 3.2.
 
 set -euo pipefail
@@ -101,6 +102,14 @@ fi
 # reads those files on purpose.
 if [ "$MODE" != userconfig ]; then
     export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+fi
+# Git before 2.32 ignores GIT_CONFIG_GLOBAL: in a container (whose home
+# files the agent may have written), no home to read either.  The
+# host's own repositories (gitdir mode) keep it, so that an include of
+# ~/... in their config resolves as Git resolves it.
+if [ "$MODE" = worktree ]; then
+    export HOME="${OUT:-/nonexistent}/.no-home" \
+        XDG_CONFIG_HOME="${OUT:-/nonexistent}/.no-home"
 fi
 [ "$MODE" = userconfig ] || [ -d "$ROOT" ] || fail "not a directory: ${ROOT}"
 [ -d "$OUT" ] || fail "not a directory: ${OUT}"
@@ -274,8 +283,45 @@ gw() {
     [ ! -s "$ERR" ] || fail "git $* in ${dir}: $(cat "$ERR")"
 }
 
+# A write that fails ends the scan, also where a caller tests the
+# result (errexit does not apply there).
 report() {
-    printf '%s\n' "$*" >> "$REPORT"
+    printf '%s\n' "$*" >> "$REPORT" || fail "cannot write the report"
+}
+
+# git config on the file that -f names, and on nothing else: no
+# repository looked for around the current directory (the workspace's
+# own, where the helper runs the scan), no global or system file (Git
+# reads those first, includes and all, whatever -f names).
+cfg() {
+    GIT_DIR="$OUT/.no-repository" GIT_CONFIG_NOSYSTEM=1 \
+        GIT_CONFIG_GLOBAL=/dev/null HOME="$OUT/.no-home" \
+        XDG_CONFIG_HOME="$OUT/.no-home" git config "$@"
+}
+
+# Run a command, killing it once SWARM_SCAN_GIT_TIMEOUT seconds (default
+# 30) have passed; OUT/.timed-out then says so.  The watchdog stops at
+# its next tick once the command has ended.
+bounded() {
+    local secs="${SWARM_SCAN_GIT_TIMEOUT:-30}" pid wpid rc=0
+    rm -f "$OUT/.timed-out" "$OUT/.bounded-done"
+    "$@" &
+    pid=$!
+    (
+        i=0
+        while [ "$i" -lt "$secs" ]; do
+            sleep 1
+            [ ! -e "$OUT/.bounded-done" ] || exit 0
+            i=$((i + 1))
+        done
+        : > "$OUT/.timed-out"
+        kill -9 "$pid" 2>/dev/null
+    ) >/dev/null 2>&1 &
+    wpid=$!
+    wait "$pid" || rc=$?
+    : > "$OUT/.bounded-done"
+    wait "$wpid" 2>/dev/null || true
+    return "$rc"
 }
 
 # Print the size of file $1 in bytes.
@@ -348,15 +394,17 @@ list_files() {
 
 # Store every path of OUT/.fkeep (under TOP) in SCRATCH: a symlink as
 # its target string, a regular file as its bytes, each as a blob
-# referenced by refs/v/0/f/<k>, with the list "<k> <mode> <size> <path>"
-# (NUL-terminated, paths relative to TOP) as refs/v/0/files.  A file
-# over the size limits is reported as uncommitted instead, unless its
-# path relative to TOP starts with ALWAYS/ (files mode keeps objects/
-# whatever its size); such files do not count toward the total.  Any
-# other kind of file fails the scan.
+# referenced by refs/v/<ID>/f/<k>, with the list "<k> <mode> <size>
+# <path>" (NUL-terminated, paths relative to TOP) as refs/v/<ID>/files.
+# A file over the size limits is reported as uncommitted instead, unless
+# its path relative to TOP starts with ALWAYS/ (files mode keeps
+# objects/ whatever its size); such files do not count toward the total,
+# which TOTAL_USED keeps across every call of one scan.  Any other kind
+# of file fails the scan.
+TOTAL_USED=0
 store_files() {
-    local top="$1" always="$2" f rel target blob size mode files keep
-    local k=0 total=0
+    local top="$1" always="$2" id="$3" f rel target blob size mode files
+    local keep k=0
     : > "$OUT/.files"
     : > "$OUT/.fupd"
     while IFS= read -r -d '' f; do
@@ -371,7 +419,8 @@ store_files() {
             blob=$(printf '%s' "$target" \
                 | git --git-dir="$SCRATCH" hash-object -w --stdin) \
                 || fail "cannot store ${f}"
-            printf 'update refs/v/0/f/%s %s\n' "$k" "$blob" >> "$OUT/.fupd"
+            printf 'update refs/v/%s/f/%s %s\n' "$id" "$k" "$blob" \
+                >> "$OUT/.fupd"
             printf '%s 120000 0 %s\0' "$k" "$rel" >> "$OUT/.files"
             continue
         fi
@@ -385,25 +434,25 @@ store_files() {
         fi
         if [ "$keep" = no ]; then
             if [ "$size" -gt "$FILE_LIMIT" ] \
-                    || [ $((total + size)) -gt "$TOTAL_LIMIT" ]; then
+                    || [ $((TOTAL_USED + size)) -gt "$TOTAL_LIMIT" ]; then
                 report "uncommitted large-file ${f#"$ROOT"/} ${size}"
                 continue
             fi
-            total=$((total + size))
+            TOTAL_USED=$((TOTAL_USED + size))
         fi
         k=$((k + 1))
         blob=$(git --git-dir="$SCRATCH" hash-object -w --no-filters --stdin \
             < "$f") || fail "cannot store ${f}"
         mode=100644
         [ ! -x "$f" ] || mode=100755
-        printf 'update refs/v/0/f/%s %s\n' "$k" "$blob" >> "$OUT/.fupd"
+        printf 'update refs/v/%s/f/%s %s\n' "$id" "$k" "$blob" >> "$OUT/.fupd"
         printf '%s %s %s %s\0' "$k" "$mode" "$size" "$rel" >> "$OUT/.files"
     done < "$OUT/.fkeep"
     git --git-dir="$SCRATCH" update-ref --stdin < "$OUT/.fupd" 2>"$ERR" \
         || fail "cannot record the files of ${top}: $(cat "$ERR")"
     files=$(git --git-dir="$SCRATCH" hash-object -w --stdin \
         < "$OUT/.files") || fail "cannot write the file list of ${top}"
-    git --git-dir="$SCRATCH" update-ref refs/v/0/files "$files"
+    git --git-dir="$SCRATCH" update-ref "refs/v/$id/files" "$files"
 }
 
 make_bundle() {
@@ -429,7 +478,7 @@ if [ "$MODE" = files ]; then
     : > "$OUT/objects"
     : > "$OUT/.exempt"
     list_files "$ROOT" "$OUT/.exempt"
-    store_files "$ROOT" objects
+    store_files "$ROOT" objects 0
     make_bundle
     exit 0
 fi
@@ -449,15 +498,31 @@ if [ "$MODE" = userconfig ]; then
         mr=$(real_path "$m" && printf x) || fail "cannot resolve mount ${m}"
         printf '%s\n' "${mr%x}" >> "$OUT/.um"
     done < "$OUT/.um0"
-    # The files Git reads for its global and system settings, as the
-    # git on this PATH names them: a git built with another prefix
-    # reads its system file elsewhere than /etc/gitconfig.  A git that
-    # cannot name them (older than 2.42, or stopped by a config file it
-    # cannot parse) is refused, with its first message.
-    if ! git var GIT_CONFIG_GLOBAL > "$OUT/.uf" 2>"$OUT/.ue" \
-            || ! git var GIT_CONFIG_SYSTEM >> "$OUT/.uf" 2>>"$OUT/.ue" \
+    # The files Git reads for its global settings, worked out here as
+    # Git does (XDG_CONFIG_HOME, else HOME/.config; then HOME): git
+    # would read them before it named them.  The system file is named
+    # by git var, run with no global file and no repository, and within
+    # a time limit (it reads that file first): a git built with another
+    # prefix reads it elsewhere than /etc/gitconfig.  A git that cannot
+    # name it (older than 2.42, stopped by a file it cannot parse, or
+    # out of time) is refused, with its first message.
+    : > "$OUT/.uf"
+    if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+        printf '%s\n' "$XDG_CONFIG_HOME/git/config" >> "$OUT/.uf"
+    elif [ "${HOME+set}" = set ]; then
+        printf '%s\n' "$HOME/.config/git/config" >> "$OUT/.uf"
+    fi
+    [ "${HOME+set}" != set ] || printf '%s\n' "$HOME/.gitconfig" >> "$OUT/.uf"
+    : > "$OUT/.ue"
+    if ! bounded env HOME="$OUT/.no-home" XDG_CONFIG_HOME="$OUT/.no-home" \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_DIR="$OUT/.no-repository" \
+            git var GIT_CONFIG_SYSTEM >> "$OUT/.uf" 2>"$OUT/.ue" \
             || [ -s "$OUT/.ue" ]; then
-        report "block config-paths-unknown $(oneline "$(head -n 1 "$OUT/.ue")")"
+        if [ -e "$OUT/.timed-out" ]; then
+            report "block config-paths-unknown (git var did not answer in time)"
+        else
+            report "block config-paths-unknown $(oneline "$(head -n 1 "$OUT/.ue")")"
+        fi
         exit 0
     fi
     while IFS= read -r f; do
@@ -507,11 +572,11 @@ if [ "$MODE" = userconfig ]; then
             continue
         fi
         rc=0
-        git config -f "$r" --name-only --get-regexp \
+        cfg -f "$r" --name-only --get-regexp \
             '^(lfs\.storage|core\.worktree|core\.hookspath|include\..*|includeif\..*)$' \
             > "$OUT/.uk" 2>"$OUT/.ue" || rc=$?
         if [ -s "$OUT/.ue" ]; then
-            report "block config-unreadable $(oneline "$f")"
+            report "block config-unreadable $(oneline "$f"): $(oneline "$(head -n 1 "$OUT/.ue")")"
             continue
         fi
         case "$rc" in
@@ -653,49 +718,146 @@ else
     [ -f "$TOP/HEAD" ] || fail "not a git dir: ${TOP}"
 fi
 
-# TOP as a find -path pattern: *, ?, [ and \ in it match only themselves.
-TOP_PAT=$(printf '%s' "$TOP" | sed 's/[][*?\\]/\\&/g')
-
 # Set when a git dir or a repository below ROOT cannot be checked (its
 # path holds a newline): git status must not run then.
 UNCHECKED_REPO=""
-GITDIRS="$OUT/.gitdirs"
-list_gitdirs "$TOP" > "$GITDIRS"
-grep -qx "$TOP" "$GITDIRS" || printf '%s\n' "$TOP" >> "$GITDIRS"
 
-# Git follows a config include wherever it points, and opening a FIFO
-# there would hang the scan.  Before any git command reads a git dir's
-# config, each of its config files must be a regular file that
-# includes no other; one that is not stops the scan.
-_cfg_stop=""
-while IFS= read -r d; do
-    rel="${d#"$ROOT"/}"
-    for cf in "$d/config" "$d/config.worktree"; do
-        [ -e "$cf" ] || [ -L "$cf" ] || continue
-        if [ ! -f "$cf" ]; then
-            report "block config-unreadable $(oneline "${cf#"$ROOT"/}")"
-            _cfg_stop=yes
-            continue
-        fi
-        rc=0
-        git config -f "$cf" --name-only --get-regexp \
-            '^(include|includeif)\.' > "$OUT/.inc" 2>/dev/null || rc=$?
-        case "$rc" in
-            0)
-                report "block config-include ${rel}"
-                _cfg_stop=yes ;;
-            1) ;;
-            *) fail "cannot parse ${cf}" ;;
+# The trees of git dirs this scan carries (TOPS): TOP and, in worktree
+# mode, the .git directory of every repository nested in the checkout,
+# at any depth (a clone or a git init there), each checked and carried
+# the way TOP is.  find lists every .git below ROOT without looking
+# inside one, so no git dir's own files are taken for another
+# repository.  A .git that is a real directory holding a repository
+# (HEAD, objects/, not bare) is a TOP; .git files (the pointers of
+# submodules and linked worktrees) are resolved further on, once every
+# git dir is listed, and any other .git is reported there.
+TOPS="$OUT/.tops"
+printf '%s\n' "$TOP" > "$TOPS"
+: > "$OUT/.markers"
+if [ "$MODE" = worktree ]; then
+    find "$ROOT" -name .git -print0 -prune 2>"$ERR" > "$OUT/.markers" \
+        || fail "cannot list ${ROOT}"
+    [ ! -s "$ERR" ] || fail "cannot list ${ROOT}: $(cat "$ERR")"
+    : > "$OUT/.tops-n"
+    while IFS= read -r -d '' e; do
+        [ "$e" != "$TOP" ] || continue
+        case "$e" in
+            *$'\n'*) continue ;;
         esac
-    done
-done < "$GITDIRS"
-[ -z "$_cfg_stop" ] || exit 0
+        [ -d "$e" ] && [ ! -L "$e" ] || continue
+        [ -d "$e/objects" ] && [ ! -L "$e/objects" ] || continue
+        [ -f "$e/HEAD" ] || [ -L "$e/HEAD" ] || continue
+        if [ -f "$e/config" ]; then
+            rc=0
+            bare=$(cfg -f "$e/config" --bool --get core.bare \
+                2>/dev/null) || rc=$?
+            case "$rc" in
+                0) [ "$bare" != true ] || continue ;;
+                1) ;;
+                *) fail "cannot parse ${e}/config" ;;
+            esac
+        fi
+        printf '%s\n' "$e" >> "$OUT/.tops-n"
+    done < "$OUT/.markers"
+    sort "$OUT/.tops-n" >> "$TOPS"
+fi
+# Succeed when path $1 is one of the TOPS or inside one.
+in_a_top() {
+    local t
+    while IFS= read -r t; do
+        case "$1" in
+            "$t"|"$t"/*) return 0 ;;
+        esac
+    done < "$TOPS"
+    return 1
+}
+GITDIRS="$OUT/.gitdirs"
+: > "$GITDIRS"
+while IFS= read -r t; do
+    list_gitdirs "$t" >> "$GITDIRS"
+    grep -qxF -- "$t" "$GITDIRS" || printf '%s\n' "$t" >> "$GITDIRS"
+done < "$TOPS"
 
-# Unsupported layouts that keep history outside these git dirs.
+# No file in a git dir may be a special file: Git opens many of them
+# (HEAD, config, the index, packed-refs, info/exclude, pack indexes,
+# the commit-graph), a FIFO there would hang the scan, and a device or
+# a socket is no repository data.  In a work tree Git opens .gitignore,
+# .gitattributes and .gitmodules.  A symlink is followed, so one that
+# leads to a special file counts too (links that lead out of ROOT are
+# checked further on).  This stops the scan at once, before any of them
+# is read.
+: > "$OUT/.special"
+while IFS= read -r d; do
+    find "$d" \( -type l -o ! \( -type f -o -type d \) \) -print0 \
+        2>"$ERR" >> "$OUT/.special" || fail "cannot list ${d}"
+    [ ! -s "$ERR" ] || fail "cannot list ${d}: $(cat "$ERR")"
+done < "$GITDIRS"
+if [ "$MODE" = worktree ]; then
+    find "$ROOT" \( -name .gitignore -o -name .gitattributes \
+        -o -name .gitmodules \) ! -type f -print0 2>"$ERR" \
+        >> "$OUT/.special" || fail "cannot list ${ROOT}"
+    [ ! -s "$ERR" ] || fail "cannot list ${ROOT}: $(cat "$ERR")"
+fi
+LC_ALL=C sort -zu "$OUT/.special" > "$OUT/.special-u" \
+    || fail "cannot sort the special files"
+while IFS= read -r -d '' f; do
+    # A symlink to a regular file or a directory is no special file;
+    # test -e and -f look at the target without opening it.
+    if [ -L "$f" ] && { [ ! -e "$f" ] || [ -f "$f" ] || [ -d "$f" ]; }
+    then
+        continue
+    fi
+    [ ! -d "$f" ] || continue
+    report "block special-file $(oneline "${f#"$ROOT"/}")"
+done < "$OUT/.special-u"
+if grep -q '^block special-file ' "$REPORT"; then
+    exit 0
+fi
+
+# In gitdir mode (a repository the engine made, which agents can write)
+# Git reads the config as it is, following an include wherever it
+# points: an include of a FIFO would hang the scan.  The engine writes
+# none, so one stops the scan before any git command reads the config.
+# (A workspace's config files are read on their own, includes left out;
+# an include there blocks below.)
+if [ "$MODE" = gitdir ]; then
+    _cfg_stop=""
+    while IFS= read -r d; do
+        for cf in "$d/config" "$d/config.worktree"; do
+            [ -f "$cf" ] || continue
+            rc=0
+            cfg -f "$cf" --name-only --get-regexp \
+                '^(include|includeif)\.' > "$OUT/.inc" 2>/dev/null \
+                || rc=$?
+            case "$rc" in
+                0)
+                    report "block config-include ${d#"$ROOT"/}"
+                    _cfg_stop=yes ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+        done
+    done < "$GITDIRS"
+    [ -z "$_cfg_stop" ] || exit 0
+fi
+
+# Unsupported layouts that keep history outside these git dirs.  In a
+# workspace the config files are read on their own, includes left out
+# (an include blocks below); a repository the engine made (gitdir mode)
+# is read as Git reads it, once it holds no include.
 while IFS= read -r d; do
     [ ! -f "$d/shallow" ] || report "block shallow ${d#"$ROOT"/}"
-    _lfs=$(git --git-dir="$d" -c safe.directory='*' config \
-        --get lfs.storage 2>/dev/null || true)
+    _lfs=""
+    if [ "$MODE" = worktree ]; then
+        for cf in "$d/config" "$d/config.worktree"; do
+            [ -f "$cf" ] || continue
+            _v=$(cfg -f "$cf" --get lfs.storage 2>/dev/null) || _v=""
+            [ -z "$_v" ] || _lfs="$_v"
+        done
+    else
+        _lfs=$(git --git-dir="$d" -c safe.directory='*' config \
+            --get lfs.storage 2>/dev/null || true)
+    fi
     [ -z "$_lfs" ] || report "block lfs-storage ${d#"$ROOT"/} ${_lfs}"
 done < "$GITDIRS"
 
@@ -735,13 +897,21 @@ if [ "$MODE" = worktree ]; then
         fi
         for cf in "$d/config" "$d/config.worktree"; do
             [ -f "$cf" ] || continue
-            # Includes stopped the scan above.  A filter driver is a
-            # command Git runs on work-tree files (git status can run a
-            # clean filter): it would run inside this scan.  It blocks
-            # rather than being switched off, which would make every
-            # filtered file look modified.
             rc=0
-            git config -f "$cf" --name-only --get-regexp '^filter\.' \
+            cfg -f "$cf" --name-only --get-regexp \
+                '^(include\..*|includeif\..*)$' > "$OUT/.inc" 2>/dev/null \
+                || rc=$?
+            case "$rc" in
+                0) report "block config-include ${rel}" ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+            # A filter driver is a command Git runs on work-tree files
+            # (git status can run a clean filter): it would run inside
+            # this scan.  It blocks rather than being switched off, which
+            # would make every filtered file look modified.
+            rc=0
+            cfg -f "$cf" --name-only --get-regexp '^filter\.' \
                 > "$OUT/.flt" 2>/dev/null || rc=$?
             case "$rc" in
                 0) report "block filter-driver ${rel} $(oneline "$(head -n 1 "$OUT/.flt")")" ;;
@@ -752,7 +922,7 @@ if [ "$MODE" = worktree ]; then
             # against a base that depends on the repository layout; the
             # engine never sets it, so any value blocks.
             rc=0
-            git config -f "$cf" --get core.hooksPath >/dev/null 2>&1 \
+            cfg -f "$cf" --get core.hooksPath >/dev/null 2>&1 \
                 || rc=$?
             case "$rc" in
                 0) report "block core-hookspath ${rel}" ;;
@@ -762,7 +932,7 @@ if [ "$MODE" = worktree ]; then
             # core.worktree is relative to the git dir; submodule git
             # dirs set it to their checkout inside ROOT.
             rc=0
-            wtv=$(git config -f "$cf" --get core.worktree 2>/dev/null \
+            wtv=$(cfg -f "$cf" --get core.worktree 2>/dev/null \
                 && printf x) || rc=$?
             # git prints the value and a newline; any other newline is
             # part of the value.
@@ -780,15 +950,17 @@ if [ "$MODE" = worktree ]; then
                         *) wtv="$d/$wtv" ;;
                     esac
                     wtc=$(canon_nm "$wtv") || wtc=""
-                    # A work tree inside the git dir is out of sight of
-                    # the search for repositories below ROOT (it skips
-                    # the git dir), and status would go there.
-                    case "$wtc" in
-                        "$TOP"|"$TOP"/*)
-                            report "block gitdir-worktree ${rel} ${wtv}" ;;
-                        "$ROOT"|"$ROOT"/*) ;;
-                        *) report "block core-worktree ${rel} ${wtv}" ;;
-                    esac ;;
+                    # A work tree inside a git dir is out of sight of the
+                    # search for repositories below ROOT (it skips every
+                    # .git), and status would go there.
+                    if in_a_top "$wtc"; then
+                        report "block gitdir-worktree ${rel} ${wtv}"
+                    else
+                        case "$wtc" in
+                            "$ROOT"|"$ROOT"/*) ;;
+                            *) report "block core-worktree ${rel} ${wtv}" ;;
+                        esac
+                    fi ;;
                 1) ;;
                 *) fail "cannot parse ${cf}" ;;
             esac
@@ -924,6 +1096,46 @@ if [ "$MODE" = worktree ]; then
             esac
         done < "$od/info/alternates"
     done
+
+    # A partial clone leaves objects to its promisor remote: its history
+    # is not all here, and this scan never fetches.  A partial-clone
+    # setting (extensions.partialClone, a remote's promisor or
+    # partialCloneFilter) in either config file of any git dir, or a
+    # promisor pack in any object store this scan reads (alternates
+    # included, whatever the pack's name), refuses, also when every
+    # object happens to be there.
+    while IFS= read -r d; do
+        rel="${d#"$ROOT"/}"
+        for cf in "$d/config" "$d/config.worktree"; do
+            [ -f "$cf" ] || continue
+            rc=0
+            cfg -f "$cf" --get extensions.partialClone >/dev/null 2>&1 \
+                || rc=$?
+            case "$rc" in
+                0) report "block promisor ${rel} extensions.partialClone" ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+            rc=0
+            cfg -f "$cf" --name-only --get-regexp \
+                '^remote\..*\.(promisor|partialclonefilter)$' \
+                > "$OUT/.prom" 2>/dev/null || rc=$?
+            case "$rc" in
+                0) report "block promisor ${rel} $(oneline "$(head -n 1 "$OUT/.prom")")" ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+        done
+    done < "$GITDIRS"
+    while IFS= read -r od; do
+        [ -d "$od/pack" ] || continue
+        find -H "$od/pack" -mindepth 1 -maxdepth 1 -name '*.promisor' \
+            -print 2>"$ERR" > "$OUT/.promp" || fail "cannot list ${od}/pack"
+        [ ! -s "$ERR" ] || fail "cannot list ${od}/pack: $(cat "$ERR")"
+        if [ -s "$OUT/.promp" ]; then
+            report "block promisor $(oneline "${od#"$ROOT"/}") $(oneline "$(head -n 1 "$OUT/.promp" | sed 's|.*/||')")"
+        fi
+    done < "$OUT/.alt-seen"
 fi
 
 # Engine files and the deletions the context mode makes: in the
@@ -970,6 +1182,28 @@ engine_dir_only() {
     [ "$entries" = "./settings.local.json"$'\n'"x" ]
 }
 
+# Succeed when status record $2 (XY) $3 (path) of the checkout at $1 is
+# the directory of a repository nested in it that this scan carries and
+# checks on its own: an untracked (??) or ignored (!!) directory, not a
+# link, whose .git is one of the TOPS.  Git shows such a directory as
+# one entry and does not look inside it.  Tracked records are never
+# skipped.
+nested_entry() {
+    local wt="$1" xy="$2" path="$3" d
+    case "$xy" in
+        '??'|'!!') ;;
+        *) return 1 ;;
+    esac
+    case "$path" in
+        */) ;;
+        *) return 1 ;;
+    esac
+    d="$wt/${path%/}"
+    [ -d "$d" ] && [ ! -L "$d" ] && [ -d "$d/.git" ] && [ ! -L "$d/.git" ] \
+        || return 1
+    grep -qxF -- "$d/.git" "$TOPS"
+}
+
 # Work-tree content outside Git's history, for the checkout at $1 with
 # git dir $3 ($2 is its path in the report).  Both are passed
 # explicitly, so a core.worktree setting cannot point status elsewhere.
@@ -989,6 +1223,7 @@ check_checkout() {
         xy="${rec:0:2}"
         path="${rec:3}"
         engine_entry "$xy" "$rel" "$path" && continue
+        nested_entry "$wt" "$xy" "$path" && continue
         report "uncommitted dirty ${rel}: ${xy} $(oneline "$path")"
     done < "$OUT/.st"
     gw "$wt" --git-dir="$gd" --work-tree="$wt" status --porcelain=v1 -z \
@@ -999,6 +1234,7 @@ check_checkout() {
         path="${rec:3}"
         engine_entry "!!" "$rel" "$path" && continue
         engine_dir_only "$wt" "$rel" "$path" && continue
+        nested_entry "$wt" "!!" "$path" && continue
         report "uncommitted ignored ${rel}: $(oneline "$path")"
     done < "$OUT/.st"
     gw "$wt" --git-dir="$gd" --work-tree="$wt" ls-files -v -z > "$OUT/.ls"
@@ -1051,20 +1287,77 @@ check_index_paths() {
 # Queue checkout $1 (shown as $2, git dir $3) for check_checkout, which
 # runs only once every repository below ROOT has been validated.
 queue_checkout() {
-    printf '%s\0%s\0%s\0' "$1" "$2" "$3" >> "$OUT/.checkouts"
+    printf '%s\0%s\0%s\0' "$1" "$2" "$3" >> "$OUT/.checkouts" \
+        || fail "cannot queue the checkout $(oneline "$2")"
+}
+
+# Queue the checkout at $1 (shown as $2) whose .git file names git dir
+# $3 (resolved), when that is a git dir this scan checked, in one of the
+# TOPS: a submodule's module repo, or a linked worktree's admin dir that
+# names $1 back (that checkout is queued with the linked worktrees
+# below).  Return 1 when $3 is none of those, for the caller to report;
+# 0 when it queued the checkout or reported why not.
+gitfile_target() {
+    local wt="$1" rel="$2" target="$3" t rest bp bpwt wtc
+    while IFS= read -r t; do
+        case "$target" in
+            "$t"/worktrees/*)
+                # A linked worktree's own admin dir (one level below
+                # worktrees/, with its gitdir back-pointer) is checked
+                # with the others below.  Anything deeper, such as a
+                # module repo of a linked worktree, is a submodule
+                # checkout and is checked here.
+                rest="${target#"$t"/worktrees/}"
+                case "$rest" in
+                    */*)
+                        if grep -qxF -- "$target" "$GITDIRS"; then
+                            queue_checkout "$wt" "$rel" "$target"
+                            return 0
+                        fi
+                        return 1 ;;
+                esac
+                [ -f "$target/gitdir" ] \
+                    && grep -qxF -- "$target" "$GITDIRS" || return 1
+                # Only when its back-pointer names this checkout; a
+                # copied worktree dir points at another one and is not
+                # checked there.
+                if has_nul "$target/gitdir"; then
+                    report "block mismatched-worktree $(oneline "$rel")"
+                    return 0
+                fi
+                bp=$(cat "$target/gitdir")
+                case "$bp" in
+                    /*) ;;
+                    *) bp="$target/$bp" ;;
+                esac
+                bpwt=$(canon "${bp%/.git}") || bpwt=""
+                wtc=$(canon "$wt") || wtc="-"
+                [ "$bpwt" = "$wtc" ] \
+                    || report "block mismatched-worktree ${rel}"
+                return 0 ;;
+            "$t"/*)
+                # Only a git dir this scan checked (in GITDIRS).
+                if grep -qxF -- "$target" "$GITDIRS"; then
+                    queue_checkout "$wt" "$rel" "$target"
+                    return 0
+                fi
+                return 1 ;;
+        esac
+    done < "$TOPS"
+    return 1
 }
 
 if [ "$MODE" = worktree ]; then
     : > "$OUT/.checkouts"
-    # Every other .git below ROOT must be a submodule checkout whose git
-    # dir lives in ROOT/.git; anything else is a repository the bundle
-    # does not see.  This is checked before git status runs: status
-    # looks into submodules (--ignore-submodules=none) with the config
-    # of whatever git dir their .git names.
-    find "$ROOT" -path "$TOP_PAT" -prune -o -name .git -print0 2>"$ERR" \
-        > "$OUT/.embedded" || fail "cannot list ${ROOT}"
-    [ ! -s "$ERR" ] || fail "cannot list ${ROOT}: $(cat "$ERR")"
+    # Every other .git below ROOT is either the git dir of a repository
+    # nested in the checkout (one of the TOPS: its checkout is queued
+    # here) or a .git file that leads to a git dir this scan checked;
+    # anything else is a repository the bundle does not see.  This is
+    # checked before git status runs: status looks into submodules
+    # (--ignore-submodules=none) with the config of whatever git dir
+    # their .git names.
     while IFS= read -r -d '' e; do
+        [ "$e" != "$TOP" ] || continue
         wt="${e%/.git}"
         rel="${wt#"$ROOT"/}"
         case "$rel" in
@@ -1074,6 +1367,10 @@ if [ "$MODE" = worktree ]; then
                 UNCHECKED_REPO=yes
                 continue ;;
         esac
+        if [ -d "$e" ] && [ ! -L "$e" ] && grep -qxF -- "$e" "$TOPS"; then
+            queue_checkout "$wt" "$rel" "$e"
+            continue
+        fi
         if [ -f "$e" ] && [ ! -L "$e" ]; then
             if has_nul "$e"; then
                 report "block embedded $(oneline "$rel") (unreadable or NUL byte in .git)"
@@ -1096,62 +1393,15 @@ if [ "$MODE" = worktree ]; then
                 *) target="$wt/$target" ;;
             esac
             target=$(canon_nm "$target") || target=""
-            case "$target" in
-                "$TOP"/worktrees/*)
-                    # A linked worktree's own admin dir (one level below
-                    # worktrees/, with its gitdir back-pointer) is
-                    # checked with the others below.  Anything deeper,
-                    # such as a module repo of a linked worktree, is a
-                    # submodule checkout and is checked here.
-                    _rest="${target#"$TOP"/worktrees/}"
-                    case "$_rest" in
-                        */*) ;;
-                        *)
-                            if [ -f "$target/gitdir" ] \
-                                    && grep -qxF "$target" "$GITDIRS"; then
-                                # Only when its back-pointer names this
-                                # checkout; a copied worktree dir points
-                                # at another one and is not checked
-                                # there.
-                                if has_nul "$target/gitdir"; then
-                                    report "block mismatched-worktree $(oneline "$rel")"
-                                    continue
-                                fi
-                                bp=$(cat "$target/gitdir")
-                                case "$bp" in
-                                    /*) ;;
-                                    *) bp="$target/$bp" ;;
-                                esac
-                                bpwt=$(canon "${bp%/.git}") || bpwt=""
-                                wtc=$(canon "$wt") || wtc="-"
-                                if [ "$bpwt" = "$wtc" ]; then
-                                    continue
-                                fi
-                                report "block mismatched-worktree ${rel}"
-                                continue
-                            fi ;;
-                    esac
-                    case "$_rest" in
-                        */*)
-                            if grep -qxF "$target" "$GITDIRS"; then
-                                queue_checkout "$wt" "$rel" "$target"
-                                continue
-                            fi ;;
-                    esac ;;
-                "$TOP"/*)
-                    # Only a git dir this scan checked (in GITDIRS).
-                    if grep -qxF "$target" "$GITDIRS"; then
-                        queue_checkout "$wt" "$rel" "$target"
-                        continue
-                    fi ;;
-            esac
+            gitfile_target "$wt" "$rel" "$target" && continue
         fi
         report "block embedded ${rel}"
-    done < "$OUT/.embedded"
-    # A repository directory anywhere else below ROOT (a bare clone, a
-    # copied .git under another name) holds history the bundle does not
-    # carry: it blocks, whatever filters would apply to its files.
-    find "$ROOT" -path "$TOP_PAT" -prune -o \( -type f -o -type l \) \
+    done < "$OUT/.markers"
+    # A repository directory anywhere below ROOT outside the .git
+    # directories (a bare clone, a copied .git under another name) holds
+    # history the bundle does not carry: it blocks, whatever filters
+    # would apply to its files.
+    find "$ROOT" -name .git -prune -o \( -type f -o -type l \) \
         -name HEAD -print0 2>"$ERR" > "$OUT/.otherheads" \
         || fail "cannot list ${ROOT}"
     [ ! -s "$ERR" ] || fail "cannot list ${ROOT}: $(cat "$ERR")"
@@ -1189,8 +1439,11 @@ if [ "$MODE" = worktree ]; then
             report "block missing-worktree ${wtgit%/.git}"
             continue
         fi
+        if in_a_top "$wt"; then
+            report "block gitdir-worktree ${wt#"$ROOT"/}"
+            continue
+        fi
         case "$wt" in
-            "$TOP"|"$TOP"/*) report "block gitdir-worktree ${wt#"$ROOT"/}" ;;
             "$ROOT"/*) queue_checkout "$wt" "${wt#"$ROOT"/}" "$d" ;;
             *) report "block external ${wt}" ;;
         esac
@@ -1211,14 +1464,19 @@ if [ "$MODE" = worktree ]; then
     # search for repositories below ROOT skips the git dir, so any such
     # entry, in any checkout's index, blocks.  ls-files reads the index
     # without refreshing it.
+    # ls-files reads each checkout's config, includes and all: it runs
+    # only once none of those findings is there.
+    if [ -n "$UNCHECKED_REPO" ] \
+            || grep -qE '^block (filter-driver|config-include|embedded|core-worktree|gitdir-worktree|mismatched-worktree|commondir|promisor) ' \
+            "$REPORT"; then
+        exit 0
+    fi
     check_index_paths "$ROOT" "." "$TOP"
     while IFS= read -r -d '' wt && IFS= read -r -d '' rel \
             && IFS= read -r -d '' gd; do
         check_index_paths "$wt" "$rel" "$gd"
     done < "$OUT/.checkouts"
-    if [ -n "$UNCHECKED_REPO" ] \
-            || grep -qE '^block (filter-driver|config-include|embedded|core-worktree|gitdir-worktree|index-in-gitdir|mismatched-worktree|commondir) ' \
-            "$REPORT"; then
+    if grep -q '^block index-in-gitdir ' "$REPORT"; then
         exit 0
     fi
     check_checkout "$ROOT" "." "$TOP"
@@ -1330,6 +1588,12 @@ while IFS= read -r d; do
     manifest=$(git --git-dir="$SCRATCH" hash-object -w --stdin \
         < "$tips") || fail "cannot write the manifest of ${d}"
     git --git-dir="$SCRATCH" update-ref "refs/v/$n/manifest" "$manifest"
+    # Where this git dir was, relative to ROOT ("." in gitdir mode), so
+    # that refs/v/<n> can be told apart after import.
+    gpath=$(printf '%s' "$rel" \
+        | git --git-dir="$SCRATCH" hash-object -w --stdin) \
+        || fail "cannot write the path of ${d}"
+    git --git-dir="$SCRATCH" update-ref "refs/v/$n/path" "$gpath"
     printf '%s\n' "$d" > "$OUT/.gitdir.$n"
 done < "$GITDIRS"
 sort -u "$OBJECTS" -o "$OBJECTS"
@@ -1374,8 +1638,19 @@ while IFS= read -r d; do
 done < "$GITDIRS"
 sort -u "$EXEMPT" -o "$EXEMPT"
 
+# TOP's files as refs/v/0/...; those of a nested repository's git dir
+# tree under the number of its git dir in the inventory.
 list_files "$TOP" "$EXEMPT"
-store_files "$TOP" ""
+store_files "$TOP" "" 0
+while IFS= read -r t; do
+    [ "$t" != "$TOP" ] || continue
+    id=$(grep -nxF -- "$t" "$GITDIRS" | cut -d: -f1) || id=""
+    case "$id" in
+        ''|*[!0-9]*) fail "${t} is not once among the git dirs" ;;
+    esac
+    list_files "$t" "$EXEMPT"
+    store_files "$t" "" "$id"
+done < "$TOPS"
 
 # ---- Bundle -------------------------------------------------------------
 

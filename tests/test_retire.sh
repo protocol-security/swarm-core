@@ -624,7 +624,7 @@ case_setup
 mkdir -p "$H/e"
 printf '[lfs]\n\tstorage = /x\n[broken\n' > "$H/e/.gitconfig"
 edit proj-agent-2 --arg h "$H/e" '.[0].Config.Env = ["HOME=" + $h]'
-refused "a config file that does not parse" "config-paths-unknown fatal: bad config line 3 in file $H/e/.gitconfig"
+refused "a config file that does not parse" "config-unreadable $H/e/.gitconfig: fatal: bad config line 3"
 # Config on a mount, or reached through a link onto one, cannot be
 # read from the snapshot; Docker's own mounts count too.
 case_setup
@@ -1613,7 +1613,22 @@ refused "a dirty submodule in a layer checkout" "dirty sub"
 kept_case
 fixture /tmp/p
 git init -q "$F/snaproot/tmp/p/inner"
-refused "a checkout inside a layer checkout" "embedded inner"
+echo i > "$F/snaproot/tmp/p/inner/i"
+g -C "$F/snaproot/tmp/p/inner" add i
+g -C "$F/snaproot/tmp/p/inner" commit -qm inner
+assert_eq "a checkout inside a layer checkout: retired" "0" "$(retire)"
+assert_eq "in one scan, its parent's" "/tmp/p" \
+    "$(cat "$F/layer-scans" 2>/dev/null)"
+assert_eq "the inner checkout's objects are kept" "true" \
+    "$(all_kept "$F/snaproot/tmp/p/inner/.git" && echo true || echo false)"
+kept_case
+fixture /tmp/p
+git init -q "$F/snaproot/tmp/p/inner"
+echo i > "$F/snaproot/tmp/p/inner/i"
+g -C "$F/snaproot/tmp/p/inner" add i
+g -C "$F/snaproot/tmp/p/inner" commit -qm inner
+echo changed > "$F/snaproot/tmp/p/inner/i"
+refused "a dirty checkout inside a layer checkout" "dirty inner"
 kept_case
 fixture /tmp/p
 git init -q --bare "$F/snaproot/tmp/p/x.git"

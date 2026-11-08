@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- **Cleanup and retire keep repositories nested in a workspace.** A
+  repository cloned or initialized inside a workspace or a layer
+  checkout retire keeps (a setup hook's clone of the code under audit,
+  say) made both refuse (`embedded`), and nothing let them go on. Its
+  git dir is now checked and copied like the workspace's own (refs,
+  reflogs, objects, stashes, unfinished operations, git-dir files, its
+  submodules), its work outside Git's history is listed with its path,
+  and the workspace's entry for its directory is no longer counted as
+  the workspace's. Every copied git dir keeps its path as `<k>/path`
+  under the recovery refs. A bare repository, a `.git` link and a
+  `.git` file that leads elsewhere still refuse.
+- **A workspace scan stops instead of hanging on what an agent left.**
+  A FIFO or another special file as a git dir's `HEAD`, `config`,
+  `index`, pointer or alternates file, or a config that includes one,
+  could hang cleanup's scan (in the workspace's own repository too):
+  such a file now refuses before anything reads it, and no Git command
+  reads a checkout's config, includes and all, before the config
+  checks have passed. A failed write to the scan's report or queue
+  ends the scan instead of being missed. Retire's check of a
+  container's own git config works out where Git looks for the global
+  files instead of asking git, which read them first, and gives
+  `git var` a time limit for the system file; scans in a container
+  read no global file on any Git version.
+- **Cleanup refuses a partial clone in a workspace.** Its history is
+  not all there and cleanup never fetches: a partial-clone setting or
+  a promisor pack refuses before anything else reads the repository.
+  ends the scan instead of being missed.
 - **Fix: each submodule mirror comes from that submodule's Git
   directory.** Mirrors were cloned from `.git/modules/<path>`, but Git
   keeps a submodule's directory there by name, or in its work tree, so
