@@ -781,22 +781,30 @@ assert_eq "lowercase p asks for confirmation" "true" \
 assert_eq "lowercase p can launch post-process" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF '"$SWARM_DIR/launch.sh" post-process' || true)"
-assert_eq "lowercase p preserves dashboard config" "1" \
+# Both launch.sh runs get the dashboard's swarmfile and the token of the
+# engagement shown, so a cleanup and a new start between them make the
+# second refuse.
+assert_eq "lowercase p passes the dashboard config to both runs" "2" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'SWARM_CONFIG="$CONFIG_FILE"' || true)"
+assert_eq "lowercase p passes the engagement token to both runs" "2" \
+    "$(printf '%s\n' "$pp_lower_case" \
+        | grep -cF 'SWARM_ENGAGEMENT_TOKEN="$_token"' || true)"
+assert_eq "lowercase p stops the numbered agents through launch.sh" "1" \
+    "$(printf '%s\n' "$pp_lower_case" \
+        | grep -cF '"$SWARM_DIR/launch.sh" stop --numbered' || true)"
 assert_eq "lowercase p has cancellation path" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
-        | grep -cF 'post-processing not started' || true)"
+        | grep -cF '"(post-processing not started)"' || true)"
 assert_eq "lowercase p refuses to replace running post-process" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'post-processing is already running' || true)"
 assert_eq "lowercase p blocks only running post-process" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'if post_process_container_running; then' || true)"
-assert_eq "lowercase p allows exited post-process replacement" "1" \
+assert_eq "lowercase p sends an exited post-process to retire" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
-        | grep -cF 'previous post-process container will be replaced' \
-        || true)"
+        | grep -cF './launch.sh retire --post-process' || true)"
 assert_eq "lowercase p has no replacement prompt" "0" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'Replace existing' || true)"
@@ -817,12 +825,17 @@ assert_eq "footer guards start hint on running container" "1" \
 assert_eq "footer keeps logs hint for exited container" "1" \
     "$(printf '%s\n' "$help_bar" \
         | grep -cF 'if post_process_container_exists; then' || true)"
-assert_eq "s stops post-process container" "1" \
+# launch.sh stop covers the agents, post-process and the interactive
+# containers of the engagement shown (its token), with its own checks.
+assert_eq "s stops through launch.sh stop" "1" \
     "$(printf '%s\n' "$s_case" \
-        | grep -cF 'stop_own_container "${IMAGE_NAME}-post"' || true)"
-assert_eq "s stops interactive containers" "1" \
-    "$(printf '%s\n' "$s_case" \
-        | grep -cF 'interactive_container_names' || true)"
+        | grep -cF '"$SWARM_DIR/launch.sh" stop' || true)"
+assert_eq "s passes the dashboard config" "1" \
+    "$(printf '%s\n' "$s_case" | grep -cF 'SWARM_CONFIG="$CONFIG_FILE"' \
+        || true)"
+assert_eq "and the engagement token" "1" \
+    "$(printf '%s\n' "$s_case" | grep -cF 'SWARM_ENGAGEMENT_TOKEN="$_token"' \
+        || true)"
 
 # ============================================================
 echo ""
@@ -850,7 +863,7 @@ echo "=== 14. Runtime directory is read only when private ==="
 # shellcheck disable=SC1091 source=../lib/project.sh
 source "$TESTS_DIR/../lib/project.sh"
 _rt_tmp=$(mktemp -d)
-for _fn in runtime_ok interactive_branch_status; do
+for _fn in runtime_ok bare_git interactive_branch_status; do
     awk -v fn="$_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' \
@@ -916,6 +929,9 @@ done
 
 RUNTIME_DIR="$_ls_tmp/rt"
 STATE_FILE="$RUNTIME_DIR/state.json"
+# As dashboard.sh sets them before its first load_state.
+DASH_TOKEN=""
+DASH_CLEANUP=false
 mkdir -m 700 "$RUNTIME_DIR"
 jq -n --arg t "x \$(touch $_ls_tmp/pwned)" \
     '{schema: "swarm-core.state/v1", title: $t,
@@ -933,6 +949,27 @@ assert_eq "config" "/c/swarm.json" "$SWARM_CONFIG"
 assert_eq "agent count" "3" "$SWARM_NUM_AGENTS"
 assert_eq "model summary" "3x m" "$SWARM_MODEL_SUMMARY"
 assert_eq "config label" "swarm.json" "$SWARM_CONFIG_LABEL"
+assert_eq "no engagement recorded: no token shown" "" "$DASH_TOKEN"
+# The engagement shown is the state's token; once the state has none
+# (cleaned up), none is shown, whatever was shown before.
+jq '.engagement_token = "t1"' "$STATE_FILE" > "$_ls_tmp/st" \
+    && mv "$_ls_tmp/st" "$STATE_FILE"
+load_state || true
+assert_eq "the engagement's token is shown" "t1" "$DASH_TOKEN"
+jq 'del(.engagement_token)' "$STATE_FILE" > "$_ls_tmp/st" \
+    && mv "$_ls_tmp/st" "$STATE_FILE"
+load_state || true
+assert_eq "a cleaned-up engagement shows no token" "" "$DASH_TOKEN"
+# A cleanup that has not finished (its checkpoint in the state) is shown
+# while the checkpoint is there, and no longer once it is gone.
+jq '.cleanup = {snapshot: "s1"}' "$STATE_FILE" > "$_ls_tmp/st" \
+    && mv "$_ls_tmp/st" "$STATE_FILE"
+load_state || true
+assert_eq "a cleanup checkpoint is shown" "true" "$DASH_CLEANUP"
+jq 'del(.cleanup)' "$STATE_FILE" > "$_ls_tmp/st" \
+    && mv "$_ls_tmp/st" "$STATE_FILE"
+load_state || true
+assert_eq "and no longer once it is gone" "false" "$DASH_CLEANUP"
 
 printf 'SWARM_TITLE="from env file"\n' > "$STATE_FILE"
 SWARM_TITLE="kept"
@@ -1067,7 +1104,133 @@ rm -rf "$_id_tmp"
 
 # ============================================================
 echo ""
-echo "=== 17. A dashboard that stops short does not end with 0 ==="
+echo "=== 17. s and p act through launch.sh on the engagement shown ==="
+
+# The s and p arms of the key loop, run with a launch.sh that logs its
+# arguments, the swarmfile and the token it got.  Its stop can fail, or
+# replace the engagement (another token in the state file) as a cleanup
+# and a new start in another terminal would.  The swarmfile is a custom
+# one, as a standalone dashboard knows it from the state file, and the
+# engagement shown is DASH_TOKEN (load_state sets it at each refresh).
+_kd=$(mktemp -d)
+mkdir -p "$_kd/swarm"
+cat > "$_kd/swarm/launch.sh" <<'EOF'
+#!/bin/bash
+printf '%s|%s|%s\n' "$*" "${SWARM_CONFIG:-}" \
+    "${SWARM_ENGAGEMENT_TOKEN-unset}" >> "$KEYS_DIR/log"
+if [ "$1" = stop ]; then
+    [ ! -e "$KEYS_DIR/stop-fails" ] || exit 1
+    if [ -e "$KEYS_DIR/replace" ]; then
+        jq -c '.engagement_token = "t2"' "$KEYS_DIR/state.json" \
+            > "$KEYS_DIR/state.x" && mv "$KEYS_DIR/state.x" \
+            "$KEYS_DIR/state.json"
+    fi
+fi
+exit 0
+EOF
+chmod +x "$_kd/swarm/launch.sh"
+# Run the body of a case arm (ARM, as extracted above) once, with the
+# answers on standard input; its output goes to $_kd/out.
+run_key() {
+    local body
+    body=$(printf '%s\n' "$1" | sed '1d;$d')
+    (
+        SWARM_DIR="$_kd/swarm"
+        STATE_FILE="$_kd/state.json"
+        CONFIG_FILE="$_kd/custom.json"
+        IMAGE_NAME=proj-agent
+        DASH_TOKEN="$KEY_TOKEN"
+        KEYS_DIR="$_kd"
+        export KEYS_DIR
+        # The dashboard's own helpers, as the key loop finds them.
+        # shellcheck disable=SC2329
+        leave_alt_screen() { :; }
+        # shellcheck disable=SC2329
+        enter_alt_screen() { :; }
+        # shellcheck disable=SC2329
+        identity_ok() { return 0; }
+        # shellcheck disable=SC2329
+        post_process_configured() { return 0; }
+        # shellcheck disable=SC2329
+        post_process_container_running() { [ -e "$_kd/pp-running" ]; }
+        # shellcheck disable=SC2329
+        post_process_container_exists() { [ -e "$_kd/pp-exists" ]; }
+        # The arms end with continue: a loop of one turn.
+        eval "for _turn in 1; do
+$body
+done"
+    ) < <(printf '%s\n' "${2:-}" "" "" "") > "$_kd/out" 2>&1
+}
+key_reset() {
+    rm -f "$_kd/log" "$_kd/stop-fails" "$_kd/replace" "$_kd/pp-running" \
+        "$_kd/pp-exists"
+    : > "$_kd/log"
+    KEY_TOKEN=t1
+    jq -n '{schema: "swarm-core.state/v1", engagement_id: "e1",
+        engagement_token: "t1", docker_daemon: "d1"}' > "$_kd/state.json"
+}
+key_reset
+run_key "$s_case"
+assert_eq "s runs launch.sh stop with the swarmfile and the token" \
+    "stop|$_kd/custom.json|t1" "$(cat "$_kd/log")"
+key_reset
+run_key "$pp_lower_case" y
+assert_eq "p stops the numbered agents, then starts post-process" \
+    "stop --numbered|$_kd/custom.json|t1
+post-process|$_kd/custom.json|t1" "$(cat "$_kd/log")"
+key_reset
+: > "$_kd/replace"
+run_key "$pp_lower_case" y
+assert_eq "an engagement replaced during p's stop: post-process gets the old token" \
+    "post-process|$_kd/custom.json|t1" "$(sed -n 2p "$_kd/log")"
+key_reset
+: > "$_kd/stop-fails"
+run_key "$pp_lower_case" y
+assert_eq "a stop that fails: no post-process" "1" \
+    "$(grep -c . "$_kd/log")"
+assert_eq "saying so" "1" \
+    "$(grep -c 'agents not stopped; post-processing not started' \
+        "$_kd/out" || true)"
+key_reset
+: > "$_kd/pp-exists"
+run_key "$pp_lower_case" y
+assert_eq "an earlier post-process container: p runs nothing" "0" \
+    "$(grep -c . "$_kd/log" || true)"
+assert_eq "and names the retire step" "1" \
+    "$(grep -c 'retire it first: ./launch.sh retire --post-process' \
+        "$_kd/out" || true)"
+key_reset
+run_key "$pp_lower_case" n
+assert_eq "p not confirmed: nothing runs" "0" \
+    "$(grep -c . "$_kd/log" || true)"
+# No engagement shown (cleaned up, or none started): nothing runs,
+# rather than a launch.sh bound to no engagement, which would act on
+# whatever is there by then.
+key_reset
+KEY_TOKEN=""
+run_key "$s_case"
+assert_eq "no engagement shown: s runs nothing" "0" \
+    "$(grep -c . "$_kd/log" || true)"
+assert_eq "saying so" "1" \
+    "$(grep -c 'no engagement shown; nothing stopped' "$_kd/out" || true)"
+key_reset
+KEY_TOKEN=""
+run_key "$pp_lower_case" y
+assert_eq "no engagement shown: p runs nothing" "0" \
+    "$(grep -c . "$_kd/log" || true)"
+# The token is the one shown, not one read at the key press: an
+# engagement started since the last refresh is not acted on.
+key_reset
+jq '.engagement_token = "t9"' "$_kd/state.json" > "$_kd/state.x" \
+    && mv "$_kd/state.x" "$_kd/state.json"
+run_key "$s_case"
+assert_eq "s passes the token shown, not the state's newer one" \
+    "stop|$_kd/custom.json|t1" "$(cat "$_kd/log")"
+rm -rf "$_kd"
+
+# ============================================================
+echo ""
+echo "=== 17b. A dashboard that stops short does not end with 0 ==="
 
 # Bash 3.2 (macOS's /bin/bash, which the dashboard's shebang runs) gives
 # an EXIT trap status 0 when set -u stops the script.  The dashboard's
@@ -1254,6 +1417,197 @@ assert_eq "nor one marked on its line" "0 1" \
 assert_eq "exit 1, or awk's exit, is no exit 0" "0 0" \
     "$(_ex_form 'x || exit 1' "y=\$(awk 'NF { print; exit }')")"
 rm -rf "$_ex_tmp"
+
+# ============================================================
+echo ""
+echo "=== 18. Workspace volumes with no container, an unfinished cleanup ==="
+
+# The whole dashboard, one refresh and then q, on a checkout whose
+# engagement (token t1) has agent 1 exited and agents 2 and 3 and the
+# post-process gone.  Docker is a fake answering from files (container
+# list, states, volume list) and logging its calls; tput gives a width.
+_rv=$(mktemp -d)
+mkdir -p "$_rv/bin" "$_rv/proj" "$_rv/xdg"
+cat > "$_rv/bin/docker" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$RV_DIR/calls"
+case "$1" in
+    ps) cat "$RV_DIR/ps" ;;
+    inspect)
+        case "$3" in
+            *State.Status*) awk -v id="$4" '$1 == id { print $2 }' \
+                "$RV_DIR/status" ;;
+        esac ;;
+    volume)
+        [ "$2" = ls ] || exit 1
+        cat "$RV_DIR/volumes"
+        # A failure after some output: none of it may count.
+        [ ! -e "$RV_DIR/volume-ls-fails" ] || exit 1 ;;
+    *) exit 1 ;;
+esac
+EOF
+cat > "$_rv/bin/tput" <<'EOF'
+#!/bin/bash
+[ "$1" != cols ] || echo 140
+EOF
+chmod +x "$_rv/bin/docker" "$_rv/bin/tput"
+git init -q "$_rv/proj"
+git -C "$_rv/proj" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m init
+_rv_root=$(cd -P "$_rv/proj" && pwd -P)
+cat > "$_rv/proj/swarm.json" <<'EOF'
+{
+  "prompt": "p.md",
+  "agents": [{"count": 3, "model": "claude-opus-4-6"}],
+  "post_process": {"prompt": "post.md", "model": "claude-opus-4-6"}
+}
+EOF
+_rv_rt="$_rv/rt"
+mkdir -m 700 "$_rv_rt"
+# Run the dashboard once; its screen goes to $_rv/screen.
+rv_draw() {
+    : > "$_rv/calls"
+    (cd "$_rv/proj" && printf 'q' | env -u SWARM_CONFIG -u SWARM_PROJECT \
+        PATH="$_rv/bin:$PATH" RV_DIR="$_rv" \
+        SWARM_RUNTIME_DIR="$_rv_rt" XDG_STATE_HOME="$_rv/xdg" \
+        bash "$TESTS_DIR/../dashboard.sh") > "$_rv/screen" 2>&1 || true
+}
+# STATUS of row ID (1-9 or P) on the screen, as its status column shows.
+rv_row() {
+    grep -E "^  $1 " "$_rv/screen" \
+        | grep -oE 'running|exited|volume only|configured|not found' \
+        | head -1
+}
+# Write the state file of the engagement, then apply jq filter $1.
+rv_state() {
+    jq -n --arg r "$_rv_root" --arg c "$_rv/proj/swarm.json" \
+        '{schema: "swarm-core.state/v1", project: "proj", repo_root: $r,
+          engagement_id: "e1", engagement_token: "t1", config: $c,
+          num_agents: 3} | '"${1:-.}" > "$_rv_rt/state.json"
+}
+rv_state
+jq -nc --arg o "$_rv_root" \
+    '{id: "cid1", name: "proj-agent-1", project: "proj", owner: $o}' \
+    > "$_rv/ps"
+printf 'cid1 exited\n' > "$_rv/status"
+# Agent 2 and the post-process have volumes of this engagement (two for
+# the post-process, retired twice); agent 3 has one of another, and
+# agent 2 one with no engagement token.  The listing is long: a match
+# early in it still counts.
+{
+    printf '%s\n' "proj-agent-2 t1" "proj-agent-post t1" \
+        "proj-agent-post t1" "proj-agent-3 t0" "proj-agent-2 "
+    awk 'BEGIN { for (i = 0; i < 20000; i++) print "other-" i " t9" }'
+} > "$_rv/volumes"
+rv_draw
+assert_eq "an exited container: exited" "exited" "$(rv_row 1)"
+assert_eq "no container, a volume: volume only" "volume only" \
+    "$(rv_row 2)"
+assert_eq "a volume of another engagement: configured" "configured" \
+    "$(rv_row 3)"
+assert_eq "the post-process: volume only" "volume only" "$(rv_row P)"
+assert_eq "only exited agents count as done" "1" \
+    "$(grep -c 'Swarm complete.*all 1 agents exited' "$_rv/screen" || true)"
+assert_eq "volumes are listed for this project and checkout" "1" \
+    "$(grep -c "^volume ls --filter label=swarm-core.project=proj --filter label=swarm-core.checkout=${_rv_root} " "$_rv/calls" || true)"
+assert_eq "a container is left: no volume line" "0" \
+    "$(grep -c 'workspace volume' "$_rv/screen" || true)"
+assert_eq "nothing but reads reach Docker" "" \
+    "$(grep -vE '^(--version$|ps |inspect |volume ls |cp [^ ]*:/workspace/)' \
+        "$_rv/calls" || true)"
+# A container listed whose state Docker does not give (inspect fails):
+# not taken for one that is not there.
+jq -nc --arg o "$_rv_root" \
+    '{id: "cid2", name: "proj-agent-2", project: "proj", owner: $o}' \
+    >> "$_rv/ps"
+rv_draw
+assert_eq "a container there, inspect failing: not volume only" "true" \
+    "$([ "$(rv_row 2)" != "volume only" ] && echo true || echo false)"
+# Every container gone: the volumes are counted, and cleanup named.
+: > "$_rv/ps"
+rv_draw
+assert_eq "agent 1 gone, no volume: configured" "configured" "$(rv_row 1)"
+assert_eq "the engagement's volumes counted" "1" \
+    "$(grep -c '3 workspace volume(s), no container: harvest, then ./launch.sh cleanup ends the engagement' "$_rv/screen" || true)"
+# Docker cannot list volumes: nothing is said about them.
+: > "$_rv/volume-ls-fails"
+rv_draw
+assert_eq "volumes not listed: configured" "configured" "$(rv_row 2)"
+assert_eq "and no volume line" "0" \
+    "$(grep -c 'workspace volume' "$_rv/screen" || true)"
+rm -f "$_rv/volume-ls-fails"
+# Tokens are compared as strings, even when awk could read them as
+# numbers (0 and 0e0).
+rv_state '.engagement_token = "0000000000000000"'
+printf '%s\n' "proj-agent-2 00000000000000e0" > "$_rv/volumes"
+rv_draw
+assert_eq "a token equal only as a number: configured" "configured" \
+    "$(rv_row 2)"
+assert_eq "and not counted" "0" \
+    "$(grep -c 'workspace volume' "$_rv/screen" || true)"
+printf '%s\n' "proj-agent-2 t1" "proj-agent-2 " > "$_rv/volumes"
+# No engagement recorded (cleaned up): no row is volume only.
+rv_state 'del(.engagement_token)'
+rv_draw
+assert_eq "no engagement shown: configured" "configured" "$(rv_row 2)"
+assert_eq "and no volume line" "0" \
+    "$(grep -c 'workspace volume' "$_rv/screen" || true)"
+# A cleanup that has not finished (running, or stopped before the end):
+# said, instead of the volumes.
+rv_state '.cleanup = {snapshot: "s1"}'
+rv_draw
+assert_eq "an unfinished cleanup is shown" "1" \
+    "$(grep -c 'A cleanup has not finished.*if it is not running, run ./launch.sh cleanup again' "$_rv/screen" || true)"
+assert_eq "instead of the volume line" "0" \
+    "$(grep -c 'workspace volume' "$_rv/screen" || true)"
+# Once it is done (no checkpoint), the line goes.
+rv_state
+rv_draw
+assert_eq "a finished cleanup is no longer shown" "0" \
+    "$(grep -c 'A cleanup has not finished' "$_rv/screen" || true)"
+# The bare repo is the agents' to write.  Its recent commits are read
+# without running what its config names: a gpg.program that
+# log.showSignature would run on a signed commit, and the uploadpack
+# command of a "promisor" remote that a missing object would fetch
+# from (protocol.file.allow=always included).
+_rvg() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"; }
+_rv_src="$_rv/bare-src"
+git init -q "$_rv_src"
+_rvg -C "$_rv_src" commit -q --allow-empty -m one
+git clone -q --bare "$_rv_src" "$_rv_rt/upstream.git"
+_rv_bare="$_rv_rt/upstream.git"
+_rv_signed=$(printf 'tree %s\nparent %s\nauthor t <t@t> 1 +0000\ncommitter t <t@t> 1 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n x\n -----END PGP SIGNATURE-----\n\nsigned commit\n' \
+    "$(git -C "$_rv_bare" rev-parse 'HEAD^{tree}')" \
+    "$(git -C "$_rv_bare" rev-parse HEAD)" \
+    | git -C "$_rv_bare" hash-object -t commit -w --stdin)
+git -C "$_rv_bare" update-ref refs/heads/agent-work "$_rv_signed"
+printf '#!/bin/sh\ntouch %s/gpg-ran\nexit 1\n' "$_rv" > "$_rv/fakegpg"
+chmod +x "$_rv/fakegpg"
+git -C "$_rv_bare" config log.showSignature true
+git -C "$_rv_bare" config gpg.program "$_rv/fakegpg"
+git -C "$_rv_bare" log --oneline -1 refs/heads/agent-work >/dev/null 2>&1 || true
+assert_eq "control: git log on the bare repo runs its gpg.program" "true" \
+    "$([ -e "$_rv/gpg-ran" ] && echo true || echo false)"
+rm -f "$_rv/gpg-ran"
+rv_state
+rv_draw
+assert_eq "the dashboard shows the recent commits" "1" \
+    "$(grep -c 'signed commit' "$_rv/screen" || true)"
+assert_eq "without running the bare repo's gpg.program" "false" \
+    "$([ -e "$_rv/gpg-ran" ] && echo true || echo false)"
+git -C "$_rv_bare" repack -q -a -d
+rm -f "${_rv_bare:?}"/objects/pack/pack-*
+git -C "$_rv_bare" config core.repositoryformatversion 1
+git -C "$_rv_bare" config extensions.partialClone origin
+git -C "$_rv_bare" config remote.origin.url "$_rv_src"
+git -C "$_rv_bare" config remote.origin.promisor true
+git -C "$_rv_bare" config remote.origin.uploadpack \
+    "touch $_rv/promisor-ran; git-upload-pack"
+git -C "$_rv_bare" config protocol.file.allow always
+rv_draw
+assert_eq "nor a promisor remote's uploadpack for a missing object" \
+    "false" "$([ -e "$_rv/promisor-ran" ] && echo true || echo false)"
+rm -rf "$_rv"
 
 # ============================================================
 echo ""

@@ -2,6 +2,204 @@
 
 ## Unreleased
 
+- **The bare repo and the mirrors hold what the checkout's branches,
+  tags and HEAD reach.** They were local clones, which copy the whole
+  object store, so objects that only remote-tracking branches, the
+  stash, the reflogs or earlier recovery refs keep went into the bare
+  repo, the mirrors and every workspace, and each cleanup kept them
+  again as new recovery refs, more after every engagement in the same
+  checkout. A checkout of about 900 MB whose branches reach 21 MB gave
+  every workspace the 900 MB. Both are now cloned through Git's
+  transport (`--no-local`). A mirror also keeps the commit the
+  engagement's base records for its submodule (`refs/swarm/gitlink`),
+  fetched by id when the submodule's checkout has moved on, and
+  `start` warns when the submodule lacks it.
+- **retire keeps the Git checkouts a container has outside its
+  volume.** It refused any container with a repository in its own
+  layer, and agents leave some there routinely (a test's fixture in
+  `/tmp`), so an engagement ended with `docker cp` and `docker rm` by
+  hand. A checkout there is now scanned in the container's snapshot,
+  copied into the checkout as recovery refs (`.../l<n>/`, listed in the
+  snapshot's `sources`), and the checkout is verified with `git fsck`
+  before any container goes. Work outside Git's history in it stops
+  retire unless `--discard-uncommitted` (new for retire; cleanup passes
+  its own on) drops exactly what it lists; other repositories there
+  (bare ones, git dirs apart from their work trees) still refuse, and a
+  container's checkouts may take `SWARM_RETIRE_LAYER_LIMIT_MB` megabytes
+  (default 100). cleanup, like retire, now writes a snapshot's
+  `sources` ref only after `git fsck` passed.
+- **Hardening: what agents write cannot steer the host's Git or fill
+  its disk.** The host's reads of the bare repo and the mirrors never
+  fetch and never check signatures; the preservation scans read no
+  global or system Git config, and stop before they read a work tree
+  when a repository's config sets a filter driver (which now blocks,
+  like `lfs.storage`) or includes other files, or when a repository
+  below it is not one they check; what a retire or cleanup helper
+  container writes to a file on the host is capped
+  (`SWARM_HELPER_OUTPUT_LIMIT_MB`, default 16384) and keeps no container
+  log, and a scan archive is checked before it is extracted.
+- **The dashboard shows workspace volumes with no container, and an
+  unfinished cleanup.** A numbered agent or post-process whose
+  container retire removed showed `configured`, like one that never
+  started; it now shows `volume only` (its files are on its workspace
+  volume until cleanup). Once no container is left, a line counts the
+  engagement's workspace volumes; a cleanup that has not finished is
+  shown instead.
+- **Fix: harvest merges agent work built on the engagement's base
+  after HEAD moved on.** It refused any branch that did not descend from
+  HEAD, so agent work pushed after an interactive branch was merged, or
+  after commits made in the checkout, could not be harvested. It now
+  checks the commit the engagement started from (`base_commit`, recorded
+  on the host): a branch built on it merges while HEAD's history still
+  has it, and still has what earlier harvests of the engagement merged
+  (recorded too). A history rewritten after the start, or one that
+  dropped harvested work or gave up a merge (each merge is recorded
+  before it starts, and committed whatever the Git config says), still
+  refuses; `harvest.sh --again` merges that work again on purpose, after
+  undoing a harvest say, even once the bare repo's branches no longer
+  bring it back. A merge that stops on a conflict says how to
+  finish or give it up, a harvest refuses while a merge is in progress,
+  and one within the same second as the previous one no longer fails on
+  its restore tag. Harvest no longer fetches tags from the bare repo,
+  and refuses when a tag or branch of the checkout has the name of a
+  harvested branch (`_agent-harvest/<branch>`).
+- **Fix: a run that Bash 3.2 stops on an unset variable no longer ends
+  with status 0.** macOS's `/bin/bash` runs an EXIT trap with status 0
+  when `set -u` stops a script, so `launch.sh`, retire and cleanup,
+  which have EXIT traps, would report a stop of that kind (a bug) as
+  success. Such a run now ends with 1. `tests/test.sh --unit` also
+  fails a test file that never printed its summary, which the same
+  quirk would have let pass; files that skip on purpose print one.
+- **Breaking: workspace volumes, one Docker daemon per engagement, new
+  engagements only on a clean runtime directory.** Each engine container
+  gets a `/workspace` volume of its own (`<container>-ws-<hex>`, labeled
+  with the project, checkout, engagement, engagement token, container,
+  kind, context and a nonce that is read back), so its work outlives it
+  for retire and cleanup. The workspace mount, the engagement labels,
+  `--restart no`, `--rm=false` and the container name come after
+  `docker_args`. The state file records the engagement's Docker daemon
+  and a random token; `post-process` and `interactive` joining it,
+  `stop`, `wait`, `retire` and `cleanup` refuse another daemon, and each
+  command keeps the Docker context it started with. `stop` stops by ID
+  only containers that carry the engagement's token (`--numbered`: the
+  numbered agents only), first without the engagement lock, then under
+  it, after waiting up to its grace for a start still launching agents,
+  and fails when one still runs or the lock stays held; `wait` checks
+  the token again before it goes on;
+  `SWARM_ENGAGEMENT_TOKEN` binds `stop`, `post-process`, `interactive`
+  and `harvest.sh` to one engagement, and the dashboard's `s` and `p` go
+  through `launch.sh`. `start`, and `post-process` or `interactive` when
+  they would create the engagement, refuse while the runtime directory
+  holds anything of one; nothing is removed by force any more (no
+  `docker rm -f`, no `alpine` helper, no `rm -rf` recipes): end an
+  engagement with `harvest.sh` and `./launch.sh cleanup`, which gains
+  `--allow-unharvested` for work a rewritten upstream left behind and
+  checks the volumes before it retires anything. `post-process` refuses
+  while numbered agents of the engagement run, and while an earlier
+  post-process container is there (`./launch.sh retire --post-process`).
+  Bare repos and mirrors are cloned to `.new` and renamed once ready,
+  and a mistake in the swarmfile or a failed image build stops `start`
+  before the engagement is created. The runtime directory must be a
+  place cleanup can work in. Engagements of earlier releases are not
+  taken over: every command but `status` and `logs` refuses them. Finish
+  such an engagement with the release that started it (check it out,
+  stop the agents, run `harvest.sh`, follow its cleanup steps), then
+  come back.
+- **Fix: `tests/runtime_pi.sh` on Linux hosts whose UID is not 1000.**
+  The test handed its Codex auth fixture to the container's user before
+  the driver read it on the host, so the Codex checks failed, and its
+  cleanup could not remove what the agents wrote into the bare repo. It
+  now reads the fixture first and removes the bare repo as root with
+  its test image.
+- **Feature: `launch.sh cleanup [--discard-uncommitted]`.** Deletes this
+  checkout's engagement (containers, through retire's checks; workspace
+  volumes; the bare repo; the mirrors; leftovers of an earlier cleanup)
+  after copying everything Git keeps in each location into the checkout
+  as recovery refs (`refs/swarm-recovery/e<hex>/<snapshot>/s<n>/`,
+  `<hex>` being the engagement id in hex, with a `sources` blob naming
+  each) and verifying them with `git fsck --full`. It refuses while the
+  bare repo holds agent work the checkout lacks, while a session is open
+  or starting, when a location holds work outside Git's history (unless
+  `--discard-uncommitted`, which drops exactly what it lists), when
+  the checkout cannot keep the copies by itself, or when something is
+  mounted where it would delete. A checkpoint in the state file lets a
+  run that stopped half way be finished by the next; every run checks
+  everything again and checks the recovery refs earlier runs wrote, and
+  start, post-process, interactive, stop and harvest.sh refuse
+  meanwhile. Files the containers wrote are deleted through a throwaway
+  engine-image container as root, only once a token shows it sees the
+  same directory. The scanner gains a `files` mode for what a deletion
+  left of a repository. retire and cleanup ignore the caller's `GIT_*`
+  variables (except the choice of config files).
+- **Fix: launch.sh leaves no temporary files behind.** The profile file
+  of `interactive` and the agents' list of `start` were removed only
+  when the command got that far; any earlier exit, a failure or Ctrl-C
+  left them, on macOS in the user's temporary directory whatever
+  `TMPDIR` said. They are now made in `TMPDIR` (or `/tmp`) and removed
+  when `launch.sh` exits, however it does.
+- **Feature: `launch.sh retire [--post-process]`.** Removes this
+  checkout's stopped engine containers (or only the post-process one) by
+  ID, without `-f`, after checking every selected container first:
+  exited or created, no restart policy or auto-remove, exactly one mount
+  at `/workspace` that is its own workspace volume and nothing mounted
+  or on tmpfs below it, no open interactive session, no git config in
+  the container that keeps repository data elsewhere (the global and
+  system files its git names with `git var`, so Git 2.42 or later in the
+  image), no repository data outside the volume (worktrees, links,
+  alternates, config), no symlink in the volume to data the container
+  wrote (compared with `docker diff` and with the original image; a name
+  `docker diff` cannot report exactly, not being UTF-8, refuses), and no
+  Git repository anywhere outside the volume, made by the container or
+  shipped by its image, changed or not (`docker diff` cannot show every
+  change). The checks run in a `docker commit` snapshot of the
+  container. A container that changed since its check is left. Workspace
+  volumes stay. It needs no swarmfile, takes the engagement lock and
+  checks the engagement's Docker daemon. `tests/runtime_retire.sh` (in
+  `tests/test.sh --runtime` and `--all`) runs it on real stopped
+  containers.
+- **Feature: recovery snapshots (building block).**
+  `lib/preserve-scan.sh` packs everything Git keeps in a repository
+  location (every ref, reflog entry, stash, operation state, object,
+  and every file of its git dirs) into a bundle and reports work-tree
+  content outside Git's history; `swarm_recovery_import` copies such a
+  bundle into the checkout under `refs/swarm-recovery/<engagement>/
+  <snapshot>/` and checks it, and `swarm_recovery_verify_checkout`
+  re-hashes the checkout's objects. Cleanup uses them in a later
+  change; no command calls them yet.
+- **Fix: open interactive sessions keep the bare repo and the
+  mirrors.** `interactive` held the lock in a helper process until the
+  container ran, and `start` could still replace the bare repo and the
+  mirrors under a running session. `interactive` now records the
+  session under the lock with its pid, that process's start time and
+  the Docker daemon, releases the lock and execs `docker run`. While
+  that process runs, or the container runs after a detach, `start`
+  fails, and so do `post-process` and `interactive` when they would
+  create the bare repo. A joining session no longer replaces the
+  mirrors; it only adds missing ones. `post-process` now mirrors the
+  submodules when it creates the bare repo, as `start` and
+  `interactive` do.
+- **Fix: the harness keeps commits that no push shipped.** Each
+  loop iteration reset the workspace to `origin/agent-work`, so
+  commits left from a session whose push and park both failed, or
+  from a restart before the push, stayed only in the reflog. The loop
+  now fetches with `--prune` and checks HEAD against origin's
+  `agent-work`, `swarm/*` and `agent-parked/*`; commits on none of
+  them go through the session-end push first, and if they are still
+  unshipped the harness exits without resetting. After a scratch
+  worktree push, the branch moves to the pushed commits, since the
+  originals were shipped as copies, but only when the tree is clean
+  and `git cherry` finds every local commit on origin. The scratch
+  push also stopped reporting success when it could not list the
+  commits to transplant.
+- **Fix: a new bare repo starts from the checkout's HEAD.** The
+  clone copied every local branch, so an old local `agent-work`,
+  `swarm/*` or `agent-parked/*` branch in the checkout reached the new
+  engagement and harvest could take it for new agent work.
+  `create_bare_repo` now deletes the `swarm/*` and `agent-parked/*`
+  branches in the new bare repo, points `agent-work` and
+  `refs/swarm/base` at the checkout's HEAD, and records that commit as
+  `base_commit` in the state file. A checkout without a commit is
+  refused.
 - **Fix: a signal that ends costs.sh, progress.sh or dashboard.sh no
   longer prints "stopped before the end of its run" on Bash 4.1 and
   later.** Bash runs the EXIT trap with status 0 when a signal ends a
