@@ -4,7 +4,9 @@
 # sessions), read as the exact vector docker run gets and checked
 # against docker run's option grammar before anything of an engagement
 # is prepared.  The check is structural: values are Docker's to check,
-# when it runs.  Compatible with Bash 3.2.  Functions print
+# when it runs, except where they would reach what launch.sh gives
+# every container of a target (the TARGET_* variables, the snapshot at
+# /target-upstream).  Compatible with Bash 3.2.  Functions print
 # "ERROR: ..." and return 1 on refusal.
 
 # docker run's options, as Docker 24.0.9 or 29.8.2 registers them
@@ -113,6 +115,169 @@ swarm_docker_args_read() {
     done
 }
 
+# The perl part of _swarm_docker_args_reserved: exit 0 when operand $2
+# of kind $1 names no container path at or below /target-upstream, 1
+# when it does, 2 when Docker could not parse it as a --mount value, 3
+# when it is not UTF-8 (jq only writes UTF-8; utf8::decode is built in,
+# where Debian ships Encode outside perl-base).  Kind mount: Docker 29
+# trims the whole value (Go's strings.TrimSpace) and refuses white space
+# around a key or a value, Docker 24 trims nothing; both read one CSV
+# record (Go's encoding/csv: a quote opens a field only at its start,
+# "" inside one is a quote, and a trailing CR before the end goes),
+# split each field at its first "=" and lowercase the key with Go's
+# strings.ToLower (ASCII, and U+0130 to "i": the only other letters
+# whose lowercase is ASCII are U+0130 and U+212A, a "k", which no key
+# here has).  Both readings must parse, and neither may
+# have a target, dst or destination key whose value, cleaned as Go's
+# path.Clean does, is /target-upstream or below it; the first reading
+# also trims each key and value (Docker 29 refuses those, so this only
+# refuses more).  Kind fields (-v, --device): every ":" field; kind
+# tmpfs: what comes before the first ":"; each as given and trimmed.
+_SWARM_DOCKER_RESERVED='use strict;
+use warnings;
+my ($kind, $v) = @ARGV;
+exit 3 unless utf8::decode($v);
+my $ws = q|[\x{9}-\x{D}\x{20}\x{85}\x{A0}\x{1680}\x{2000}-\x{200A}|
+    . q|\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}]|;
+sub trim {
+    my $s = shift;
+    $s =~ s/\A$ws+//;
+    $s =~ s/$ws+\z//;
+    return $s;
+}
+sub reserved {
+    my $p = shift;
+    return 0 unless substr($p, 0, 1) eq "/";
+    my @out;
+    for my $c (split m{/}, $p) {
+        next if $c eq "" || $c eq ".";
+        if ($c eq "..") { pop @out; next; }
+        push @out, $c;
+    }
+    return @out && $out[0] eq "target-upstream" ? 1 : 0;
+}
+sub record {
+    my $s = shift;
+    $s =~ s/\r\z//;
+    return undef if $s eq "";
+    my ($i, $n, @f) = (0, length $s);
+    FIELD: while (1) {
+        if ($i >= $n || substr($s, $i, 1) ne "\"") {
+            my $j = index($s, ",", $i);
+            my $field = $j >= 0 ? substr($s, $i, $j - $i) : substr($s, $i);
+            return undef if index($field, "\"") >= 0;
+            push @f, $field;
+            if ($j >= 0) { $i = $j + 1; next FIELD; }
+            return \@f;
+        }
+        my $field = "";
+        $i++;
+        while (1) {
+            my $q = index($s, "\"", $i);
+            return undef if $q < 0;
+            $field .= substr($s, $i, $q - $i);
+            $i = $q + 1;
+            if ($i < $n && substr($s, $i, 1) eq "\"") {
+                $field .= "\"";
+                $i++;
+                next;
+            }
+            push @f, $field;
+            return \@f if $i >= $n;
+            return undef if substr($s, $i, 1) ne ",";
+            $i++;
+            next FIELD;
+        }
+    }
+}
+sub mount_check {
+    my $value = shift;
+    my $hit = 0;
+    for my $trimmed (1, 0) {
+        my $fields = record($trimmed ? trim($value) : $value);
+        return 2 unless defined $fields;
+        for my $field (@$fields) {
+            my ($k, $val) = split /=/, $field, 2;
+            next unless defined $val;
+            ($k, $val) = (trim($k), trim($val)) if $trimmed;
+            $k =~ tr/A-Z/a-z/;
+            $k =~ s/\x{130}/i/g;
+            next unless $k eq "target" || $k eq "dst" || $k eq "destination";
+            $hit = 1 if reserved($val);
+        }
+    }
+    return $hit;
+}
+my $rc = 0;
+if ($kind eq "mount") {
+    $rc = mount_check($v);
+} else {
+    my @parts = $kind eq "tmpfs" ? ((split /:/, $v, 2)[0] // "")
+        : split(/:/, $v, -1);
+    for my $p (@parts) {
+        $rc = 1 if reserved($p) || reserved(trim($p));
+    }
+}
+exit $rc;'
+
+# Refuse element POS (1-based) of docker_args, A, when option NAME (its
+# long name) with operand V would reach what launch.sh gives every
+# container of a target: one of the five variables (an env name is what
+# comes before the first "=", exactly), every variable of a file
+# (--env-file) or every mount of another container (--volumes-from), or
+# a mount at or below /target-upstream (_SWARM_DOCKER_RESERVED).  The
+# place and the names are reserved whether or not the engagement has a
+# target.
+_swarm_docker_args_reserved() {
+    local pos="$1" a="$2" name="$3" v="$4" kind rc=0
+    case "$name" in
+        env)
+            case "${v%%=*}" in
+                TARGET_REPO|TARGET_REV|TARGET_REV_BASE|TARGET_REV_BASE_REPO\
+                |SWARM_TARGET_MIRROR)
+                    _swarm_docker_args_refuse "$pos" "$a" "sets ${v%%=*}:" \
+                        "launch.sh sets it from the engagement's target" \
+                        "(TARGET_REPO, TARGET_REV, TARGET_REV_BASE and" \
+                        "TARGET_REV_BASE_REPO go in the host environment)"
+                    return 1 ;;
+            esac
+            return 0 ;;
+        env-file)
+            _swarm_docker_args_refuse "$pos" "$a" "reads variables from a" \
+                "file, which could set the target's; give each one with -e" \
+                "(TARGET_* go in the host environment)"
+            return 1 ;;
+        volumes-from)
+            _swarm_docker_args_refuse "$pos" "$a" "takes every mount of" \
+                "another container, which could put one at" \
+                "/target-upstream; give the mounts themselves"
+            return 1 ;;
+        mount) kind=mount ;;
+        volume|device) kind=fields ;;
+        tmpfs) kind=tmpfs ;;
+        *) return 0 ;;
+    esac
+    perl -e "$_SWARM_DOCKER_RESERVED" -- "$kind" "$v" || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        1)
+            _swarm_docker_args_refuse "$pos" "$a" "puts something at or" \
+                "below /target-upstream, the place of the target's" \
+                "snapshot" ;;
+        2)
+            _swarm_docker_args_refuse "$pos" "$a" "has a value Docker" \
+                "cannot read as one CSV record (a quote may only enclose a" \
+                "whole field)" ;;
+        3)
+            _swarm_docker_args_refuse "$pos" "$a" "has a value that is" \
+                "not UTF-8 text" ;;
+        *)
+            _swarm_docker_args_refuse "$pos" "$a" "cannot be checked" \
+                "(perl ended with status ${rc})" ;;
+    esac
+    return 1
+}
+
 # Refuse element POS (1-based) of docker_args, A, for REASON (the rest
 # of the arguments).
 _swarm_docker_args_refuse() {
@@ -131,9 +296,11 @@ _swarm_docker_args_refuse() {
 # (a positional argument ends docker run's options before the engine's
 # own), an option taking a value with nothing after it, `-x=` for a
 # boolean x (Docker reads the "=" as another option), and a group of
-# short options such as `-it` (give `-i` and `-t` apart).
+# short options such as `-it` (give `-i` and `-t` apart).  Each operand,
+# attached or not, then goes through _swarm_docker_args_reserved; `-x=V`
+# gives V, as pflag reads it, and `-x=` gives "=".
 swarm_docker_args_check() {
-    local n="${#SWARM_DOCKER_ARGS[@]}" i=0 a name kind x rest pos
+    local n="${#SWARM_DOCKER_ARGS[@]}" i=0 a name kind x rest pos v
     while [ "$i" -lt "$n" ]; do
         a="${SWARM_DOCKER_ARGS[$i]}"
         pos=$((i + 1))
@@ -158,7 +325,9 @@ swarm_docker_args_check() {
                     return 1
                 fi
                 case "$a" in
-                    *=*) ;;
+                    *=*)
+                        _swarm_docker_args_reserved "$pos" "$a" "$name" \
+                            "${a#*=}" || return 1 ;;
                     *)
                         if [ "$kind" = value ]; then
                             if [ $((i + 1)) -ge "$n" ]; then
@@ -167,6 +336,8 @@ swarm_docker_args_check() {
                                 return 1
                             fi
                             i=$((i + 1))
+                            _swarm_docker_args_reserved "$pos" "$a" "$name" \
+                                "${SWARM_DOCKER_ARGS[$i]}" || return 1
                         fi ;;
                 esac ;;
             -?*)
@@ -178,6 +349,11 @@ swarm_docker_args_check() {
                         "is no docker run option this engine knows"
                     return 1
                 fi
+                case "$x" in
+                    e) name="env" ;;
+                    v) name="volume" ;;
+                    *) name="" ;;
+                esac
                 if [ -z "$rest" ]; then
                     if [ "$kind" = value ]; then
                         if [ $((i + 1)) -ge "$n" ]; then
@@ -186,6 +362,8 @@ swarm_docker_args_check() {
                             return 1
                         fi
                         i=$((i + 1))
+                        _swarm_docker_args_reserved "$pos" "$a" "$name" \
+                            "${SWARM_DOCKER_ARGS[$i]}" || return 1
                     fi
                 elif [ "$rest" = "=" ] && [ "$kind" = bool ]; then
                     _swarm_docker_args_refuse "$pos" "$a" \
@@ -195,6 +373,13 @@ swarm_docker_args_check() {
                     _swarm_docker_args_refuse "$pos" "$a" \
                         "groups short options: give each one apart"
                     return 1
+                elif [ "$kind" = value ]; then
+                    v="$rest"
+                    case "$rest" in
+                        =?*) v="${rest#=}" ;;
+                    esac
+                    _swarm_docker_args_reserved "$pos" "$a" "$name" "$v" \
+                        || return 1
                 fi ;;
             *)
                 _swarm_docker_args_refuse "$pos" "$a" \
