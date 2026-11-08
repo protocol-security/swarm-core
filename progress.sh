@@ -8,8 +8,8 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
 Usage: $0
 
 Show recent commits on agent-work and the swarm's containers.
-Clones the bare repo to a temp directory, displays the last
-15 commits on agent-work, and lists the containers with their state.
+Displays the last 15 commits on the bare repo's agent-work and lists
+the containers with their state.
 HELP
     exit 0
 fi
@@ -39,7 +39,6 @@ if docker info >/dev/null 2>&1; then
     swarm_containers_verify "$PROJECT" "$REPO_ROOT" || exit 1
 fi
 
-CHECK_DIR=$(mktemp -d)
 # Set when the run gets to its end (its last line).
 PROGRESS_EXIT_OK=false
 # Whether Bash MAJOR.MINOR needs the check in the EXIT trap below: before
@@ -50,14 +49,13 @@ PROGRESS_EXIT_OK=false
 progress_stop_guard_needed() {
     [ "$1" -lt 4 ] || { [ "$1" -eq 4 ] && [ "$2" -lt 1 ]; }
 }
-# The EXIT trap: remove the clone, and where Bash needs it, never let a
-# run that stopped short end with status 0.  Bash also runs this trap
-# with $? at 0 when a signal ends the script, so the check is only made
-# where Bash can end a stopped run with 0 itself; there a signal can
-# print the line too.  Any other status stays, a signal's too.
+# The EXIT trap: where Bash needs it, never let a run that stopped short
+# end with status 0.  Bash also runs this trap with $? at 0 when a signal
+# ends the script, so the check is only made where Bash can end a
+# stopped run with 0 itself; there a signal can print the line too.  Any
+# other status stays, a signal's too.
 progress_exit_trap() {
     local rc=$?
-    rm -rf "$CHECK_DIR"
     if [ "$rc" -eq 0 ] && ! $PROGRESS_EXIT_OK \
             && progress_stop_guard_needed "${BASH_VERSINFO[0]}" \
                 "${BASH_VERSINFO[1]}"; then
@@ -66,12 +64,14 @@ progress_exit_trap() {
     fi
 }
 trap progress_exit_trap EXIT
-git clone --quiet "$BARE_REPO" "$CHECK_DIR"
-cd "$CHECK_DIR"
-git checkout --quiet agent-work
 
+# Read the bare repo, which agents write, in place: no pager (core.pager
+# there would run on the host), no transport (a missing object must not
+# make it fetch from a remote the repo names) and no signature check
+# (log.showSignature would run the repo's gpg.program).
 echo "=== Recent commits ==="
-git log --oneline -15
+swarm_no_fetch git --no-pager -c log.showSignature=false \
+    --git-dir="$BARE_REPO" log --oneline -15 refs/heads/agent-work
 
 echo ""
 echo "=== Status ==="
