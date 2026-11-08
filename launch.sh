@@ -940,8 +940,9 @@ HELP
         done < <(agent_docker_env "$agent_effort")
     fi
 
-    # Forward Pi timeout/retry overrides from the host environment.
-    for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES; do
+    # Forward Pi settings overrides from the host environment.
+    for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES \
+            PI_COMPACTION_RESERVE_TOKENS; do
         [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
     done
 
@@ -1120,8 +1121,9 @@ cmd_start() {
             done < <(agent_docker_env "$eff")
         fi
 
-        # Forward Pi timeout/retry overrides from the host environment.
-        for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES; do
+        # Forward Pi settings overrides from the host environment.
+        for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES \
+                PI_COMPACTION_RESERVE_TOKENS; do
             [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
         done
 
@@ -1627,8 +1629,9 @@ cmd_post_process() {
         done < <(agent_docker_env "$pp_effort")
     fi
 
-    # Forward Pi timeout/retry overrides from the host environment.
-    for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES; do
+    # Forward Pi settings overrides from the host environment.
+    for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES \
+            PI_COMPACTION_RESERVE_TOKENS; do
         [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
     done
 

@@ -94,6 +94,7 @@ Credentials stay as env vars (not in shell history).
 | `ANTHROPIC_OAUTH_TOKEN` | | Pi Anthropic OAuth token; falls back to `CLAUDE_CODE_OAUTH_TOKEN`. |
 | `PI_HTTP_IDLE_TIMEOUT_MS` | `300000` | Pi driver: `httpIdleTimeoutMs` written to the container's Pi settings. Bounds the wait for response headers and stream data; `0` disables. See [Pi timeouts](#pi-timeouts-and-retries). |
 | `PI_MAX_RETRIES` | `0` | Pi driver: enable Pi's in-session request retry with this many attempts. `0` leaves retries to the harness. |
+| `PI_COMPACTION_RESERVE_TOKENS` | Pi's (`16384`) | Pi driver: `compaction.reserveTokens` written to the container's Pi settings. See [Pi timeouts](#pi-timeouts-and-retries). |
 | `SWARM_CONFIG` | | Path to swarmfile (or place `swarm.json` in repo root). |
 | `SWARM_TITLE` | | Dashboard title override. |
 | `SWARM_RUNTIME_DIR` | | See [Runtime directory](#runtime-directory). |
@@ -854,6 +855,15 @@ fallback restarts the task from the prompt instead. Only
 `httpIdleTimeoutMs` is written, never `retry.provider.timeoutMs`. Keep
 `SWARM_ACTIVITY_TIMEOUT` above the backend's longest silent period, since a
 long prefill emits no log lines.
+
+Pi compacts the conversation once its context passes `contextWindow`
+minus `compaction.reserveTokens` (16384 by default), and caps a summary
+at a share of that reserve and of `maxTokens`. A reasoning model spends
+the same budget on reasoning, so its summary can hit the cap, and Pi
+then ends the session with `Summarization failed: generation hit the
+token cap`. `PI_COMPACTION_RESERVE_TOKENS` sets a larger reserve, set
+the same way; raise `PI_MAX_TOKENS` with it for custom models. It
+applies to every agent of the run.
 
 #### Codex subscription through Pi
 
