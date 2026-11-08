@@ -3190,8 +3190,9 @@ unset DOCKER_CONTEXT DOCKER_HOST
 # keeps it; DOCKER_CONTEXT overrides it.  With PD_SWITCH set, docker
 # info switches the current context to B, as another terminal could.
 # PD_STATE is the state of the container with the session's label on
-# A, "gone" for none, "error" for a failed listing.  A lookup by name
-# finds nothing, as after a rename of the detached container.
+# A, "gone" for none, "error" for a failed listing, "failed" for a
+# created one whose start failed.  A lookup by name finds nothing, as
+# after a rename of the detached container.
 PD_STATE=gone
 PD_DAEMON=d1
 PD_SWITCH=""
@@ -3210,6 +3211,14 @@ docker() {
         if [ "$ctx" = A ]; then echo "$PD_DAEMON"; else echo d2; fi
         return 0
     fi
+    if [ "$1 $2 ${*: -1}" = "container inspect pd-c1" ] \
+            && [ "$ctx" = A ]; then
+        case "$PD_STATE" in
+            failed) echo "created|port is already allocated" ;;
+            *) echo "${PD_STATE}|" ;;
+        esac
+        return 0
+    fi
     if [ "$1" != ps ]; then
         echo "Error: No such container: ${*: -1}" >&2
         return 1
@@ -3218,9 +3227,13 @@ docker() {
     case "$PD_STATE" in
         gone) ;;
         error) echo "Cannot connect to the Docker daemon" >&2; return 1 ;;
+        failed)
+            case "$*" in
+                *" label=swarm-core.session="*) echo "pd-c1 created" ;;
+            esac ;;
         *)
             case "$*" in
-                *" label=swarm-core.session="*) echo "$PD_STATE" ;;
+                *" label=swarm-core.session="*) echo "pd-c1 $PD_STATE" ;;
             esac ;;
     esac
 }
@@ -3328,6 +3341,11 @@ PD_STATE=created
 assert_eq "a session whose container is only created stays open" \
     "$_pd_id_a $_pd_id_b" \
     "$(swarm_pending_live "$_pd_dir" | sort | tr '\n' ' ' | sed 's/ $//')"
+# One whose start failed never runs: retire can take it.
+PD_STATE=failed
+assert_eq "a session whose container failed to start is closed" \
+    "$_pd_id_a" "$(swarm_pending_live "$_pd_dir")"
+swarm_pending_write "$_pd_dir" "$_pd_id_b" "$_pd_dead" d1
 PD_STATE=exited
 assert_eq "an ended session whose container exited is closed" \
     "$_pd_id_a" "$(swarm_pending_live "$_pd_dir")"
@@ -3756,6 +3774,7 @@ case "$1" in
                    project: (.labels["swarm-core.project"] // ""),
                    owner: (.labels["swarm-core.checkout"] // "")} | tojson
               elif $fmt == "{{.State}}" then .state
+              elif $fmt == "{{.ID}} {{.State}}" then "\(.id) \(.state)"
               elif $fmt == "{{.Names}} {{.State}}" then "\(.name) \(.state)"
               else .name end' "$d/containers" ;;
     container|inspect)
@@ -3778,6 +3797,7 @@ case "$1" in
         fi
         case "$fmt" in
             *'"labels":'*) jq -c '{id, labels}' <<< "$c" ;;
+            *.State.Error*) jq -r '"\(.state)|\(.error // "")"' <<< "$c" ;;
             *.State.Status*) jq -r .state <<< "$c" ;;
             *.State.Running*) jq -r '.state == "running"' <<< "$c" ;;
             *.State.ExitCode*) echo 0 ;;
@@ -4449,7 +4469,7 @@ assert_eq "wait: post-process only after them" "1" \
 # The count itself: numbered agents only, any state that may still run.
 awk '/^wait_count\(\)[[:space:]]*\{/ { p = 1 } p { print }
      p && /^\}[[:space:]]*$/ { exit }' "$_LAUNCH_SH" > "$_v_root/wait_count.sh"
-assert_eq "wait counts the numbered agents that run or may" "3 2" \
+assert_eq "wait counts the numbered agents that run or may" "3 3" \
     "$(IMAGE_NAME="$_v_img"
        # shellcheck source=/dev/null
        source "$_v_root/wait_count.sh"
@@ -4458,6 +4478,7 @@ ${_v_img}-2 exited
 ${_v_img}-3 created
 ${_v_img}-4 paused
 ${_v_img}-10 dead
+${_v_img}-5 failed
 ${_v_img}-post running
 ${_v_img}-interactive-x-1 running
 other-agent-1 running")"
@@ -4489,6 +4510,32 @@ for _v_state in running exited; do
     assert_eq "a $_v_state -post container: runtime as it was" \
         "$_v_before" "$(v_snap)"
 done
+: > "$V_DIR/containers"
+# A container whose start failed (a port in use) stays created, with
+# the error, and never runs: post-process says to retire it, and wait
+# does not wait for such an agent.
+v_container "${_v_img}-post" created "$_v_tok"
+jq -c '.error = "port is already allocated"' "$V_DIR/containers" \
+    > "$V_DIR/containers.x" && mv "$V_DIR/containers.x" "$V_DIR/containers"
+_v_rc=0
+_v_out=$(v_run post-process) || _v_rc=$?
+assert_eq "a -post container that failed to start: retire it first" \
+    "1 true" "$_v_rc $(v_has "retire it first" "$_v_out")"
+: > "$V_DIR/containers"
+v_container "${_v_img}-1" exited "$_v_tok"
+v_container "${_v_img}-2" created "$_v_tok"
+jq -c 'if .name | endswith("-2")
+       then .error = "port is already allocated" else . end' \
+    "$V_DIR/containers" > "$V_DIR/containers.x" \
+    && mv "$V_DIR/containers.x" "$V_DIR/containers"
+rm -f "$V_DIR/wait-listed"
+echo run > "$V_DIR/fail"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run wait) || _v_rc=$?
+rm -f "$V_DIR/fail"
+assert_eq "wait: an agent that failed to start is not waited for" "1" \
+    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 : > "$V_DIR/containers"
 
 # A token names an engagement to join: with the bare repo gone,

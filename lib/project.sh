@@ -1171,20 +1171,43 @@ swarm_pending_write() {
     } > "$file.tmp" && mv "$file.tmp" "$file"
 }
 
+# Succeed when container ID never started and never will: Docker keeps
+# a container whose start failed (a port in use, a mount denied) as
+# created, with the error, and the engine runs none with a restart
+# policy.  One still being started has no error yet.
+swarm_start_failed() {
+    local state
+    state=$(docker container inspect \
+        -f '{{.State.Status}}|{{.State.Error}}' "$1" 2>/dev/null) \
+        || return 1
+    case "$state" in
+        "created|"?*) return 0 ;;
+    esac
+    return 1
+}
+
 # Succeed when no container of session NAME runs or can still start:
 # Docker lists none with its session label, or only exited or dead
-# ones.  A created container counts as running, since the daemon can
-# finish starting it after the client is gone.  Returns 1 while one
-# runs, and 2 when Docker cannot tell.
+# ones, or created ones whose start failed.  Another created container
+# counts as running, since the daemon can finish starting it after the
+# client is gone.  Returns 1 while one runs, and 2 when Docker cannot
+# tell.
 swarm_container_settled() {
-    local name="$1" states state
-    states=$(docker ps -a \
+    local name="$1" lines id state
+    lines=$(docker ps -a \
         --filter "label=${SWARM_SESSION_LABEL}=${name}" \
-        --format '{{.State}}' 2>/dev/null) || return 2
-    for state in $states; do
+        --format '{{.ID}} {{.State}}' 2>/dev/null) || return 2
+    # Pairs of words: ids and states hold no blanks or glob characters.
+    # shellcheck disable=SC2086
+    set -- $lines
+    while [ $# -ge 2 ]; do
+        id="$1"
+        state="$2"
+        shift 2
         case "$state" in
             exited|dead) ;;
-            created|running|paused|restarting|removing) return 1 ;;
+            created) swarm_start_failed "$id" || return 1 ;;
+            running|paused|restarting|removing) return 1 ;;
             *) return 2 ;;
         esac
     done
