@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Fix: the test files no longer take Pi settings from the caller's
+  environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
+  Pi driver reads, as it does for swarm-core's own settings, in every
+  file but `tests/test.sh`, whose live runs use them. With
+  `PI_REASONING` or `PI_COMPACTION_RESERVE_TOKENS` exported, as on a
+  host that runs Pi agents, `tests/test_pi.sh` and
+  `tests/test_launch.sh` failed.
 - **Fix: Git leaves nothing running that holds the engagement lock.**
   Every process started under the lock inherits its descriptor, so
   Git's fsmonitor daemon, started by a merge in a checkout with
