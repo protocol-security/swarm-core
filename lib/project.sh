@@ -191,6 +191,111 @@ swarm_runtime_check() {
     fi
 }
 
+# Print absolute PATH with the longest leading part of it that can be
+# entered resolved (cd -P), and the rest as it is: PATH need not exist
+# on this host, but a link on the way to it is still followed.  Fails
+# on a relative path.
+swarm_path_resolve() {
+    local p="$1" head rest="" resolved
+    case "$p" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    while [ "$p" != / ] && [ "${p%/}" != "$p" ]; do
+        p="${p%/}"
+    done
+    head="$p"
+    while ! resolved=$(cd -P "$head" 2>/dev/null && pwd -P); do
+        rest="/${head##*/}${rest}"
+        head="${head%/*}"
+        [ -n "$head" ] || head=/
+    done
+    [ "$resolved" != / ] || resolved=""
+    [ -n "${resolved}${rest}" ] || rest=/
+    printf '%s%s\n' "$resolved" "$rest"
+}
+
+# Print the numeric owner of PATH.
+swarm_owner_uid() {
+    if stat -c %u / >/dev/null 2>&1; then
+        stat -c %u "$1"
+    else
+        stat -f %u "$1"
+    fi
+}
+
+# Succeed when DIR (it need not exist yet) can be the runtime directory
+# of the checkout at ROOT, in a place cleanup can work in: not /, not
+# $HOME; not the checkout, its common git dir or its own git dir (a
+# linked worktree's lives apart), nor inside or around any of them; no
+# comma, quote, tab or newline in its path (the Docker helper's --mount
+# value is comma-separated, cleanup's lists tab-separated); and, when it
+# exists, a directory of this user's.
+swarm_runtime_location_ok() {
+    local dir="$1" root="$2" rt home owner croot common gitdir x
+    case "$dir" in
+        *[,\"]*|*$'\n'*|*$'\t'*)
+            echo "ERROR: ${dir} holds a comma, a quote, a tab or a" \
+                 "newline; it cannot be the runtime directory." >&2
+            return 1 ;;
+    esac
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+        if [ -L "$dir" ] || [ ! -d "$dir" ]; then
+            echo "ERROR: ${dir} is not a directory." >&2
+            return 1
+        fi
+        owner=$(swarm_owner_uid "$dir") || return 1
+        if [ "$owner" != "$(id -u)" ]; then
+            echo "ERROR: ${dir} does not belong to this user." >&2
+            return 1
+        fi
+    fi
+    if ! rt=$(swarm_path_resolve "$dir"); then
+        echo "ERROR: ${dir} is not an absolute path." >&2
+        return 1
+    fi
+    home=$(cd -P "${HOME:-/}" 2>/dev/null && pwd -P) || home=/
+    if [ "$rt" = / ] || [ "$rt" = "$home" ]; then
+        echo "ERROR: refusing ${dir} as the runtime directory." >&2
+        return 1
+    fi
+    # The checkout, its common git dir and its own git dir, resolved,
+    # with no GIT_* variable of the caller's steering git.
+    if ! croot=$(cd -P "$root" 2>/dev/null && pwd -P) \
+            || ! common=$(cd "$root" && env -u GIT_DIR -u GIT_WORK_TREE \
+                -u GIT_COMMON_DIR git rev-parse --git-common-dir \
+                2>/dev/null) \
+            || ! gitdir=$(cd "$root" && env -u GIT_DIR -u GIT_WORK_TREE \
+                -u GIT_COMMON_DIR git rev-parse --absolute-git-dir \
+                2>/dev/null); then
+        echo "ERROR: cannot resolve the git dir of ${root}." >&2
+        return 1
+    fi
+    case "$common" in
+        /*) ;;
+        *) common="$root/$common" ;;
+    esac
+    if ! common=$(cd -P "$common" 2>/dev/null && pwd -P) \
+            || ! gitdir=$(cd -P "$gitdir" 2>/dev/null && pwd -P); then
+        echo "ERROR: cannot resolve the git dir of ${root}." >&2
+        return 1
+    fi
+    for x in "$croot" "$common" "$gitdir"; do
+        case "$x/" in
+            "$rt"/*)
+                echo "ERROR: ${dir} holds the checkout or its git dir" \
+                     "(${x})." >&2
+                return 1 ;;
+        esac
+        case "$rt/" in
+            "$x"/*)
+                echo "ERROR: ${dir} is inside the checkout or its git" \
+                     "dir (${x})." >&2
+                return 1 ;;
+        esac
+    done
+}
+
 # Create the runtime directory (owner-only) when missing, then check it.
 # The directory has to be private from the moment it exists, or another
 # user could add entries before any check runs.  mkdir -m 700 gives that
@@ -228,50 +333,25 @@ swarm_runtime_init() {
 # /tmp with world-writable modes, so any local user could have changed
 # its refs.  That state is never adopted; print how to recover it.
 # Only a directory owned by the current user counts: anyone can create
-# a path in /tmp, and only its owner could remove it.  Agents pushed to
-# it as the container's user, whose files rm cannot always delete on
-# Linux, so the old state goes through Docker as in rm_docker_dir.
+# a path in /tmp, and only its owner could remove it.
 swarm_refuse_legacy_state() {
-    local project="$1" legacy quoted path remove=""
-    local grace="${SWARM_STOP_TIMEOUT:-60}"
+    local project="$1" legacy quoted
     legacy="/tmp/${project}-upstream.git"
     if [ -L "$legacy" ] || [ ! -d "$legacy" ] || [ ! -O "$legacy" ]; then
         return 0
     fi
     quoted=$(printf '%q' "$legacy")
-    # List the paths that exist instead of printing a glob, which zsh
-    # rejects when nothing matches.
-    for path in "$legacy" "/tmp/${project}-mirror-"*.git \
-            "/tmp/${project}-swarm.env"; do
-        if [ -e "$path" ] || [ -L "$path" ]; then
-            remove+=" $(printf '%q' "$path")"
-        fi
-    done
     cat >&2 <<EOF
 ERROR: ${legacy} is left over from an older swarm-core.
 This version keeps its state in a private runtime directory and does
-not reuse the old one, since other local users could write to it.
-Containers of the older release push to it.  Stop any that still run
-with the grace ./launch.sh stop gives, so their agents can push their
-last commits:
-  docker stop -t ${grace} <container>...
-To keep agent commits from it, fetch them and review them before you
-merge anything:
+not reuse the old one, since other local users could write to it; it
+leaves the old state and its containers alone.  Finish that engagement
+with the release that made it (check it out, stop the agents, harvest,
+then follow its USAGE.md), then come back to this one.  To look at the
+agents' commits meanwhile, fetch them (this changes nothing there):
   git fetch ${quoted} '+refs/heads/*:refs/remotes/legacy-swarm/*'
-Then remove the old state.  The agents wrote part of it as the
-container's user, so remove it through Docker:
-  docker run --rm -v /tmp:/tmp alpine rm -rf${remove}
 EOF
     return 1
-}
-
-# Print a command that removes the bare repository of runtime directory
-# DIR.  The agents wrote files in it as the container's user, which rm
-# run by the user cannot always delete on Linux, so rm runs as root in
-# a container, as in rm_docker_dir.  Only DIR is mounted.
-swarm_bare_rm_command() {
-    printf 'docker run --rm -v %s:/runtime alpine' "$(printf '%q' "$1")"
-    printf ' rm -rf /runtime/upstream.git'
 }
 
 SWARM_STATE_SCHEMA="swarm-core.state/v1"
@@ -314,6 +394,19 @@ swarm_project_resolve() {
     swarm_project_id "$(basename "$root")"
 }
 
+# Run command ARGS (git, or a function that runs it) with no Git
+# transport allowed: for reads of a repository that agents write (the
+# bare repo, a mirror).  A missing object would otherwise make Git fetch
+# it from a remote that repository names, which for a local path runs
+# the remote's uploadpack command.  GIT_NO_LAZY_FETCH stops that from
+# Git 2.45 on; an empty GIT_ALLOW_PROTOCOL stops every transport on any
+# Git, whatever protocol.* the repository sets (-c protocol.allow=never
+# would not: a repository's protocol.file.allow overrides it).  Never
+# for fetching a bundle, which needs the file transport.
+swarm_no_fetch() {
+    GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL='' "$@"
+}
+
 # Physical path of a checkout, the form recorded as its owner.
 swarm_checkout_path() {
     (cd -P "$1" && pwd -P)
@@ -345,6 +438,7 @@ swarm_state_update() {
 # another checkout.  Callers run swarm_runtime_check first.
 swarm_runtime_owner_check() {
     local dir="$1" root="$2" project="$3" file canonical state owner
+    local recorded
     file="$dir/state.json"
     if [ ! -e "$file" ] && [ ! -L "$file" ]; then
         return 0
@@ -363,9 +457,20 @@ swarm_runtime_owner_check() {
         echo "  owner:    ${owner}" >&2
         echo "  this one: ${canonical}" >&2
         echo "Give this checkout its own id with SWARM_PROJECT. If it" \
-             "is the same checkout at a new path, harvest from the old" \
-             "path first, or remove the runtime directory once nothing" \
-             "in it is needed." >&2
+             "is the same checkout at a new path, run harvest.sh and" \
+             "./launch.sh cleanup from the old path." >&2
+        return 1
+    fi
+    # The runtime directory can be named apart from the project id
+    # (SWARM_RUNTIME_DIR), and cleanup finds containers and volumes by
+    # the project: a runtime of another project is not this one's.
+    recorded=$(printf '%s' "$state" | jq -r '.project // empty') \
+        || return 1
+    if [ -n "$recorded" ] && [ "$recorded" != "$project" ]; then
+        echo "ERROR: ${dir} belongs to project id '${recorded}', not" \
+             "'${project}'." >&2
+        echo "Use that project's SWARM_PROJECT with it, or another" \
+             "SWARM_RUNTIME_DIR." >&2
         return 1
     fi
 }
@@ -397,6 +502,107 @@ swarm_runtime_verify() {
 # checkout that created it in these labels.
 SWARM_PROJECT_LABEL="swarm-core.project"
 SWARM_CHECKOUT_LABEL="swarm-core.checkout"
+# An interactive session's container carries its record's name here:
+# a running container can be renamed, but not relabeled.
+SWARM_SESSION_LABEL="swarm-core.session"
+# Containers and workspace volumes carry the engagement they belong to.
+# A workspace volume also names its container, the kind of work in it
+# (agent: numbered agents and post-process; interactive: a human
+# session), the context mode of that container, and a random nonce that
+# proves this engine made it.  The scripts that source this file use
+# them.
+# shellcheck disable=SC2034
+SWARM_ENGAGEMENT_LABEL="swarm-core.engagement"
+# shellcheck disable=SC2034
+SWARM_CONTAINER_LABEL="swarm-core.container"
+# shellcheck disable=SC2034
+SWARM_KIND_LABEL="swarm-core.kind"
+# shellcheck disable=SC2034
+SWARM_CONTEXT_LABEL="swarm-core.context"
+# shellcheck disable=SC2034
+SWARM_NONCE_LABEL="swarm-core.nonce"
+# They also carry the token the engine made when it created the
+# engagement: the engagement id can come from the caller
+# (SWARM_ENGAGEMENT_ID) and so repeat, the token cannot.
+# shellcheck disable=SC2034
+SWARM_TOKEN_LABEL="swarm-core.engagement-token"
+
+# Print 2*N random lowercase hex digits.
+swarm_random_hex() {
+    local hex
+    hex=$(od -An -N"$1" -tx1 /dev/urandom 2>/dev/null | tr -d ' \n') \
+        || return 1
+    [ "${#hex}" -eq $(( $1 * 2 )) ] || return 1
+    printf '%s' "$hex"
+}
+
+# Create the workspace volume for container NAME of the engagement with
+# id ENGAGEMENT and token TOKEN, and print its name.  Each container gets
+# a new volume, so a later container never starts from the files of an
+# earlier one, and removing a stopped container leaves its /workspace
+# behind for cleanup to preserve.  The name has a random part; an
+# existing volume of that name is an error, and since docker volume
+# create also succeeds for an existing volume, the labels (with a
+# nonce) are read back after creating it.
+swarm_workspace_volume_create() {
+    local name="$1" project="$2" checkout="$3" engagement="$4" token="$5"
+    local kind="$6" context="$7" rand nonce vol err rc=0 labels
+    case "$kind" in
+        agent|interactive) ;;
+        *) echo "ERROR: unknown workspace kind: ${kind}" >&2; return 1 ;;
+    esac
+    case "$context" in
+        full|slim|none) ;;
+        *) echo "ERROR: unknown context mode: ${context}" >&2; return 1 ;;
+    esac
+    if ! rand=$(swarm_random_hex 4) || ! nonce=$(swarm_random_hex 8); then
+        echo "ERROR: cannot read /dev/urandom." >&2
+        return 1
+    fi
+    vol="${name}-ws-${rand}"
+    err=$(docker volume inspect "$vol" 2>&1 >/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "ERROR: Docker volume ${vol} already exists." >&2
+        return 1
+    fi
+    case "$err" in
+        *"o such volume"*) ;;
+        *)
+            echo "ERROR: cannot check Docker volume ${vol}: ${err}" >&2
+            return 1 ;;
+    esac
+    if ! docker volume create \
+            --label "${SWARM_PROJECT_LABEL}=${project}" \
+            --label "${SWARM_CHECKOUT_LABEL}=${checkout}" \
+            --label "${SWARM_ENGAGEMENT_LABEL}=${engagement}" \
+            --label "${SWARM_TOKEN_LABEL}=${token}" \
+            --label "${SWARM_CONTAINER_LABEL}=${name}" \
+            --label "${SWARM_KIND_LABEL}=${kind}" \
+            --label "${SWARM_CONTEXT_LABEL}=${context}" \
+            --label "${SWARM_NONCE_LABEL}=${nonce}" \
+            "$vol" >/dev/null; then
+        echo "ERROR: cannot create Docker volume ${vol}." >&2
+        return 1
+    fi
+    labels=$(docker volume inspect -f '{{json .Labels}}' "$vol" \
+        2>/dev/null) || labels=""
+    if ! printf '%s' "$labels" | jq -e \
+            --arg pk "$SWARM_PROJECT_LABEL" --arg p "$project" \
+            --arg ck "$SWARM_CHECKOUT_LABEL" --arg c "$checkout" \
+            --arg ek "$SWARM_ENGAGEMENT_LABEL" --arg e "$engagement" \
+            --arg tk "$SWARM_TOKEN_LABEL" --arg t "$token" \
+            --arg nk "$SWARM_CONTAINER_LABEL" --arg n "$name" \
+            --arg kk "$SWARM_KIND_LABEL" --arg k "$kind" \
+            --arg xk "$SWARM_CONTEXT_LABEL" --arg x "$context" \
+            --arg ok "$SWARM_NONCE_LABEL" --arg o "$nonce" '
+            .[$pk] == $p and .[$ck] == $c and .[$ek] == $e and .[$tk] == $t
+            and .[$nk] == $n and .[$kk] == $k and .[$xk] == $x
+            and .[$ok] == $o' >/dev/null 2>&1; then
+        echo "ERROR: Docker volume ${vol} is not the one just created." >&2
+        return 1
+    fi
+    printf '%s' "$vol"
+}
 
 # docker ps format and jq definitions for the project's containers.  A
 # container is the project's when its project label is the id,
@@ -487,20 +693,18 @@ swarm_containers_verify() {
         | jq -rs 'map(select(.owner == "") | .name) | join(" ")') \
         || unlabeled=""
     if [ "$others" != 0 ]; then
-        echo "Give this checkout its own id with SWARM_PROJECT, or stop" \
-             "those containers from the checkout that owns them and" \
-             "remove them with docker rm once their work is harvested." >&2
+        echo "Give this checkout its own id with SWARM_PROJECT, or" \
+             "retire or clean up those containers from the checkout" \
+             "that owns them (./launch.sh retire, ./launch.sh cleanup" \
+             "there)." >&2
     fi
-    # An older release started these, and its agents push to the bare
-    # repository in /tmp: stopping them without the grace period can
-    # lose their last commits.
+    # An older release started these, and their files may live only in
+    # their own layers (stopping one started with --rm removes it).
     if [ -n "$unlabeled" ]; then
-        echo "Containers without an owner label come from an older" \
-             "swarm-core. Stop them with the grace ./launch.sh stop" \
-             "gives, so their agents can push their last commits:" >&2
-        echo "  docker stop -t ${SWARM_STOP_TIMEOUT:-60} ${unlabeled}" >&2
-        echo "Then fetch their work and remove them as \"Upgrading from" \
-             "/tmp state\" in USAGE.md describes." >&2
+        echo "Containers without an owner label (${unlabeled}) come" \
+             "from an older swarm-core, which made their engagement:" \
+             "finish it with that release, as \"Upgrading from /tmp" \
+             "state\" in USAGE.md describes." >&2
     fi
     return 1
 }
@@ -537,6 +741,14 @@ swarm_own_container_id() {
     esac
 }
 
+# Succeed when Docker lists no container with ID (it was removed); fail
+# when it does, or cannot tell.
+swarm_container_gone() {
+    local left
+    left=$(docker ps -aq --no-trunc --filter "id=$1" 2>/dev/null) || return 1
+    [ -z "$left" ]
+}
+
 # Print "name id" lines for the project's containers that this checkout
 # owns, so that callers can address each container by ID.
 swarm_own_containers() {
@@ -545,6 +757,55 @@ swarm_own_containers() {
     containers=$(swarm_project_containers "$project") || return 1
     printf '%s\n' "$containers" | jq -r --arg root "$canonical" \
         'select(.owner == $root) | "\(.name) \(.id)"'
+}
+
+# Print what runtime directory DIR holds of an engagement, one entry per
+# line: its bare repo and upstream.git.new, mirrors/, any remnant of a
+# cleanup (hidden names too), and the containers and workspace volumes
+# of the checkout at ROOT (canonical path CHECKOUT) under project id
+# PROJECT.  Fails, saying so, when Docker cannot list them.
+swarm_runtime_leftovers() {
+    local dir="$1" project="$2" root="$3" checkout="$4" e containers vols
+    for e in "$dir/upstream.git" "$dir/upstream.git.new" "$dir/mirrors" \
+            "$dir"/*.removing "$dir"/.[!.]*.removing \
+            "$dir"/..?*.removing; do
+        if [ -e "$e" ] || [ -L "$e" ]; then
+            printf '  %s\n' "$e"
+        fi
+    done
+    if ! containers=$(swarm_own_containers "$project" "$root"); then
+        echo "ERROR: cannot list Docker containers." >&2
+        return 1
+    fi
+    if [ -n "$containers" ]; then
+        printf '  containers: %s\n' "$(printf '%s\n' "$containers" \
+            | awk '{ print $1 }' | tr '\n' ' ')"
+    fi
+    if ! vols=$(docker volume ls -q \
+            --filter "label=${SWARM_PROJECT_LABEL}=${project}" \
+            --filter "label=${SWARM_CHECKOUT_LABEL}=${checkout}" \
+            2>/dev/null); then
+        echo "ERROR: cannot list Docker volumes." >&2
+        return 1
+    fi
+    if [ -n "$vols" ]; then
+        printf '  volumes: %s\n' "$(printf '%s\n' "$vols" | tr '\n' ' ')"
+    fi
+}
+
+# Fail, saying how to finish it, when runtime directory DIR holds
+# something of an engagement although its state file records none
+# (see swarm_runtime_leftovers for the other arguments): this engine
+# records the engagement before it makes anything, so that comes from
+# an earlier release.  Also fails when Docker cannot list what is there.
+swarm_unrecorded_refuse() {
+    local dir="$1" left
+    left=$(swarm_runtime_leftovers "$@") || return 1
+    [ -n "$left" ] || return 0
+    swarm_legacy_explain "$dir" \
+        "what is left of an engagement it never recorded"
+    printf '%s\n' "$left" >&2
+    return 1
 }
 
 # An engagement is one life of the bare repo: it starts when the bare
@@ -606,6 +867,132 @@ swarm_engagement_recorded() {
     printf '%s' "$state" | jq -r '.engagement_id // empty'
 }
 
+# Print the engagement token state file FILE records (empty when none,
+# or when there is no state file).  Fails when the file cannot be read.
+swarm_engagement_token() {
+    local file="$1" state
+    if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+        return 0
+    fi
+    state=$(swarm_state_read "$file") || {
+        echo "ERROR: not a ${SWARM_STATE_SCHEMA} state file: ${file}" >&2
+        return 1
+    }
+    printf '%s' "$state" | jq -r '.engagement_token // empty'
+}
+
+# Fail when SWARM_ENGAGEMENT_TOKEN is set and state file FILE records
+# another engagement token, or none: the command was started for an
+# engagement that has gone since (cleaned up, maybe started again).
+swarm_engagement_token_check() {
+    local file="$1" token
+    [ -n "${SWARM_ENGAGEMENT_TOKEN:-}" ] || return 0
+    token=$(swarm_engagement_token "$file") || return 1
+    if [ "$token" != "$SWARM_ENGAGEMENT_TOKEN" ]; then
+        echo "ERROR: the engagement this command was started for is" \
+             "gone (cleaned up, or started again)." >&2
+        return 1
+    fi
+}
+
+# Return 0 when state file FILE records an engagement an earlier release
+# started (an engagement id without a Docker daemon: its containers keep
+# their files in their own layers), 1 when it does not (or there is no
+# state file), 2 when the file cannot be read.
+swarm_engagement_legacy() {
+    local file="$1" state
+    if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+        return 1
+    fi
+    state=$(swarm_state_read "$file") || return 2
+    case "$(printf '%s' "$state" | jq -r '
+            if (.engagement_id // "") != "" and (.docker_daemon // "") == ""
+            then "legacy" else "current" end' 2>/dev/null)" in
+        legacy) return 0 ;;
+        current) return 1 ;;
+        *) return 2 ;;
+    esac
+}
+
+# Explain on stderr how to finish what an earlier release left in
+# runtime directory DIR (WHAT says what was found).
+swarm_legacy_explain() {
+    local dir="$1" what="$2"
+    cat >&2 <<EOF
+ERROR: ${dir} holds ${what}, which an earlier release of swarm-core
+made.  Its containers keep their files in their own layers, without
+workspace volumes, and this release does not take them over: it
+changes nothing there.  Finish it with the release that made it (check
+that release out, stop the agents, run harvest.sh, then follow that
+release's cleanup steps in its USAGE.md), then come back to this one.
+Only status and logs work on it here.
+EOF
+}
+
+# Fail, with the explanation above, when state file FILE (in runtime
+# directory DIR) records an earlier release's engagement or cannot be
+# read.
+swarm_legacy_refuse() {
+    local dir="$1" file="$2" rc=0
+    swarm_engagement_legacy "$file" || rc=$?
+    case "$rc" in
+        0)
+            swarm_legacy_explain "$dir" "an engagement"
+            return 1 ;;
+        1) return 0 ;;
+        *)
+            echo "ERROR: cannot read ${file}." >&2
+            return 1 ;;
+    esac
+}
+
+# Stop unless Docker talks to the daemon the engagement in state file
+# FILE recorded.  The context is pinned first, so every later docker
+# call of this run goes to the same daemon.  A file that cannot be read
+# fails; so does an engagement without a daemon (callers refuse an
+# earlier release's engagement before this).
+swarm_engagement_daemon_check() {
+    local file="$1" state recorded current
+    state=$(swarm_state_read "$file") || {
+        echo "ERROR: cannot read ${file}." >&2
+        return 1
+    }
+    recorded=$(printf '%s' "$state" | jq -r '.docker_daemon // empty') \
+        || return 1
+    if [ -z "$recorded" ]; then
+        echo "ERROR: ${file} records no Docker daemon." >&2
+        return 1
+    fi
+    if ! swarm_docker_pin || ! current=$(swarm_docker_daemon_id); then
+        echo "ERROR: cannot read the Docker daemon id." >&2
+        return 1
+    fi
+    if [ "$current" != "$recorded" ]; then
+        echo "ERROR: this engagement runs on Docker daemon ${recorded}," \
+             "but Docker now talks to ${current}.  Switch back to that" \
+             "daemon (docker context use, DOCKER_HOST) first." >&2
+        return 1
+    fi
+}
+
+# Fail when state file FILE records a cleanup that has not finished:
+# the engagement is half deleted, and only cleanup may go on.
+swarm_cleanup_pending_check() {
+    local file="$1" state pending
+    if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+        return 0
+    fi
+    if ! state=$(swarm_state_read "$file") \
+            || ! pending=$(printf '%s' "$state" | jq -r 'has("cleanup")'); then
+        echo "ERROR: cannot read ${file}." >&2
+        return 1
+    fi
+    if [ "$pending" = true ]; then
+        echo "ERROR: cleanup in progress: run ./launch.sh cleanup again." >&2
+        return 1
+    fi
+}
+
 # A later phase joins the recorded engagement.  Fail when the caller
 # names a different one, or names one while none is recorded.
 swarm_engagement_join() {
@@ -640,14 +1027,16 @@ swarm_fd_is_file() {
     [ -e "/dev/fd/$fd" ] && [ "/dev/fd/$fd" -ef "$file" ]
 }
 
-# Take the engagement lock of runtime directory DIR, or fail at once
-# when another operation holds it.  flock(1) keeps the lock for as long
-# as the descriptor stays open, so children that inherit it share it.
+# Take the engagement lock of runtime directory DIR, or fail when
+# another operation holds it: at once, or after waiting up to WAIT
+# seconds when WAIT is given and above 0.  flock(1) keeps the lock for
+# as long as the descriptor stays open, so children that inherit it
+# share it.
 # A caller that already holds the lock passes its descriptor in
 # SWARM_LOCK_FD: the engine checks that the descriptor is this lock
 # file and locks through it.
 swarm_lock() {
-    local dir="$1" lock fd
+    local dir="$1" wait="${2:-}" lock fd
     lock="$dir/engagement.lock"
     if ! command -v flock >/dev/null 2>&1; then
         echo "ERROR: flock is required to lock ${lock}" \
@@ -673,7 +1062,13 @@ swarm_lock() {
         fd=9
         exec 9>>"$lock" || return 1
     fi
-    if ! flock -n "$fd"; then
+    # flock -w 0 is one try on Linux and an error on macOS.
+    if [ -n "$wait" ] && [ "$wait" != 0 ]; then
+        if ! flock -w "$wait" "$fd"; then
+            echo "ERROR: another swarm-core operation holds ${lock}." >&2
+            return 1
+        fi
+    elif ! flock -n "$fd"; then
         echo "ERROR: another swarm-core operation holds ${lock}." >&2
         return 1
     fi
@@ -690,4 +1085,234 @@ swarm_unlock() {
     esac
     eval "exec ${fd}>&-"
     unset SWARM_LOCK_FD
+}
+
+# An interactive session runs for hours without the lock.  launch.sh
+# records it under the lock in DIR/interactive-<container name>.pending
+# with its own pid, that process's start time and the Docker daemon,
+# releases the lock and execs `docker run`, which keeps the pid and
+# makes the container and its mounts.  While that process lives, or the
+# container runs after a detach, the bare repo and the mirrors the
+# container mounts must stay as they are.
+
+# Print the start time of process PID, or nothing when ps cannot tell.
+# The format follows the locale and the time zone, so both are fixed:
+# the reader may run with other settings than the session.
+swarm_proc_started() {
+    LC_ALL=C TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null \
+        | sed 's/^ *//; s/ *$//' || true
+}
+
+# Pin the Docker daemon for the rest of the calling shell: each docker
+# command resolves the current context again, and another terminal can
+# switch it (docker context use) between two commands.  DOCKER_HOST or
+# DOCKER_CONTEXT already pin it; otherwise export DOCKER_CONTEXT as the
+# current context.  Callers that must not leak it declare
+# DOCKER_CONTEXT local first.
+swarm_docker_pin() {
+    local ctx
+    if [ -n "${DOCKER_HOST:-}" ] || [ -n "${DOCKER_CONTEXT:-}" ]; then
+        return 0
+    fi
+    ctx=$(docker context show 2>/dev/null) || return 1
+    # Docker allows letters, digits and "_.+-" in context names.
+    case "$ctx" in
+        ''|*[!"$SWARM_ALNUM"._+-]*) return 1 ;;
+    esac
+    DOCKER_CONTEXT="$ctx"
+    export DOCKER_CONTEXT
+}
+
+# Print the id of the Docker daemon the CLI talks to.  A container id
+# means something only on its daemon.
+swarm_docker_daemon_id() {
+    local id
+    id=$(docker info -f '{{.ID}}' 2>/dev/null) || return 1
+    case "$id" in
+        ''|*[!"$SWARM_ALNUM":-]*) return 1 ;;
+    esac
+    printf '%s' "$id"
+}
+
+# Succeed when NAME is a container name Docker accepts.
+swarm_container_name_valid() {
+    case "$1" in
+        ["$SWARM_ALNUM"]*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *[!"$SWARM_ALNUM"._-]*) return 1 ;;
+    esac
+}
+
+# Record that the session in process PID runs container NAME on the
+# daemon with id DAEMON.
+swarm_pending_write() {
+    local dir="$1" name="$2" pid="$3" daemon="$4" file
+    if ! swarm_container_name_valid "$name"; then
+        echo "ERROR: unexpected container name: ${name}" >&2
+        return 1
+    fi
+    case "$daemon" in
+        ''|*[!"$SWARM_ALNUM":-]*)
+            echo "ERROR: unexpected Docker daemon id: ${daemon}" >&2
+            return 1 ;;
+    esac
+    file="$dir/interactive-${name}.pending"
+    # Never over another session's record (callers hold the lock).
+    if [ -e "$file" ] || [ -L "$file" ]; then
+        echo "ERROR: a session record ${file} is there already." >&2
+        return 1
+    fi
+    {
+        printf 'pid=%s\n' "$pid"
+        printf 'started=%s\n' "$(swarm_proc_started "$pid")"
+        printf 'daemon=%s\n' "$daemon"
+    } > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+# Succeed when container ID never started and never will: Docker keeps
+# a container whose start failed (a port in use, a mount denied) as
+# created, with the error, and the engine runs none with a restart
+# policy.  One still being started has no error yet.
+swarm_start_failed() {
+    local state
+    state=$(docker container inspect \
+        -f '{{.State.Status}}|{{.State.Error}}' "$1" 2>/dev/null) \
+        || return 1
+    case "$state" in
+        "created|"?*) return 0 ;;
+    esac
+    return 1
+}
+
+# Succeed when no container of session NAME runs or can still start:
+# Docker lists none with its session label, or only exited or dead
+# ones, or created ones whose start failed.  Another created container
+# counts as running, since the daemon can finish starting it after the
+# client is gone.  Returns 1 while one runs, and 2 when Docker cannot
+# tell.
+swarm_container_settled() {
+    local name="$1" lines id state
+    lines=$(docker ps -a \
+        --filter "label=${SWARM_SESSION_LABEL}=${name}" \
+        --format '{{.ID}} {{.State}}' 2>/dev/null) || return 2
+    # Pairs of words: ids and states hold no blanks or glob characters.
+    # shellcheck disable=SC2086
+    set -- $lines
+    while [ $# -ge 2 ]; do
+        id="$1"
+        state="$2"
+        shift 2
+        case "$state" in
+            exited|dead) ;;
+            created) swarm_start_failed "$id" || return 1 ;;
+            running|paused|restarting|removing) return 1 ;;
+            *) return 2 ;;
+        esac
+    done
+    return 0
+}
+
+# Print the container names of the sessions in DIR that are open, one
+# per line, and remove the records of the others.  A session is open
+# while its process runs (a process whose start time ps cannot read
+# counts as running), and after that while its container runs: a
+# session can detach and leave it running.  The container is found by
+# its session label, which a rename does not change.  A record must be exactly
+# "pid=N\nstarted=T\ndaemon=D\n" (T empty or a C-locale ps start time,
+# D the daemon that made the container); anything else, a record that
+# cannot be read or removed, a record from another daemon, or a
+# container state Docker cannot give, fails the check.
+swarm_pending_live() {
+    local dir="$1" f name content rest l1 l2 l3 pid started daemon now rc
+    local current=""
+    # The daemon id and the container states below must come from one
+    # daemon; the pin ends with this function.
+    local DOCKER_CONTEXT="${DOCKER_CONTEXT:-}"
+    for f in "$dir"/interactive-*.pending; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        name="${f##*/interactive-}"
+        name="${name%.pending}"
+        # The x keeps trailing newlines from command substitution.
+        if ! swarm_container_name_valid "$name"; then
+            echo "ERROR: ${f} does not name a container." >&2
+            return 1
+        fi
+        if [ -L "$f" ] || [ ! -f "$f" ] \
+                || ! content=$(cat "$f" 2>/dev/null && echo x); then
+            echo "ERROR: cannot read ${f}." >&2
+            return 1
+        fi
+        content="${content%x}"
+        pid=""
+        started=""
+        daemon=""
+        case "$content" in
+            pid=*$'\n'started=*$'\n'daemon=*$'\n')
+                l1="${content%%$'\n'*}"
+                rest="${content#*$'\n'}"
+                l2="${rest%%$'\n'*}"
+                rest="${rest#*$'\n'}"
+                l3="${rest%$'\n'}"
+                pid="${l1#pid=}"
+                started="${l2#started=}"
+                daemon="${l3#daemon=}"
+                if [ "$started" = "$l2" ] || [ "$daemon" = "$l3" ]; then
+                    pid=""
+                fi
+                case "$daemon" in
+                    ''|*[!"$SWARM_ALNUM":-]*) pid="" ;;
+                esac ;;
+        esac
+        case "$pid" in
+            ''|*[!0123456789]*)
+                echo "ERROR: ${f} is not a session record." >&2
+                return 1 ;;
+        esac
+        case "$started" in
+            ''|[A-Z][a-z][a-z]' '[A-Z][a-z][a-z]' '[' '0123][0-9]' '[0-9][0-9]:[0-9][0-9]:[0-9][0-9]' '[0-9][0-9][0-9][0-9])
+                ;;
+            *)
+                echo "ERROR: ${f} is not a session record." >&2
+                return 1 ;;
+        esac
+        if kill -0 "$pid" 2>/dev/null; then
+            now=$(swarm_proc_started "$pid")
+            if [ -z "$started" ] || [ -z "$now" ] \
+                    || [ "$now" = "$started" ]; then
+                printf '%s\n' "$name"
+                continue
+            fi
+        fi
+        # The process is gone: only the daemon that made the container
+        # can say whether it still runs.
+        if [ -z "$current" ]; then
+            if ! swarm_docker_pin \
+                    || ! current=$(swarm_docker_daemon_id); then
+                echo "ERROR: cannot read the Docker daemon id." >&2
+                return 1
+            fi
+        fi
+        if [ "$daemon" != "$current" ]; then
+            echo "ERROR: ${f} belongs to another Docker daemon" \
+                 "(${daemon}); switch back to it to check the session." >&2
+            return 1
+        fi
+        rc=0
+        swarm_container_settled "$name" || rc=$?
+        case "$rc" in
+            0) ;;
+            1)
+                printf '%s\n' "$name"
+                continue ;;
+            *)
+                echo "ERROR: cannot read the state of container ${name}." >&2
+                return 1 ;;
+        esac
+        rm -f "$f" || {
+            echo "ERROR: cannot remove ${f}." >&2
+            return 1
+        }
+    done
 }

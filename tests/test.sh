@@ -5,10 +5,20 @@ set -euo pipefail
 # start real containers, so keep the caller's: it is how a checkout
 # runs when another one owns the project's containers.
 _caller_project="${SWARM_PROJECT:-}"
+_own_project=false
 # shellcheck source=_test_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 if [ -n "$_caller_project" ]; then
     export SWARM_PROJECT="$_caller_project"
+else
+    _own_project=true
+    # Each run makes and removes an engagement of its own, under a
+    # project id of its own, so it never meets an engagement of this
+    # checkout (a new one needs a clean runtime), and its cleanup never
+    # touches one.
+    SWARM_PROJECT="swarm-core-test-$(od -An -N4 -tx1 /dev/urandom \
+        | tr -d ' \n')"
+    export SWARM_PROJECT
 fi
 
 # Smoke test: launch agents with a counting prompt, verify results.
@@ -18,7 +28,8 @@ fi
 #
 # Options:
 #   --unit          Run unit tests only (no Docker or API key needed).
-#   --runtime       Runtime emergency-push test (Docker only, no API key).
+#   --runtime       Runtime tests: emergency push, retire and cleanup
+#                   (Docker only, no API key).
 #   --all           Unit + runtime, then full integration matrix.
 #   --oauth         Integration test using OAuth token (needs Docker +
 #                   CLAUDE_CODE_OAUTH_TOKEN).
@@ -36,6 +47,13 @@ PROJECT="$(swarm_project_resolve "$REPO_ROOT")" || exit 1
 REVIEW_DIR="/tmp/${PROJECT}-test-review"
 INJECT_DIR="/tmp/${PROJECT}-test-inject"
 TIMEOUT="${TIMEOUT:-600}"
+
+# The engine image of a project id this run made up goes when the run
+# is over (the runs it starts share the id and leave it).
+drop_own_image() {
+    $_own_project || return 0
+    docker rmi "${PROJECT}-agent" >/dev/null 2>&1 || true
+}
 
 # Docker containers may leave files owned by a different UID.
 rm_docker_dir() {
@@ -72,7 +90,10 @@ run_all_tests() {
     # test_session_end_push.sh §6 / §7 cannot prove the signal trap
     # actually fires; this phase does.  Skips cleanly when Docker
     # is unavailable so --all stays useful on hosts without it.
-    # Also runs the real Pi CLI against a local test API, without keys.
+    # Also runs the real Pi CLI against a local test API, without keys,
+    # launch.sh retire on real containers, whose snapshots and docker
+    # diff test_retire.sh only imitates, and launch.sh cleanup on files
+    # a container wrote as its own user.
     echo "=== Phase 1.5: Docker runtime tests ==="
     echo ""
     if ! command -v docker >/dev/null 2>&1; then
@@ -83,7 +104,8 @@ run_all_tests() {
         runtime_skip=1
     else
         local rt_test rt_start rt_elapsed rt_rc
-        for rt_test in runtime_signal_trap.sh runtime_pi.sh; do
+        for rt_test in runtime_signal_trap.sh runtime_pi.sh \
+                runtime_retire.sh runtime_cleanup.sh; do
             rt_rc=0
             rt_start=$(date +%s)
             "$TESTS_DIR/$rt_test" || rt_rc=$?
@@ -337,6 +359,14 @@ cmd_unit() {
         rc=0
         output=$("$f" 2>&1) || rc=$?
         count=$(printf '%s' "$output" | grep -oE '[0-9]+ passed' | tail -1 || true)
+        # A file passes only when it got to its summary: Bash 3.2 (the
+        # files' /bin/bash on macOS) exits 0 when set -u stops a script
+        # that has an EXIT trap.
+        if [ "$rc" -eq 0 ] \
+                && ! grep -qE '^ *[0-9]+ passed, 0 failed' <<< "$output"; then
+            rc=1
+            output="${output}"$'\n'"(no summary line: the file stopped early)"
+        fi
         if [ "$rc" -eq 0 ]; then
             printf "  PASS  %-24s (%s)\n" "$name" "${count:-?}"
             pass=$((pass + 1))
@@ -395,9 +425,11 @@ Run swarm-core tests.
 Options:
   (no args)         Single integration smoke test (needs Docker + API key).
   --unit            Unit tests only (no Docker or API key needed).
-  --runtime         Runtime emergency-push test (needs Docker, no API key).
-                    Drives SIGTERM / SIGINT / fatal-exit paths under a
-                    real container with a synthetic test-committer driver.
+  --runtime         Runtime tests (need Docker, no API key): drives
+                    SIGTERM / SIGINT / fatal-exit paths under a real
+                    container with a synthetic test-committer driver,
+                    then launch.sh retire on real stopped containers and
+                    launch.sh cleanup on what containers wrote.
   --all             Unit + runtime, then full integration matrix.
   --oauth           Integration test using CLAUDE_CODE_OAUTH_TOKEN
                     (needs Docker + OAuth token).
@@ -448,18 +480,25 @@ if $RUN_UNIT; then
 fi
 
 if $RUN_OAUTH; then
-    cmd_oauth
-    exit $?
+    rc=0
+    cmd_oauth || rc=$?
+    drop_own_image
+    exit "$rc"
 fi
 
 if $RUN_RUNTIME; then
-    "$TESTS_DIR/runtime_signal_trap.sh"
-    exit $?
+    rt_rc=0
+    "$TESTS_DIR/runtime_signal_trap.sh" || rt_rc=1
+    "$TESTS_DIR/runtime_retire.sh" || rt_rc=1
+    "$TESTS_DIR/runtime_cleanup.sh" || rt_rc=1
+    exit "$rt_rc"
 fi
 
 if $RUN_ALL; then
-    run_all_tests
-    exit $?
+    rc=0
+    run_all_tests || rc=$?
+    drop_own_image
+    exit "$rc"
 fi
 
 if [ -n "$CONFIG_FILE" ] && [ ! -f "$CONFIG_FILE" ]; then
@@ -669,11 +708,29 @@ cleanup() {
     cd "$REPO_ROOT"
     SWARM_CONFIG="$TEMP_CONFIG" \
         "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
+    # This run's containers and volumes, and nothing else: those with
+    # its engagement's token, which its own runtime directory records.
+    local token id vol
+    token=$(swarm_engagement_token "$TEST_RUNTIME_DIR/state.json" \
+        2>/dev/null) || token=""
+    if [ -n "$token" ]; then
+        for id in $(docker ps -aq \
+                --filter "label=swarm-core.engagement-token=${token}" \
+                2>/dev/null); do
+            docker rm -f "$id" >/dev/null 2>&1 || true
+        done
+        for vol in $(docker volume ls -q \
+                --filter "label=swarm-core.engagement-token=${token}" \
+                2>/dev/null); do
+            docker volume rm "$vol" >/dev/null 2>&1 || true
+        done
+    fi
     rm -f "$TEMP_CONFIG" "$_AUTO_CONFIG"
     rm -rf "$REVIEW_DIR" "$INJECT_DIR"
     rm_docker_dir "$TEST_RUNTIME_DIR"
     rm -f "$REPO_ROOT/$PROMPT_FILE" "$REPO_ROOT/$SETUP_FILE" \
         "$REPO_ROOT/$ALT_PROMPT_FILE"
+    drop_own_image
 }
 trap cleanup EXIT
 

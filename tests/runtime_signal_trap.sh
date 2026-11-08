@@ -280,23 +280,36 @@ FAKE_DIR="$WORKDIR/fake-bin"
 mkdir -p "$FAKE_DIR"
 cat > "$FAKE_DIR/docker" <<'FD'
 #!/bin/bash
+# The daemon cmd_stop finds the engagement on, and no container of it.
+case "$1 ${2:-}" in
+    "info -f") echo d1 ;;
+    "context show") echo default ;;
+esac
 exit 0
 FD
 chmod +x "$FAKE_DIR/docker"
 
-# cmd_stop checks the engagement in the state file before its banner,
-# and stops containers through stop_own_container and lib/project.sh.
+# cmd_stop checks the engagement in the state file (its token and
+# daemon) before its banner, through lib/project.sh.
 # shellcheck disable=SC1091 source=../lib/project.sh
 source "$REPO_ROOT/lib/project.sh"
 CMD_STOP_BODY=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_SH")
-STOP_OWN_BODY=$(awk '/^stop_own_container\(\) \{/,/^\}$/' "$LAUNCH_SH")
-STATE_FILE="$WORKDIR/no-state.json"
+# cmd_stop checks a copy of the state, which these make (in WORKDIR,
+# which this test removes).
+STOP_HELPERS=$(awk '/^(state_snapshot|swarm_tmp_file)\(\) \{/,/^\}$/' \
+    "$LAUNCH_SH")
+RUNTIME_DIR="$WORKDIR/stop-runtime"
+mkdir -p "$RUNTIME_DIR"
+STATE_FILE="$RUNTIME_DIR/state.json"
+printf '%s\n' '{"schema":"swarm-core.state/v1","engagement_id":"e1",
+    "engagement_token":"t1","docker_daemon":"d1"}' > "$STATE_FILE"
 CHECKOUT_PATH="$WORKDIR"
 
 BANNER_DEFAULT=$(
     eval "$CMD_STOP_BODY"
-    eval "$STOP_OWN_BODY"
-    NUM_AGENTS=2 IMAGE_NAME=fake PROJECT=fake \
+    eval "$STOP_HELPERS"
+    SWARM_TMP_FILES=()
+    NUM_AGENTS=2 IMAGE_NAME=fake PROJECT=fake TMPDIR="$WORKDIR" \
         PATH="$FAKE_DIR:$PATH" cmd_stop 2>&1 | head -1
 )
 check "default banner" \
@@ -304,8 +317,9 @@ check "default banner" \
 
 BANNER_120=$(
     eval "$CMD_STOP_BODY"
-    eval "$STOP_OWN_BODY"
-    NUM_AGENTS=2 IMAGE_NAME=fake PROJECT=fake \
+    eval "$STOP_HELPERS"
+    SWARM_TMP_FILES=()
+    NUM_AGENTS=2 IMAGE_NAME=fake PROJECT=fake TMPDIR="$WORKDIR" \
         PATH="$FAKE_DIR:$PATH" SWARM_STOP_TIMEOUT=120 cmd_stop 2>&1 \
         | head -1
 )
