@@ -1084,25 +1084,46 @@ _stop_status=$(/bin/bash "$TMPDIR/stop-probe.sh" 2>/dev/null || true)
 _stop_says=0
 [ "$_stop_status" = 0 ] && _stop_says=1
 _ex_tmp=$(mktemp -d)
-awk '$0 ~ /^cleanup\(\)[[:space:]]*\{/ { p = 1 }
-     p { print }
-     p && /^\}[[:space:]]*$/ { exit }' "$DASHBOARD_FILE" > "$_ex_tmp/cleanup.sh"
-_ex_run() {  # END: how the run ends, after the trap is set
+_ex_extract() {  # FUNCTION
+    awk -v f="$1" '$0 ~ "^" f "\\(\\)[[:space:]]*\\{" { p = 1 }
+         p { print }
+         p && /^\}[[:space:]]*$/ { exit }' "$DASHBOARD_FILE"
+}
+{
+    _ex_extract dash_stop_guard_needed
+    _ex_extract cleanup
+} > "$_ex_tmp/cleanup.sh"
+# END: how the run ends, after the trap is set; STUB (0 or 1, optional)
+# replaces the version test; BASH runs it (default /bin/bash).  tput
+# records what it is asked to do.
+_ex_run() {  # END [STUB] [BASH]
+    local stub=""
+    [ -z "${2:-}" ] || stub="dash_stop_guard_needed() { return $2; }"
+    : > "$_ex_tmp/tput.log"
     cat > "$_ex_tmp/run.sh" <<EOF
 set -euo pipefail
-tput() { :; }
+tput() { printf '%s\n' "\$1" >> "$_ex_tmp/tput.log"; }
 DASH_TMPDIR="$_ex_tmp/scratch"
 mkdir -p "\$DASH_TMPDIR"
 DASH_EXIT_OK=false
 # shellcheck source=/dev/null
 source "$_ex_tmp/cleanup.sh"
+$stub
 trap cleanup EXIT
 $1
 EOF
-    /bin/bash "$_ex_tmp/run.sh" 2>&1
+    "${3:-/bin/bash}" "$_ex_tmp/run.sh" 2>&1
 }
 _ex_gone() {
     if [ -e "$_ex_tmp/scratch" ]; then echo no; else echo yes; fi
+}
+_ex_restored() {
+    if grep -qx rmcup "$_ex_tmp/tput.log" \
+            && grep -qx cnorm "$_ex_tmp/tput.log"; then
+        echo yes
+    else
+        echo no
+    fi
 }
 _ex_rc=0
 _ex_out=$(_ex_run 'echo "$swarm_test_unset_variable"') || _ex_rc=$?
@@ -1111,28 +1132,127 @@ assert_eq "saying so where Bash 3.2 would end with 0" "$_stop_says" \
     "$(grep -c 'dashboard.sh stopped before the end of its run' \
         <<< "$_ex_out")"
 assert_eq "the scratch directory goes" "yes" "$(_ex_gone)"
+assert_eq "the terminal is restored" "yes" "$(_ex_restored)"
 _ex_rc=0
 _ex_run 'DASH_EXIT_OK=true; exit 0' >/dev/null || _ex_rc=$?
 assert_eq "a quit on purpose: status 0" "0" "$_ex_rc"
 assert_eq "the scratch directory goes" "yes" "$(_ex_gone)"
+assert_eq "the terminal is restored" "yes" "$(_ex_restored)"
 _ex_rc=0
 _ex_run 'exit 3' >/dev/null || _ex_rc=$?
 assert_eq "another status stays" "3" "$_ex_rc"
+assert_eq "scratch gone, terminal restored" "yes yes" \
+    "$(_ex_gone) $(_ex_restored)"
+# The check is made only on Bash before 4.1: later versions end a run
+# that set -u stops with a nonzero status themselves, and every version
+# runs the EXIT trap with $? at 0 when a signal ends the script.
+_ex_guard() {
+    (
+        # shellcheck source=/dev/null
+        source "$_ex_tmp/cleanup.sh"
+        if dash_stop_guard_needed "$1" "$2"; then echo yes; else echo no; fi
+    )
+}
+_ex_guards="$(_ex_guard 3 2) $(_ex_guard 4 0) $(_ex_guard 4 1)"
+_ex_guards="$_ex_guards $(_ex_guard 4 4) $(_ex_guard 5 2) $(_ex_guard 10 0)"
+assert_eq "the check is made on Bash 3.2 and 4.0, not from 4.1 on" \
+    "yes yes no no no no" "$_ex_guards"
+# The trap with the version test stubbed both ways, in each Bash the
+# runner has (/bin/bash, and on macOS the Homebrew bash CI installs).
+_ex_bashes="/bin/bash"
+_ex_brew=""
+if command -v brew >/dev/null 2>&1; then
+    _ex_brew="$(brew --prefix)/bin/bash"
+fi
+if [ -n "$_ex_brew" ] && [ -x "$_ex_brew" ]; then
+    _ex_bashes="$_ex_bashes $_ex_brew"
+elif [ "$(uname)" = Darwin ]; then
+    if [ -n "${CI:-}" ]; then
+        assert_eq "CI has the Homebrew bash" "yes" "no"
+    else
+        echo "  SKIP: no Homebrew bash, so only /bin/bash is checked"
+    fi
+fi
+for _ex_b in $_ex_bashes; do
+    _ex_rc=0
+    _ex_out=$(_ex_run ':' 0 "$_ex_b") || _ex_rc=$?
+    assert_eq "$_ex_b: no flag where the check is made: status 1" "1" \
+        "$_ex_rc"
+    assert_eq "$_ex_b:   saying so once" "1" \
+        "$(grep -c 'dashboard.sh stopped before the end of its run' \
+            <<< "$_ex_out")"
+    assert_eq "$_ex_b:   scratch gone, terminal restored" "yes yes" \
+        "$(_ex_gone) $(_ex_restored)"
+    _ex_rc=0
+    _ex_out=$(_ex_run ':' 1 "$_ex_b") || _ex_rc=$?
+    assert_eq "$_ex_b: no flag where it is not: status 0" "0" "$_ex_rc"
+    assert_eq "$_ex_b:   no line" "0" \
+        "$(grep -c 'stopped before the end' <<< "$_ex_out")"
+    assert_eq "$_ex_b:   scratch gone, terminal restored" "yes yes" \
+        "$(_ex_gone) $(_ex_restored)"
+    _ex_rc=0
+    _ex_out=$(_ex_run 'DASH_EXIT_OK=true; exit 0' 0 "$_ex_b") \
+        || _ex_rc=$?
+    assert_eq "$_ex_b: a quit on purpose: status 0, no line" "0 0" \
+        "$_ex_rc $(grep -c 'stopped before the end' <<< "$_ex_out")"
+    assert_eq "$_ex_b:   scratch gone, terminal restored" "yes yes" \
+        "$(_ex_gone) $(_ex_restored)"
+    _ex_rc=0
+    _ex_out=$(_ex_run 'exit 3' 0 "$_ex_b") || _ex_rc=$?
+    assert_eq "$_ex_b: another status stays, with no line" "3 0" \
+        "$_ex_rc $(grep -c 'stopped before the end' <<< "$_ex_out")"
+    assert_eq "$_ex_b:   scratch gone, terminal restored" "yes yes" \
+        "$(_ex_gone) $(_ex_restored)"
+done
 # The dashboard sets the trap, and says it quits on purpose right
-# before each exit 0 that comes after the trap (the q key).
+# before (or on the same line as) every exit with status 0 or none that
+# comes after the trap, at shell level: exit or exit 0 at the start of a
+# line or after &&, ||, ";", "{", "(", then, else or do, and followed
+# by the end of the line, a comment, ";", && or ||.
 assert_eq "the dashboard sets cleanup as its EXIT trap" "1" \
     "$(grep -c '^trap cleanup EXIT$' "$DASHBOARD_FILE")"
-assert_eq "every exit 0 after the trap is marked as on purpose" "0" \
-    "$(awk '/^trap cleanup EXIT$/ { t = 1; next }
-            t && /^[[:space:]]*exit 0[[:space:]]*$/ {
-                if (prev !~ /^[[:space:]]*DASH_EXIT_OK=true[[:space:]]*$/) n++
-            }
-            NF { prev = $0 }
-            END { print n + 0 }' "$DASHBOARD_FILE")"
-assert_eq "and there is one (q)" "1" \
-    "$(awk '/^trap cleanup EXIT$/ { t = 1; next }
-            t && /^[[:space:]]*exit 0[[:space:]]*$/ { n++ }
-            END { print n + 0 }' "$DASHBOARD_FILE")"
+_ex_exits='BEGIN {
+        e = "(^|&&|[|][|]|;|[{(]|(^|[[:space:]])(then|else|do))"
+        e = e "[[:space:]]*exit([[:space:]]+0)?"
+        e = e "[[:space:]]*($|#|;|&&|[|][|])"
+    }
+    /^trap cleanup EXIT$/ { t = 1; next }
+    t && $0 ~ e {
+        m++
+        if ($0 !~ /DASH_EXIT_OK=true[[:space:]]*;/ \
+                && prev !~ /^[[:space:]]*DASH_EXIT_OK=true[[:space:]]*$/) n++
+    }
+    NF { prev = $0 }
+    END { print n + 0, m + 0 }'
+assert_eq "every exit 0 after the trap is marked, and there is one (q)" \
+    "0 1" "$(awk "$_ex_exits" "$DASHBOARD_FILE")"
+# The check itself, on each form: unmarked exits it must count, and
+# lines it must leave alone (another status, the awk program's exit,
+# marked exits).
+_ex_form() {  # LINES...: after the trap; prints unmarked and all
+    { echo 'trap cleanup EXIT'; printf '%s\n' "$@"; } > "$_ex_tmp/form.sh"
+    awk "$_ex_exits" "$_ex_tmp/form.sh"
+}
+assert_eq "a bare exit is counted" "1 1" "$(_ex_form '    exit')"
+assert_eq "exit 0; is counted" "1 1" "$(_ex_form 'exit 0;')"
+assert_eq "exit 0 with a comment is counted" "1 1" \
+    "$(_ex_form 'exit 0 # stopped early')"
+assert_eq "exit 0; and more is counted" "1 1" \
+    "$(_ex_form 'exit 0; echo unreachable')"
+assert_eq "an exit after then is counted" "1 1" \
+    "$(_ex_form 'if x; then exit 0; fi')"
+assert_eq "and after then, else or do starting a line" "1 1 1 1 1 1" \
+    "$(_ex_form 'then exit 0') $(_ex_form '  else exit') \
+$(_ex_form 'do exit 0')"
+assert_eq "an exit after && is counted" "1 1" "$(_ex_form 'x && exit 0')"
+assert_eq "an exit after || is counted" "1 1" "$(_ex_form 'x || exit')"
+assert_eq "an exit after ; is counted" "1 1" "$(_ex_form 'x; exit 0')"
+assert_eq "a marked exit is not" "0 1" \
+    "$(_ex_form 'DASH_EXIT_OK=true' 'exit 0')"
+assert_eq "nor one marked on its line" "0 1" \
+    "$(_ex_form 'DASH_EXIT_OK=true; exit 0')"
+assert_eq "exit 1, or awk's exit, is no exit 0" "0 0" \
+    "$(_ex_form 'x || exit 1' "y=\$(awk 'NF { print; exit }')")"
 rm -rf "$_ex_tmp"
 
 # ============================================================

@@ -42,15 +42,25 @@ fi
 CHECK_DIR=$(mktemp -d)
 # Set when the run gets to its end (its last line).
 PROGRESS_EXIT_OK=false
-# The EXIT trap: remove the clone, and never let a run that stopped
-# short end with status 0.  Bash 3.2 (macOS's /bin/bash) runs an EXIT
-# trap with $? at 0 when set -u stops the script on an unset variable,
-# so that stop would pass for success.  Any other status stays, a
-# signal's too.
+# Whether Bash MAJOR.MINOR needs the check in the EXIT trap below: before
+# 4.1, Bash (macOS's /bin/bash is 3.2) runs an EXIT trap with $? at 0
+# when set -u stops the script on an unset variable, so that stop would
+# pass for success; later versions end such a run with a nonzero status
+# themselves.
+progress_stop_guard_needed() {
+    [ "$1" -lt 4 ] || { [ "$1" -eq 4 ] && [ "$2" -lt 1 ]; }
+}
+# The EXIT trap: remove the clone, and where Bash needs it, never let a
+# run that stopped short end with status 0.  Bash also runs this trap
+# with $? at 0 when a signal ends the script, so the check is only made
+# where Bash can end a stopped run with 0 itself; there a signal can
+# print the line too.  Any other status stays, a signal's too.
 progress_exit_trap() {
     local rc=$?
     rm -rf "$CHECK_DIR"
-    if [ "$rc" -eq 0 ] && ! $PROGRESS_EXIT_OK; then
+    if [ "$rc" -eq 0 ] && ! $PROGRESS_EXIT_OK \
+            && progress_stop_guard_needed "${BASH_VERSINFO[0]}" \
+                "${BASH_VERSINFO[1]}"; then
         echo "ERROR: progress.sh stopped before the end of its run." >&2
         exit 1
     fi
