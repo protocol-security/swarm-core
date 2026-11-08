@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Fix: Git leaves nothing running that holds the engagement lock.**
+  Every process started under the lock inherits its descriptor, so
+  Git's fsmonitor daemon, started by a merge in a checkout with
+  `core.fsmonitor` on (macOS), kept the lock after `harvest.sh` ended,
+  and the next `start` refused. Under the lock, Git now runs with
+  `core.fsmonitor=false`, `gc.auto=0` and `maintenance.auto=false`,
+  passed through the environment, so it starts no daemon, detached gc
+  or background maintenance.
 - **Feature: `PI_COMPACTION_RESERVE_TOKENS` sets Pi's compaction
   reserve.** Pi caps a compaction summary at a share of
   `compaction.reserveTokens` (16384 by default) and of `maxTokens`; a
