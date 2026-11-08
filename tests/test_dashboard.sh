@@ -1247,13 +1247,13 @@ _stop_status=$(/bin/bash "$TMPDIR/stop-probe.sh" 2>/dev/null || true)
 _stop_says=0
 [ "$_stop_status" = 0 ] && _stop_says=1
 _ex_tmp=$(mktemp -d)
-_ex_extract() {  # FUNCTION
+_ex_extract() {  # FUNCTION [FILE]
     awk -v f="$1" '$0 ~ "^" f "\\(\\)[[:space:]]*\\{" { p = 1 }
          p { print }
-         p && /^\}[[:space:]]*$/ { exit }' "$DASHBOARD_FILE"
+         p && /^\}[[:space:]]*$/ { exit }' "${2:-$DASHBOARD_FILE}"
 }
 {
-    _ex_extract dash_stop_guard_needed
+    _ex_extract swarm_stop_guard_needed "$TESTS_DIR/../lib/project.sh"
     _ex_extract cleanup
 } > "$_ex_tmp/cleanup.sh"
 # END: how the run ends, after the trap is set; STUB (0 or 1, optional)
@@ -1261,7 +1261,7 @@ _ex_extract() {  # FUNCTION
 # records what it is asked to do.
 _ex_run() {  # END [STUB] [BASH]
     local stub=""
-    [ -z "${2:-}" ] || stub="dash_stop_guard_needed() { return $2; }"
+    [ -z "${2:-}" ] || stub="swarm_stop_guard_needed() { return $2; }"
     : > "$_ex_tmp/tput.log"
     cat > "$_ex_tmp/run.sh" <<EOF
 set -euo pipefail
@@ -1313,7 +1313,11 @@ _ex_guard() {
     (
         # shellcheck source=/dev/null
         source "$_ex_tmp/cleanup.sh"
-        if dash_stop_guard_needed "$1" "$2"; then echo yes; else echo no; fi
+        if swarm_stop_guard_needed "$1" "$2"; then
+            echo yes
+        else
+            echo no
+        fi
     )
 }
 _ex_guards="$(_ex_guard 3 2) $(_ex_guard 4 0) $(_ex_guard 4 1)"
