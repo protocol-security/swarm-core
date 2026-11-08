@@ -938,6 +938,34 @@ assert_eq "progress shows the history" "true" \
 assert_eq "progress reports Docker as unavailable" "true" \
     "$(grep -qF '(docker not available)' <<< "$progress_out" \
         && echo true || echo false)"
+# The history comes from the bare repo's agent-work, read in place: no
+# clone, nothing left in TMPDIR, and none of the bare repo's pager or
+# signature settings, which agents can write, take effect.
+_pb="$SWARM_RUNTIME_DIR/upstream.git"
+_pb_commit=$(git --git-dir="$_pb" -c user.name=agent -c user.email=a@a \
+    commit-tree -p refs/heads/agent-work -m "agent progress marker" \
+    "refs/heads/agent-work^{tree}")
+git --git-dir="$_pb" update-ref refs/heads/agent-work "$_pb_commit"
+git --git-dir="$_pb" config core.pager "touch $TMPDIR/progress-pager-ran"
+git --git-dir="$_pb" config log.showSignature true
+git --git-dir="$_pb" config gpg.program "touch $TMPDIR/progress-gpg-ran"
+_pb_tmp=$(mktemp -d)
+progress_rc=0
+progress_out=$(TMPDIR="$_pb_tmp" bash "$REPO_ROOT/progress.sh" 2>&1) \
+    || progress_rc=$?
+assert_eq "progress shows agent-work's latest commit" "0 true" \
+    "$progress_rc $(grep -qF 'agent progress marker' <<< "$progress_out" \
+        && echo true || echo false)"
+assert_eq "progress leaves nothing in TMPDIR" "" "$(ls -A "$_pb_tmp")"
+assert_eq "progress runs no pager or gpg of the bare repo's" "false false" \
+    "$([ -e "$TMPDIR/progress-pager-ran" ] && echo true || echo false) $(
+        [ -e "$TMPDIR/progress-gpg-ran" ] && echo true || echo false)"
+assert_eq "progress turns the pager off" "1" \
+    "$(grep -c 'git --no-pager' "$REPO_ROOT/progress.sh")"
+rmdir "$_pb_tmp"
+git --git-dir="$_pb" config --unset core.pager
+git --git-dir="$_pb" config --unset log.showSignature
+git --git-dir="$_pb" config --unset gpg.program
 # Bash 3.2 (macOS's /bin/bash, which the script's shebang runs) gives an
 # EXIT trap status 0 when set -u stops the script.  An echo that, through
 # BASH_ENV, reads an unset variable when it prints the history's title
@@ -1018,8 +1046,6 @@ fi
 _px_run() {  # BASH NEEDED(0 yes, 1 no) END
     cat > "$TMPDIR/progress-trap-run.sh" <<EOF
 set -euo pipefail
-CHECK_DIR="$TMPDIR/progress-trap-scratch"
-mkdir -p "\$CHECK_DIR"
 PROGRESS_EXIT_OK=false
 # shellcheck source=/dev/null
 source "$TMPDIR/progress-trap.sh"
@@ -1029,9 +1055,6 @@ $3
 EOF
     "$1" "$TMPDIR/progress-trap-run.sh" 2>&1
 }
-_px_gone() {
-    if [ -e "$TMPDIR/progress-trap-scratch" ]; then echo no; else echo yes; fi
-}
 for _px_b in $_px_bashes; do
     _px_rc=0
     _px_out=$(_px_run "$_px_b" 0 ':') || _px_rc=$?
@@ -1040,25 +1063,21 @@ for _px_b in $_px_bashes; do
     assert_eq "$_px_b:   saying so once" "1" \
         "$(grep -c 'progress.sh stopped before the end of its run' \
             <<< "$_px_out")"
-    assert_eq "$_px_b:   the clone goes" "yes" "$(_px_gone)"
     _px_rc=0
     _px_out=$(_px_run "$_px_b" 1 ':') || _px_rc=$?
     assert_eq "$_px_b: no flag where it is not: status 0" "0" "$_px_rc"
     assert_eq "$_px_b:   no line" "0" \
         "$(grep -c 'stopped before the end' <<< "$_px_out")"
-    assert_eq "$_px_b:   the clone goes" "yes" "$(_px_gone)"
     _px_rc=0
     _px_out=$(_px_run "$_px_b" 0 'PROGRESS_EXIT_OK=true') || _px_rc=$?
     assert_eq "$_px_b: the flag: status 0" "0" "$_px_rc"
     assert_eq "$_px_b:   no line" "0" \
         "$(grep -c 'stopped before the end' <<< "$_px_out")"
-    assert_eq "$_px_b:   the clone goes" "yes" "$(_px_gone)"
     _px_rc=0
     _px_out=$(_px_run "$_px_b" 0 'exit 3') || _px_rc=$?
     assert_eq "$_px_b: another status stays" "3" "$_px_rc"
     assert_eq "$_px_b:   with no line" "0" \
         "$(grep -c 'stopped before the end' <<< "$_px_out")"
-    assert_eq "$_px_b:   the clone goes" "yes" "$(_px_gone)"
 done
 
 # ============================================================
