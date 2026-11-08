@@ -778,19 +778,38 @@ while IFS= read -r t; do
     grep -qxF -- "$t" "$GITDIRS" || printf '%s\n' "$t" >> "$GITDIRS"
 done < "$TOPS"
 
-# The files of a git dir that Git, or this scan, opens before anything
-# else is read must not be special files: a FIFO there would hang the
-# scan, and a device or a socket is no repository data.  (A symlink is
-# followed; links that lead out of ROOT are checked further on.)  This
-# stops the scan at once, before any of them is read.
+# No file in a git dir may be a special file: Git opens many of them
+# (HEAD, config, the index, packed-refs, info/exclude, pack indexes,
+# the commit-graph), a FIFO there would hang the scan, and a device or
+# a socket is no repository data.  In a work tree Git opens .gitignore,
+# .gitattributes and .gitmodules.  A symlink is followed, so one that
+# leads to a special file counts too (links that lead out of ROOT are
+# checked further on).  This stops the scan at once, before any of them
+# is read.
+: > "$OUT/.special"
 while IFS= read -r d; do
-    for f in HEAD config config.worktree index commondir gitdir \
-            objects/info/alternates; do
-        if [ -e "$d/$f" ] && [ ! -f "$d/$f" ] && [ ! -d "$d/$f" ]; then
-            report "block special-file $(oneline "${d#"$ROOT"/}/${f}")"
-        fi
-    done
+    find "$d" \( -type l -o ! \( -type f -o -type d \) \) -print0 \
+        2>"$ERR" >> "$OUT/.special" || fail "cannot list ${d}"
+    [ ! -s "$ERR" ] || fail "cannot list ${d}: $(cat "$ERR")"
 done < "$GITDIRS"
+if [ "$MODE" = worktree ]; then
+    find "$ROOT" \( -name .gitignore -o -name .gitattributes \
+        -o -name .gitmodules \) ! -type f -print0 2>"$ERR" \
+        >> "$OUT/.special" || fail "cannot list ${ROOT}"
+    [ ! -s "$ERR" ] || fail "cannot list ${ROOT}: $(cat "$ERR")"
+fi
+LC_ALL=C sort -zu "$OUT/.special" > "$OUT/.special-u" \
+    || fail "cannot sort the special files"
+while IFS= read -r -d '' f; do
+    # A symlink to a regular file or a directory is no special file;
+    # test -e and -f look at the target without opening it.
+    if [ -L "$f" ] && { [ ! -e "$f" ] || [ -f "$f" ] || [ -d "$f" ]; }
+    then
+        continue
+    fi
+    [ ! -d "$f" ] || continue
+    report "block special-file $(oneline "${f#"$ROOT"/}")"
+done < "$OUT/.special-u"
 if grep -q '^block special-file ' "$REPORT"; then
     exit 0
 fi
