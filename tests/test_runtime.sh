@@ -65,11 +65,13 @@ echo "=== 0. The tests run without the caller's swarm-core settings ==="
 # An embedder's environment (an engagement it is running, say) must not
 # reach the tests, which make engagements of their own.
 assert_eq "_test_env.sh unsets every engagement and runtime setting" \
-    "unset unset unset unset unset" \
+    "unset unset unset unset unset unset" \
     "$(SWARM_PROJECT=p SWARM_RUNTIME_DIR=/r SWARM_ENGAGEMENT_ID=e \
-        SWARM_LOCK_FD=9 SWARM_ENGAGEMENT_TOKEN=outside "$BASH" -c \
+        SWARM_LOCK_FD=9 SWARM_ENGAGEMENT_TOKEN=outside \
+        SWARM_GIT_NO_BACKGROUND=1 "$BASH" -c \
         'source "$1"; for v in SWARM_PROJECT SWARM_RUNTIME_DIR \
-            SWARM_ENGAGEMENT_ID SWARM_LOCK_FD SWARM_ENGAGEMENT_TOKEN; do
+            SWARM_ENGAGEMENT_ID SWARM_LOCK_FD SWARM_ENGAGEMENT_TOKEN \
+            SWARM_GIT_NO_BACKGROUND; do
             printf "%s\n" "${!v-unset}"; done' _ \
         "$TESTS_DIR/_test_env.sh" | paste -sd ' ' -)"
 
@@ -773,6 +775,27 @@ assert_eq "the lock is free once the holder closes it" "0" \
     "$(env -u SWARM_LOCK_FD "$BASH" -c 'source "$1"; swarm_lock "$2"' \
         _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" >/dev/null 2>&1; \
        echo $?)"
+
+# Git under the lock leaves nothing running that would keep it: no
+# fsmonitor daemon, no detached gc, no background maintenance, whatever
+# the checkout's config says.  The caller's own entries stay, and taking
+# the lock again adds none.
+_lk_repo="$TMPDIR/lock-repo"
+git init -q "$_lk_repo"
+git -C "$_lk_repo" config core.fsmonitor true
+git -C "$_lk_repo" config gc.auto 100
+git -C "$_lk_repo" config maintenance.auto true
+assert_eq "under the lock Git starts nothing in the background" \
+    "false 0 false user 4" \
+    "$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=x.who GIT_CONFIG_VALUE_0=user \
+        env -u SWARM_LOCK_FD "$BASH" -c \
+        'source "$1"; swarm_lock "$2" && swarm_lock "$2" || exit 1
+         for k in core.fsmonitor gc.auto maintenance.auto x.who; do
+             git -C "$3" config --get "$k"
+         done
+         echo "$GIT_CONFIG_COUNT"' \
+        _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" "$_lk_repo" \
+        2>/dev/null | paste -sd ' ' -)"
 
 _fd_check='source "$1"; exec 5>>"$2"; swarm_fd_is_file 5 "$3"; echo $?'
 assert_eq "swarm_fd_is_file: same file" "0" \
