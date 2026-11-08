@@ -1228,14 +1228,16 @@ assert_eq "pp tag env expansion" "expanded-pp" "$pp_expanded"
 echo ""
 echo "=== 33. docker_args array construction ==="
 
-# Mirrors the DOCKER_EXTRA_ARGS construction in launch.sh.
+# The reader launch.sh uses (lib/docker-args.sh), its elements joined by
+# "|" so that their boundaries show.
 build_docker_extra_args() {
-    local config_file="$1"
-    local DOCKER_EXTRA_ARGS=()
-    while IFS= read -r _da; do
-        [ -n "$_da" ] && DOCKER_EXTRA_ARGS+=("$_da")
-    done < <(jq -r '.docker_args[]?' "$config_file" 2>/dev/null)
-    echo "${DOCKER_EXTRA_ARGS[*]+"${DOCKER_EXTRA_ARGS[*]}"}"
+    (
+        # shellcheck source=../lib/docker-args.sh
+        source "$TESTS_DIR/../lib/docker-args.sh"
+        swarm_docker_args_read "$1" || exit 1
+        IFS='|'
+        echo "${SWARM_DOCKER_ARGS[*]+"${SWARM_DOCKER_ARGS[*]}"}"
+    )
 }
 
 cat > "$TMPDIR/da_full.json" <<'EOF'
@@ -1247,7 +1249,7 @@ cat > "$TMPDIR/da_full.json" <<'EOF'
 EOF
 
 assert_eq "docker_args full" \
-    "-v /var/run/docker.sock:/var/run/docker.sock --privileged" \
+    "-v|/var/run/docker.sock:/var/run/docker.sock|--privileged" \
     "$(build_docker_extra_args "$TMPDIR/da_full.json")"
 
 # No docker_args — empty.
@@ -1279,9 +1281,17 @@ cat > "$TMPDIR/da_complex.json" <<'EOF'
   "agents": [{ "count": 1, "model": "m" }]
 }
 EOF
-assert_eq "docker_args complex" \
-    "-v /var/run/docker.sock:/var/run/docker.sock -v /tmp:/host-tmp:ro --cap-add SYS_PTRACE" \
+_da_want="-v|/var/run/docker.sock:/var/run/docker.sock"
+_da_want="${_da_want}|-v|/tmp:/host-tmp:ro|--cap-add|SYS_PTRACE"
+assert_eq "docker_args complex" "$_da_want" \
     "$(build_docker_extra_args "$TMPDIR/da_complex.json")"
+# An element with a space stays one element.
+cat > "$TMPDIR/da_space.json" <<'EOF'
+{ "prompt": "p.md", "docker_args": ["--label", "a b=c d"],
+  "agents": [{ "count": 1, "model": "m" }] }
+EOF
+assert_eq "docker_args element with a space" "--label|a b=c d" \
+    "$(build_docker_extra_args "$TMPDIR/da_space.json")"
 
 # ============================================================
 echo ""
@@ -2502,9 +2512,11 @@ CMD_INTERACTIVE_BODY=$(awk '
     p && /^\}[[:space:]]*$/ { exit }
 ' "$LAUNCH_FILE")
 
-assert_eq "interactive execs docker run -it" "1" \
+assert_eq "interactive execs docker run, -it after docker_args" "1" \
     "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
-        | grep -cF 'exec docker run -it')"
+        | grep -A2 -F 'exec docker run' \
+        | sed -n '2s/.*DOCKER_EXTRA_ARGS.*/da/p;3s/^ *-it \\$/it/p' \
+        | tr -d '\n' | grep -c '^dait$')"
 assert_eq "interactive uses dedicated entrypoint" "1" \
     "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
         | grep -cF -- '--entrypoint /interactive.sh')"
@@ -3046,7 +3058,7 @@ assert_eq "a container that appears later stops start" "1" \
 assert_eq "the late container is not removed" "0" \
     "$(grep -c '^rm ' "$_id_log" || true)"
 assert_eq "no agent container is started" "0" \
-    "$(grep -c '^run -d' "$_id_log" || true)"
+    "$(grep -v '^run refused' "$_id_log" | grep -c '^run ' || true)"
 
 # A container of another project can hold one of the names commands
 # address (here start-repo-agent-1, labeled for project "other").
@@ -3166,7 +3178,11 @@ echo "\$*" >> "$_lk_log"
 # FAKE_EXIT.  With FAKE_NEVER_RUNS the container never starts.
 [ "\$1" = info ] && { echo d1; exit 0; }
 [ "\$1 \$2" = "context show" ] && { echo default; exit 0; }
-if [ "\$1 \$2" = "run -it" ]; then
+_it=false
+for _a in "\$@"; do
+    [ "\$_a" != -it ] || _it=true
+done
+if [ "\$1" = run ] && \$_it; then
     _name=""
     _prev=""
     for _a in "\$@"; do
@@ -3239,15 +3255,15 @@ jq '. + {docker_args: ["--detach-keys=ctrl-x", "--label", "-itd",
     SWARM_CONFIG=sub/configs/docker-args.json SWARM_SKIP_DEP_CHECK=1 \
     "$BASH" "$_LAUNCH_SH" interactive --agent-index 1 >/dev/null 2>&1) \
     || true
-assert_eq "docker_args reach docker run unchanged" "1" \
-    "$(grep '^run -it ' "$_lk_log" \
-        | grep -c -- ' --detach-keys=ctrl-x --label -itd --name custom' \
-        || true)"
+assert_eq "docker_args reach docker run unchanged, right after run" "1" \
+    "$(grep -c -- \
+        '^run --detach-keys=ctrl-x --label -itd --name custom-session -it ' \
+        "$_lk_log" || true)"
 assert_eq "the container gets the recorded name" "1" \
     "$(grep -c 'record names the session' "$_lk_log" || true)"
 assert_eq "the session label follows docker_args too" "1" \
-    "$(grep '^run -it ' "$_lk_log" | grep -cE -- \
-        ' --name custom-session .* --name [^ ]+ --label swarm-core\.session=' \
+    "$(grep '^run ' "$_lk_log" | grep -cE -- \
+        ' --name custom-session -it .* --name [^ ]+ --label swarm-core\.session=' \
         || true)"
 rm -f "$_lk_cfg"
 
@@ -4083,6 +4099,7 @@ case "$1" in
             *) printf '%s\n' "$c" ;;
         esac ;;
     run)
+        jq -nc '$ARGS.positional' --args -- "$@" >> "$d/argv.jsonl"
         fails run && exit 125
         case " $* " in
             *" -d "*) echo "cid-run" ;;
@@ -4242,7 +4259,7 @@ for _v_i in 1 2; do
             "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
             && echo true || echo false)"
     assert_eq "agent $_v_i: mount, labels, policies and name follow docker_args" \
-        "1" "$(grep -F -- '|run -d ' "$V_DIR/log" | grep -cF -- " --rm --restart always --name other --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-${_v_i} " || true)"
+        "1" "$(grep -F -- "|run --rm --restart always --name other -d --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-${_v_i} " || true)"
 done
 assert_eq "start builds the image once" "1" \
     "$(grep -c '|build ' "$V_DIR/log" || true)"
@@ -4256,7 +4273,8 @@ echo a > "$V_DIR/context"
 _v_rc=0
 _v_out=$(v_run interactive --agent-index 1) || _v_rc=$?
 assert_eq "interactive joins the engagement" "0" "$_v_rc"
-_v_sess=$(grep -F -- '|run -it ' "$V_DIR/log" \
+_v_sess=$(grep -F -- '|run --rm --restart always --name other -it ' \
+    "$V_DIR/log" \
     | sed -n 's/.* --rm=false --name \([^ ]*\) .*/\1/p')
 assert_eq "the session's name ends in UTC time and 8 hex digits" "true" \
     "$(grep -qE "^${_v_img}-interactive-[a-z0-9._-]+-[0-9]{14}-[0-9a-f]{8}$" \
@@ -4271,7 +4289,7 @@ assert_eq "the session gets a volume of its own" "true" \
         "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
         && echo true || echo false)"
 assert_eq "mounted after docker_args, with the policies and its name" "1" \
-    "$(grep -F -- '|run -it ' "$V_DIR/log" | grep -cF -- " --rm --restart always --name other --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_sess} " || true)"
+    "$(grep -F -- "|run --rm --restart always --name other -it --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_sess} " || true)"
 assert_eq "its session record names the daemon" "daemon=daemon-a" \
     "$(grep '^daemon=' "$V_RT/interactive-${_v_sess}.pending" 2>/dev/null)"
 assert_eq "joining builds the image too" "1" \
@@ -4294,7 +4312,7 @@ assert_eq "post-process gets a volume of its own" "true" \
         "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
         && echo true || echo false)"
 assert_eq "mounted after docker_args, with the policies and its name" "1" \
-    "$(grep -F -- '|run -d ' "$V_DIR/log" | grep -cF -- " --rm --restart always --name other --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-post " || true)"
+    "$(grep -F -- "|run --rm --restart always --name other -d --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-post " || true)"
 
 # --- volume failures stop before any docker run ----------------------
 # Creation fails; the labels read back are not the ones set (another
@@ -4494,7 +4512,7 @@ assert_eq "wait: the lock held a moment, it waits for it" "1" \
 assert_eq "the holder let it go once wait waited" "true" \
     "$(v_holder_waited)"
 assert_eq "then post-process starts" "1" \
-    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+    "$(grep -c "|run .* -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 assert_eq "and ends at the failed docker run" "125" "$_v_rc"
 # A stop that fails without the lock fails at once, without waiting for
 # the lock first.
@@ -4750,7 +4768,7 @@ _v_rc=0
 _v_out=$(v_run wait) || _v_rc=$?
 rm -f "$V_DIR/fail"
 assert_eq "wait: all agents done, post-process starts" "1" \
-    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+    "$(grep -c "|run .* -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 assert_eq "wait: post-process ended at the failed docker run" "125" \
     "$_v_rc"
 
@@ -4770,7 +4788,7 @@ rm -f "$V_DIR/fail"
 assert_eq "wait: a running agent keeps it waiting" "5" \
     "$(cat "$V_DIR/wait-listed" 2>/dev/null)"
 assert_eq "wait: then post-process starts" "1" \
-    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+    "$(grep -c "|run .* -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 # A start records the engagement before it launches the agents, and
 # holds the lock until they run: agents that run by the time wait has
 # the lock are waited for too.
@@ -4789,7 +4807,7 @@ rm -f "$V_DIR/fail"
 assert_eq "wait: agents launched while it took the lock are waited for" \
     "6" "$(cat "$V_DIR/wait-listed" 2>/dev/null)"
 assert_eq "wait: post-process only after them" "1" \
-    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+    "$(grep -c "|run .* -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 # The count itself: numbered agents only, any state that may still run.
 awk '/^wait_count\(\)[[:space:]]*\{/ { p = 1 } p { print }
      p && /^\}[[:space:]]*$/ { exit }' "$_LAUNCH_SH" > "$_v_root/wait_count.sh"
@@ -4859,7 +4877,7 @@ _v_rc=0
 _v_out=$(v_run wait) || _v_rc=$?
 rm -f "$V_DIR/fail"
 assert_eq "wait: an agent that failed to start is not waited for" "1" \
-    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+    "$(grep -c "|run .* -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 : > "$V_DIR/containers"
 
 # A token names an engagement to join: with the bare repo gone, the
@@ -5264,6 +5282,145 @@ assert_eq "interactive mounts it with --mount" "1" \
         "$V_DIR/log" || true)"
 assert_eq "and no -v names /upstream any more" "0" \
     "$(grep -c ':/upstream' "$_LAUNCH_SH" || true)"
+_v_cfg_saved="$V_CFG"
+
+# --- docker_args: the exact vector, first, checked before anything -----
+# Each docker run gets docker_args exactly (argument boundaries kept, as
+# the fake's JSON log of each run shows) right after "run", before every
+# argument the engine sets.
+_v_cfg_da="$_v_root/da-exact.json"
+jq '.docker_args = ["--label", "a b=c d", "--env", "X= y", "-e", "Z",
+    "--network=host"]' "$_v_cfg_saved" > "$_v_cfg_da"
+_v_cfg_saved="$V_CFG"
+V_CFG="$_v_cfg_da"
+v_new
+v_run start >/dev/null || true
+_v_da_want='["--label","a b=c d","--env","X= y","-e","Z","--network=host"]'
+assert_eq "each agent's run gets docker_args exactly, right after run" "2" \
+    "$(jq -c --argjson w "$_v_da_want" \
+        'select(.[0] == "run" and .[1:8] == $w and .[8] == "-d")' \
+        "$V_DIR/argv.jsonl" | grep -c . || true)"
+v_agents exited
+: > "$V_DIR/argv.jsonl"
+# (The fake's docker run fails here, after logging: post-process ends at
+# once instead of waiting for a container the fake never makes.)
+echo run > "$V_DIR/fail"
+v_run post-process >/dev/null || true
+rm -f "$V_DIR/fail"
+assert_eq "post-process's too" "1" \
+    "$(jq -c --argjson w "$_v_da_want" \
+        'select(.[0] == "run" and .[1:8] == $w and .[8] == "-d")' \
+        "$V_DIR/argv.jsonl" | grep -c . || true)"
+: > "$V_DIR/argv.jsonl"
+v_run interactive --agent-index 1 >/dev/null || true
+assert_eq "and interactive's, -it after them" "1" \
+    "$(jq -c --argjson w "$_v_da_want" \
+        'select(.[0] == "run" and .[1:8] == $w and .[8] == "-it")' \
+        "$V_DIR/argv.jsonl" | grep -c . || true)"
+V_CFG="$_v_cfg_saved"
+
+# Absent, null and empty docker_args: the engine's arguments right after
+# run, at each launch.
+for _v_da in absent null empty; do
+    _v_cfg_da="$_v_root/da-$_v_da.json"
+    case "$_v_da" in
+        absent) jq 'del(.docker_args)' "$_v_cfg_saved" > "$_v_cfg_da" ;;
+        null) jq '.docker_args = null' "$_v_cfg_saved" > "$_v_cfg_da" ;;
+        empty) jq '.docker_args = []' "$_v_cfg_saved" > "$_v_cfg_da" ;;
+    esac
+    V_CFG="$_v_cfg_da"
+    v_new
+    _v_rc=0
+    v_run start >/dev/null || _v_rc=$?
+    assert_eq "docker_args $_v_da: start works" "0" "$_v_rc"
+    v_agents exited
+    echo run > "$V_DIR/fail"
+    _v_rc=0
+    v_run post-process >/dev/null || _v_rc=$?
+    rm -f "$V_DIR/fail"
+    assert_eq "docker_args $_v_da: post-process gets to docker run" "125" \
+        "$_v_rc"
+    v_run interactive --agent-index 1 >/dev/null || true
+    assert_eq "docker_args $_v_da: -d or -it right after run, each time" \
+        "-d -d -d -it" \
+        "$(jq -r '.[1]' "$V_DIR/argv.jsonl" | tr '\n' ' ' | sed 's/ $//')"
+    V_CFG="$_v_cfg_saved"
+done
+
+# A bad docker_args stops start, post-process, interactive, chat and
+# shell before they prepare anything: no runtime directory, nothing in
+# Docker.
+_v_cfg_bad="$_v_root/da-bad.json"
+jq '.docker_args = ["--rm", "-it"]' "$_v_cfg_saved" > "$_v_cfg_bad"
+V_CFG="$_v_cfg_bad"
+for _v_cmd in start post-process "interactive --agent-index 1" \
+        "chat --agent-index 1" "shell --agent-index 1"; do
+    v_new
+    _v_rc=0
+    # shellcheck disable=SC2086
+    _v_out=$(v_run $_v_cmd) || _v_rc=$?
+    assert_eq "bad docker_args: $_v_cmd refused" "1" "$_v_rc"
+    assert_eq "bad docker_args: $_v_cmd says why" "true" \
+        "$(v_has "docker_args element 2 (-it) groups short options" \
+            "$_v_out")"
+    assert_eq "bad docker_args: $_v_cmd prepares nothing" "no" \
+        "$([ -e "$V_RT" ] && echo yes || echo no)"
+    assert_eq "bad docker_args: $_v_cmd makes nothing in Docker" "0" \
+        "$(v_writes)"
+done
+V_CFG="$_v_cfg_saved"
+
+# wait reads docker_args only when it goes on to post-process; stop,
+# status and logs never do.
+v_new
+v_run start >/dev/null || true
+v_agents exited
+_v_tok_saved="$_v_tok"
+_v_tok=$(jq -r .engagement_token "$V_STATE" 2>/dev/null)
+v_agents exited
+V_CFG="$_v_cfg_bad"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run wait) || _v_rc=$?
+assert_eq "wait on to post-process: a bad docker_args stops it" "1" "$_v_rc"
+assert_eq "  saying why" "true" \
+    "$(v_has "docker_args element 2 (-it) groups short options" "$_v_out")"
+assert_eq "  before any run" "0" "$(grep -c '|run ' "$V_DIR/log" || true)"
+V_CFG="$_v_root/da-bad-harvest.json"
+jq 'del(.post_process)' "$_v_cfg_bad" > "$V_CFG"
+_v_out=$(v_run wait) || true
+assert_eq "wait on to harvest: docker_args not read" "false" \
+    "$(v_has "docker_args" "$_v_out")"
+assert_eq "  it goes on to harvest" "true" \
+    "$(v_has "Harvesting results" "$_v_out")"
+V_CFG="$_v_root/da-not-array.json"
+jq '.docker_args = "-it"' "$_v_cfg_saved" > "$V_CFG"
+for _v_cmd in stop status "logs 1"; do
+    # shellcheck disable=SC2086
+    _v_out=$(v_run $_v_cmd) || true
+    assert_eq "$_v_cmd ignores docker_args" "false" \
+        "$(v_has "docker_args" "$_v_out")"
+done
+V_CFG="$_v_cfg_saved"
+_v_tok="$_v_tok_saved"
+
+# What C5 will restrict passes for now: TARGET_* in -e, --env-file,
+# --volumes-from.
+V_CFG="$_v_root/da-later.json"
+jq '.docker_args = ["-e", "TARGET_REPO", "-e", "TARGET_REV=main",
+    "--env-file", "/dev/null", "--volumes-from", "other"]' \
+    "$_v_cfg_saved" > "$V_CFG"
+v_new
+_v_rc=0
+v_run start >/dev/null || _v_rc=$?
+assert_eq "TARGET_* in -e, --env-file, --volumes-from: start works" "0" \
+    "$_v_rc"
+assert_eq "  and they reach docker run" "2" \
+    "$(jq -c 'select(.[0] == "run" and .[1:9] == ["-e", "TARGET_REPO",
+        "-e", "TARGET_REV=main", "--env-file", "/dev/null",
+        "--volumes-from", "other"])' "$V_DIR/argv.jsonl" \
+        | grep -c . || true)"
+V_CFG="$_v_cfg_saved"
 
 # A run killed during the clone leaves upstream.git.new: the gate
 # refuses it (cleanup preserves and removes it, see test_cleanup.sh).

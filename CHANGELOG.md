@@ -11,6 +11,7 @@
 
 
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -59,6 +60,18 @@
   that is set but empty is refused by every command, as it named no
   engagement and let `post-process` and `interactive` create one.
 
+- **`docker_args` reach `docker run` exactly, and their form is
+  checked first.** Each element was split at newlines, empty elements
+  were dropped, other JSON values (and a `docker_args` object) were
+  turned into text, and nothing checked the result: a positional
+  element ended `docker run`'s options and made the engine's own
+  arguments the container's command. Each element is now one argument,
+  read once, and `start`, `post-process` and `interactive` check them
+  against `docker run`'s options before they prepare anything: an
+  unknown option, `--help`, `--`, a positional element, an option
+  missing its value and grouped short options (`-it`) refuse, naming
+  the element. They also come first now, so `-d`, `-it`, the name, the
+  policies and interactive's entrypoint are always the engine's.
 - **Cleanup deletes a target snapshot.** `target.git` in the runtime
   directory, a copy of the audit target, holds none of the engagement's
   work: cleanup deletes it without copying it, after the repository

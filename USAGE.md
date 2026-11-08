@@ -295,8 +295,12 @@ engagement's.
 
 ### Extra Docker arguments
 
-Pass arbitrary flags to every `docker run` invocation via the
-top-level `docker_args` array.  Each element is one shell token:
+Pass flags to the `docker run` of each container `launch.sh` starts
+(the agents, post-process and interactive sessions; not the helper
+containers of `retire` and `cleanup`) with the top-level
+`docker_args` array.  Each element is exactly one argument: no
+element is split, and each must be a string that is not empty and
+holds no newline and no NUL:
 
 ```json
 {
@@ -311,10 +315,40 @@ This is useful for mounting the host Docker socket, adding
 devices or capabilities, setting network modes, or passing any
 other flags that the harness does not manage natively.
 
-What the engine sets comes after `docker_args`, and Docker takes the
-last value of a flag given twice, so an entry there cannot replace it:
-the workspace volume at `/workspace`, the engagement labels,
-`--restart no`, `--rm=false` and the container's name.
+`start`, `post-process`, `interactive` (`chat` and `shell` too), and
+`wait` when it goes on to post-process, check `docker_args` against
+`docker run`'s options before they prepare anything, and refuse,
+naming the element:
+
+- an option this engine does not know: its table holds every option
+  Docker 24.0 or 29.8 registers, hidden aliases (`--net`,
+  `--net-alias`, `--dns-opt`) and deprecated ones included; an option
+  newer than Docker 29.8 waits for that table;
+- `--help` in any spelling, `--`, `-` alone, and anything that is no
+  option where `docker run` expects one (a positional argument would
+  end its options before the engine's own);
+- an option that takes a value with nothing after it, a boolean short
+  option with nothing after `=` (`-i=`), and grouped short options
+  such as `-it` (give `-i` and `-t` apart).
+
+An option that takes a value takes the next element as its value,
+whatever it holds; `--name=value`, `-xVALUE` and `-x=VALUE` work too.
+The check is about form: values are Docker's to check when it runs,
+once the engagement is prepared (`--memory=nonsense` passes it). The
+dashboard's post-process key stops the numbered agents before
+post-process checks `docker_args`.
+
+`docker_args` come right after `docker run`, before everything the
+engine sets, so for an option that takes one value the engine's wins:
+`-d` for agents and post-process (a `--detach=false` there changes
+nothing), `-it` for interactive sessions (a session cannot be made
+TTY-less from `docker_args`), the name, `--restart no`, `--rm=false`,
+and interactive's `--entrypoint` (agents and post-process set none, so
+`docker_args` can change theirs). Options that add up (`-v`,
+`--mount`, `-e`, `--label`) add to the engine's: for an `-e` or
+`--label` key given twice the later value wins, and a mount that
+conflicts with one the engine makes (`/workspace`, `/upstream`) makes
+`docker run` fail.
 
 Docker's `-e` flag accepts two forms: `-e VAR=value` passes a
 literal value, and `-e VAR` (no `=value`) inherits `VAR` from the

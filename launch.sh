@@ -73,6 +73,8 @@ source "$SWARM_DIR/lib/project.sh"
 source "$SWARM_DIR/lib/preserve.sh"
 # shellcheck source=lib/target.sh
 source "$SWARM_DIR/lib/target.sh"
+# shellcheck source=lib/docker-args.sh
+source "$SWARM_DIR/lib/docker-args.sh"
 
 # retire and cleanup read and write Git data: none of the caller's GIT_*
 # variables may point them at another repository or inject settings
@@ -732,10 +734,14 @@ NUM_AGENTS=$(jq '[.agents[]? | (.count // 0)] | add // 0' "$CONFIG_FILE")
 SWARM_DRIVER_DEFAULT=$(jq -r '.driver // "claude-code"' "$CONFIG_FILE")
 MAX_RETRY_WAIT=$(jq -r '.max_retry_wait // 0' "$CONFIG_FILE")
 
+# docker_args, read and checked by the commands that launch containers
+# (docker_args_load), before they prepare anything.
 DOCKER_EXTRA_ARGS=()
-while IFS= read -r _da; do
-    [ -n "$_da" ] && DOCKER_EXTRA_ARGS+=("$_da")
-done < <(jq -r '.docker_args[]?' "$CONFIG_FILE" 2>/dev/null)
+docker_args_load() {
+    swarm_docker_args_read "$CONFIG_FILE" || exit 1
+    swarm_docker_args_check || exit 1
+    DOCKER_EXTRA_ARGS=("${SWARM_DOCKER_ARGS[@]+"${SWARM_DOCKER_ARGS[@]}"}")
+}
 
 parse_start_args() {
     OPEN_DASHBOARD=false
@@ -942,6 +948,7 @@ HELP
         exit 1
     fi
 
+    docker_args_load
     prepare_runtime
     ensure_bare_repo_for_interactive
 
@@ -992,13 +999,15 @@ HELP
     swarm_unlock
     echo "--- Starting interactive ${profile_label} (${agent_model}) ---"
     echo "Branch: ${branch}"
-    # --name and the session label come after docker_args: the last
-    # one wins, and the record must find the container Docker makes.
-    exec docker run -it \
+    # docker_args come first: everything the engine sets comes after
+    # them, so the last value of an option is the engine's (-it, the
+    # name and the session label the record must find, the entrypoint).
+    exec docker run \
+        "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+        -it \
         --mount "type=bind,src=${BARE_REPO},dst=/upstream" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
         "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
-        "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
         "${WORKSPACE_ARGS[@]}" \
         --name "$name" \
         --label "${SWARM_SESSION_LABEL}=${name}" \
@@ -1100,6 +1109,7 @@ cmd_start() {
         exit 1
     fi
 
+    docker_args_load
     prepare_runtime
 
     # A new engagement, only once the last one was cleaned up.  The
@@ -1166,13 +1176,15 @@ cmd_start() {
             read -r price_input price_output price_cached <<< "$_price"
         fi
 
-        # The workspace, its labels, no restart policy, no auto-remove
-        # and the name come after docker_args: the last value wins.
-        docker run -d \
+        # docker_args come first: -d, the workspace, its labels, no
+        # restart policy, no auto-remove and the name come after them,
+        # so the last value of each is the engine's.
+        docker run \
+            "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+            -d \
             --mount "type=bind,src=${BARE_REPO},dst=/upstream" \
             "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
             "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
-            "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
             "${WORKSPACE_ARGS[@]}" \
             --name "$NAME" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
@@ -1599,6 +1611,7 @@ cmd_post_process() {
         exit 1
     fi
 
+    docker_args_load
     prepare_runtime
     local NAME="${IMAGE_NAME}-post" pp_state pp_engaged
     # The state decides: a recorded engagement is joined, never made
@@ -1692,13 +1705,14 @@ cmd_post_process() {
 
     echo "--- Starting post-processing (${pp_model}) ---"
     local pp_id
-    # As for the agents: the workspace, its labels, the policies and the
-    # name come after docker_args.
-    pp_id=$(docker run -d \
+    # As for the agents: docker_args first, then -d, the workspace, its
+    # labels, the policies and the name.
+    pp_id=$(docker run \
+        "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+        -d \
         --mount "type=bind,src=${BARE_REPO},dst=/upstream" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
         "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
-        "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
         "${WORKSPACE_ARGS[@]}" \
         --name "$NAME" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \

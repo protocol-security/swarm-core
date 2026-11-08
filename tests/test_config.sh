@@ -984,8 +984,16 @@ assert_eq "hetero pp auth" "oauth" "$(jq -r '.post_process.auth' "$CFG")"
 echo ""
 echo "=== 28. docker_args field ==="
 
+# The reader launch.sh uses (lib/docker-args.sh), one element per line
+# (an element holds no newline).
 parse_docker_args() {
-    jq -r '.docker_args[]?' "$1" 2>/dev/null
+    (
+        # shellcheck source=../lib/docker-args.sh
+        source "$TESTS_DIR/../lib/docker-args.sh"
+        swarm_docker_args_read "$1" || exit 1
+        [ "${#SWARM_DOCKER_ARGS[@]}" -eq 0 ] \
+            || printf '%s\n' "${SWARM_DOCKER_ARGS[@]}"
+    )
 }
 
 cat > "$TMPDIR/docker_args.json" <<'EOF'
