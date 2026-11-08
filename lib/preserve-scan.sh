@@ -663,6 +663,34 @@ GITDIRS="$OUT/.gitdirs"
 list_gitdirs "$TOP" > "$GITDIRS"
 grep -qx "$TOP" "$GITDIRS" || printf '%s\n' "$TOP" >> "$GITDIRS"
 
+# Git follows a config include wherever it points, and opening a FIFO
+# there would hang the scan.  Before any git command reads a git dir's
+# config, each of its config files must be a regular file that
+# includes no other; one that is not stops the scan.
+_cfg_stop=""
+while IFS= read -r d; do
+    rel="${d#"$ROOT"/}"
+    for cf in "$d/config" "$d/config.worktree"; do
+        [ -e "$cf" ] || [ -L "$cf" ] || continue
+        if [ ! -f "$cf" ]; then
+            report "block config-unreadable $(oneline "${cf#"$ROOT"/}")"
+            _cfg_stop=yes
+            continue
+        fi
+        rc=0
+        git config -f "$cf" --name-only --get-regexp \
+            '^(include|includeif)\.' > "$OUT/.inc" 2>/dev/null || rc=$?
+        case "$rc" in
+            0)
+                report "block config-include ${rel}"
+                _cfg_stop=yes ;;
+            1) ;;
+            *) fail "cannot parse ${cf}" ;;
+        esac
+    done
+done < "$GITDIRS"
+[ -z "$_cfg_stop" ] || exit 0
+
 # Unsupported layouts that keep history outside these git dirs.
 while IFS= read -r d; do
     [ ! -f "$d/shallow" ] || report "block shallow ${d#"$ROOT"/}"
@@ -707,16 +735,7 @@ if [ "$MODE" = worktree ]; then
         fi
         for cf in "$d/config" "$d/config.worktree"; do
             [ -f "$cf" ] || continue
-            rc=0
-            git config -f "$cf" --name-only --get-regexp \
-                '^(include\..*|includeif\..*)$' > "$OUT/.inc" 2>/dev/null \
-                || rc=$?
-            case "$rc" in
-                0) report "block config-include ${rel}" ;;
-                1) ;;
-                *) fail "cannot parse ${cf}" ;;
-            esac
-            # A filter driver is a command Git runs on work-tree files
+            # Includes stopped the scan above.  A filter driver is a command Git runs on work-tree files
             # (git status can run a clean filter): it would run inside
             # this scan.  It blocks rather than being switched off, which
             # would make every filtered file look modified.

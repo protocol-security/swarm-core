@@ -161,6 +161,17 @@ rc=0
 swarm_preservation_check "$TMPDIR/link.git" "$WORK" >/dev/null 2>&1 \
     || rc=$?
 assert_eq "a symlink: status 2" "2" "$rc"
+# Git follows an include wherever it points (a FIFO there would hang
+# the host), and agents can write the bare repo's config: the check
+# stops before git reads it.
+git -C "$BARE" config include.path inc
+rc=0
+swarm_preservation_check "$BARE" "$WORK" >/dev/null 2>"$TMPDIR/inc.err" \
+    || rc=$?
+assert_eq "a config include: status 2" "2" "$rc"
+assert_eq "and says so" "1" \
+    "$(grep -c 'includes other files' "$TMPDIR/inc.err" || true)"
+git -C "$BARE" config --unset include.path
 
 echo ""
 echo "=== 7. A checkout git cannot read fails the check ==="
@@ -514,6 +525,22 @@ git -C "$W" config include.path /elsewhere
 assert_eq "a config include blocks" "1" \
     "$(has_line "$(scan worktree "$W" full)" 'block config-include .git')"
 git -C "$W" config --unset include.path
+# In a bare repo too, before any git command reads its config.
+IB="$TMPDIR/inc-bare.git"
+git init -q --bare "$IB"
+printf '[core]\n' > "$IB/inc.cfg"
+git -C "$IB" config includeIf.onbranch:x.path inc.cfg
+out=$(scan gitdir "$IB" -)
+assert_eq "a config include in a bare repo blocks" "1" \
+    "$(has_line "$out" 'block config-include ')"
+assert_eq "and stops the scan, with no bundle" "false" \
+    "$([ -e "$out/bundle" ] && echo true || echo false)"
+rm -f "$IB/config.worktree"
+mkfifo "$IB/config.worktree"
+git -C "$IB" config --unset includeIf.onbranch:x.path
+out=$(scan gitdir "$IB" -)
+assert_eq "a config file that is no regular file blocks" "1" \
+    "$(has_line "$out" 'block config-unreadable ')"
 ln -s /tmp "$W/.git/out-link"
 assert_eq "a git-dir symlink to a directory out of the volume blocks" "1" \
     "$(has_line "$(scan worktree "$W" full)" 'block outside-dir-link .git/out-link')"
