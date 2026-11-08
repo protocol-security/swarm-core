@@ -735,10 +735,11 @@ if [ "$MODE" = worktree ]; then
         fi
         for cf in "$d/config" "$d/config.worktree"; do
             [ -f "$cf" ] || continue
-            # Includes stopped the scan above.  A filter driver is a command Git runs on work-tree files
-            # (git status can run a clean filter): it would run inside
-            # this scan.  It blocks rather than being switched off, which
-            # would make every filtered file look modified.
+            # Includes stopped the scan above.  A filter driver is a
+            # command Git runs on work-tree files (git status can run a
+            # clean filter): it would run inside this scan.  It blocks
+            # rather than being switched off, which would make every
+            # filtered file look modified.
             rc=0
             git config -f "$cf" --name-only --get-regexp '^filter\.' \
                 > "$OUT/.flt" 2>/dev/null || rc=$?
