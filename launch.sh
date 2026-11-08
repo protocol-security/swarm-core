@@ -481,8 +481,15 @@ mirror_submodules() {
     }
     cd "$REPO_ROOT"
     mkdir -p "$MIRROR_DIR"
+    # Git says where each submodule's Git directory is: under
+    # .git/modules/ by name, not by path (a submodule moved with git mv
+    # keeps its name), or in the submodule's work tree.  One that Git
+    # cannot find or read stops the listing, and the command with it,
+    # even an interactive session that joins and has that mirror
+    # already.
     git submodule foreach --quiet \
-        'echo "$name|$sm_path|$toplevel/.git/modules/$sm_path"' | \
+        'gitdir=$(git rev-parse --absolute-git-dir) &&
+         echo "$name|$sm_path|$gitdir"' | \
     while IFS='|' read -r name path gitdir; do
         local safe_name mirror entry mode oid
         safe_name="${name//\//_}"
@@ -509,7 +516,7 @@ mirror_submodules() {
         read -r mode _ oid _ <<< "$entry"
         echo "--- Mirroring submodule: ${name} ---"
         # Through Git's transport, as create_bare_repo does: new files,
-        # so the chmod below cannot reach the checkout's .git/modules
+        # so the chmod below cannot reach the submodule's Git directory
         # through hardlinks, holding what the submodule's branches, tags
         # and HEAD reach.
         git clone --bare --no-local "$gitdir" "$mirror.new"
