@@ -10,6 +10,7 @@
 
 
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -17,6 +18,15 @@
   `PI_REASONING` or `PI_COMPACTION_RESERVE_TOKENS` exported, as on a
   host that runs Pi agents, `tests/test_pi.sh` and
   `tests/test_launch.sh` failed.
+- **The image checks a target out: `swarm-target-checkout DIR`.** A
+  setup hook or an agent makes `DIR` a checkout of the engagement's
+  recorded commit from the read-only snapshot, without the network and
+  without the caller's Git configuration or `GIT_*` variables (no
+  hook, filter, fsmonitor or URL rewrite applies). The checkout is
+  built beside `DIR` and renamed into place at the end, so a failure
+  before that leaves `DIR` as it was; a pin at another object than the
+  recorded commit is refused.
+
 - **A target is resolved on the host, once per engagement.**
   `TARGET_REPO` and `TARGET_REV` (and a base) went to the containers
   through `docker_args`, and each container's setup hook fetched the
