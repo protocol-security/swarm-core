@@ -797,10 +797,11 @@ assert_eq "under the lock Git starts nothing in the background" \
         _ "$TESTS_DIR/../lib/project.sh" "$_lk_dir" "$_lk_repo" \
         2>/dev/null | paste -sd ' ' -)"
 
-# Where Git has its fsmonitor daemon (macOS), git status in a checkout
-# with core.fsmonitor on starts it, and the daemon keeps every
-# descriptor it inherits, the lock's too.  The control holds the lock
-# without swarm_lock's settings; the check takes it with swarm_lock.
+# Where Git has its fsmonitor daemon, git status in a checkout with
+# core.fsmonitor on starts it, and a daemon that keeps the descriptors
+# it inherits keeps the lock (Git 2.56 closes them; older ones may
+# not).  The control holds the lock without swarm_lock's settings and
+# says what this Git's daemon does; under swarm_lock none starts.
 _fm_repo="$TMPDIR/fm-repo"
 git init -q "$_fm_repo"
 echo a > "$_fm_repo/a"
@@ -830,8 +831,7 @@ else
     if [ "$(_fm_daemon)" != running ]; then
         echo "  SKIP: git status started no fsmonitor daemon"
     else
-        assert_eq "control: the daemon keeps a lock it inherits" "held" \
-            "$(_fm_lock)"
+        echo "  NOTE: with this Git the daemon leaves the lock $(_fm_lock)"
         git -C "$_fm_repo" fsmonitor--daemon stop >/dev/null 2>&1 || true
         assert_eq "control: stopping the daemon frees the lock" \
             "stopped free" "$(_fm_daemon) $(_fm_lock)"
