@@ -167,6 +167,17 @@ agent_settings() {
         echo "ERROR: PI_MAX_RETRIES must be a non-negative integer." >&2
         return 1
     fi
+    # Pi compacts once the context passes contextWindow minus
+    # compaction.reserveTokens (16384 by default), and caps a summary at
+    # a share of that reserve and of maxTokens.  A reasoning model
+    # spends that budget on reasoning too, so its summary can hit the
+    # cap, which ends the session.  An override leaves more room.
+    local reserve="${PI_COMPACTION_RESERVE_TOKENS:-}"
+    if [ -n "$reserve" ] && ! [[ "$reserve" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: PI_COMPACTION_RESERVE_TOKENS must be a non-negative" \
+            "integer." >&2
+        return 1
+    fi
     (
         umask 077
         # Atomic replacement keeps simultaneous container startups from
@@ -178,12 +189,15 @@ agent_settings() {
         # Only httpIdleTimeoutMs is set: Pi maps 0 there to "disabled",
         # whereas retry.provider.timeoutMs would pass 0 through literally.
         jq -n --arg chatgpt "${PI_CHATGPT_AUTH:-}" \
-            --argjson idle "$idle_ms" --argjson retries "$max_retries" '{
+            --argjson idle "$idle_ms" --argjson retries "$max_retries" \
+            --arg reserve "$reserve" '{
             httpIdleTimeoutMs: $idle,
             retry: {enabled: ($retries > 0), maxRetries: $retries},
             cacheWarming: "off",
             enableInstallTelemetry: false
-        } + (if $chatgpt == "1" then {
+        } + (if $reserve != "" then {
+            compaction: {reserveTokens: ($reserve | tonumber)}
+        } else {} end) + (if $chatgpt == "1" then {
             transport: "sse", sessionDir: "/home/agent/.pi/sessions"
         } else {} end)' > "$settings" || exit 1
         mv "$settings" "$pi_home/settings.json" || exit 1

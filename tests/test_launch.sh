@@ -2524,7 +2524,8 @@ done
 # become -e pairs.
 _pi_env_mirror() {
     local -a EXTRA_ENV=() _pv
-    for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES; do
+    for _pv in PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES \
+            PI_COMPACTION_RESERVE_TOKENS; do
         [ -n "${!_pv:-}" ] && EXTRA_ENV+=(-e "${_pv}=${!_pv}")
     done
     echo "${EXTRA_ENV[*]+"${EXTRA_ENV[*]}"}"
@@ -2536,6 +2537,18 @@ assert_eq "idle timeout forwarded" "-e PI_HTTP_IDLE_TIMEOUT_MS=1800000" \
 assert_eq "both overrides forwarded" \
     "-e PI_HTTP_IDLE_TIMEOUT_MS=0 -e PI_MAX_RETRIES=2" \
     "$(PI_HTTP_IDLE_TIMEOUT_MS=0 PI_MAX_RETRIES=2 _pi_env_mirror)"
+assert_eq "compaction reserve forwarded" \
+    "-e PI_COMPACTION_RESERVE_TOKENS=65536" \
+    "$(PI_HTTP_IDLE_TIMEOUT_MS='' PI_MAX_RETRIES='' \
+        PI_COMPACTION_RESERVE_TOKENS=65536 _pi_env_mirror)"
+for _fn in cmd_start cmd_interactive cmd_post_process; do
+    assert_eq "${_fn} forwards the compaction reserve" "1" \
+        "$(awk -v fn="$_fn" '
+            $0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1; next }
+            p && /^\}[[:space:]]*$/ { p = 0 }
+            p && /^ *PI_COMPACTION_RESERVE_TOKENS; do$/ { c++ }
+            END { print c + 0 }' "$_LAUNCH_SH")"
+done
 
 # ============================================================
 echo ""
