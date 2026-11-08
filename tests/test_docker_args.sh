@@ -239,6 +239,100 @@ else
 fi
 
 echo ""
+echo "=== 4. What launch.sh gives a target's containers ==="
+# The five variables, by exact name before the first "=", in every
+# spelling the grammar takes.
+refused "sets TARGET_REPO" -e TARGET_REPO=x
+refused "sets TARGET_REPO" -e TARGET_REPO
+refused "sets TARGET_REV" --env TARGET_REV=1
+refused "sets TARGET_REV_BASE" --env=TARGET_REV_BASE=1
+refused "sets TARGET_REV_BASE_REPO" -eTARGET_REV_BASE_REPO=/x
+refused "sets SWARM_TARGET_MIRROR" -e=SWARM_TARGET_MIRROR=/y
+refused "element 2 (-e) sets TARGET_REPO" --rm -e TARGET_REPO=
+accepted -e TARGET_REPOX=1
+accepted -e XTARGET_REPO=1
+accepted -e target_repo=1
+accepted -e ' TARGET_REPO=1'
+accepted --env FOO=TARGET_REPO=1
+accepted --label TARGET_REPO=1
+# Whole files of variables and other containers' mounts, always.
+refused "reads variables from a file" --env-file /dev/null
+refused "reads variables from a file" --env-file=/dev/null
+refused "takes every mount of another container" --volumes-from c1
+refused "takes every mount of another container" --volumes-from=c1:ro
+accepted --label-file /dev/null
+# Mounts at or below /target-upstream, after Go's path.Clean: every
+# field of -v and --device (a host path there counts too), the part of
+# --tmpfs before its first ":".
+U="puts something at or below /target-upstream"
+refused "$U" -v /x:/target-upstream
+refused "$U" -v /x:/target-upstream:ro
+refused "$U" -v /target-upstream
+refused "$U" -v /x:/target-upstream/sub
+refused "$U" --volume=/x://target-upstream/
+refused "$U" -v/x:/a/../target-upstream
+refused "$U" -v=/x:/target-upstream
+refused "$U" -v /target-upstream:/data
+refused "$U" -v myvol:/target-upstream/.
+refused "$U" -v ' /target-upstream'
+refused "$U" --device /dev/null:/target-upstream/probe
+refused "$U" --device=/target-upstream
+refused "$U" --device /dev/null:/target-upstream:rwm
+refused "$U" --tmpfs /target-upstream
+refused "$U" --tmpfs /target-upstream:rw,size=1m
+refused "$U" --tmpfs=/target-upstream/x
+refused "$U" -v /x:/./target-upstream
+accepted -v /x:/target-upstreamx
+accepted -v target-upstream:/data
+accepted -v /x:/target-upstream-2
+accepted -v /x:/data/target-upstream
+accepted -v /x:/target-upstream/..
+accepted --device /dev/null:/dev/xnull
+accepted --tmpfs /tmp:/target-upstream
+accepted --tmpfs /run
+# --mount, read as Docker 29 reads it (the whole value trimmed) and as
+# Docker 24 does (nothing trimmed), one CSV record each.
+refused "$U" --mount type=bind,src=/x,dst=/target-upstream
+refused "$U" --mount type=volume,target=/target-upstream/sub
+refused "$U" --mount type=tmpfs,destination=/target-upstream
+refused "$U" --mount=type=bind,src=/x,DST=/target-upstream
+refused "$U" --mount type=bind,src=/x,Destination=/target-upstream
+refused "$U" --mount "$(printf 'DEST\304\260NAT\304\260ON=/target-upstream')"
+refused "$U" --mount '"dst=/target-upstream"'
+refused "$U" --mount 'type=bind,"src=/a,b",dst=/target-upstream'
+refused "$U" --mount '"dst=/target-upstream/""x"""'
+refused "$U" --mount 'type=bind,src=/x,dst=/target-upstream '
+refused "$U" --mount 'dst=/target-upstream/.. '
+refused "$U" --mount "$(printf 'dst=/target-upstream\r')"
+refused "$U" --mount "$(printf '\302\240dst=/target-upstream\302\240')"
+refused "$U" --mount 'dst = /target-upstream'
+refused "$U" --mount dst=/x,dst=/target-upstream
+refused "$U" --mount dst=/target-upstream,dst=/x
+refused "$U" --mount dst=//target-upstream/./
+C="has a value Docker cannot read as one CSV record"
+refused "$C" --mount 'dst="/target-upstream"'
+refused "$C" --mount '"dst=/x'
+refused "$C" --mount '"dst=/x"y'
+refused "$C" --mount ' '
+refused "is not UTF-8" --mount "$(printf 'dst=/x\377')"
+accepted --mount type=bind,src=/target-upstream,dst=/data
+accepted --mount type=volume,src=target-upstream,dst=/data
+accepted --mount "$(printf 'dst=/target-upstream/..\r')"
+accepted --mount type=bind,src=/x,dst=/target-upstreamx
+accepted --mount type=bind,src=/x,dst=/data,readonly
+accepted --mount dst=/target-upstream/..
+accepted --mount '"dst=/a,b"'
+accepted --mount "$(printf 'type=bind,src=/x,dst=/data/\357\277\277')"
+accepted --mount "$(printf 'dst=/x,k\342\204\252y=/target-upstream')"
+# A perl that fails is no clear answer.
+mkdir -p "$TMPDIR/badperl"
+printf '#!/bin/sh\nexit 99\n' > "$TMPDIR/badperl/perl"
+chmod +x "$TMPDIR/badperl/perl"
+assert_contains "a failing perl refuses" "cannot be checked (perl ended" \
+    "$(PATH="$TMPDIR/badperl:$PATH" chk --mount dst=/x)"
+assert_eq "  and only the options it checks need it" "0|" \
+    "$(PATH="$TMPDIR/badperl:$PATH" chk --rm -e FOO=1 --name x)"
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

@@ -102,6 +102,10 @@ Credentials stay as env vars (not in shell history).
 | `SWARM_ENGAGEMENT_ID` | | See [Engagements](#engagements). |
 | `SWARM_ENGAGEMENT_TOKEN` | | See [Engagements](#engagements). |
 | `SWARM_LOCK_FD` | | See [Engagement lock](#engagement-lock). |
+| `TARGET_REPO`, `TARGET_REV` | | The engagement's audit target. See [Target](#target). |
+| `TARGET_REV_BASE`, `TARGET_REV_BASE_REPO` | | A base for the target. See [Target](#target). |
+| `SWARM_TARGET_TIMEOUT` | `300` | Seconds each network Git command of a target's resolution may take. |
+| `SWARM_TARGET_VERIFY_TIMEOUT` | `600` | Seconds each local Git command on a target's snapshot may take. |
 | `SWARM_SKIP_DEP_CHECK` | | Set to `1` to silence dependency version warnings. |
 | `SWARM_ACTIVITY_TIMEOUT` | `0` | Seconds of logfile silence before the in-container watchdog SIGTERMs the agent CLI's process group.  `0` disables.  See [Activity watchdog](#activity-watchdog). |
 | `SWARM_ACTIVITY_POLL` | `10` | Watchdog mtime-poll interval, in seconds.  Rarely needs tuning. |
@@ -359,14 +363,32 @@ swarmfile with host env without templating:
 ```json
 {
   "setup": "scripts/setup.sh",
-  "docker_args": ["-e", "TARGET_REPO", "-e", "TARGET_REV"]
+  "docker_args": ["-e", "HTTPS_PROXY", "-e", "NO_PROXY"]
 }
 ```
 
-```bash
-TARGET_REPO=git@github.com:org/repo.git TARGET_REV=abc123 \
-    ./launch.sh start
-```
+What `launch.sh` gives a target's containers cannot come from
+`docker_args`, whether or not the engagement has a target, so the
+check also rejects: `-e` in any spelling naming `TARGET_REPO`,
+`TARGET_REV`, `TARGET_REV_BASE`, `TARGET_REV_BASE_REPO` or
+`SWARM_TARGET_MIRROR` (the name is what comes before the first `=`,
+exactly); `--env-file` and `--volumes-from`, which could bring them;
+and a mount at or below `/target-upstream`: any field of `-v` or
+`--device` (a host path there counts too), the path of `--tmpfs`, and
+the `target`, `dst` or `destination` of `--mount`, read as Docker 29
+reads it (the whole value trimmed) and as Docker 24 does (nothing
+trimmed), with paths cleaned as Docker cleans them (`//`, `.`, `..`,
+a trailing `/`). It also rejects a `--mount` value that Docker cannot
+read as one CSV record: a quote opens a field only at its start
+(`"dst=/a,b"`, not `dst="/a,b"`).
+
+Swarmfiles of earlier releases that passed the target with
+`-e TARGET_REPO -e TARGET_REV` move it to the host environment, where
+`launch.sh` resolves it (see [Target](#target)); an abbreviated
+`TARGET_REV` becomes a full commit id, a branch or a tag. Joining an
+engagement started without a target is rejected while `TARGET_*` is
+set: unset it, or finish the engagement (`./launch.sh stop`,
+`harvest.sh`, `./launch.sh cleanup`) before one with a target starts.
 
 ### Setup hook
 
@@ -382,6 +404,124 @@ work end-to-end.
 After `setup.sh` returns, the harness reclaims ownership of
 `/workspace` so subsequent agent runs can modify the tree as the
 non-root `agent` user.
+
+### Target
+
+An engagement can have an audit target: a repository and a revision
+that `launch.sh` resolves on the host, once, when it creates the
+engagement, into a snapshot that every container of the engagement
+mounts read-only. Set it in the host environment (`docker_args` may
+not set the target's variables, see
+[Extra Docker arguments](#extra-docker-arguments)):
+
+```bash
+TARGET_REPO=git@github.com:org/repo.git TARGET_REV=v1.2.0 \
+    ./launch.sh start
+```
+
+| Variable | Description |
+|----------|-------------|
+| `TARGET_REPO` | The repository: an absolute local path, `ssh://`, `[user@]host:path`, or `https://` without a user name, a query or a fragment. |
+| `TARGET_REV` | A full commit id, a full ref under `refs/heads/` or `refs/tags/`, or a branch or tag name. |
+| `TARGET_REV_BASE` | Optional: a base revision, in the same forms. |
+| `TARGET_REV_BASE_REPO` | The base's repository when it is not `TARGET_REPO` (needs `TARGET_REV_BASE`). |
+| `SWARM_TARGET_TIMEOUT` | Seconds each network Git command may take (1 to 86400, default 300). |
+| `SWARM_TARGET_VERIFY_TIMEOUT` | Seconds each local Git command on the snapshot may take (1 to 86400, default 600). |
+
+Setting any of the four variables, even to an empty value, asks for
+a target. `TARGET_REPO` and `TARGET_REV` must both be set, and empty
+values are rejected. An expression such as `main~1` is rejected; an
+abbreviated commit id is rejected unless a branch or a tag has that
+name, and so is a name that is both a branch and a tag (give the full
+ref). Each named revision is looked up with one listing of its
+repository's refs, and the commit that listing gives is then fetched
+by id; a full commit id is fetched as given. Git runs with your Git
+configuration and credentials (a credential helper, your ssh agent and
+configuration), over ssh, https or the local file system only, and
+never prompts: a custom ssh command or credential helper there must
+work unattended. Each network command is bounded by
+`SWARM_TARGET_TIMEOUT` and each local one by
+`SWARM_TARGET_VERIFY_TIMEOUT` (perl arms the alarm, so it is
+required). The snapshot has the checkout's object format.
+
+The snapshot is `target.git` in the runtime directory: a bare
+repository holding `refs/swarm/target` at the commit (and
+`refs/swarm/target-base` at the base's), checked with `git fsck` and
+readable by every user. The state file records the target in the
+write that records the engagement: each repository as given and its
+physical path, each revision as given and its commit, and the object
+format. A failure before that write leaves no engagement, and the next
+`start` can follow at once. If publishing the snapshot or making the
+bare repo fails after it, the engagement is incomplete, and every
+launch rejects it until `./launch.sh cleanup` has finished it.
+
+Every container of the engagement (agents, post-process, interactive
+sessions) gets `target.git` mounted read-only at `/target-upstream`,
+with `SWARM_TARGET_MIRROR=/target-upstream`, `TARGET_REPO` (as given),
+`TARGET_REV` (the commit id), `TARGET_REV_BASE` (the base's commit id)
+and `TARGET_REV_BASE_REPO` (as given), the base ones empty without a
+base. Without a target, a container gets no mount and the five set
+empty.
+
+Before anything is built or run, `post-process` and `interactive`
+joining an engagement, and `wait` before it polls, check:
+
+- the record, as creation writes it (a damaged one points to
+  `./launch.sh cleanup`);
+- each `TARGET_*` variable that is set (an unset one takes the
+  recorded value): `TARGET_REPO` must be the repository as given or
+  its physical path, `TARGET_REV` the revision as given or its commit,
+  and the base ones likewise. Any of them is rejected for an engagement
+  without a target, and a base one for a target without a base;
+- the snapshot: a directory of this user's with nothing mounted in it,
+  holding only regular files and directories, with `r-x` on
+  directories and `r--` on files for user, group and other (a
+  container's user may match any of them), only the settings this
+  resolver's `git init` writes, no object storage outside it, exactly
+  the pins at the recorded commits, and a clean `git fsck --full`,
+  which reads every object. Each Git command is bounded by
+  `SWARM_TARGET_VERIFY_TIMEOUT`. A damaged snapshot cannot be repaired
+  in place: stop the agents, run `harvest.sh`, then
+  `./launch.sh cleanup`.
+
+Nothing reaches the target's source: a join works when the source is
+gone or out of reach. Under the lock, once the agents are done, `wait`
+checks the record and the variables again; the snapshot is checked
+again where it is mounted, by the post-process `wait` goes on to, so
+damage made while `wait` polls stops that post-process but not
+`harvest.sh`, which never mounts the snapshot. The checks see modes,
+not access control lists: every container user needs effective read
+access to the snapshot's files and read and search access to its
+directories, and a default ACL on the runtime directory or a parent of
+it that takes that away makes the containers' reads fail.
+
+Until the image has a helper that checks the target out, a setup hook
+(see [Setup hook](#setup-hook)) can make a checkout from the snapshot
+without the network:
+
+```bash
+set -eu
+dir=/workspace/target
+mkdir "$dir"
+fmt=$(git -c safe.directory=/target-upstream \
+    --git-dir=/target-upstream rev-parse --show-object-format)
+git init -q --template= --object-format="$fmt" "$dir"
+set -- refs/swarm/target:refs/swarm/target
+if [ -n "$TARGET_REV_BASE" ]; then
+    set -- "$@" refs/swarm/target-base:refs/swarm/target-base
+fi
+git -C "$dir" fetch -q --no-tags --no-recurse-submodules \
+    --upload-pack='git -c safe.directory=/target-upstream upload-pack' \
+    /target-upstream "$@"
+git -C "$dir" checkout -q --detach "$TARGET_REV"
+```
+
+`mkdir` fails when anything is there already, a link included, so the
+hook stops before it touches another repository; `safe.directory`
+lets Git read a snapshot that another user owns. The target's
+submodules and LFS content are not fetched. A hook that clones
+`TARGET_REPO` over the network instead works only for a source the
+container can reach.
 
 ### Commit signing
 
@@ -1308,11 +1448,16 @@ path, takes it for one, and its `HEAD` names a commit). `post-process`
 and `interactive`, and `wait` before it goes on to post-process or
 `harvest.sh`, refuse an incomplete engagement and point to
 `./launch.sh cleanup`; a recorded engagement's bare repo is never made
-again. The
-engagement is recorded before anything is made, and a bare repo or a
-mirror is cloned to `<name>.new` and renamed once ready, so a run
-stopped half way leaves the record and at most a `.new`, which
-`cleanup` preserves and deletes. A mistake in the swarmfile (an
+again. With a target, `post-process` and `interactive` also need its
+snapshot to pass the target's check, and `wait` checks it before it
+polls (see [Target](#target)). The engagement is recorded before
+anything of it is made (a target is resolved into scratch first and
+published as `target.git` right after the record), and a bare repo or
+a mirror is cloned to `<name>.new` and renamed once ready, so a run
+stopped half way leaves the record and whatever it had made by then
+(`target.git`, target scratch, a `.new`, the bare repo, mirrors),
+which `cleanup` finishes, keeping what Git holds in the bare repo, the
+mirrors and a `.new` as recovery refs. A mistake in the swarmfile (an
 unknown driver or context mode) or a failed image build stops `start`
 before the engagement is created. Containers mount the bare repo with
 `--mount`, which fails on a missing source rather than creating an

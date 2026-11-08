@@ -9,6 +9,7 @@
 
 
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -16,6 +17,21 @@
   `PI_REASONING` or `PI_COMPACTION_RESERVE_TOKENS` exported, as on a
   host that runs Pi agents, `tests/test_pi.sh` and
   `tests/test_launch.sh` failed.
+- **A target is resolved on the host, once per engagement.**
+  `TARGET_REPO` and `TARGET_REV` (and a base) went to the containers
+  through `docker_args`, and each container's setup hook fetched the
+  target on its own, with the container's network and credentials, at
+  whatever commit a branch had by then. They now go in the host
+  environment: creating the engagement resolves them with the host's
+  Git credentials, each Git command bounded, into `target.git`, a
+  checked snapshot the state file records with the engagement, and
+  every container mounts it read-only at `/target-upstream`, with the
+  commit ids in `TARGET_REV` and `TARGET_REV_BASE`. Joining an
+  engagement checks the record, the variables set against it and the
+  snapshot (`git fsck --full` included) before anything starts; the
+  source is never asked again. `docker_args` may no longer set the
+  target's variables or use `--env-file`, `--volumes-from` or a mount
+  at `/target-upstream`.
 
 - **`docker_args` reach `docker run` exactly, and their form is
   checked first.** Each element was split at newlines, empty elements

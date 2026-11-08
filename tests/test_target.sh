@@ -1173,6 +1173,579 @@ assert_contains "  saying so" "cannot read this host's mount table" "$out"
 swarm_target_scratch_clean "$SM" 2>/dev/null
 assert_eq "with the real mount table both go" "" "$(names_in "$SM")"
 
+
+echo ""
+echo "=== 7. Joining: the record, the request, the snapshot ==="
+# Files the cases make keep the modes the checks expect of a snapshot.
+umask 022
+# Three sealed snapshots, kept as they are: with a base from the same
+# repository, without a base, and with a base from a repository of its
+# own (whose objects only the base pin reaches).  Each case works on a
+# copy published in a runtime directory of its own.
+TARGET_REPO="$SRC" TARGET_REV=main TARGET_REV_BASE=feature resolve \
+    > /dev/null
+mv "$(prep)" "$TMPDIR/sealed-base"
+TARGET_REPO="$SRC" TARGET_REV=main resolve > /dev/null
+mv "$(prep)" "$TMPDIR/sealed-nobase"
+BSRC="$TMPDIR/basesrc"
+git init -q -b main "$BSRC"
+echo base > "$BSRC/basefile"
+g -C "$BSRC" add basefile
+g -C "$BSRC" commit -q -m base
+BTIP=$(git -C "$BSRC" rev-parse HEAD)
+BBLOB=$(git -C "$BSRC" rev-parse HEAD:basefile)
+TARGET_REPO="$SRC" TARGET_REV=main TARGET_REV_BASE=main \
+    TARGET_REV_BASE_REPO="$BSRC" resolve > /dev/null
+mv "$(prep)" "$TMPDIR/sealed-other"
+# A second spelling of the source, as a user may give it.
+ln -s "$SRC" "$TMPDIR/srclink"
+JRT="$TMPDIR/jrt"
+JST="$TMPDIR/jstate.json"
+JHOOK="$TMPDIR/jhook.sh"
+JTMP="$TMPDIR/jtmp"
+mkdir -p "$JTMP"
+# Publish a fresh copy of sealed snapshot $1 (base or nobase), modes
+# kept.
+fresh() {
+    chmod -R u+rwx "$JRT" 2>/dev/null || true
+    rm -rf "$JRT"
+    mkdir -m 700 "$JRT"
+    cp -Rp "$TMPDIR/sealed-${1:-base}" "$JRT/target.git"
+    : > "$JHOOK"
+}
+# The record creation writes for sealed snapshot $1 (base, nobase or
+# other).
+record() {
+    jq -n --arg repo "$TMPDIR/srclink" --arg phys "$SRC" --arg main "$MAIN" \
+        --arg one "$ONE" --arg kind "${1:-base}" --arg bsrc "$BSRC" \
+        --arg btip "$BTIP" '
+        {engagement_id: "e1",
+         target: {repo: $repo, repo_physical: $phys, rev: "main",
+                  commit: $main, base_repo: $repo, base_repo_physical: $phys,
+                  base_rev: "feature", base_commit: $one, format: "sha1"}}
+        | if $kind == "nobase" then .target.base_repo = null
+              | .target.base_repo_physical = null | .target.base_rev = null
+              | .target.base_commit = null
+          elif $kind == "other" then .target.base_repo = $bsrc
+              | .target.base_repo_physical = $bsrc | .target.base_rev = "main"
+              | .target.base_commit = $btip
+          else . end'
+}
+# The join validator in its own Bash, with set -euo pipefail as in
+# launch.sh, after the code in $JHOOK (functions a case replaces); then
+# the run arguments, as JSON.  ARGS before the Bash: env's.  Prints
+# "<status>|<arguments>"; stderr to $TMPDIR/jerr.
+JOIN="$TMPDIR/join.sh"
+cat > "$JOIN" <<EOF
+#!/bin/bash
+set -euo pipefail
+source "$REPO_ROOT/lib/project.sh"
+source "$REPO_ROOT/lib/target.sh"
+source "$JHOOK"
+swarm_target_join_check "\$1" "\$2"
+swarm_target_args "\$2"
+jq -nc '\$ARGS.positional' --args -- "\${SWARM_TARGET_ARGS[@]}"
+EOF
+join_with() {
+    local rc=0 out
+    out=$(env TMPDIR="$JTMP" SWARM_TARGET_VERIFY_TIMEOUT=60 "$@" "$BASH" \
+        "$JOIN" "$JST" "$JRT" 2> "$TMPDIR/jerr") || rc=$?
+    printf '%s|%s' "$rc" "$out"
+}
+join() { join_with; }
+jerr() { cat "$TMPDIR/jerr"; }
+
+fresh
+record > "$JST"
+assert_eq "a record and snapshot as creation leaves them join" "0|$(jq -nc \
+    --arg s "$JRT/target.git" --arg r "$TMPDIR/srclink" --arg m "$MAIN" \
+    --arg o "$ONE" '["--mount",
+    "type=bind,src=\($s),dst=/target-upstream,readonly",
+    "-e", "SWARM_TARGET_MIRROR=/target-upstream", "-e", "TARGET_REPO=\($r)",
+    "-e", "TARGET_REV=\($m)", "-e", "TARGET_REV_BASE=\($o)",
+    "-e", "TARGET_REV_BASE_REPO=\($r)"]')" "$(join)"
+assert_eq "  its private directory is gone" "" "$(names_in "$JTMP")"
+fresh nobase
+record nobase > "$JST"
+assert_eq "without a base too, the base variables empty" "0|$(jq -nc \
+    --arg s "$JRT/target.git" --arg r "$TMPDIR/srclink" --arg m "$MAIN" \
+    '["--mount", "type=bind,src=\($s),dst=/target-upstream,readonly",
+    "-e", "SWARM_TARGET_MIRROR=/target-upstream", "-e", "TARGET_REPO=\($r)",
+    "-e", "TARGET_REV=\($m)", "-e", "TARGET_REV_BASE=",
+    "-e", "TARGET_REV_BASE_REPO="]')" "$(join)"
+record | jq 'del(.target)' > "$JST"
+NONE='["-e","SWARM_TARGET_MIRROR=","-e","TARGET_REPO=","-e","TARGET_REV=",'
+NONE="${NONE}"'"-e","TARGET_REV_BASE=","-e","TARGET_REV_BASE_REPO="]'
+assert_eq "no target: the five set empty, the snapshot not looked at" \
+    "0|${NONE}" "$(rm -rf "$JRT/target.git"; join)"
+
+# The record: what creation cannot have written is damaged.
+jcase() {   # LABEL FILTER NEEDLE
+    local out
+    fresh
+    record | jq "$2" > "$JST"
+    out=$(join)
+    assert_eq "$1 refuses" 1 "${out%%|*}"
+    assert_contains "  saying so" "$3" "$(jerr)"
+}
+D="records a damaged target"
+jcase "a null target" '.target = null' "$D (not an object)"
+jcase "an array target" '.target = []' "not an object"
+for f in repo repo_physical rev commit format; do
+    jcase "no ${f}" "del(.target.${f})" "a field missing or empty"
+    jcase "an empty ${f}" ".target.${f} = \"\"" "a field missing or empty"
+    jcase "a number as ${f}" ".target.${f} = 1" "a field missing or empty"
+done
+for f in base_repo base_repo_physical base_rev base_commit; do
+    jcase "no ${f}" "del(.target.${f})" "a base field missing"
+    jcase "${f} alone null" ".target.${f} = null" "only some base fields set"
+    jcase "${f} alone empty" ".target.${f} = \"\"" \
+        "only some base fields set"
+done
+jcase "a newline in rev" '.target.rev = "ma\nin"' "a control character in a field"
+jcase "DEL in the repository" '.target.repo = "/a\u007fb"' \
+    "a control character in a field"
+jcase "U+001F in the base revision" '.target.base_rev = "a\u001fb"' \
+    "a control character in a field"
+jcase "format sha3" '.target.format = "sha3"' "an object format other than sha1 and sha256"
+jcase "a sha256 record of sha1 ids" '.target.format = "sha256"' \
+    "an invalid commit id"
+jcase "an uppercase commit" '.target.commit |= ascii_upcase' \
+    "an invalid commit id"
+jcase "a relative repository" '.target.repo = "src"' \
+    "an invalid repository"
+jcase "https with a user" \
+    '.target.repo = "https://u@h/r" | .target.repo_physical = .target.repo' \
+    "an invalid repository"
+jcase "a relative physical path" '.target.repo_physical = "src"' \
+    "an invalid repository"
+jcase "a URL whose physical path differs" \
+    '.target.repo = "https://h/r" | .target.repo_physical = "https://h/x"' \
+    "an invalid repository"
+jcase "an expression as rev" '.target.rev = "main^"' \
+    "an invalid revision"
+jcase "a short base commit" '.target.base_commit = "abc"' \
+    "an invalid base commit id"
+jcase "a relative base repository" '.target.base_repo = "src"' \
+    "an invalid base repository"
+jcase "a relative base physical path" '.target.base_repo_physical = "src"' \
+    "an invalid base repository"
+jcase "a URL base whose physical path differs" \
+    '.target.base_repo = "ssh://h/r" | .target.base_repo_physical = "/x"' \
+    "an invalid base repository"
+jcase "a base revision with a space" '.target.base_rev = "a b"' \
+    "an invalid base revision"
+fresh
+record | jq '.target.repo = "https://h/r"
+    | .target.repo_physical = "https://h/r"
+    | .target.base_repo = "ssh://h/b"
+    | .target.base_repo_physical = "ssh://h/b"' > "$JST"
+assert_eq "URLs recorded as themselves join" 0 "$(join | cut -d'|' -f1)"
+assert_eq "state that is no JSON refuses" 1 \
+    "$(printf 'x' > "$JST"; join | cut -d'|' -f1)"
+assert_contains "  saying so" "cannot read the target record" "$(jerr)"
+
+# The request: each variable unset takes the record, set names it.
+rcase() {   # LABEL STATUS NEEDLE [nobase|none] VAR=VALUE...
+    local label="$1" want="$2" needle="$3" kind="$4" out
+    shift 4
+    case "$kind" in
+        none)
+            fresh
+            record | jq 'del(.target)' > "$JST" ;;
+        *)
+            fresh "${kind:-base}"
+            record "$kind" > "$JST" ;;
+    esac
+    out=$(join_with "$@")
+    assert_eq "$label" "$want" "${out%%|*}"
+    [ -z "$needle" ] || assert_contains "  saying so" "$needle" "$(jerr)"
+}
+rcase "nothing set: the recorded target" 0 "" ""
+rcase "TARGET_REPO, the recorded spelling" 0 "" "" \
+    TARGET_REPO="$TMPDIR/srclink"
+rcase "TARGET_REPO, the physical path" 0 "" "" TARGET_REPO="$SRC"
+rcase "TARGET_REPO, another repository" 1 \
+    "TARGET_REPO does not name this engagement's target (it records" "" \
+    TARGET_REPO="$OTHER_SRC"
+rcase "TARGET_REPO, set but empty" 1 "TARGET_REPO is set but empty" "" \
+    TARGET_REPO=
+rcase "TARGET_REV, the recorded name" 0 "" "" TARGET_REV=main
+rcase "TARGET_REV, the commit" 0 "" "" TARGET_REV="$MAIN"
+rcase "TARGET_REV, an abbreviation of it" 1 "TARGET_REV does not name" "" \
+    TARGET_REV="${MAIN:0:7}"
+rcase "TARGET_REV, another spelling of the name" 1 \
+    "TARGET_REV does not name" "" TARGET_REV=refs/heads/main
+rcase "TARGET_REV_BASE, the recorded name" 0 "" "" TARGET_REV_BASE=feature
+rcase "TARGET_REV_BASE, its commit" 0 "" "" TARGET_REV_BASE="$ONE"
+rcase "TARGET_REV_BASE, another" 1 "TARGET_REV_BASE does not name" "" \
+    TARGET_REV_BASE=main
+rcase "TARGET_REV_BASE_REPO, the physical path" 0 "" "" \
+    TARGET_REV_BASE_REPO="$SRC"
+rcase "TARGET_REV_BASE_REPO, another" 1 \
+    "TARGET_REV_BASE_REPO does not name" "" TARGET_REV_BASE_REPO="$OTHER_SRC"
+rcase "TARGET_REV_BASE_REPO, set but empty" 1 \
+    "TARGET_REV_BASE_REPO is set but empty" "" TARGET_REV_BASE_REPO=
+rcase "all four, matching" 0 "" "" TARGET_REPO="$SRC" TARGET_REV="$MAIN" \
+    TARGET_REV_BASE=feature TARGET_REV_BASE_REPO="$TMPDIR/srclink"
+rcase "without a base: TARGET_REV_BASE" 1 "target has no base" nobase \
+    TARGET_REV_BASE=feature
+rcase "without a base: TARGET_REV_BASE_REPO" 1 "target has no base" nobase \
+    TARGET_REV_BASE_REPO="$SRC"
+rcase "without a base: TARGET_REV_BASE set empty" 1 "target has no base" \
+    nobase TARGET_REV_BASE=
+rcase "without a base: TARGET_REPO and TARGET_REV" 0 "" nobase \
+    TARGET_REPO="$SRC" TARGET_REV=main
+rcase "no target: TARGET_REPO" 1 "this engagement has no target" none \
+    TARGET_REPO="$SRC"
+rcase "no target: TARGET_REV_BASE_REPO alone" 1 \
+    "this engagement has no target" none TARGET_REV_BASE_REPO="$SRC"
+rcase "no target: TARGET_REV set empty" 1 "this engagement has no target" \
+    none TARGET_REV=
+
+# The validator reads the variables and leaves them as they were: set,
+# unset, exported or not, across two calls.
+cat > "$TMPDIR/keep.sh" <<EOF
+#!/bin/bash
+set -euo pipefail
+source "$REPO_ROOT/lib/project.sh"
+source "$REPO_ROOT/lib/target.sh"
+TARGET_REV=main
+export TARGET_REPO="$SRC"
+unset TARGET_REV_BASE TARGET_REV_BASE_REPO
+# Each variable: set or not, its value, exported or not.
+vars() {
+    local v
+    for v in TARGET_REPO TARGET_REV TARGET_REV_BASE TARGET_REV_BASE_REPO; do
+        printf '%s=%s:%s:%s\n' "\$v" "\${!v+set}" "\${!v-}" \
+            "\$(export -p | grep -c "^declare -x \$v=" || true)"
+    done
+}
+before=\$(vars)
+swarm_target_join_check "\$1" "\$2"
+swarm_target_join_check "\$1" "\$2"
+swarm_target_record_check "\$1"
+after=\$(vars)
+[ "\$before" = "\$after" ] && echo same
+EOF
+fresh
+record > "$JST"
+assert_eq "the input variables stay as they were" same \
+    "$(env TMPDIR="$JTMP" "$BASH" "$TMPDIR/keep.sh" "$JST" "$JRT" 2>&1)"
+
+# The snapshot: each fault refuses, the first found named.  KIND
+# (base unless set) picks the sealed snapshot.
+scase() {   # LABEL NEEDLE DAMAGE...
+    local label="$1" needle="$2" out
+    shift 2
+    fresh "${KIND:-base}"
+    record "${KIND:-base}" > "$JST"
+    "$@"
+    out=$(join)
+    assert_eq "$label refuses" 1 "${out%%|*}"
+    assert_contains "  saying so" "$needle" "$(jerr)"
+    assert_eq "  its private directory is gone" "" "$(names_in "$JTMP")"
+}
+S="$JRT/target.git"
+I="this engagement is incomplete"
+scase "no target.git" "$I" rm -rf "$S"
+assert_lacks "  with no word of repairing" "cannot be repaired in place" \
+    "$(jerr)"
+scase "target.git a link" "$I" eval 'mv "$S" "$JRT/t2" && ln -s t2 "$S"'
+scase "target.git a file" "$I" eval 'rm -rf "$S" && : > "$S"'
+scase "another owner" "does not belong to this user" \
+    eval 'echo "swarm_owner_uid() { echo 12345; }" > "$JHOOK"'
+scase "something mounted at it" "something is mounted at or in" \
+    eval 'echo "swarm_mounts_under() {
+        [ \"\${2:-}\" != at ] || echo \"/dev/x on \$1\"; }" > "$JHOOK"'
+scase "a mount table it cannot read" "cannot read this host's mount table" \
+    eval 'echo "swarm_mounts_under() { return 1; }" > "$JHOOK"'
+R="holds a link, a special file, or something"
+scase "a link inside" "$R" ln -s /etc/hosts "$S/refs/swarm/x"
+assert_contains "  and the way out" \
+    "A damaged snapshot cannot be repaired in place: stop the agents" \
+    "$(jerr)"
+scase "a FIFO inside" "$R" mkfifo "$S/refs/p"
+scase "target.git at 0750" "$R" chmod 750 "$S"
+scase "a directory without group search" "$R" chmod g-x "$S/refs/swarm"
+scase "a directory without other read" "$R" chmod o-r "$S/objects"
+scase "a file without group read" "$R" chmod g-r "$S/config"
+scase "an object without other read" "$R" \
+    eval 'chmod o-r "$(find "$S/objects" -type f | head -1)"'
+# find failing refuses: a directory its owner cannot list (not as root,
+# who can), and any failure of find itself.
+if [ "$(id -u)" != 0 ]; then
+    fresh
+    record > "$JST"
+    chmod 300 "$S/refs"
+    assert_eq "a directory it cannot list refuses" 1 "$(join | cut -d'|' -f1)"
+    assert_contains "  saying so" "cannot list everything in" "$(jerr)"
+    chmod 755 "$S/refs"
+fi
+scase "find failing" "cannot list everything in" \
+    eval 'echo "find() { command find \"\$@\"; return 1; }" > "$JHOOK"'
+scase "no objects directory" "has no objects directory or no config file" \
+    rm -rf "$S/objects"
+scase "no config file" "has no objects directory or no config file" \
+    rm -f "$S/config"
+for kv in core.logallrefupdates=true include.path=/etc/x \
+        includeIf.gitdir:/x.path=/y uploadpack.hideRefs=refs/swarm \
+        fsck.skipList=/x core.fsmonitor=x extensions.refStorage=files \
+        remote.origin.url=/x gc.auto=0; do
+    k="${kv%%=*}"
+    lk=$(printf '%s' "${k%.*}" | tr '[:upper:]' '[:lower:]')
+    lk="${lk}.$(printf '%s' "${k##*.}" | tr '[:upper:]' '[:lower:]')"
+    case "$k" in includeIf.*) lk="includeif.gitdir:/x.path" ;; esac
+    scase "the setting ${k}" "has the setting ${lk}, which its git init" \
+        git config -f "$S/config" "$k" "${kv#*=}"
+done
+fresh
+record > "$JST"
+git config -f "$S/config" core.symlinks false
+assert_eq "core.symlinks=false (a file system without links) joins" 0 \
+    "$(join | cut -d'|' -f1)"
+for f in shallow commondir objects/info/alternates \
+        objects/info/http-alternates; do
+    scase "$f" "the target's snapshot has ${f}; refused" \
+        eval "mkdir -p \"\$S/objects/info\" && echo /x > \"\$S/$f\""
+done
+scase "a promisor pack" "promisor pack" \
+    eval 'mkdir -p "$S/objects/pack" && : > "$S/objects/pack/x.promisor"'
+scase "core.bare false" "is not a bare sha1 repository" \
+    git config -f "$S/config" core.bare false
+fresh
+record | jq --arg h "$HEX64" '.target.format = "sha256"
+    | .target.commit = $h | .target.base_commit = $h' > "$JST"
+assert_eq "a sha256 record of a sha1 snapshot refuses" 1 \
+    "$(join | cut -d'|' -f1)"
+assert_contains "  saying so" "is not a bare sha256 repository" "$(jerr)"
+P="are not exactly the recorded pins"
+scase "an extra ref" "$P" git --git-dir="$S" update-ref refs/heads/x "$MAIN"
+scase "a missing base pin" "$P" \
+    git --git-dir="$S" update-ref -d refs/swarm/target-base
+scase "a moved pin" "$P" git --git-dir="$S" update-ref refs/swarm/target "$TWO"
+scase "a symbolic pin" "$P" \
+    git --git-dir="$S" symbolic-ref refs/swarm/target refs/swarm/target-base
+scase "a symbolic pin to a file holding its commit" "$P" eval '
+    echo "$MAIN" > "$S/PINNED" && chmod a+r "$S/PINNED"
+    git --git-dir="$S" symbolic-ref refs/swarm/target PINNED'
+fresh
+TREE=$(git --git-dir="$S" rev-parse "$MAIN^{tree}")
+git --git-dir="$S" update-ref refs/swarm/target "$TREE"
+record | jq --arg t "$TREE" '.target.commit = $t' > "$JST"
+assert_eq "a pin to a tree refuses" 1 "$(join | cut -d'|' -f1)"
+assert_contains "  saying so" "a pin of $S does not point to a commit" "$(jerr)"
+
+# The objects, through git fsck --full: missing or damaged below either
+# pin, loose or packed.  The resolver's fetch keeps a pack; loosen
+# unpacks it into loose objects.
+obj_path() { printf '%s/objects/%s/%s' "$S" "${1:0:2}" "${1:2}"; }
+loosen() {
+    local p
+    for p in "$S"/objects/pack/*.pack; do
+        [ -e "$p" ] || continue
+        mv "$p" "$TMPDIR/loosen.pack"
+        rm -f "${p%.pack}".*
+        git --git-dir="$S" unpack-objects -q < "$TMPDIR/loosen.pack"
+    done
+    chmod -R a+rX "$S"
+}
+# Delete loose object $1, saying so when there is none to delete.
+drop_obj() {
+    local p
+    loosen
+    p=$(obj_path "$1")
+    if [ ! -f "$p" ]; then
+        echo "no loose object $1" >&2
+        return 1
+    fi
+    rm -f "$p"
+}
+BLOB3=$(git -C "$SRC" rev-parse "$MAIN:file")
+F="checking the snapshot (git fsck) failed"
+fresh other
+record other > "$JST"
+assert_eq "a base from another repository joins" 0 "$(join | cut -d'|' -f1)"
+scase "a missing blob below the target pin" "$F" drop_obj "$BLOB3"
+scase "a missing parent commit" "$F" drop_obj "$TWO"
+KIND=other scase "a missing blob only the base pin reaches" "$F" \
+    drop_obj "$BBLOB"
+# Another blob's loose file under the name of one the pins reach.
+EVIL="$TMPDIR/evil.git"
+git init -q --bare "$EVIL"
+EVILBLOB=$(printf 'evil\n' | git --git-dir="$EVIL" hash-object -w --stdin)
+swap_blob() {
+    local p
+    loosen
+    p=$(obj_path "$1")
+    chmod u+w "$p" "${p%/*}"
+    cp "$EVIL/objects/${EVILBLOB:0:2}/${EVILBLOB:2}" "$p"
+    chmod a+r "$p"
+}
+scase "a rewritten blob below the target pin" "$F" swap_blob "$BLOB3"
+KIND=other scase "a rewritten blob only the base pin reaches" "$F" \
+    swap_blob "$BBLOB"
+# Packed: one byte of a blob's data flipped.
+flip_packed() {
+    local idx pack off
+    git --git-dir="$S" repack -a -d -q
+    idx=$(ls "$S"/objects/pack/*.idx)
+    pack="${idx%.idx}.pack"
+    off=$(git verify-pack -v "$idx" | awk -v b="$1" '$1 == b { print $5 }')
+    chmod u+w "$pack"
+    perl -e 'open(my $f, "+<", $ARGV[0]) or die; binmode $f;
+        seek($f, $ARGV[1] + 3, 0); read($f, my $c, 1);
+        seek($f, $ARGV[1] + 3, 0); print $f chr(ord($c) ^ 0x55); close $f' \
+        "$pack" "$off"
+    chmod -R a+rX "$S"
+}
+scase "a flipped byte in a packed blob below the target pin" "$F" \
+    flip_packed "$BLOB3"
+KIND=other scase "a flipped byte in a packed blob only the base pin reaches" \
+    "$F" flip_packed "$BBLOB"
+fresh
+record > "$JST"
+git --git-dir="$S" repack -a -d -q
+chmod -R a+rX "$S"
+assert_eq "a packed snapshot, undamaged, joins" 0 "$(join | cut -d'|' -f1)"
+
+# A SHA-256 snapshot joins (its config has extensions.objectformat).
+S256="$TMPDIR/src256"
+git init -q -b main --object-format=sha256 "$S256"
+echo x > "$S256/f"
+g -C "$S256" add f
+g -C "$S256" commit -q -m x
+S256_TIP=$(git -C "$S256" rev-parse HEAD)
+FORMAT=sha256 TARGET_REPO="$S256" TARGET_REV=main resolve > /dev/null
+mv "$(prep)" "$TMPDIR/sealed-s256"
+fresh s256
+jq -n --arg r "$S256" --arg c "$S256_TIP" '{target: {repo: $r,
+    repo_physical: $r, rev: "main", commit: $c, base_repo: null,
+    base_repo_physical: null, base_rev: null, base_commit: null,
+    format: "sha256"}}' > "$JST"
+assert_eq "a SHA-256 snapshot joins" 0 "$(join | cut -d'|' -f1)"
+assert_eq "  its config names the format" sha256 \
+    "$(git config -f "$JRT/target.git/config" extensions.objectformat)"
+assert_contains "  and its commit reaches the containers" \
+    "\"TARGET_REV=${S256_TIP}\"" "$(join)"
+
+# Bounds, the lock's descriptor, the source never asked.
+fresh
+record > "$JST"
+assert_eq "SWARM_TARGET_VERIFY_TIMEOUT=0 refuses" 1 \
+    "$(join_with SWARM_TARGET_VERIFY_TIMEOUT=0 | cut -d'|' -f1)"
+assert_contains "  saying so" "SWARM_TARGET_VERIFY_TIMEOUT must be" "$(jerr)"
+mkdir -p "$TMPDIR/slowgit"
+cat > "$TMPDIR/slowgit/git" <<EOF
+#!/bin/bash
+case " \$* " in *" fsck "*) sleep 30 ;; esac
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$TMPDIR/slowgit/git"
+# Run once first: a new executable's first start can take a while (a
+# macOS scan), which is no Git command's doing.
+"$TMPDIR/slowgit/git" --version > /dev/null
+assert_eq "a Git command past its bound refuses" 1 \
+    "$(join_with PATH="$TMPDIR/slowgit:$PATH" SWARM_TARGET_VERIFY_TIMEOUT=3 \
+        | cut -d'|' -f1)"
+assert_contains "  saying so" "(git fsck) took longer than 3 seconds" \
+    "$(jerr)"
+: > "$TMPDIR/git.log"
+_jrc=0
+(
+    exec 8> "$TMPDIR/lock8"
+    env TMPDIR="$JTMP" PATH="$TMPDIR/gitshim:$PATH" SWARM_LOCK_FD=8 \
+        "$BASH" "$JOIN" "$JST" "$JRT" > /dev/null 2>&1
+) || _jrc=$?
+assert_eq "with the lock on descriptor 8, the join passes" 0 "$_jrc"
+assert_eq "  every Git command ran without it" "" \
+    "$(grep -v 'fd8=closed lock=unset' "$TMPDIR/git.log" || true)"
+assert_eq "  (Git ran)" yes \
+    "$([ -s "$TMPDIR/git.log" ] && echo yes || echo no)"
+fresh
+record | jq --arg g "$TMPDIR/gone" '.target.repo = $g
+    | .target.repo_physical = $g | .target.base_repo = $g
+    | .target.base_repo_physical = $g' > "$JST"
+assert_eq "a local source that is gone: the join passes" 0 \
+    "$(join | cut -d'|' -f1)"
+# An https source on a port where a listener logs every connection it
+# accepts: none, the probe made after the join aside.
+LISTEN="$TMPDIR/listen.pl"
+cat > "$LISTEN" <<'EOF'
+use strict;
+use warnings;
+use IO::Socket::INET;
+my ($ready, $log) = @ARGV;
+my $s = IO::Socket::INET->new(Listen => 5, LocalAddr => "127.0.0.1",
+    LocalPort => 0, Proto => "tcp", ReuseAddr => 1) or die "listen: $!";
+open(my $l, ">>", $log) or die;
+$l->autoflush(1);
+open(my $r, ">", "$ready.tmp") or die;
+print $r $s->sockport, "\n";
+close $r;
+rename("$ready.tmp", $ready) or die;
+while (my $c = $s->accept) {
+    print $l "accepted\n";
+    close $c;
+}
+EOF
+: > "$TMPDIR/listen.log"
+perl "$LISTEN" "$TMPDIR/listen.ready" "$TMPDIR/listen.log" &
+LISTEN_PID=$!
+echo "$LISTEN_PID $LISTEN_PID" >> "$PIDS"
+_jn=0
+while [ ! -s "$TMPDIR/listen.ready" ] && [ "$_jn" -lt 100 ]; do
+    sleep 0.1
+    _jn=$((_jn + 1))
+done
+PORT=$(cat "$TMPDIR/listen.ready" 2>/dev/null || true)
+fresh
+record | jq --arg u "https://127.0.0.1:${PORT}/x.git" '.target.repo = $u
+    | .target.repo_physical = $u | .target.base_repo = $u
+    | .target.base_repo_physical = $u' > "$JST"
+assert_eq "an https source: the join passes" 0 "$(join | cut -d'|' -f1)"
+perl -MIO::Socket::INET -e 'IO::Socket::INET->new(PeerAddr => "127.0.0.1",
+    PeerPort => $ARGV[0], Proto => "tcp") or exit 1' "$PORT" || true
+_jn=0
+while [ ! -s "$TMPDIR/listen.log" ] && [ "$_jn" -lt 100 ]; do
+    sleep 0.1
+    _jn=$((_jn + 1))
+done
+assert_eq "  the listener saw the probe alone" "accepted" \
+    "$(cat "$TMPDIR/listen.log")"
+kill "$LISTEN_PID" 2>/dev/null || true
+# An ssh source, with an ssh that logs every call first in PATH.
+mkdir -p "$TMPDIR/logssh"
+printf '#!/bin/sh\necho "$*" >> "%s"\nexit 1\n' "$TMPDIR/ssh-calls" \
+    > "$TMPDIR/logssh/ssh"
+chmod +x "$TMPDIR/logssh/ssh"
+: > "$TMPDIR/ssh-calls"
+fresh
+record | jq '.target.repo = "ssh://host/x.git"
+    | .target.repo_physical = .target.repo
+    | .target.base_repo = "git@host:y.git"
+    | .target.base_repo_physical = .target.base_repo' > "$JST"
+assert_eq "an ssh source: the join passes" 0 \
+    "$(join_with PATH="$TMPDIR/logssh:$PATH" | cut -d'|' -f1)"
+assert_eq "  ssh never ran" "" "$(cat "$TMPDIR/ssh-calls")"
+
+# Each input variable alone, for the commands that may join.
+for v in TARGET_REPO=src TARGET_REV='main^' TARGET_REV_BASE= \
+        TARGET_REV_BASE_REPO=http://h/r; do
+    assert_eq "swarm_target_vars_check: ${v} refuses" 1 \
+        "$(env "$v" "$BASH" -c "source '$REPO_ROOT/lib/target.sh';
+            swarm_target_vars_check" > /dev/null 2>&1; echo $?)"
+done
+assert_eq "swarm_target_vars_check: nothing set passes" 0 \
+    "$(status swarm_target_vars_check)"
+assert_eq "swarm_target_vars_check: TARGET_REV_BASE_REPO alone passes" 0 \
+    "$(TARGET_REV_BASE_REPO="$SRC" status swarm_target_vars_check)"
+# A mount source with a comma, a quote or a line break is refused.
+for d in "$TMPDIR/a,b" "$TMPDIR/a\"b" "$TMPDIR/a
+b"; do
+    assert_eq "swarm_target_args refuses $(printf '%q' "$d")" 1 \
+        "$(SWARM_TARGET_RECORDED=true status swarm_target_args "$d")"
+done
 echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
