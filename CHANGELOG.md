@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **progress.sh reads agent-work from the bare repo in place.** It
+  cloned the bare repo to a temporary directory and checked out
+  `agent-work` only to print its last 15 commits, which copied the
+  whole history on every run. It now runs `git log` on the bare repo
+  itself, with no pager, no transport and no signature check, since
+  agents write that repository's config.
 - **Cleanup and retire keep repositories nested in a workspace.** A
   repository cloned or initialized inside a workspace or a layer
   checkout retire keeps (a setup hook's clone of the code under audit,
