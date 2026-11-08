@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Feature: `PI_COMPACTION_RESERVE_TOKENS` sets Pi's compaction
+  reserve.** Pi caps a compaction summary at a share of
+  `compaction.reserveTokens` (16384 by default) and of `maxTokens`; a
+  reasoning model spends that budget on reasoning too, so the summary
+  could hit the cap and end the session. The variable, forwarded like
+  `PI_HTTP_IDLE_TIMEOUT_MS`, writes `compaction.reserveTokens` to the
+  container's Pi settings.
 - **Feature: `PI_REASONING=1` makes `effort` reach custom Pi models.**
   With `base_url`, a model Pi does not know was declared without
   `reasoning`, so Pi sent no reasoning parameter and `effort` had no

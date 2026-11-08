@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/drivers/pi.sh
 source "$ROOT/lib/drivers/pi.sh"
 unset PI_CHATGPT_AUTH PI_AUTH_DIR
-unset PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES
+unset PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES PI_COMPACTION_RESERVE_TOKENS
 
 PASS=0
 FAIL=0
@@ -299,6 +299,17 @@ assert_eq "negative retry count rejected" fail \
         agent_settings "$WORK/workspace" 2>/dev/null && echo ok || echo fail)"
 assert_eq "rejected override leaves last valid settings" 0 \
     "$(jq -r '.httpIdleTimeoutMs' "$PI_CODING_AGENT_DIR/settings.json")"
+# Compaction keeps Pi's reserve unless one is given.
+SWARM_MODEL=openai/gpt-5.4 agent_settings "$WORK/workspace"
+assert_eq "Pi default compaction reserve kept" null \
+    "$(jq -r '.compaction' "$PI_CODING_AGENT_DIR/settings.json")"
+PI_COMPACTION_RESERVE_TOKENS=65536 SWARM_MODEL=openai/gpt-5.4 \
+    agent_settings "$WORK/workspace"
+assert_eq "compaction reserve override applied" 65536 \
+    "$(jq -r '.compaction.reserveTokens' "$PI_CODING_AGENT_DIR/settings.json")"
+assert_eq "non-numeric compaction reserve rejected" fail \
+    "$(PI_COMPACTION_RESERVE_TOKENS=64k SWARM_MODEL=openai/gpt-5.4 \
+        agent_settings "$WORK/workspace" 2>/dev/null && echo ok || echo fail)"
 SWARM_MODEL=openai/gpt-5.4 agent_settings "$WORK/workspace"
 assert_eq "credential file is private" auth.json \
     "$(find "$PI_CODING_AGENT_DIR/auth.json" -perm 600 -exec basename {} \;)"
