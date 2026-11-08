@@ -74,6 +74,45 @@ assert_eq "_test_env.sh unsets every engagement and runtime setting" \
             SWARM_GIT_NO_BACKGROUND; do
             printf "%s\n" "${!v-unset}"; done' _ \
         "$TESTS_DIR/_test_env.sh" | paste -sd ' ' -)"
+# Nor the caller's Pi settings, which change what the Pi driver writes
+# and forwards: every PI_ variable the driver reads is unset there.
+_pi_vars=$(grep -oE '[$][{]?PI_[A-Z_]+' "$TESTS_DIR/../lib/drivers/pi.sh" \
+    | tr -d '${' | sort -u)
+assert_eq "the Pi driver reads PI_ settings (the list is not empty)" \
+    "yes" "$([ -n "$_pi_vars" ] && echo yes || echo no)"
+_pi_env=()
+_pi_want=""
+for _v in $_pi_vars; do
+    _pi_env+=("$_v=outside")
+    _pi_want="${_pi_want:+$_pi_want }unset"
+done
+# shellcheck disable=SC2086  # one argument per variable name
+assert_eq "_test_env.sh unsets every PI_ setting the Pi driver reads" \
+    "$_pi_want" \
+    "$(env "${_pi_env[@]}" "$BASH" -c 'source "$1"; shift
+        for v in "$@"; do printf "%s\n" "${!v-unset}"; done' _ \
+        "$TESTS_DIR/_test_env.sh" $_pi_vars | paste -sd ' ' -)"
+# A test file unsets them; the runner, tests/test.sh, keeps them for its
+# live runs (the files it starts unset them themselves).
+mkdir -p "$TMPDIR/pi-env"
+for _f in test.sh test_x.sh; do
+    printf 'source "%s"\nprintf "%%s" "${PI_AUTH_DIR-unset}"\n' \
+        "$TESTS_DIR/_test_env.sh" > "$TMPDIR/pi-env/$_f"
+done
+assert_eq "a test file unsets the caller's PI_AUTH_DIR" "unset" \
+    "$(PI_AUTH_DIR=/caller "$BASH" "$TMPDIR/pi-env/test_x.sh")"
+assert_eq "the runner keeps it for its live runs" "/caller" \
+    "$(PI_AUTH_DIR=/caller "$BASH" "$TMPDIR/pi-env/test.sh")"
+# Sourced from a command string under set -u (no BASH_SOURCE[1]), with
+# the shell's own options and with SHELLOPTS exported, it works too.
+assert_eq "sourced from a command string under set -euo pipefail" "ok" \
+    "$(PI_AUTH_DIR=/caller "$BASH" -euo pipefail -c \
+        'source "$1"; printf "%s" "${PI_AUTH_DIR-ok}"' _ \
+        "$TESTS_DIR/_test_env.sh" 2>&1)"
+assert_eq "and with nounset in an exported SHELLOPTS" "ok" \
+    "$(env PI_AUTH_DIR=/caller SHELLOPTS=nounset "$BASH" -c \
+        'source "$1"; printf "%s" "${PI_AUTH_DIR-ok}"' _ \
+        "$TESTS_DIR/_test_env.sh" 2>&1)"
 
 # ============================================================
 echo "=== 1. Runtime directory location ==="

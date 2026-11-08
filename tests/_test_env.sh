@@ -10,6 +10,22 @@ unset GIT_CONFIG GIT_CONFIG_PARAMETERS
 unset SWARM_PROJECT SWARM_RUNTIME_DIR SWARM_ENGAGEMENT_ID SWARM_LOCK_FD \
     SWARM_ENGAGEMENT_TOKEN SWARM_GIT_NO_BACKGROUND
 
+# And of the caller's Pi settings (a host that runs Pi agents may export
+# them), which change what the Pi driver writes and forwards: in every
+# file but the runner, tests/test.sh, whose live runs use them (with
+# pi-chatgpt.json, PI_AUTH_DIR) and whose test files unset them
+# themselves.
+# (Sourced from a command string, there is no BASH_SOURCE[1].)
+case "${BASH_SOURCE[1]-}" in
+    test.sh|*/test.sh) ;;
+    *)
+        unset PI_API_KEY PI_API_KIND PI_AUTH_DIR PI_BASE_URL \
+            PI_CHATGPT_AUTH PI_CODING_AGENT_DIR \
+            PI_COMPACTION_RESERVE_TOKENS PI_CONTEXT_WINDOW PI_EFFORT \
+            PI_HTTP_IDLE_TIMEOUT_MS PI_MAX_RETRIES PI_MAX_TOKENS \
+            PI_REASONING PI_VERSION ;;
+esac
+
 # Succeed when a job started under job control can be stopped by
 # SIGINT: not when the test started with SIGINT ignored (a background
 # job of a script), since the ignore is inherited and cannot be undone.
