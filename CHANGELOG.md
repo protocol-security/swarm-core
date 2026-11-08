@@ -7,6 +7,7 @@
 
 
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -77,6 +78,13 @@
   one, with an error about the lock and the advice to run stop again. It
   now ends with 0 when nothing at all is at the runtime path; anything
   there, or a path it cannot look into, still goes through the lock.
+- **Fix: cleanup no longer takes the files of a repository nested in an
+  uninitialized submodule's directory for uncommitted work.** The scan
+  lists every file below a submodule directory without its `.git`, so a
+  clean repository an agent made there had all its files listed too, and
+  cleanup refused, although the scan carries and checks that repository
+  on its own. Its tree is now left out of that listing; the other files
+  there are still listed.
 - **Feature: `PI_COMPACTION_RESERVE_TOKENS` sets Pi's compaction
   reserve.** Pi caps a compaction summary at a share of
   `compaction.reserveTokens` (16384 by default) and of `maxTokens`; a

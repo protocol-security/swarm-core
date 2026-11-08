@@ -1209,7 +1209,7 @@ nested_entry() {
 # explicitly, so a core.worktree setting cannot point status elsewhere.
 # Status is read NUL-separated (-z), so paths come unquoted and whole.
 check_checkout() {
-    local wt="$1" rel="$2" gd="$3" rec xy path
+    local wt="$1" rel="$2" gd="$3" rec xy path t f nested
     # No rename detection: a rename record would hide its new path from
     # the filters below.  --ignore-submodules=dirty: a submodule counts
     # when its commit differs from the one recorded, but status does not
@@ -1257,10 +1257,27 @@ check_checkout() {
                 || [ -L "$wt/$path" ] || [ ! -d "$wt/$path" ]; then
             continue
         fi
+        # A repository nested below it (one of the TOPS) is carried and
+        # checked on its own: its tree is left out of this listing.
+        : > "$OUT/.gls" || fail "cannot write ${OUT}/.gls"
+        while IFS= read -r t; do
+            case "$t" in
+                "$wt/$path"/*/.git)
+                    printf '%s\n' "${t%/.git}" >> "$OUT/.gls" \
+                        || fail "cannot write ${OUT}/.gls" ;;
+            esac
+        done < "$TOPS"
         find "$wt/$path" -mindepth 1 ! -type d -print0 2>"$ERR" \
             > "$OUT/.glf" || fail "cannot list ${wt}/${path}"
         [ ! -s "$ERR" ] || fail "cannot list ${wt}/${path}: $(cat "$ERR")"
         while IFS= read -r -d '' f; do
+            nested=false
+            while IFS= read -r t; do
+                case "$f" in
+                    "$t"/*) nested=true; break ;;
+                esac
+            done < "$OUT/.gls"
+            $nested && continue
             report "uncommitted dirty ${rel}: ?? $(oneline "${f#"$wt"/}")"
         done < "$OUT/.glf"
     done < "$OUT/.gl"

@@ -660,6 +660,21 @@ out=$(scan worktree "$W" full)
 assert_eq "a file in an uninitialized submodule directory is listed" \
     "1" "$(has_line "$out" 'uncommitted dirty .: ?? lib/deep/work.txt')"
 rm -r "$W/lib/deep"
+# A repository nested there is a checkout of its own, carried and
+# checked on its own: none of its files is listed for the submodule
+# directory, while a file beside it still is.
+git init -q "$W/lib/inner"
+g -C "$W/lib/inner" commit -q --allow-empty -m inner
+echo beside > "$W/lib/beside.txt"
+out=$(scan worktree "$W" full)
+assert_eq "a repository in that directory is carried on its own" "1" \
+    "$(grep -cE '^gitdir [0-9]+ lib/inner/\.git$' "$out/report" || true)"
+assert_eq "  none of its files listed for the directory" "0" \
+    "$(grep -c '^uncommitted dirty \.: ?? lib/inner/' "$out/report" \
+        || true)"
+assert_eq "  a file beside it still listed" "1" \
+    "$(has_line "$out" 'uncommitted dirty .: ?? lib/beside.txt')"
+rm -rf "$W/lib/inner" "$W/lib/beside.txt"
 
 # A core.worktree setting cannot point status at another directory.
 mkdir -p "$TMPDIR/clean-elsewhere"
