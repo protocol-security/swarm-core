@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Feature: `PI_REASONING=1` makes `effort` reach custom Pi models.**
+  With `base_url`, a model Pi does not know was declared without
+  `reasoning`, so Pi sent no reasoning parameter and `effort` had no
+  effect, `none` included. The variable declares it a reasoning model;
+  on `openai-completions` it also maps `effort: "none"` to
+  `reasoning_effort: "none"`.
 - **progress.sh reads agent-work from the bare repo in place.** It
   cloned the bare repo to a temporary directory and checked out
   `agent-work` only to print its last 15 commits, which copied the
