@@ -1238,6 +1238,14 @@ cmd_stop() {
             echo "No engagement recorded; nothing to stop."
             return 0
         fi
+        # Nothing at all at the runtime path: no engagement was started
+        # here, and a start makes the directory before it takes the lock,
+        # so none is building its image either.  A path stop cannot look
+        # into goes on to the lock.
+        if swarm_path_absent "$RUNTIME_DIR"; then
+            echo "No engagement recorded; nothing to stop."
+            return 0
+        fi
         # A start holds the lock while it builds the image, before it
         # records its token: no token says nothing until it is done.
         if ! swarm_lock "$RUNTIME_DIR" "$stop_timeout"; then

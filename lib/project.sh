@@ -527,6 +527,21 @@ SWARM_NONCE_LABEL="swarm-core.nonce"
 # shellcheck disable=SC2034
 SWARM_TOKEN_LABEL="swarm-core.engagement-token"
 
+# Succeed when nothing at all exists at path $1, as the file system
+# says: test -e and -L also fail when the path cannot be looked up (a
+# directory on the way that cannot be searched, metadata that may not be
+# read), so only a lookup that fails with "No such file or directory"
+# counts.
+swarm_path_absent() {
+    local err
+    { [ ! -e "$1" ] && [ ! -L "$1" ]; } || return 1
+    err=$(LC_ALL=C ls -d -- "$1" 2>&1 >/dev/null) && return 1
+    case "$err" in
+        *': No such file or directory') return 0 ;;
+    esac
+    return 1
+}
+
 # Print 2*N random lowercase hex digits.
 swarm_random_hex() {
     local hex
