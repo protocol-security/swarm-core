@@ -29,12 +29,22 @@
 #                  object to keep), refs/v/<n>/f/<k> (one per file of the
 #                  git dir) and refs/v/<n>/manifest, refs/v/<n>/files
 #   OUT/objects    every object id the bundle must carry, one per line
+#   OUT/external-worktrees  (worktree mode, origin retire-volume) the
+#                  linked worktrees outside ROOT the scan checked, each
+#                  path ended by a NUL; written only at the scan's normal
+#                  end with no block reported
 # Report lines:
 #   empty                          ROOT has no files at all
 #   gitdir <n> <path>              a git dir, relative to ROOT
 #   block <what> <detail>          content the bundle cannot carry
 #   uncommitted <what> <detail>    content outside Git's history that
 #                                  only an explicit discard may drop
+#   layer-uncommitted <what> <detail>  the same in a linked worktree
+#                                  outside ROOT, in the container's layer
+#   external-worktree <path>       such a worktree, checked
+#   gone-worktree <path>           a worktree registered outside ROOT
+#                                  whose directory is not there
+#   deferred-worktree <path>       one cleanup's scan leaves to retire
 #   layer-link <path>              where a symlink in the volume leads
 #                                  out of it (worktree mode, resolved):
 #                                  in the image or in the container's
@@ -74,6 +84,15 @@ MODE="${1:-}"
 ROOT="${2:-}"
 CONTEXT="${3:-}"
 OUT="${4:-}"
+# Who runs the scan (SWARM_SCAN_ORIGIN, set by the caller): retire's scan
+# of a container's volume (retire-volume), of a checkout in its layer
+# (retire-layer), cleanup's helper passes (cleanup), or anything else
+# (other).  Only retire-volume lets a linked worktree outside ROOT
+# through (accept_external_worktree).
+case "${SWARM_SCAN_ORIGIN:-other}" in
+    retire-volume|retire-layer|cleanup) ORIGIN="$SWARM_SCAN_ORIGIN" ;;
+    *) ORIGIN=other ;;
+esac
 
 # A single file larger than this, or more than TOTAL bytes of files per
 # git dir tree, is reported as uncommitted instead of being stored.
@@ -174,6 +193,20 @@ read_pointer() {
     done
     case "$v" in
         *$'\n'*|*$'\r'*) return 1 ;;
+    esac
+    printf '%s' "$v"
+}
+
+# Print file $1, which must hold one line: its content with one final LF
+# dropped.  Fails when anything else is left (another line, a CR) or the
+# file is empty or cannot be read.
+read_one_line() {
+    local v
+    v=$(cat "$1" && printf x) || return 1
+    v="${v%x}"
+    v="${v%$'\n'}"
+    case "$v" in
+        ''|*$'\n'*|*$'\r'*) return 1 ;;
     esac
     printf '%s' "$v"
 }
@@ -366,6 +399,241 @@ canon_nm() {
         done < "$OUT/.cnm"
     fi
     canon "$1"
+}
+
+# ---- Linked worktrees outside ROOT --------------------------------------
+
+# Succeed when path $1 is at, or below, an entry of the scan's mount set
+# (OUT/.mounts: the container's other mount points, as configured and as
+# resolved).
+in_mount_set() {
+    local m
+    [ -s "$OUT/.mounts" ] || return 1
+    while IFS= read -r m; do
+        [ -n "$m" ] || continue
+        case "$1" in
+            "$m"|"$m"/*) return 0 ;;
+        esac
+    done < "$OUT/.mounts"
+    return 1
+}
+
+# Succeed when an entry of the scan's mount set is at, or below, $1.
+mount_below() {
+    local m
+    [ -s "$OUT/.mounts" ] || return 1
+    while IFS= read -r m; do
+        [ -n "$m" ] || continue
+        case "$m" in
+            "$1"|"$1"/*) return 0 ;;
+        esac
+    done < "$OUT/.mounts"
+    return 1
+}
+
+# Succeed when $1 is an absolute path with no empty, "." or ".."
+# component, no component longer than 255 bytes and no trailing slash.
+normalized_abs() {
+    local rest comp
+    case "$1" in
+        /) return 0 ;;
+        /*/|//*) return 1 ;;
+        /*) ;;
+        *) return 1 ;;
+    esac
+    rest="${1#/}"
+    while [ -n "$rest" ]; do
+        comp="${rest%%/*}"
+        if [ "$comp" = "$rest" ]; then rest=""; else rest="${rest#*/}"; fi
+        case "$comp" in
+            ''|.|..) return 1 ;;
+        esac
+        [ "${#comp}" -le 255 ] || return 1
+    done
+    return 0
+}
+
+# Print yes when directory $1 holds an entry named $2 (one component),
+# no when a whole listing of $1 has none; fail when $1 cannot be listed.
+# A stat that fails does not say why; a listing that works and lacks the
+# name shows that it is not there.
+dir_has_entry() {
+    local pat
+    pat=$(printf '%s' "$2" | sed 's/[][*?\\]/\\&/g') || return 1
+    : > "$OUT/.entry-err"
+    find "$1" -mindepth 1 -maxdepth 1 -name "$pat" -print \
+        2>"$OUT/.entry-err" > "$OUT/.entry" || return 1
+    [ ! -s "$OUT/.entry-err" ] || return 1
+    if [ -s "$OUT/.entry" ]; then echo yes; else echo no; fi
+}
+
+# Where the normalized absolute directory $1 stands, walked from / one
+# component at a time.  Sets WT_STATE to "absent" when a component does
+# not exist (every one before it being a directory that is not a link,
+# in a parent this scan can search), or "present" when $1 is such a
+# directory itself.  Fails, with WT_WHY set, when a component is a link
+# or not a directory, a parent cannot be searched (inspection is not
+# absence), or $1 is at or below a mount of the scan's mount set.
+WT_STATE=""
+WT_WHY=""
+worktree_dir_state() {
+    local rest="${1#/}" p="" comp parent
+    WT_STATE=""
+    WT_WHY=""
+    if in_mount_set "$1"; then
+        WT_WHY="under a mount"
+        return 1
+    fi
+    while [ -n "$rest" ]; do
+        comp="${rest%%/*}"
+        if [ "$comp" = "$rest" ]; then rest=""; else rest="${rest#*/}"; fi
+        parent="${p:-/}"
+        p="${p}/${comp}"
+        if [ ! -x "$parent" ]; then
+            WT_WHY="cannot inspect $(oneline "$parent")"
+            return 1
+        fi
+        if [ -L "$p" ]; then
+            WT_WHY="a link on the way: $(oneline "$p")"
+            return 1
+        fi
+        if [ ! -e "$p" ]; then
+            # Absent only when a listing of the parent says so.
+            case "$(dir_has_entry "$parent" "$comp")" in
+                no)
+                    WT_STATE=absent
+                    return 0 ;;
+                yes) WT_WHY="cannot inspect $(oneline "$p")" ;;
+                *) WT_WHY="cannot inspect $(oneline "$parent")" ;;
+            esac
+            return 1
+        fi
+        if [ ! -d "$p" ]; then
+            WT_WHY="not a directory on the way: $(oneline "$p")"
+            return 1
+        fi
+    done
+    WT_STATE=present
+}
+
+# Report a block for the linked worktree at $1 (why: $2) and fail.
+external_refused() {
+    report "block external $(oneline "$1") ($2)"
+    return 1
+}
+
+# Check the linked worktree at $1, present outside ROOT in the
+# container's own layer and registered by admin dir $2, before Git reads
+# anything there: no mount at or below it, no file that is not a regular
+# file, a directory or a link, no repository inside but its own .git, a
+# .git that is a regular file naming $2 back, and links that resolve
+# inside it (past its own ancestors only, never through a mount).  Then
+# queue it for check_checkout under its absolute path (whose findings are
+# layer-uncommitted) and record it.  Reports a block and fails otherwise.
+accept_external_worktree() {
+    local dir="$1" d="$2" p n v t sz
+    [ "$dir" != / ] || external_refused / "a worktree at the root"         || return 1
+    if mount_below "$dir"; then
+        external_refused "$dir" "a mount inside it"
+        return 1
+    fi
+    find "$dir" -xdev \( \( ! -type f ! -type d ! -type l \) -o -name .git \
+        -o \( -name HEAD \( -type f -o -type l \) \) \) -print0 \
+        2>"$ERR" > "$OUT/.ext-find" || fail "cannot list $(oneline "$dir")"
+    [ ! -s "$ERR" ] || fail "cannot list $(oneline "$dir"): $(cat "$ERR")"
+    while IFS= read -r -d '' p; do
+        if [ ! -L "$p" ] && [ -e "$p" ] && [ ! -f "$p" ] && [ ! -d "$p" ]
+        then
+            external_refused "$dir" "a special file: $(oneline "$p")"
+            return 1
+        fi
+        case "$p" in
+            "$dir/.git") ;;
+            */.git)
+                external_refused "$dir" "a repository inside: $(oneline "$p")"
+                return 1 ;;
+            */HEAD)
+                n="${p%/HEAD}"
+                if [ -d "$n/objects" ] || [ -f "$n/commondir" ]; then
+                    external_refused "$dir" "a repository inside: $(oneline "$n")"
+                    return 1
+                fi ;;
+        esac
+    done < "$OUT/.ext-find"
+    if [ -L "$dir/.git" ] || [ ! -f "$dir/.git" ]; then
+        external_refused "$dir" "its .git is not a file"
+        return 1
+    fi
+    sz=$(wc -c < "$dir/.git" | tr -d ' ') || sz=-1
+    if [ "$sz" -lt 0 ] || [ "$sz" -gt 4096 ] || has_nul "$dir/.git"; then
+        external_refused "$dir" "its .git cannot be read as a gitfile"
+        return 1
+    fi
+    if ! v=$(read_one_line "$dir/.git"); then
+        external_refused "$dir" "its .git cannot be read as a gitfile"
+        return 1
+    fi
+    case "$v" in
+        "gitdir: /"*) v="${v#gitdir: }" ;;
+        "gitdir: "*)
+            external_refused "$dir" "its .git names a relative git dir"
+            return 1 ;;
+        *)
+            external_refused "$dir" "its .git cannot be read as a gitfile"
+            return 1 ;;
+    esac
+    if [ "$v" != "$d" ]; then
+        external_refused "$dir" "its .git names another git dir"
+        return 1
+    fi
+    find "$dir" -xdev -type l -print0 2>"$ERR" > "$OUT/.ext-links" \
+        || fail "cannot list $(oneline "$dir")"
+    [ ! -s "$ERR" ] || fail "cannot list $(oneline "$dir"): $(cat "$ERR")"
+    while IFS= read -r -d '' p; do
+        : > "$OUT/.ext-via"
+        : > "$OUT/.ext-seen"
+        if ! t=$(real_path "$p" "$OUT/.ext-via" "$OUT/.ext-seen" \
+                && printf x); then
+            external_refused "$dir" "a link out: $(oneline "$p")"
+            return 1
+        fi
+        t="${t%x}"
+        case "$t" in
+            "$dir"/*) ;;
+            *)
+                external_refused "$dir" "a link out: $(oneline "$p")"
+                return 1 ;;
+        esac
+        while IFS= read -r v; do
+            case "$v" in
+                "$dir"/*) ;;
+                *)
+                    external_refused "$dir" "a link out: $(oneline "$p")"
+                    return 1 ;;
+            esac
+        done < "$OUT/.ext-via"
+        while IFS= read -r v; do
+            # Its own ancestors are on the way to it, and were walked.
+            case "$v" in
+                "$dir"|"$dir"/*) ;;
+                *)
+                    case "$dir/" in
+                        "$v"/*) ;;
+                        *)
+                            external_refused "$dir" "a link out: $(oneline "$p")"
+                            return 1 ;;
+                    esac ;;
+            esac
+            if in_mount_set "$v"; then
+                external_refused "$dir" "a link through a mount: $(oneline "$p")"
+                return 1
+            fi
+        done < "$OUT/.ext-seen"
+    done < "$OUT/.ext-links"
+    queue_checkout "$dir" "$dir" "$d"
+    report "external-worktree $(oneline "$dir")"
+    printf '%s\0' "$dir" >> "$OUT/.external-worktrees" \
+        || fail "cannot record the linked worktree $(oneline "$dir")"
 }
 
 # ---- Files and bundle (gitdir, worktree and files modes) ----------------
@@ -1209,7 +1477,12 @@ nested_entry() {
 # explicitly, so a core.worktree setting cannot point status elsewhere.
 # Status is read NUL-separated (-z), so paths come unquoted and whole.
 check_checkout() {
-    local wt="$1" rel="$2" gd="$3" rec xy path t f nested
+    local wt="$1" rel="$2" gd="$3" rec xy path t f nested kind=uncommitted
+    # A linked worktree outside ROOT (its name absolute) is in the
+    # container's layer, which docker rm deletes.
+    case "$rel" in
+        /*) kind=layer-uncommitted ;;
+    esac
     # No rename detection: a rename record would hide its new path from
     # the filters below.  --ignore-submodules=dirty: a submodule counts
     # when its commit differs from the one recorded, but status does not
@@ -1224,7 +1497,7 @@ check_checkout() {
         path="${rec:3}"
         engine_entry "$xy" "$rel" "$path" && continue
         nested_entry "$wt" "$xy" "$path" && continue
-        report "uncommitted dirty ${rel}: ${xy} $(oneline "$path")"
+        report "${kind} dirty ${rel}: ${xy} $(oneline "$path")"
     done < "$OUT/.st"
     gw "$wt" --git-dir="$gd" --work-tree="$wt" status --porcelain=v1 -z \
         --no-renames --untracked-files=all --ignored=matching \
@@ -1235,12 +1508,12 @@ check_checkout() {
         engine_entry "!!" "$rel" "$path" && continue
         engine_dir_only "$wt" "$rel" "$path" && continue
         nested_entry "$wt" "!!" "$path" && continue
-        report "uncommitted ignored ${rel}: $(oneline "$path")"
+        report "${kind} ignored ${rel}: $(oneline "$path")"
     done < "$OUT/.st"
     gw "$wt" --git-dir="$gd" --work-tree="$wt" ls-files -v -z > "$OUT/.ls"
     while IFS= read -r -d '' rec; do
         case "${rec:0:1}" in
-            [a-z]|S) report "uncommitted hidden ${rel}: ${rec:0:1} $(oneline "${rec:2}")" ;;
+            [a-z]|S) report "${kind} hidden ${rel}: ${rec:0:1} $(oneline "${rec:2}")" ;;
         esac
     done < "$OUT/.ls"
     # Status shows nothing below a submodule's path, and a submodule
@@ -1278,7 +1551,7 @@ check_checkout() {
                 esac
             done < "$OUT/.gls"
             $nested && continue
-            report "uncommitted dirty ${rel}: ?? $(oneline "${f#"$wt"/}")"
+            report "${kind} dirty ${rel}: ?? $(oneline "${f#"$wt"/}")"
         done < "$OUT/.glf"
     done < "$OUT/.gl"
 }
@@ -1436,20 +1709,82 @@ if [ "$MODE" = worktree ]; then
         esac
     done < "$OUT/.otherheads"
 
-    # Linked worktrees: inside ROOT they are checked like any checkout;
-    # outside it (a container's /tmp) their files are not in the volume.
+    # Linked worktrees: inside ROOT they are checked like any checkout.
+    # Outside it (a container's /tmp) their files are not in the volume:
+    # one whose directory is gone is a note, cleanup defers the others to
+    # retire, and retire's volume scan checks one in the container's own
+    # layer (accept_external_worktree); anything else blocks.
     while IFS= read -r d; do
         [ -f "$d/gitdir" ] || continue
         if has_nul "$d/gitdir"; then
             report "block missing-worktree $(oneline "${d#"$ROOT"/}") (unreadable or NUL byte)"
             continue
         fi
-        wtgit=$(cat "$d/gitdir")
-        # The back-pointer is relative to this admin dir when the
-        # worktree was added with --relative-paths.
+        # The back-pointer as Git reads it: one line, a path ending in
+        # /.git, short, with no control character.
+        sz=$(wc -c < "$d/gitdir" | tr -d ' ') || sz=-1
+        if [ "$sz" -lt 0 ] || [ "$sz" -gt 4096 ] \
+                || ! wtgit=$(read_one_line "$d/gitdir"); then
+            report "block worktree-pointer $(oneline "${d#"$ROOT"/}") (not one short line)"
+            continue
+        fi
         case "$wtgit" in
-            /*) ;;
-            *) wtgit="$d/$wtgit" ;;
+            *[[:cntrl:]]*)
+                report "block worktree-pointer $(oneline "${d#"$ROOT"/}") (a control character)"
+                continue ;;
+        esac
+        case "$wtgit" in
+            */.git) ;;
+            *)
+                report "block worktree-pointer $(oneline "$wtgit") (not a .git path)"
+                continue ;;
+        esac
+        case "$wtgit" in
+            /*)
+                dir="${wtgit%/.git}"
+                if ! normalized_abs "$dir"; then
+                    report "block worktree-pointer $(oneline "$wtgit") (not a normalized path)"
+                    continue
+                fi
+                case "$dir" in
+                    "$ROOT"|"$ROOT"/*) ;;
+                    *)
+                        # Outside ROOT: its own text, never resolved, so
+                        # every component of it is walked.
+                        if ! worktree_dir_state "$dir"; then
+                            report "block worktree-path $(oneline "$dir") (${WT_WHY})"
+                            continue
+                        fi
+                        case "$ORIGIN:$WT_STATE" in
+                            cleanup:absent)
+                                report "deferred-worktree $(oneline "$dir")" ;;
+                            cleanup:present)
+                                # A directory of the image cleanup
+                                # scans from: the worktree only if its
+                                # .git names this admin dir back.
+                                if [ -f "$dir/.git" ] && [ ! -L "$dir/.git" ] \
+                                        && [ "$(read_one_line "$dir/.git" 2>/dev/null)" = "gitdir: $d" ]
+                                then
+                                    report "block external $(oneline "$dir") (present where cleanup scans)"
+                                else
+                                    report "deferred-worktree $(oneline "$dir")"
+                                fi ;;
+                            *:absent)
+                                report "gone-worktree $(oneline "$dir")" ;;
+                            retire-volume:present)
+                                accept_external_worktree "$dir" "$d" || true ;;
+                            *)
+                                report "block external $(oneline "$dir")" ;;
+                        esac
+                        continue ;;
+                esac
+                wtgit="${dir}/.git"
+                relptr="" ;;
+            *)
+                # The back-pointer is relative to this admin dir when
+                # the worktree was added with --relative-paths.
+                relptr="$wtgit"
+                wtgit="$d/$wtgit" ;;
         esac
         wt="${wtgit%/.git}"
         if ! wt=$(canon_nm "$wt"); then
@@ -1462,7 +1797,12 @@ if [ "$MODE" = worktree ]; then
         fi
         case "$wt" in
             "$ROOT"/*) queue_checkout "$wt" "${wt#"$ROOT"/}" "$d" ;;
-            *) report "block external ${wt}" ;;
+            *)
+                if [ -n "$relptr" ]; then
+                    report "block worktree-pointer $(oneline "$relptr") (relative, outside)"
+                else
+                    report "block external ${wt}"
+                fi ;;
         esac
     done < "$GITDIRS"
     # Only now is the work tree read (git status, ls-files), with the
@@ -1672,4 +2012,18 @@ done < "$TOPS"
 # ---- Bundle -------------------------------------------------------------
 
 make_bundle
+# The linked worktrees let through outside ROOT are published only now,
+# at the scan's normal end and with no block reported: a block or a
+# failure on the way leaves no list.
+if [ "$MODE" = worktree ] && [ -f "$OUT/.external-worktrees" ]; then
+    brc=0
+    grep -q '^block ' "$REPORT" || brc=$?
+    case "$brc" in
+        0) ;;
+        1)
+            mv "$OUT/.external-worktrees" "$OUT/external-worktrees" \
+                || fail "cannot publish the linked worktrees" ;;
+        *) fail "cannot read the report" ;;
+    esac
+fi
 exit 0

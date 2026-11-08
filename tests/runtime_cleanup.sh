@@ -224,6 +224,168 @@ check "no helper container is left" \
     "$(docker ps -aq --filter "label=swarm-core.cleanup=${P}" | grep -c . \
         || true)" "0"
 
+echo "--- a linked worktree of a volume's repository in a container's layer ---"
+# A second engagement whose container left a linked worktree of its
+# workspace repository in /tmp, with a file outside Git's history:
+# cleanup's own scans leave the registration to retire, which refuses
+# the file until --discard-uncommitted drops it.
+swarm_state_update "$RT/state.json" \
+    '.engagement_id = "e2" | .docker_daemon = $d' --arg d "$DAEMON" || exit 1
+VOLW="${VOL}-wt"
+docker volume create \
+    --label "${SWARM_PROJECT_LABEL}=${P}" \
+    --label "${SWARM_CHECKOUT_LABEL}=${CK}" \
+    --label "${SWARM_CONTAINER_LABEL}=${NAME}" \
+    --label "${SWARM_KIND_LABEL}=agent" \
+    --label "${SWARM_CONTEXT_LABEL}=full" \
+    --label "${SWARM_ENGAGEMENT_LABEL}=e2" "$VOLW" >/dev/null || exit 1
+docker run --name "$NAME" \
+    --label "${SWARM_PROJECT_LABEL}=${P}" \
+    --label "${SWARM_CHECKOUT_LABEL}=${CK}" \
+    --mount "type=volume,src=${VOLW},dst=/workspace" \
+    --entrypoint bash "$BASE_IMAGE" -c '
+        set -e
+        cd /workspace
+        git init -q
+        echo w > w
+        git add w
+        git -c user.name=t -c user.email=t@t commit -qm wt-work
+        git worktree add -q --detach /tmp/wt HEAD
+        echo notes > /tmp/wt/notes.txt
+    ' >/dev/null 2>&1 || { echo "FAIL: cannot make the worktree"; exit 1; }
+rc=0
+out=$(run_cleanup 2>&1) || rc=$?
+check "cleanup stops at the file in the worktree" "$rc" "1"
+check "  naming it" \
+    "$(printf '%s\n' "$out" | grep -c 'notes.txt' | awk '{ print ($1 > 0) }')" \
+    "1"
+check "  the volume stays" \
+    "$(docker volume inspect "$VOLW" >/dev/null 2>&1 && echo yes || echo no)" \
+    "yes"
+rc=0
+out=$( (cd "$CHECKOUT" && SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" \
+    "$BASH" "$LAUNCH_SH" cleanup --discard-uncommitted) 2>&1) || rc=$?
+check "--discard-uncommitted lets cleanup end it" "$rc" "0"
+[ "$rc" -eq 0 ] || printf '%s\n' "$out" | tail -8 | sed 's/^/      /'
+check "  the container is gone" \
+    "$(docker container inspect "$NAME" >/dev/null 2>&1 && echo yes || echo no)" \
+    "no"
+check "  the volume is gone" \
+    "$(docker volume inspect "$VOLW" >/dev/null 2>&1 && echo yes || echo no)" \
+    "no"
+check "  the volume's work is in the recovery refs" \
+    "$(git -C "$CHECKOUT" log --all --format=%s | grep -c '^wt-work$' \
+        | awk '{ print ($1 > 0) }')" "1"
+
+echo "--- a linked worktree rooted at /tmp, a directory the image has too ---"
+# The image cleanup scans from has /tmp but no .git there naming the
+# repository back, so cleanup leaves the registration to retire, which
+# checks the worktree in the container's layer.
+swarm_state_update "$RT/state.json" \
+    '.engagement_id = "e3" | .docker_daemon = $d' --arg d "$DAEMON" || exit 1
+VOLT="${VOL}-tmp"
+docker volume create \
+    --label "${SWARM_PROJECT_LABEL}=${P}" \
+    --label "${SWARM_CHECKOUT_LABEL}=${CK}" \
+    --label "${SWARM_CONTAINER_LABEL}=${NAME}" \
+    --label "${SWARM_KIND_LABEL}=agent" \
+    --label "${SWARM_CONTEXT_LABEL}=full" \
+    --label "${SWARM_ENGAGEMENT_LABEL}=e3" "$VOLT" >/dev/null || exit 1
+docker run --name "$NAME" \
+    --label "${SWARM_PROJECT_LABEL}=${P}" \
+    --label "${SWARM_CHECKOUT_LABEL}=${CK}" \
+    --mount "type=volume,src=${VOLT},dst=/workspace" \
+    --entrypoint bash "$BASE_IMAGE" -c '
+        set -e
+        cd /workspace
+        git init -q
+        echo w > w
+        git add w
+        git -c user.name=t -c user.email=t@t commit -qm tmp-work
+        git worktree add -q --detach /tmp HEAD
+    ' >/dev/null 2>&1 || { echo "FAIL: cannot make the worktree"; exit 1; }
+rc=0
+out=$(run_cleanup 2>&1) || rc=$?
+check "cleanup ends it" "$rc" "0"
+[ "$rc" -eq 0 ] || printf '%s\n' "$out" | tail -8 | sed 's/^/      /'
+check "  the container is gone" \
+    "$(docker container inspect "$NAME" >/dev/null 2>&1 && echo yes || echo no)" \
+    "no"
+check "  the volume is gone" \
+    "$(docker volume inspect "$VOLT" >/dev/null 2>&1 && echo yes || echo no)" \
+    "no"
+check "  the volume's work is in the recovery refs" \
+    "$(git -C "$CHECKOUT" log --all --format=%s | grep -c '^tmp-work$' \
+        | awk '{ print ($1 > 0) }')" "1"
+
+echo "--- a second-pass failure after retire keeps the engagement's sources ---"
+# A clean linked worktree in /tmp: retire, inside cleanup, takes the
+# container; then cleanup's second scan of the volume fails (a docker
+# wrapper on PATH fails the second cleanup-scan run), and nothing of the
+# engagement is deleted.  A cleanup without the wrapper then ends it.
+swarm_state_update "$RT/state.json" \
+    '.engagement_id = "e4" | .docker_daemon = $d' --arg d "$DAEMON" || exit 1
+VOLF="${VOL}-pass2"
+docker volume create \
+    --label "${SWARM_PROJECT_LABEL}=${P}" \
+    --label "${SWARM_CHECKOUT_LABEL}=${CK}" \
+    --label "${SWARM_CONTAINER_LABEL}=${NAME}" \
+    --label "${SWARM_KIND_LABEL}=agent" \
+    --label "${SWARM_CONTEXT_LABEL}=full" \
+    --label "${SWARM_ENGAGEMENT_LABEL}=e4" "$VOLF" >/dev/null || exit 1
+docker run --name "$NAME" \
+    --label "${SWARM_PROJECT_LABEL}=${P}" \
+    --label "${SWARM_CHECKOUT_LABEL}=${CK}" \
+    --mount "type=volume,src=${VOLF},dst=/workspace" \
+    --entrypoint bash "$BASE_IMAGE" -c '
+        set -e
+        cd /workspace
+        git init -q
+        echo w > w
+        git add w
+        git -c user.name=t -c user.email=t@t commit -qm pass2-work
+        git worktree add -q --detach /tmp/wt HEAD
+    ' >/dev/null 2>&1 || { echo "FAIL: cannot make the worktree"; exit 1; }
+mkdir -p "$WORKDIR/shim"
+: > "$WORKDIR/shim-count"
+cat > "$WORKDIR/shim/docker" <<EOF
+#!/bin/bash
+case "\$*" in
+    *"-cleanup-scan-"*"src=${VOLF},"*)
+        n=\$(grep -c . "$WORKDIR/shim-count")
+        echo x >> "$WORKDIR/shim-count"
+        if [ "\$n" = 1 ]; then
+            cat > /dev/null
+            exit 3
+        fi ;;
+esac
+exec $(command -v docker) "\$@"
+EOF
+chmod +x "$WORKDIR/shim/docker"
+rc=0
+out=$( (cd "$CHECKOUT" && PATH="$WORKDIR/shim:$PATH" \
+    SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" \
+    "$BASH" "$LAUNCH_SH" cleanup) 2>&1) || rc=$?
+check "cleanup stops at the failed second scan" "$rc" "1"
+check "  after retire took the container" \
+    "$(docker container inspect "$NAME" >/dev/null 2>&1 && echo yes || echo no)" \
+    "no"
+check "  the volume stays" \
+    "$(docker volume inspect "$VOLF" >/dev/null 2>&1 && echo yes || echo no)" \
+    "yes"
+check "  the engagement is still recorded" \
+    "$(jq -r '.engagement_id // empty' "$RT/state.json")" "e4"
+rc=0
+out=$(run_cleanup 2>&1) || rc=$?
+check "a cleanup without the failure ends it" "$rc" "0"
+[ "$rc" -eq 0 ] || printf '%s\n' "$out" | tail -8 | sed 's/^/      /'
+check "  the volume is gone" \
+    "$(docker volume inspect "$VOLF" >/dev/null 2>&1 && echo yes || echo no)" \
+    "no"
+check "  the volume's work is in the recovery refs" \
+    "$(git -C "$CHECKOUT" log --all --format=%s | grep -c '^pass2-work$' \
+        | awk '{ print ($1 > 0) }')" "1"
+
 echo "--- a whole engagement: start, wait, retire, cleanup, start ---"
 # The fake driver makes no commits, so with max_idle 1 each agent exits
 # after one session.  docker_args ask for auto-remove, a restart policy
