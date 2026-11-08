@@ -795,37 +795,37 @@ if grep -q '^block special-file ' "$REPORT"; then
     exit 0
 fi
 
-# Git follows a config include wherever it points, and opening a FIFO
-# there would hang the scan.  Before any git command reads a git dir's
-# config, each of its config files must be a regular file that
-# includes no other; one that is not stops the scan.
-_cfg_stop=""
-while IFS= read -r d; do
-    rel="${d#"$ROOT"/}"
-    for cf in "$d/config" "$d/config.worktree"; do
-        [ -e "$cf" ] || [ -L "$cf" ] || continue
-        if [ ! -f "$cf" ]; then
-            report "block config-unreadable $(oneline "${cf#"$ROOT"/}")"
-            _cfg_stop=yes
-            continue
-        fi
-        rc=0
-        git config -f "$cf" --name-only --get-regexp \
-            '^(include|includeif)\.' > "$OUT/.inc" 2>/dev/null || rc=$?
-        case "$rc" in
-            0)
-                report "block config-include ${rel}"
-                _cfg_stop=yes ;;
-            1) ;;
-            *) fail "cannot parse ${cf}" ;;
-        esac
-    done
-done < "$GITDIRS"
-[ -z "$_cfg_stop" ] || exit 0
+# In gitdir mode (a repository the engine made, which agents can write)
+# Git reads the config as it is, following an include wherever it
+# points: an include of a FIFO would hang the scan.  The engine writes
+# none, so one stops the scan before any git command reads the config.
+# (A workspace's config files are read on their own, includes left out;
+# an include there blocks below.)
+if [ "$MODE" = gitdir ]; then
+    _cfg_stop=""
+    while IFS= read -r d; do
+        for cf in "$d/config" "$d/config.worktree"; do
+            [ -f "$cf" ] || continue
+            rc=0
+            cfg -f "$cf" --name-only --get-regexp \
+                '^(include|includeif)\.' > "$OUT/.inc" 2>/dev/null \
+                || rc=$?
+            case "$rc" in
+                0)
+                    report "block config-include ${d#"$ROOT"/}"
+                    _cfg_stop=yes ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+        done
+    done < "$GITDIRS"
+    [ -z "$_cfg_stop" ] || exit 0
+fi
 
 # Unsupported layouts that keep history outside these git dirs.  In a
-# workspace the config files are read on their own; a repository the
-# engine made (gitdir mode) is read as Git reads it.
+# workspace the config files are read on their own, includes left out
+# (an include blocks below); a repository the engine made (gitdir mode)
+# is read as Git reads it, once it holds no include.
 while IFS= read -r d; do
     [ ! -f "$d/shallow" ] || report "block shallow ${d#"$ROOT"/}"
     _lfs=""
@@ -878,11 +878,19 @@ if [ "$MODE" = worktree ]; then
         fi
         for cf in "$d/config" "$d/config.worktree"; do
             [ -f "$cf" ] || continue
-            # Includes stopped the scan above.  A filter driver is a
-            # command Git runs on work-tree files (git status can run a
-            # clean filter): it would run inside this scan.  It blocks
-            # rather than being switched off, which would make every
-            # filtered file look modified.
+            rc=0
+            cfg -f "$cf" --name-only --get-regexp \
+                '^(include\..*|includeif\..*)$' > "$OUT/.inc" 2>/dev/null \
+                || rc=$?
+            case "$rc" in
+                0) report "block config-include ${rel}" ;;
+                1) ;;
+                *) fail "cannot parse ${cf}" ;;
+            esac
+            # A filter driver is a command Git runs on work-tree files
+            # (git status can run a clean filter): it would run inside
+            # this scan.  It blocks rather than being switched off, which
+            # would make every filtered file look modified.
             rc=0
             cfg -f "$cf" --name-only --get-regexp '^filter\.' \
                 > "$OUT/.flt" 2>/dev/null || rc=$?
