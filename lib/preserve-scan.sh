@@ -987,6 +987,27 @@ check_checkout() {
             [a-z]|S) report "uncommitted hidden ${rel}: ${rec:0:1} $(oneline "${rec:2}")" ;;
         esac
     done < "$OUT/.ls"
+    # Status shows nothing below a submodule's path, and a submodule
+    # directory without its .git (never initialized, or its .git
+    # removed) is no checkout of its own: every file there is listed.
+    gw "$wt" --git-dir="$gd" --work-tree="$wt" ls-files -s -z > "$OUT/.gl"
+    while IFS= read -r -d '' rec; do
+        case "$rec" in
+            "160000 "*) ;;
+            *) continue ;;
+        esac
+        path="${rec#*$'\t'}"
+        if [ -e "$wt/$path/.git" ] || [ -L "$wt/$path/.git" ] \
+                || [ -L "$wt/$path" ] || [ ! -d "$wt/$path" ]; then
+            continue
+        fi
+        find "$wt/$path" -mindepth 1 ! -type d -print0 2>"$ERR" \
+            > "$OUT/.glf" || fail "cannot list ${wt}/${path}"
+        [ ! -s "$ERR" ] || fail "cannot list ${wt}/${path}: $(cat "$ERR")"
+        while IFS= read -r -d '' f; do
+            report "uncommitted dirty ${rel}: ?? $(oneline "${f#"$wt"/}")"
+        done < "$OUT/.glf"
+    done < "$OUT/.gl"
 }
 
 # Report every index entry of checkout $1 (shown as $2, git dir $3)

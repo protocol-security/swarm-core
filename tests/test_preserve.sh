@@ -623,6 +623,16 @@ assert_eq "a deinitialized module repo is a git dir" "1" \
     "$(grep -cE '^gitdir [0-9]+ \.git/modules/lib$' "$out/report" || true)"
 assert_eq "its detached commit is kept" "commit" \
     "$(git -C "$(imported "$out")" cat-file -t "$SUBWORK" 2>/dev/null)"
+# A submodule directory without its .git is no checkout, and status
+# shows nothing below it: every file there is listed.
+assert_eq "an empty uninitialized submodule directory is no work" "0" \
+    "$(has_line "$out" 'uncommitted dirty .: ?? lib/')"
+mkdir "$W/lib/deep"
+echo work > "$W/lib/deep/work.txt"
+out=$(scan worktree "$W" full)
+assert_eq "a file in an uninitialized submodule directory is listed" \
+    "1" "$(has_line "$out" 'uncommitted dirty .: ?? lib/deep/work.txt')"
+rm -r "$W/lib/deep"
 
 # A core.worktree setting cannot point status at another directory.
 mkdir -p "$TMPDIR/clean-elsewhere"
