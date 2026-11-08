@@ -2384,6 +2384,107 @@ rm -f "$_stop_rt"
 run_stop_with_runtime "$TMPDIR/stop-missing"
 assert_eq "stop does not create a missing runtime" "false" \
     "$([ -e "$TMPDIR/stop-missing" ] && echo true || echo false)"
+# With no runtime directory at all, no engagement was started there:
+# nothing to stop, a success, and no lock to wait for.
+_stop_none_rc=0
+_stop_none_out=$(
+    eval "$CMD_STOP_BODY"
+    eval "$STOP_HELPERS"
+    SWARM_TMP_FILES=()
+    IMAGE_NAME="stop-fake"
+    PROJECT="fake"
+    RUNTIME_DIR="$TMPDIR/stop-missing"
+    STATE_FILE="$RUNTIME_DIR/state.json"
+    CHECKOUT_PATH="/checkout"
+    # Called by the evaluated cmd_stop.
+    # shellcheck disable=SC2329
+    docker() { return 0; }
+    cmd_stop 2>&1
+) || _stop_none_rc=$?
+assert_eq "no runtime directory: stop succeeds" "0" "$_stop_none_rc"
+assert_eq "  saying there is nothing to stop" "1" \
+    "$(grep -c '^No engagement recorded; nothing to stop.$' \
+        <<< "$_stop_none_out" || true)"
+assert_eq "  with nothing else to say" "1" \
+    "$(grep -c . <<< "$_stop_none_out" || true)"
+assert_eq "  and still no runtime directory" "false" \
+    "$([ -e "$TMPDIR/stop-missing" ] && echo true || echo false)"
+# A dangling link there is something: stop goes on to the lock, which
+# cannot be taken through it, and fails.
+ln -s "$TMPDIR/stop-nowhere" "$TMPDIR/stop-dangling"
+_stop_none_rc=0
+_stop_none_out=$(
+    eval "$CMD_STOP_BODY"
+    eval "$STOP_HELPERS"
+    SWARM_TMP_FILES=()
+    IMAGE_NAME="stop-fake"
+    PROJECT="fake"
+    RUNTIME_DIR="$TMPDIR/stop-dangling"
+    STATE_FILE="$RUNTIME_DIR/state.json"
+    CHECKOUT_PATH="/checkout"
+    SWARM_STOP_TIMEOUT=1
+    # Called by the evaluated cmd_stop.
+    # shellcheck disable=SC2329
+    docker() { return 0; }
+    cmd_stop 2>&1
+) || _stop_none_rc=$?
+assert_eq "a dangling runtime link: stop does not succeed" "true" \
+    "$([ "$_stop_none_rc" -ne 0 ] && echo true || echo false)"
+rm -f "$TMPDIR/stop-dangling"
+# swarm_path_absent tells a path that is not there from one stop cannot
+# look into: test -e and -L fail in both cases.
+_pa() { if swarm_path_absent "$1"; then echo yes; else echo no; fi; }
+mkdir -p "$TMPDIR/pa/dir"
+: > "$TMPDIR/pa/file"
+ln -s "$TMPDIR/pa/nowhere" "$TMPDIR/pa/dangling"
+_pa_all="$(_pa "$TMPDIR/pa/none") $(_pa "$TMPDIR/pa/no/such/dirs")"
+_pa_all="$_pa_all $(_pa "$TMPDIR/pa/file") $(_pa "$TMPDIR/pa/dir")"
+_pa_all="$_pa_all $(_pa "$TMPDIR/pa/dangling")"
+assert_eq "path absent: a missing entry, missing parents, file, dir, link" \
+    "yes yes no no no" "$_pa_all"
+assert_eq "path absent: below a file is no absence" "no" \
+    "$(_pa "$TMPDIR/pa/file/x")"
+# Only a lookup that fails with "No such file or directory" counts: any
+# other error, such as metadata the system will not show (an ls that
+# says so, here), is no absence.
+mkdir -p "$TMPDIR/pa/ls-bin"
+cat > "$TMPDIR/pa/ls-bin/ls" <<'EOF'
+#!/bin/bash
+echo "ls: ${3}: Operation not permitted" >&2
+exit 1
+EOF
+chmod +x "$TMPDIR/pa/ls-bin/ls"
+assert_eq "path absent: a lookup that fails otherwise is no absence" "no" \
+    "$(PATH="$TMPDIR/pa/ls-bin:$PATH" _pa "$TMPDIR/pa/none")"
+if [ "$(id -u)" != 0 ]; then
+    mkdir -p "$TMPDIR/pa/shut/inside"
+    chmod 600 "$TMPDIR/pa/shut"
+    assert_eq "path absent: below a directory it cannot search is no" \
+        "no" "$(_pa "$TMPDIR/pa/shut/inside/rt")"
+    _stop_none_rc=0
+    _stop_none_out=$(
+        eval "$CMD_STOP_BODY"
+        eval "$STOP_HELPERS"
+        SWARM_TMP_FILES=()
+        IMAGE_NAME="stop-fake"
+        PROJECT="fake"
+        RUNTIME_DIR="$TMPDIR/pa/shut/inside/rt"
+        STATE_FILE="$RUNTIME_DIR/state.json"
+        CHECKOUT_PATH="/checkout"
+        SWARM_STOP_TIMEOUT=1
+        # Called by the evaluated cmd_stop.
+        # shellcheck disable=SC2329
+        docker() { return 0; }
+        cmd_stop 2>&1
+    ) || _stop_none_rc=$?
+    chmod 700 "$TMPDIR/pa/shut"
+    assert_eq "a runtime stop cannot look into: stop does not succeed" \
+        "true" "$([ "$_stop_none_rc" -ne 0 ] && echo true || echo false)"
+    assert_eq "  nor says there is nothing to stop" "0" \
+        "$(grep -c 'nothing to stop' <<< "$_stop_none_out" || true)"
+else
+    echo "  SKIP: root searches any directory, so no permission case"
+fi
 
 mkdir -m 700 "$_stop_rt"
 printf '%s\n' "$_stop_state" > "$_stop_rt/state.json"
