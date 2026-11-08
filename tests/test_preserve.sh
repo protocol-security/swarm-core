@@ -1879,6 +1879,30 @@ assert_eq "a FIFO for the workspace's index: the scan ends" "" \
     "$(cat "$out/.rc" 2>/dev/null)"
 assert_eq "blocking on it too" "1" \
     "$(has_line "$out" 'block special-file .git/index')"
+# Any other file Git opens in a git dir, or a symlink to a FIFO there,
+# and the files Git opens in a work tree.
+SF=$(sf_ws others)
+rm -f "$SF/.git/info/exclude"
+mkfifo "$SF/.git/packed-refs" "$SF/.git/info/exclude" "$TMPDIR/sf-fifo"
+ln -s "$TMPDIR/sf-fifo" "$SF/.git/info/attributes"
+mkdir "$SF/sub"
+mkfifo "$SF/sub/.gitignore"
+out=$(sf_timed_scan "$SF")
+assert_eq "FIFOs elsewhere in the git dir and work tree: the scan ends" \
+    "" "$(cat "$out/.rc" 2>/dev/null)"
+assert_eq "blocking on packed-refs" "1" \
+    "$(has_line "$out" 'block special-file .git/packed-refs')"
+assert_eq "on info/exclude" "1" \
+    "$(has_line "$out" 'block special-file .git/info/exclude')"
+assert_eq "on a symlink to a FIFO" "1" \
+    "$(has_line "$out" 'block special-file .git/info/attributes')"
+assert_eq "and on a .gitignore in the work tree" "1" \
+    "$(has_line "$out" 'block special-file sub/.gitignore')"
+rm "$SF/.git/packed-refs" "$SF/.git/info/exclude" "$SF/sub/.gitignore"
+rm "$SF/.git/info/attributes"
+ln -s ../HEAD "$SF/.git/info/attributes"
+assert_eq "a symlink to a regular file in the git dir is fine" "0" \
+    "$(has_line "$(sf_timed_scan "$SF")" 'block special-file')"
 SF=$(sf_ws include)
 mkfifo "$TMPDIR/sf-include-fifo"
 git -C "$SF" config include.path "$TMPDIR/sf-include-fifo"
