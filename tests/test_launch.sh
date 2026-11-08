@@ -1641,6 +1641,164 @@ rm -rf "$_tr_dir"
 
 # ============================================================
 echo ""
+echo "=== 35d. Each mirror comes from its submodule's own Git directory ==="
+
+# A submodule's Git directory is .git/modules/<name>, not <path>, and
+# some keep theirs in their work tree: one moved with git mv, two whose
+# names are each other's paths, and one added from a repository already
+# there.  Each mirror, named after its submodule, holds that
+# submodule's commits, and a clone of the bare repo whose submodules
+# point at the mirrors, as a container's does, checks each of them out.
+# The live functions again (extracted in 35b).
+_gd_dir="$TMPDIR/gd"
+mkdir -p "$_gd_dir"
+for _gd_r in one rx ry; do
+    _hl_git -C "$_gd_dir" init -q "$_gd_r"
+    _hl_git -C "$_gd_dir/$_gd_r" commit --allow-empty -m "$_gd_r" -q
+done
+_gd_src="$_gd_dir/src"
+_hl_git -C "$_gd_dir" init -q src
+_hl_git -C "$_gd_src" commit --allow-empty -m one -q
+_hl_git -C "$_gd_src" submodule add -q "$_gd_dir/one" first 2>/dev/null
+_hl_git -C "$_gd_src" commit -m 'Add first' -q
+mkdir -p "$_gd_src/lib"
+_hl_git -C "$_gd_src" mv first lib/moved
+_hl_git -C "$_gd_src" commit -m 'Move first' -q
+_hl_git -C "$_gd_src" submodule add -q --name x "$_gd_dir/rx" y 2>/dev/null
+_hl_git -C "$_gd_src" submodule add -q --name y "$_gd_dir/ry" x 2>/dev/null
+_hl_git -C "$_gd_src" init -q inner
+_hl_git -C "$_gd_src/inner" commit --allow-empty -m inner -q
+_hl_git -C "$_gd_src" submodule add -q "$_gd_dir/one" inner >/dev/null 2>&1
+_hl_git -C "$_gd_src" commit -m 'Add x, y and inner' -q
+assert_eq "first's Git directory is under its name, not its path" \
+    "yes no" \
+    "$([ -d "$_gd_src/.git/modules/first" ] && echo yes || echo no) $(
+        [ -e "$_gd_src/.git/modules/lib/moved" ] && echo yes || echo no)"
+assert_eq "inner keeps its Git directory in its work tree" "yes no" \
+    "$([ -d "$_gd_src/inner/.git" ] && echo yes || echo no) $(
+        [ -e "$_gd_src/.git/modules/inner" ] && echo yes || echo no)"
+_gd_runtime="$_gd_dir/runtime"
+mkdir -m 700 "$_gd_runtime"
+_gd_run() {  # 'FUNCTION [ARG]'...: each in turn, under set -e as in
+    # launch.sh (a subshell after || would ignore it)
+    set +e
+    (
+        set -e
+        # shellcheck source=/dev/null
+        source "$TMPDIR/hl_funcs.sh"
+        # shellcheck disable=SC2329
+        swarm_docker_daemon_id() { printf 'TEST:DAEMON'; }
+        REPO_ROOT="$_gd_src"
+        BARE_REPO="$_gd_dir/bare.git"
+        MIRROR_DIR="$_gd_runtime/mirrors"
+        STATE_FILE="$_gd_runtime/state.json"
+        for _gd_cmd in "$@"; do
+            $_gd_cmd
+        done
+    ) > "$TMPDIR/gd.out" 2>&1
+    _gd_rc=$?
+    set -e
+}
+_gd_run create_bare_repo mirror_submodules
+assert_eq "start's bare repo and mirrors are made" 0 "$_gd_rc"
+assert_eq "with no warning" 0 "$(grep -c '^WARNING' "$TMPDIR/gd.out" || true)"
+for _gd_case in first:lib/moved:one x:y:rx y:x:ry inner:inner:src/inner; do
+    IFS=: read -r _gd_name _gd_path _gd_repo <<< "$_gd_case"
+    _gd_link=$(git -C "$_gd_src" rev-parse "HEAD:$_gd_path")
+    assert_eq "${_gd_name} (at ${_gd_path}): the base's commit is ${_gd_repo}'s" \
+        "$(git -C "$_gd_dir/$_gd_repo" rev-parse HEAD)" "$_gd_link"
+    assert_eq "${_gd_name}: its mirror has it under refs/swarm/gitlink" \
+        "$_gd_link" \
+        "$(git -C "$_gd_runtime/mirrors/${_gd_name}.git" rev-parse -q \
+            --verify refs/swarm/gitlink 2>/dev/null)"
+done
+# What a container does with the mounts: a clone of the bare repo whose
+# submodules, by name, point at the mirrors.
+_gd_ck="$_gd_dir/ck"
+_hl_git clone -q "$_gd_dir/bare.git" "$_gd_ck" 2>/dev/null || true
+git config --file "$_gd_ck/.gitmodules" --get-regexp 'submodule\..*\.path' \
+    > "$TMPDIR/gd.paths" 2>/dev/null || true
+while read -r _gd_key _gd_path; do
+    _gd_name="${_gd_key#submodule.}"
+    _gd_name="${_gd_name%.path}"
+    git -C "$_gd_ck" config "submodule.${_gd_name}.url" \
+        "$_gd_runtime/mirrors/${_gd_name}.git"
+    _hl_git -C "$_gd_ck" submodule update --init -q -- "$_gd_path" \
+        2>/dev/null || true
+done < "$TMPDIR/gd.paths"
+for _gd_path in lib/moved y x inner; do
+    # " <commit>": checked out at the commit the base records.
+    assert_eq "the clone checks ${_gd_path} out at the base's commit" \
+        " $(git -C "$_gd_src" rev-parse "HEAD:$_gd_path")" \
+        "$(git -C "$_gd_ck" submodule status -- "$_gd_path" 2>/dev/null \
+            | cut -c1-41)"
+done
+# A submodule whose Git directory cannot be found or read stops start:
+# a .git that names no repository (Git's foreach refuses it before the
+# command runs), and a config Git cannot parse (git rev-parse fails in
+# the command).  Each time on a new runtime directory and bare repo.
+_gd_again() {  # N: put the last runtime directory and bare repo aside
+    mv "$_gd_runtime" "$_gd_dir/runtime-$1"
+    if [ -e "$_gd_dir/bare.git" ]; then
+        mv "$_gd_dir/bare.git" "$_gd_dir/bare-$1.git"
+    fi
+    mkdir -m 700 "$_gd_runtime"
+}
+_gd_again 1
+mv "$_gd_src/lib/moved/.git" "$_gd_dir/moved.gitfile"
+printf 'gitdir: %s\n' "$_gd_dir/nowhere" > "$_gd_src/lib/moved/.git"
+_gd_run create_bare_repo mirror_submodules
+assert_eq "a submodule whose .git leads nowhere stops start" 1 \
+    "$([ "$_gd_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_eq "and gets no mirror" no \
+    "$([ -e "$_gd_runtime/mirrors/first.git" ] \
+        || [ -e "$_gd_runtime/mirrors/first.git.new" ] && echo yes || echo no)"
+mv "$_gd_dir/moved.gitfile" "$_gd_src/lib/moved/.git"
+_gd_again 2
+cp "$_gd_src/.git/modules/first/config" "$_gd_dir/first.config"
+printf '[core\n' >> "$_gd_src/.git/modules/first/config"
+_gd_run create_bare_repo mirror_submodules
+assert_eq "a submodule whose config Git cannot read stops start" 1 \
+    "$([ "$_gd_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_eq "naming the file" 1 \
+    "$(grep -q "modules/first/config" "$TMPDIR/gd.out" && echo 1 || echo 0)"
+assert_eq "and gets no mirror" no \
+    "$([ -e "$_gd_runtime/mirrors/first.git" ] \
+        || [ -e "$_gd_runtime/mirrors/first.git.new" ] && echo yes || echo no)"
+# A session that joins the first engagement, whose mirrors are all
+# there, stops too, and leaves them as they are.
+_gd_again 3
+rmdir "$_gd_runtime"
+mv "$_gd_dir/runtime-1" "$_gd_runtime"
+if [ -e "$_gd_dir/bare-1.git" ]; then
+    mv "$_gd_dir/bare-1.git" "$_gd_dir/bare.git"
+fi
+# A file of the test's own in first's mirror, and its refs: both stay
+# if the mirror does.
+_gd_refs() {
+    git -C "$_gd_runtime/mirrors/first.git" for-each-ref \
+        --format='%(objectname) %(refname)' 2>/dev/null || true
+}
+touch "$_gd_runtime/mirrors/first.git/gd-sentinel" 2>/dev/null || true
+_gd_before=$(_gd_refs)
+_gd_run 'mirror_submodules missing'
+assert_eq "a joining session stops on that config too" 1 \
+    "$([ "$_gd_rc" -ne 0 ] && echo 1 || echo 0)"
+assert_eq "naming the file" 1 \
+    "$(grep -q "modules/first/config" "$TMPDIR/gd.out" && echo 1 || echo 0)"
+assert_eq "and leaves first's mirror in place" yes \
+    "$([ -e "$_gd_runtime/mirrors/first.git/gd-sentinel" ] && echo yes || echo no)"
+assert_eq "with the same refs" "$_gd_before" "$(_gd_refs)"
+assert_eq "among them the pin" 1 \
+    "$(printf '%s\n' "$_gd_before" | grep -c ' refs/swarm/gitlink$' || true)"
+cp "$_gd_dir/first.config" "$_gd_src/.git/modules/first/config"
+_gd_run 'mirror_submodules missing'
+assert_eq "with the config back, the session joins" 0 "$_gd_rc"
+
+rm -rf "$_gd_dir"
+
+# ============================================================
+echo ""
 echo "=== 36. signing_key resolution ==="
 
 # Mirrors the signing-key resolution block in launch.sh.
