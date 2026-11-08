@@ -184,6 +184,10 @@ DAEMON=$(swarm_docker_daemon_id) || exit 1
 swarm_state_update "$RT/state.json" \
     '.engagement_id = "e1" | .docker_daemon = $d' --arg d "$DAEMON" || exit 1
 
+# More docker run arguments for the next make_container (an environment
+# variable, a tmpfs); empty by default.
+MC_ARGS=()
+
 # Leave a stopped container of image IMG with a committed repository in
 # its workspace volume, after ACTION ran in it: NAME with VOL (after
 # dropping what an earlier case left), or the second one, NAME2 with
@@ -211,6 +215,7 @@ make_container() {
             --label "${SWARM_PROJECT_LABEL}=${P}" \
             --label "${SWARM_CHECKOUT_LABEL}=${CK}" \
             --mount "type=volume,src=${vol},dst=/workspace" \
+            "${MC_ARGS[@]+"${MC_ARGS[@]}"}" \
             --entrypoint bash "$img" -c '
                 set -e
                 cd /workspace
@@ -455,12 +460,12 @@ two_container_case() {
 # The untracked file of the last case, dropped on purpose: retire
 # --discard-uncommitted lists it and keeps the rest of the clone.
 discard_case() {
-    local label="--discard-uncommitted" rc=0 out
+    local label="--discard-uncommitted" rc=0 out file="${1:-results.txt}"
     out=$(cd "$CHECKOUT" && SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" \
         "$BASH" "$LAUNCH_SH" retire --discard-uncommitted 2>&1) || rc=$?
     check "$label: retired" "$rc" "0"
     check "$label: listing what it drops" \
-        "$(printf '%s\n' "$out" | grep -c 'results.txt')" "1"
+        "$(printf '%s\n' "$out" | grep -c "$file")" "1"
     check "$label: container gone" "$(container_state)" "gone"
 }
 
@@ -565,6 +570,38 @@ run_case "an edit in an image repository whose name is not UTF-8" "$IMAGE" \
     "not valid UTF-8"
 run_case "an edit under a repository rooted at /" "$ROOT_IMAGE" \
     'echo edited >> /opt/x' "  /.git"
+# Linked worktrees of the workspace's repository in the container's own
+# layer: checked like a checkout there (the volume scan's helper keeps
+# its scratch under /, so a worktree at /tmp, or one TMPDIR points into,
+# gets no file of the helper's).
+run_case "a clean linked worktree of the workspace in /tmp" "$BASE_IMAGE" '
+    git worktree add -q --detach /tmp/wt HEAD' removed
+run_case "a linked worktree rooted at /tmp itself" "$BASE_IMAGE" '
+    git worktree add -q --detach /tmp HEAD' removed
+MC_ARGS=(-e TMPDIR=/tmp/wt3)
+run_case "a linked worktree that TMPDIR points into" "$BASE_IMAGE" '
+    git worktree add -q --detach /tmp/wt3 HEAD' removed
+MC_ARGS=()
+run_case "a linked worktree in /tmp with an untracked file" "$BASE_IMAGE" '
+    git worktree add -q --detach /tmp/wt HEAD
+    echo results > /tmp/wt/notes.txt' \
+    "a linked worktree outside /workspace, in its layer, holds work"
+discard_case notes.txt
+run_case "a linked worktree whose directory is gone" "$BASE_IMAGE" '
+    git worktree add -q --detach /tmp/wt HEAD
+    rm -rf /tmp/wt' removed
+run_case "a copy of the workspace in /tmp, its worktree gone" \
+    "$BASE_IMAGE" '
+    git worktree add -q --detach /tmp/wt HEAD
+    cp -a /workspace /tmp/copy
+    rm -rf /tmp/wt' removed
+run_case "a linked worktree with a repository inside" "$BASE_IMAGE" '
+    git worktree add -q --detach /tmp/wt HEAD
+    git init -q /tmp/wt/inner' "a repository inside"
+MC_ARGS=(--tmpfs /scratch)
+run_case "a linked worktree on a tmpfs" "$BASE_IMAGE" '
+    git worktree add -q --detach /scratch/wt HEAD' "under a mount"
+MC_ARGS=()
 two_container_case
 interrupt_case
 if ! (sigint_works); then

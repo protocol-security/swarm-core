@@ -392,7 +392,7 @@ cleanup_scan() {
             SWARM_SCAN_DOCKER_ARGS=(--name "${PROJECT}-cleanup-scan-${tag}-$$"
                 --label "${CLEANUP_HELPER_LABEL}=${PROJECT}")
             if swarm_scan_volume "$path" "$IMAGE_NAME" "${context:-full}" \
-                    "$out" 2>"$out.err"; then
+                    "$out" "" cleanup 2>"$out.err"; then
                 # shellcheck disable=SC2034
                 SWARM_SCAN_DOCKER_ARGS=()
                 echo volume
@@ -445,10 +445,26 @@ cleanup_retire() {
 }
 
 # Apply the policy to scan report REPORT of SOURCE: block lines refuse;
-# uncommitted lines refuse unless --discard-uncommitted, which lists
-# them.  Fails when the source may not be deleted.
+# layer-uncommitted lines refuse too (cleanup's scans see no container
+# layer, so one means the scan is not what it should be); uncommitted
+# lines refuse unless --discard-uncommitted, which lists them.  Fails
+# when the source may not be deleted.
 cleanup_policy() {
     local report="$1" source="$2" rc=0
+    grep -a '^layer-uncommitted ' "$report" > "$report.lunc" 2>/dev/null \
+        || rc=$?
+    case "$rc" in
+        0)
+            echo "ERROR: the scan of ${source} reports work in a container" \
+                 "layer, which cleanup's scans cannot see:" >&2
+            sed 's/^layer-uncommitted /  /' "$report.lunc" >&2
+            return 1 ;;
+        1) ;;
+        *)
+            echo "ERROR: cannot read the scan of ${source}." >&2
+            return 1 ;;
+    esac
+    rc=0
     grep -a '^block ' "$report" > "$report.block" 2>/dev/null || rc=$?
     case "$rc" in
         0)

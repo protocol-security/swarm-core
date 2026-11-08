@@ -563,18 +563,25 @@ SWARM_SCAN_DOCKER_ARGS=()
 # empty directory OUT: the scanner runs in a throwaway container with
 # the volume read-only and no network, as root so it can read every
 # file, and streams its results back as a tar archive.  MOUNTS (optional,
-# one path per line) names the scanned container's other mount points.
+# one path per line) names the scanned container's other mount points;
+# ORIGIN (optional: retire-volume, cleanup) says who scans
+# (SWARM_SCAN_ORIGIN, lib/preserve-scan.sh).
 swarm_scan_volume() {
-    local vol="$1" image="$2" context="$3" out="$4" mounts="${5:-}" rc=0
+    local vol="$1" image="$2" context="$3" out="$4" mounts="${5:-}"
+    local origin="${6:-other}" rc=0
     swarm_docker_own_group run --rm -i --pull never --network none --user 0 \
         "${SWARM_SCAN_DOCKER_ARGS[@]+"${SWARM_SCAN_DOCKER_ARGS[@]}"}" \
         -e "SWARM_SCAN_MOUNTS=${mounts}" \
+        -e "SWARM_SCAN_ORIGIN=${origin}" \
         --entrypoint bash \
         --mount "type=volume,src=${vol},dst=/workspace,readonly,volume-nocopy" \
         "$image" -c '
             # The image may be a snapshot of a container with its own
-            # files anywhere, so the scratch space is a new directory.
-            d=$(mktemp -d) || exit 3
+            # files anywhere, so the scratch space is a new directory,
+            # right under / so that it is inside no checkout the scan
+            # reads (a linked worktree at /tmp, or wherever TMPDIR
+            # points).
+            d=$(mktemp -d /swarm-volume-scan.XXXXXX) || exit 3
             cat > "$d/scan.sh" || exit 3
             mkdir "$d/out" || exit 3
             bash "$d/scan.sh" worktree /workspace "$1" "$d/out" >&2 || exit $?
@@ -582,6 +589,7 @@ swarm_scan_volume() {
             set -- report
             [ ! -f bundle ] || set -- "$@" bundle
             [ ! -f objects ] || set -- "$@" objects
+            [ ! -f external-worktrees ] || set -- "$@" external-worktrees
             tar -cf - "$@" || exit 3
         ' scan "$context" \
         < "$(dirname "${BASH_SOURCE[0]}")/preserve-scan.sh" \
@@ -592,12 +600,12 @@ swarm_scan_volume() {
 
 # Extract the scan archive ARCHIVE (a helper's output: the container
 # chooses its bytes) into directory OUT, which must hold nothing else.
-# It may list only report, bundle and objects, each at most once:
-# its listing is read through head -c 64 (the longest right one is 22
-# bytes), so no member name, however long, is read whole.  The members
-# are written under the helper limit, and each must then be a regular
-# file with a single link.  The archive is removed.  Fails on anything
-# else.
+# It may list only report, bundle, objects and external-worktrees, each
+# at most once: its listing is read through head -c 64 (the longest
+# right one is 41 bytes), so no member name, however long, is read
+# whole.  The members are written under the helper limit, and each must
+# then be a regular file with a single link; external-worktrees at most
+# 64 KiB.  The archive is removed.  Fails on anything else.
 swarm_scan_extract() {
     local archive="$1" out="$2" kb list name rest seen=" " rc=0 nl=$'\n'
     kb=$(swarm_helper_limit_kb) || return 1
@@ -624,7 +632,7 @@ swarm_scan_extract() {
         name="${rest%%"$nl"*}"
         if [ "$name" = "$rest" ]; then rest=""; else rest="${rest#*"$nl"}"; fi
         case "$name" in
-            report|bundle|objects) ;;
+            report|bundle|objects|external-worktrees) ;;
             *)
                 echo "the scan archive holds an unexpected entry." >&2
                 rm -f "$archive" "$out/.tar-err"
@@ -660,6 +668,21 @@ swarm_scan_extract() {
             return 1
         fi
     done
+    if [ -f "$out/external-worktrees" ]; then
+        local size
+        size=$(wc -c < "$out/external-worktrees") || size=""
+        size="${size//[[:space:]]/}"
+        case "$size" in
+            ''|*[!0123456789]*)
+                echo "cannot read the size of the scan archive's" \
+                     "external-worktrees." >&2
+                return 1 ;;
+        esac
+        if [ "$size" -gt 65536 ]; then
+            echo "the scan archive's external-worktrees is too large." >&2
+            return 1
+        fi
+    fi
 }
 
 # Print the number of hard links of file PATH (GNU or BSD stat).

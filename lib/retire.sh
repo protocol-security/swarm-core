@@ -290,7 +290,7 @@ EOF
     # shellcheck disable=SC2034  # read by swarm_scan_volume
     SWARM_SCAN_DOCKER_ARGS=(--label "${RETIRE_HELPER_LABEL}=${PROJECT}")
     swarm_scan_volume "$vol" "$snap" "${context:-full}" "$tmp" "$mounts" \
-        2>"$tmp/err" || scan_rc=$?
+        retire-volume 2>"$tmp/err" || scan_rc=$?
     # shellcheck disable=SC2034
     SWARM_SCAN_DOCKER_ARGS=()
     # The snapshot is still needed below; every path from here removes
@@ -341,11 +341,43 @@ swarm_retire_after_scan() {
             echo "ERROR: cannot read the workspace scan of ${name}." >&2
             return 1 ;;
     esac
+    # Work outside Git's history in a linked worktree of the volume's
+    # repositories that lies in the container's own layer
+    # (layer-uncommitted): docker rm deletes it, so it refuses unless
+    # --discard-uncommitted, as a layer checkout's does.
+    grc=0
+    grep -a '^layer-uncommitted ' "$tmp/report" > "$tmp/layer-unc" \
+        2>/dev/null || grc=$?
+    case "$grc" in
+        0)
+            if [ "$RETIRE_DISCARD" = true ]; then
+                echo "Discarding, from ${name}, in its linked worktrees" \
+                     "outside /workspace:" >&2
+                sed 's/^layer-uncommitted /  /' "$tmp/layer-unc" >&2
+            else
+                echo "ERROR: ${name} cannot be retired; a linked worktree" \
+                     "outside /workspace, in its layer, holds work outside" \
+                     "Git's history:" >&2
+                sed 's/^layer-uncommitted /  /' "$tmp/layer-unc" >&2
+                echo "  Commit or copy it out (docker cp ${id}:<path>" \
+                     "<dir>), or run retire with --discard-uncommitted to" \
+                     "drop exactly these." >&2
+                return 1
+            fi ;;
+        1) ;;
+        *)
+            echo "ERROR: cannot read the workspace scan of ${name}." >&2
+            return 1 ;;
+    esac
+    # The linked worktrees the scan let through, checked against its
+    # report, are the only .git files outside the volume the layer search
+    # may pass.
+    swarm_retire_external_list "$tmp" "$name" || return 1
     # Repositories outside the volume (a clone in /tmp, a test's fixture,
     # one the image ships) are in its layer only: checkouts are scanned
     # to be kept as recovery refs, anything else refuses.
     swarm_retire_layer_repos "$id" "$name" "$snap" "$info" "$mounts" \
-        || return 1
+        "$tmp/external.ok" || return 1
     # Symlinks in the volume that lead out of it: fine when they point
     # into the image (a virtualenv's python), not when the target, or
     # anything below it, is something the container added or changed.
@@ -420,6 +452,108 @@ retire_layer_limit() {
     printf '%s' "$((mb * 1024 * 1024))"
 }
 
+# Check the list of linked worktrees the volume scan in directory TMP let
+# through (TMP/external-worktrees: absolute paths, each ended by a NUL)
+# against its report (one external-worktree line each), and write the
+# paths one per line to TMP/external.ok (empty when there are none).
+# Fails, saying why, when the list is malformed or the two disagree.
+swarm_retire_external_list() {
+    local tmp="$1" name="$2" rec n=0 total rc
+    if ! : > "$tmp/external.ok" || ! : > "$tmp/external.rep"; then
+        retire_list_failed "$name" "$tmp"
+        return 1
+    fi
+    rc=0
+    grep -a '^external-worktree ' "$tmp/report" > "$tmp/external.rep0" \
+        2>/dev/null || rc=$?
+    case "$rc" in
+        0|1) ;;
+        *)
+            echo "ERROR: cannot read the workspace scan of ${name}." >&2
+            return 1 ;;
+    esac
+    if ! sed 's/^external-worktree //' "$tmp/external.rep0" \
+            > "$tmp/external.rep"; then
+        retire_list_failed "$name" "$tmp"
+        return 1
+    fi
+    if [ ! -e "$tmp/external-worktrees" ]; then
+        if [ -s "$tmp/external.rep" ]; then
+            echo "ERROR: the workspace scan of ${name} lets linked" \
+                 "worktrees through but sent no list of them." >&2
+            return 1
+        fi
+        return 0
+    fi
+    total=$(tr -cd '\000' < "$tmp/external-worktrees" | wc -c | tr -d ' ') \
+        || total=-1
+    # Every record ends with a NUL: no tail without one.
+    if [ "$(tail -c 1 "$tmp/external-worktrees" | od -An -tx1 | tr -d ' ')" \
+            != 00 ] && [ -s "$tmp/external-worktrees" ]; then
+        echo "ERROR: the workspace scan of ${name} sent a malformed list" \
+             "of linked worktrees." >&2
+        return 1
+    fi
+    while IFS= read -r -d '' rec; do
+        n=$((n + 1))
+        case "$rec" in
+            /*) ;;
+            *) rec="" ;;
+        esac
+        case "$rec" in
+            ''|*[[:cntrl:]]*)
+                echo "ERROR: the workspace scan of ${name} sent a malformed" \
+                     "list of linked worktrees." >&2
+                return 1 ;;
+        esac
+        if ! printf '%s' "$rec" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1
+        then
+            echo "ERROR: the workspace scan of ${name} sent a malformed" \
+                 "list of linked worktrees." >&2
+            return 1
+        fi
+        # Seen already (a duplicate), and named by the report: each read
+        # must work; a failed one is not an answer.
+        rc=0
+        grep -qxF -- "$rec" "$tmp/external.ok" || rc=$?
+        case "$rc" in
+            1) ;;
+            0)
+                echo "ERROR: the workspace scan of ${name} sent a malformed" \
+                     "list of linked worktrees." >&2
+                return 1 ;;
+            *)
+                echo "ERROR: cannot check the list of linked worktrees of" \
+                     "${name}." >&2
+                return 1 ;;
+        esac
+        rc=0
+        grep -qxF -- "$rec" "$tmp/external.rep" || rc=$?
+        case "$rc" in
+            0) ;;
+            1)
+                echo "ERROR: the workspace scan of ${name} lists a linked" \
+                     "worktree its report does not name." >&2
+                return 1 ;;
+            *)
+                echo "ERROR: cannot check the list of linked worktrees of" \
+                     "${name}." >&2
+                return 1 ;;
+        esac
+        if ! printf '%s\n' "$rec" >> "$tmp/external.ok"; then
+            retire_list_failed "$name" "$tmp"
+            return 1
+        fi
+    done < "$tmp/external-worktrees"
+    if [ "$n" != "$total" ] \
+            || [ "$(retire_count_lines "$tmp/external.ok")" != "$n" ] \
+            || [ "$(retire_count_lines "$tmp/external.rep")" != "$n" ]; then
+        echo "ERROR: the workspace scan of ${name} and its list of linked" \
+             "worktrees disagree." >&2
+        return 1
+    fi
+}
+
 # Find the Git repositories in snapshot SNAP of container ID outside
 # /workspace (the volume, scanned on its own): a .git entry of any type,
 # or a directory with HEAD next to objects or commondir.  A checkout (a
@@ -429,9 +563,12 @@ retire_layer_limit() {
 # refuses: a bare repository or a git dir kept apart from its work tree,
 # a .git file or link outside every checkout, a linked worktree's admin
 # dir, a repository at /.  INFO is the container's inspect JSON, MOUNTS
-# its other mount points.
+# its other mount points.  A .git file at <p>/.git passes when <p> is a
+# line of file EXTERNAL (optional): a linked worktree of the volume's
+# repositories that the volume scan checked.
 swarm_retire_layer_repos() {
     local id="$1" name="$2" snap="$3" info="$4" mounts="$5" tmp rc=0
+    local external="${6:-}"
     tmp=$(retire_tmpdir) || return 1
     swarm_docker_own_group run --rm --pull never --network none --user 0 \
         --label "${RETIRE_HELPER_LABEL}=${PROJECT}" \
@@ -552,6 +689,11 @@ swarm_retire_layer_repos() {
             esac
         done
         $covered && continue
+        # A linked worktree the volume scan checked (its exact path).
+        if [ "$kind" = F ] && [ -n "$external" ] && [ -s "$external" ] \
+                && grep -qxF -- "${path%/.git}" "$external"; then
+            continue
+        fi
         if [ "$kind" = D ] && [ "$path" != /.git ]; then
             if ! printf '%s\n' "${path%/.git}" >> "$tmp/scan"; then
                 retire_list_failed "$name" "$tmp"
@@ -671,6 +813,7 @@ retire_scan_checkout() {
     swarm_docker_own_group run --rm -i --pull never --network none --user 0 \
         --label "${RETIRE_HELPER_LABEL}=${PROJECT}" \
         -e "SWARM_SCAN_MOUNTS=${mounts}"$'\n'"/workspace" \
+        -e SWARM_SCAN_ORIGIN=retire-layer \
         --entrypoint bash "$snap" -c '
             # swarm-layer-scan: the scanner (on stdin) on checkout $1.
             d=$(mktemp -d /swarm-layer-scan.XXXXXX) || exit 3

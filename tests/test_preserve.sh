@@ -925,7 +925,7 @@ if grep -q 'relative-paths' <<< "$_wth"; then
     git -C "$W" worktree remove --force "$W/rel-in"
     out=$(scan worktree "$W" full)
     assert_eq "a relative worktree outside the volume blocks" "1" \
-        "$(has_line "$out" "block external $(cd -P "$TMPDIR" && pwd -P)/rel-out")"
+        "$(has_line "$out" "rel-out/.git (relative, outside)")"
     git -C "$W" worktree remove --force "$TMPDIR/rel-out"
 else
     echo "  SKIP: git worktree add --relative-paths not supported"
@@ -1788,6 +1788,34 @@ echo r > "$AX/src/report"
 echo b > "$AX/src/bundle"
 echo o > "$AX/src/objects"
 echo e > "$AX/src/extra"
+echo x > "$AX/src/external-worktrees"
+ax_tar ext.tar report external-worktrees
+assert_eq "a scan archive with external-worktrees extracts" "0" \
+    "$(ax_extract ext.tar)"
+ax_tar extdup.tar report external-worktrees external-worktrees
+assert_eq "external-worktrees twice is refused" "1" "$(ax_extract extdup.tar)"
+head -c 65536 /dev/zero > "$AX/src/external-worktrees"
+ax_tar ext64.tar report external-worktrees
+assert_eq "an external-worktrees of 64 KiB extracts" "0" \
+    "$(ax_extract ext64.tar)"
+head -c 65537 /dev/zero > "$AX/src/external-worktrees"
+ax_tar ext65.tar report external-worktrees
+assert_eq "one a byte larger is refused" "1" "$(ax_extract ext65.tar)"
+echo x > "$AX/src/external-worktrees"
+ax_tar extwc.tar report external-worktrees
+wc() { return 1; }
+assert_eq "a size that cannot be read is refused" "1" "$(ax_extract extwc.tar)"
+unset -f wc
+rm "$AX/src/external-worktrees"
+ln -s report "$AX/src/external-worktrees"
+ax_tar extlink.tar report external-worktrees
+assert_eq "an external-worktrees that is a link is refused" "1" \
+    "$(ax_extract extlink.tar)"
+rm "$AX/src/external-worktrees"
+ln "$AX/src/report" "$AX/src/external-worktrees"
+ax_tar exthard.tar report external-worktrees
+assert_eq "and one that is a hard link" "1" "$(ax_extract exthard.tar)"
+rm "$AX/src/external-worktrees"
 ax_tar ok.tar report bundle objects
 assert_eq "a scan archive of report, bundle and objects extracts" "0" \
     "$(ax_extract ok.tar)"
@@ -2441,6 +2469,427 @@ git -C "$PC/inner" config core.repositoryformatversion 1
 git -C "$PC/inner" config extensions.partialClone origin
 assert_eq "so does a nested repository that is a partial clone" "1" \
     "$(has_line "$(scan worktree "$PC" full)" 'block promisor inner/.git extensions.partialClone')"
+
+# ============================================================
+echo ""
+echo "=== 18. Linked worktrees outside the scanned tree ==="
+
+# A workspace whose repository registers linked worktrees outside it, and
+# a directory that stands for the container's own layer.  Paths are
+# resolved (on macOS /var is a link), as Git records them.
+XT=$(cd -P "$TMPDIR" && pwd -P)
+XW="$XT/xws"
+XL="$XT/xlayer"
+mkdir -p "$XL"
+git init -q "$XW"
+echo a > "$XW/a"
+g -C "$XW" add a
+g -C "$XW" commit -q -m one
+XBASE=$(git -C "$XW" rev-parse HEAD)
+echo b > "$XW/a"
+g -C "$XW" commit -q -am two
+# Scan XW as ORIGIN, with more environment if given.
+xscan() {
+    local o="$1"
+    shift
+    scan worktree "$XW" full SWARM_SCAN_ORIGIN="$o" "$@"
+}
+# Add linked worktree NAME of XW in XL, detached at the first commit;
+# drop it, registration and all.
+xadd() {
+    git -C "$XW" worktree add -q --detach "$XL/$1" "$XBASE" 2>/dev/null
+}
+xdrop() {
+    rm -rf "${XL:?}/$1" "$XW/.git/worktrees/$1"
+}
+# The list scan OUT published, one path per line, or "none".
+xlist() {
+    if [ -f "$1/external-worktrees" ]; then
+        tr '\0' '\n' < "$1/external-worktrees"
+    else
+        echo none
+    fi
+}
+xblocks() {
+    grep -c '^block ' "$1/report" || true
+}
+
+xadd wt
+o=$(xscan retire-volume)
+assert_eq "retire-volume: a clean linked worktree in the layer is let through" \
+    "1" "$(has_line "$o" "external-worktree $XL/wt")"
+assert_eq "  with nothing to refuse or discard" "0" \
+    "$(grep -cE '^(block|uncommitted|layer-uncommitted) ' "$o/report" || true)"
+assert_eq "  and listed at the scan's end" "$XL/wt" "$(xlist "$o")"
+dst=$(imported "$o")
+_xk=$(git -C "$dst" cat-file -p refs/r/0/files | tr '\0' '\n' \
+    | awk '$4 == "worktrees/wt/HEAD" { print $1 }')
+assert_eq "  its admin dir's HEAD is kept with the repository's files" \
+    "$XBASE" \
+    "$(git -C "$dst" cat-file -p "refs/r/0/f/$_xk" 2>/dev/null | tr -d '\n')"
+echo u > "$XL/wt/untracked.txt"
+echo m >> "$XL/wt/a"
+echo s > "$XL/wt/staged.txt"
+git -C "$XL/wt" add staged.txt
+_xs=$(git -C "$XL/wt" rev-parse :staged.txt)
+rm "$XL/wt/staged.txt"
+echo 'x.log' >> "$XW/.git/info/exclude"
+echo l > "$XL/wt/x.log"
+o=$(xscan retire-volume)
+assert_eq "  an untracked file there is layer-uncommitted" "1" \
+    "$(has_line "$o" "layer-uncommitted dirty $XL/wt: ?? untracked.txt")"
+assert_eq "  so is a changed tracked file" "1" \
+    "$(has_line "$o" "layer-uncommitted dirty $XL/wt:  M a")"
+assert_eq "  and a staged file deleted since" "1" \
+    "$(has_line "$o" "layer-uncommitted dirty $XL/wt: AD staged.txt")"
+assert_eq "  and an ignored file" "1" \
+    "$(has_line "$o" "layer-uncommitted ignored $XL/wt: x.log")"
+assert_eq "  never plain uncommitted" "0" \
+    "$(grep -c "^uncommitted .*$XL/wt" "$o/report" || true)"
+assert_eq "  still let through and listed" "$XL/wt" "$(xlist "$o")"
+assert_eq "  the staged-only blob is in the bundle" "blob" \
+    "$(git -C "$(imported "$o")" cat-file -t "$_xs" 2>/dev/null)"
+git -C "$XL/wt" update-index --assume-unchanged a
+o=$(xscan retire-volume)
+assert_eq "  a hidden index entry is layer-uncommitted" "1" \
+    "$(has_line "$o" "layer-uncommitted hidden $XL/wt: h a")"
+sed -i.bak '/^x\.log$/d' "$XW/.git/info/exclude"
+rm -f "$XW/.git/info/exclude.bak"
+xdrop wt
+git -C "$XW" worktree prune
+# A submodule not initialized in such a worktree: Git shows nothing
+# below its directory, and every file the scan lists there is
+# layer-uncommitted too, never plain uncommitted.
+git -C "$XW" update-index --add --cacheinfo "160000,$XBASE,sub"
+g -C "$XW" commit -q -m gitlink
+git -C "$XW" worktree add -q --detach "$XL/wtg" HEAD 2>/dev/null
+mkdir -p "$XL/wtg/sub"
+echo w > "$XL/wtg/sub/x.txt"
+o=$(xscan retire-volume)
+assert_eq "  a file under its uninitialized submodule is layer-uncommitted" \
+    "1" "$(has_line "$o" "layer-uncommitted dirty $XL/wtg: ?? sub/x.txt")"
+assert_eq "  never plain uncommitted" "0" \
+    "$(grep -c "^uncommitted .*$XL/wtg" "$o/report" || true)"
+xdrop wtg
+git -C "$XW" worktree prune
+git -C "$XW" reset -q --hard HEAD~1
+
+xadd wo
+o=$(xscan cleanup)
+assert_eq "cleanup: one present where cleanup scans blocks" "1" \
+    "$(has_line "$o" "block external $XL/wo (present where cleanup scans)")"
+for _xo in retire-layer other; do
+    o=$(xscan "$_xo")
+    assert_eq "$_xo: one present outside blocks" "1" \
+        "$(has_line "$o" "block external $XL/wo")"
+done
+rm -rf "$XL/wo"
+for _xo in retire-volume retire-layer other; do
+    o=$(xscan "$_xo")
+    assert_eq "$_xo: a registration whose directory is gone is a note" \
+        "1 0" "$(has_line "$o" "gone-worktree $XL/wo") $(xblocks "$o")"
+done
+o=$(xscan cleanup)
+assert_eq "cleanup: it is left to retire" "1 0" \
+    "$(has_line "$o" "deferred-worktree $XL/wo") $(xblocks "$o")"
+xdrop wo
+
+# Its path, written by hand (Git records resolved paths).
+xadd wl
+ln -s "$XL" "$XT/xlink"
+printf '%s\n' "$XT/xlink/wl/.git" > "$XW/.git/worktrees/wl/gitdir"
+o=$(xscan retire-volume)
+assert_eq "a registered path through a link blocks" "1" \
+    "$(has_line "$o" "block worktree-path $XT/xlink/wl (a link on the way: $XT/xlink)")"
+rm "$XT/xlink"
+printf '%s\n' "$XL/wl/.git" > "$XW/.git/worktrees/wl/gitdir"
+o=$(xscan retire-volume SWARM_SCAN_MOUNTS="$XL")
+assert_eq "one at or below a mount of the container blocks" "1" \
+    "$(has_line "$o" "block worktree-path $XL/wl (under a mount)")"
+o=$(xscan retire-volume SWARM_SCAN_MOUNTS="$XL/wl/sub")
+assert_eq "so does one with a mount inside it" "1" \
+    "$(has_line "$o" "block external $XL/wl (a mount inside it)")"
+ln -s "$XL" "$XT/xalias"
+o=$(xscan retire-volume SWARM_SCAN_MOUNTS="$XT/xalias")
+assert_eq "and one under a mount given through a link" "1" \
+    "$(has_line "$o" "block worktree-path $XL/wl (under a mount)")"
+rm -rf "$XL/wl"
+o=$(xscan retire-volume SWARM_SCAN_MOUNTS="$XT/xalias")
+assert_eq "a gone one under a mount is not gone, it blocks" "1" \
+    "$(has_line "$o" "block worktree-path $XL/wl (under a mount)")"
+rm "$XT/xalias"
+if [ "$(id -u)" != 0 ]; then
+    mkdir -p "$XT/xlocked/in"
+    printf '%s\n' "$XT/xlocked/in/wl/.git" > "$XW/.git/worktrees/wl/gitdir"
+    chmod 000 "$XT/xlocked"
+    o=$(xscan retire-volume)
+    chmod 755 "$XT/xlocked"
+    assert_eq "a path this scan cannot inspect blocks" "1" \
+        "$(has_line "$o" "block worktree-path $XT/xlocked/in/wl (cannot inspect $XT/xlocked)")"
+    rm -rf "$XT/xlocked"
+else
+    echo "  SKIP: as root every directory can be searched"
+fi
+for _xp in "$XL/wl" "$XL/x/../wl/.git" "$XL/w"$'\t'"l/.git"; do
+    printf '%s\n' "$_xp" > "$XW/.git/worktrees/wl/gitdir"
+    o=$(xscan retire-volume)
+    assert_eq "a malformed back-pointer blocks: $(printf '%q' "$_xp")" "1" \
+        "$(grep -c '^block worktree-pointer ' "$o/report" || true)"
+done
+printf 'a\nb\n' > "$XW/.git/worktrees/wl/gitdir"
+o=$(xscan retire-volume)
+assert_eq "so does one of two lines" "1" \
+    "$(has_line "$o" "block worktree-pointer .git/worktrees/wl (not one short line)")"
+head -c 5000 /dev/zero | tr '\0' a > "$XW/.git/worktrees/wl/gitdir"
+o=$(xscan retire-volume)
+assert_eq "and an oversized one" "1" \
+    "$(has_line "$o" "block worktree-pointer .git/worktrees/wl (not one short line)")"
+xdrop wl
+
+xadd w2
+o=$(xscan retire-volume)
+assert_eq "a fresh worktree is let through" "1" \
+    "$(has_line "$o" "external-worktree $XL/w2")"
+for _xf in pipe .gitignore .gitattributes; do
+    mkfifo "$XL/w2/$_xf"
+    o=$(xscan retire-volume)
+    assert_eq "a FIFO named $_xf in it blocks, before Git reads it" "1" \
+        "$(has_line "$o" "block external $XL/w2 (a special file: $XL/w2/$_xf)")"
+    assert_eq "  and no list is published" "none" "$(xlist "$o")"
+    rm "$XL/w2/$_xf"
+done
+git init -q "$XL/w2/inner"
+o=$(xscan retire-volume)
+assert_eq "a repository inside it blocks" "1" \
+    "$(has_line "$o" "block external $XL/w2 (a repository inside: $XL/w2/inner/.git)")"
+rm -rf "$XL/w2/inner"
+git init -q --bare "$XL/w2/b.git"
+o=$(xscan retire-volume)
+assert_eq "so does a bare one" "1" \
+    "$(has_line "$o" "block external $XL/w2 (a repository inside: $XL/w2/b.git)")"
+rm -rf "$XL/w2/b.git"
+mkdir -p "$XL/w2/sub"
+printf 'gitdir: %s\n' "$XT/elsewhere" > "$XL/w2/sub/.git"
+o=$(xscan retire-volume)
+assert_eq "and a .git file below it" "1" \
+    "$(has_line "$o" "block external $XL/w2 (a repository inside: $XL/w2/sub/.git)")"
+rm -rf "$XL/w2/sub"
+cp "$XL/w2/.git" "$XT/xgitfile"
+rm "$XL/w2/.git"
+ln -s "$XT/xgitfile" "$XL/w2/.git"
+o=$(xscan retire-volume)
+assert_eq "a .git that is a link blocks" "1" \
+    "$(has_line "$o" "block external $XL/w2 (its .git is not a file)")"
+rm "$XL/w2/.git"
+printf 'gitdir: %s\n' "$XW/.git/worktrees/other" > "$XL/w2/.git"
+o=$(xscan retire-volume)
+assert_eq "so does one naming another git dir" "1" \
+    "$(has_line "$o" "block external $XL/w2 (its .git names another git dir)")"
+printf 'gitdir: ../x\n' > "$XL/w2/.git"
+o=$(xscan retire-volume)
+assert_eq "or a relative one" "1" \
+    "$(has_line "$o" "block external $XL/w2 (its .git names a relative git dir)")"
+cp "$XT/xgitfile" "$XL/w2/.git"
+ln -s a "$XL/w2/rel-link"
+ln -s "$XL/w2/a" "$XL/w2/abs-link"
+ln -s nowhere "$XL/w2/dangling"
+o=$(xscan retire-volume)
+assert_eq "links inside it (relative, absolute, dangling) are fine" "1 0" \
+    "$(has_line "$o" "external-worktree $XL/w2") $(xblocks "$o")"
+mkdir -p "$XT/xout"
+echo z > "$XT/xout/z"
+ln -s "$XT/xout/z" "$XL/w2/out-link"
+o=$(xscan retire-volume)
+assert_eq "a link out of it blocks" "1" \
+    "$(has_line "$o" "block external $XL/w2 (a link out: $XL/w2/out-link)")"
+rm "$XL/w2/out-link"
+ln -s "$XL/w2" "$XT/xjump"
+ln -s "$XT/xjump/a" "$XL/w2/reentry"
+o=$(xscan retire-volume)
+assert_eq "so does one that leaves it and comes back" "1" \
+    "$(has_line "$o" "block external $XL/w2 (a link out: $XL/w2/reentry)")"
+rm "$XL/w2/reentry" "$XT/xjump"
+ln -s "$XT/xout/../xlayer/w2/a" "$XL/w2/dotdot"
+o=$(xscan retire-volume)
+assert_eq "and one whose path passes an outside directory on the way" "1" \
+    "$(has_line "$o" "block external $XL/w2 (a link out: $XL/w2/dotdot)")"
+rm "$XL/w2/dotdot"
+ln -s l2 "$XL/w2/l1"
+ln -s l1 "$XL/w2/l2"
+o=$(xscan retire-volume)
+assert_eq "and a loop" "1" \
+    "$(grep -cE "^block external $XL/w2 \(a link out: $XL/w2/l[12]\)$" \
+        "$o/report" || true)"
+rm "$XL/w2/l1" "$XL/w2/l2"
+printf '%s\n' '../../../../xlayer/w2/.git' > "$XW/.git/worktrees/w2/gitdir"
+o=$(xscan retire-volume)
+assert_eq "a relative back-pointer leading outside blocks" "1" \
+    "$(has_line "$o" "block worktree-pointer ../../../../xlayer/w2/.git (relative, outside)")"
+printf '%s\n' "$XL/w2/.git" > "$XW/.git/worktrees/w2/gitdir"
+
+# Its .git, one line exactly; an empty directory; a socket; the hop bound.
+printf 'gitdir: %s\n\n' "$XW/.git/worktrees/w2" > "$XL/w2/.git"
+o=$(xscan retire-volume)
+assert_eq "a .git of two lines blocks" "1" \
+    "$(has_line "$o" "block external $XL/w2 (its .git cannot be read as a gitfile)")"
+head -c 5000 /dev/zero | tr '\0' a > "$XL/w2/.git"
+o=$(xscan retire-volume)
+assert_eq "so does an oversized one" "1" \
+    "$(has_line "$o" "block external $XL/w2 (its .git cannot be read as a gitfile)")"
+rm "$XL/w2/.git"
+o=$(xscan retire-volume)
+assert_eq "and a directory there without its .git" "1" \
+    "$(has_line "$o" "block external $XL/w2 (its .git is not a file)")"
+cp "$XT/xgitfile" "$XL/w2/.git"
+if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])' "$XL/w2/sock"
+    o=$(xscan retire-volume)
+    assert_eq "a socket in it blocks" "1" \
+        "$(has_line "$o" "block external $XL/w2 (a special file: $XL/w2/sock)")"
+    rm -f "$XL/w2/sock"
+else
+    echo "  SKIP: no python3 to make a socket"
+fi
+_xi=0
+_xprev=a
+while [ "$_xi" -lt 40 ]; do
+    ln -s "$_xprev" "$XL/w2/c$_xi"
+    _xprev="c$_xi"
+    _xi=$((_xi + 1))
+done
+o=$(xscan retire-volume)
+assert_eq "a chain of 40 links inside it is fine" "1 0" \
+    "$(has_line "$o" "external-worktree $XL/w2") $(xblocks "$o")"
+ln -s c39 "$XL/w2/c40"
+o=$(xscan retire-volume)
+assert_eq "one of 41 is past the bound and blocks" "1" \
+    "$(has_line "$o" "block external $XL/w2 (a link out: $XL/w2/c40)")"
+rm -f "$XL"/w2/c[0-9]*
+# Two admin dirs registering one directory: its .git names one of them.
+cp -R "$XW/.git/worktrees/w2" "$XW/.git/worktrees/w2b"
+o=$(xscan retire-volume)
+assert_eq "a second registration of the same directory blocks" "1" \
+    "$(has_line "$o" "block external $XL/w2 (its .git names another git dir)")"
+rm -rf "$XW/.git/worktrees/w2b"
+# What the admin dir records (an operation under way) lives in the
+# volume: plain uncommitted.
+mkdir "$XW/.git/worktrees/w2/rebase-merge"
+o=$(xscan retire-volume)
+assert_eq "an operation in its admin dir is plain uncommitted" "1 0" \
+    "$(has_line "$o" "uncommitted operation .git/worktrees/w2/rebase-merge") $(grep -c '^layer-uncommitted operation' "$o/report" || true)"
+rmdir "$XW/.git/worktrees/w2/rebase-merge"
+# A listing that fails is not absence (search allowed, reading not).
+if [ "$(id -u)" != 0 ]; then
+    mkdir -p "$XT/xnoread"
+    printf '%s\n' "$XT/xnoread/gone/.git" > "$XW/.git/worktrees/w2/gitdir"
+    chmod 100 "$XT/xnoread"
+    o=$(xscan retire-volume)
+    chmod 755 "$XT/xnoread"
+    assert_eq "a missing entry in a directory that cannot be listed blocks" \
+        "1" "$(has_line "$o" "block worktree-path $XT/xnoread/gone (cannot inspect $XT/xnoread)")"
+    rm -rf "$XT/xnoread"
+    printf '%s\n' "$XL/w2/.git" > "$XW/.git/worktrees/w2/gitdir"
+else
+    echo "  SKIP: as root every directory can be listed"
+fi
+# Nor is one in a directory that cannot be searched, even where it can
+# be listed (GNU find lists it; macOS find does not).
+if [ "$(id -u)" != 0 ]; then
+    mkdir -p "$XT/xnosearch"
+    printf '%s\n' "$XT/xnosearch/gone/.git" > "$XW/.git/worktrees/w2/gitdir"
+    chmod 400 "$XT/xnosearch"
+    o=$(xscan retire-volume)
+    chmod 755 "$XT/xnosearch"
+    assert_eq "a missing entry in a directory that cannot be searched blocks" \
+        "1" "$(has_line "$o" "block worktree-path $XT/xnosearch/gone (cannot inspect $XT/xnosearch)")"
+    rm -rf "$XT/xnosearch"
+    printf '%s\n' "$XL/w2/.git" > "$XW/.git/worktrees/w2/gitdir"
+else
+    echo "  SKIP: as root every directory can be searched"
+fi
+printf '%s\n\n' "$XL/w2/.git" > "$XW/.git/worktrees/w2/gitdir"
+o=$(xscan retire-volume)
+assert_eq "a back-pointer with a second line blocks" "1" \
+    "$(has_line "$o" "block worktree-pointer .git/worktrees/w2 (not one short line)")"
+printf '%s\r\n' "$XL/w2/.git" > "$XW/.git/worktrees/w2/gitdir"
+o=$(xscan retire-volume)
+assert_eq "so does one ending in CR LF" "1" \
+    "$(has_line "$o" "block worktree-pointer .git/worktrees/w2 (not one short line)")"
+printf '%s\n' "$XL/w2/.git" > "$XW/.git/worktrees/w2/gitdir"
+# cleanup: a directory of its image at that path is the worktree only
+# when its .git names the admin dir back.
+o=$(xscan cleanup)
+assert_eq "cleanup: the worktree itself there blocks" "1" \
+    "$(has_line "$o" "block external $XL/w2 (present where cleanup scans)")"
+mkdir -p "$XT/ximg"
+printf '%s\n' "$XT/ximg/.git" > "$XW/.git/worktrees/w2/gitdir"
+o=$(xscan cleanup)
+assert_eq "cleanup: another directory there is left to retire" "1 0" \
+    "$(has_line "$o" "deferred-worktree $XT/ximg") $(xblocks "$o")"
+printf '%s\n' "$XL/w2/.git" > "$XW/.git/worktrees/w2/gitdir"
+rm -rf "$XT/ximg"
+# retire-layer: a registration into the volume (listed) blocks.
+git clone -q "$XW" "$XT/xlc" 2>/dev/null
+git -C "$XT/xlc" worktree add -q --detach "$XT/xlc-v" HEAD 2>/dev/null
+mv "$XT/xlc/.git/worktrees/xlc-v" "$XT/xlc/.git/worktrees/v"
+rm -rf "$XT/xlc-v"
+printf '%s\n' "$XW/v/.git" > "$XT/xlc/.git/worktrees/v/gitdir"
+o=$(scan worktree "$XT/xlc" layer SWARM_SCAN_ORIGIN=retire-layer \
+    SWARM_SCAN_MOUNTS="$XW")
+assert_eq "retire-layer: a registration into the volume blocks" "1" \
+    "$(has_line "$o" "block worktree-path $XW/v (under a mount)")"
+rm -rf "$XT/xlc"
+# A path with a space and glob characters.
+git -C "$XW" worktree add -q --detach "$XL/w t*?[x]" "$XBASE" 2>/dev/null
+o=$(xscan retire-volume)
+assert_eq "a path with a space and glob characters is let through" \
+    "1 $XL/w t*?[x]" \
+    "$(has_line "$o" "external-worktree $XL/w t*?[x]") $(xlist "$o" | grep -F "w t*?[x]")"
+# Gone, beside a directory its name matches as a pattern: the listing
+# looks for that very name.
+rm -rf "$XL/w t*?[x]"
+mkdir "$XL/w tzzx"
+o=$(xscan retire-volume)
+assert_eq "a gone one with glob characters beside a match is a note" "1 0" \
+    "$(has_line "$o" "gone-worktree $XL/w t*?[x]") $(xblocks "$o")"
+rmdir "$XL/w tzzx"
+xdrop "w t*?[x]"
+# The final check reads the report; a read that fails publishes nothing.
+cat > "$XT/xgrep-env" <<'EOF'
+grep() {
+    if [ "$#" = 3 ] && [ "$1" = -q ] && [ "$2" = '^block ' ]; then
+        return 2
+    fi
+    command grep "$@"
+}
+EOF
+o=$(xscan retire-volume BASH_ENV="$XT/xgrep-env")
+assert_eq "a report the last check cannot read: failure, no list" \
+    "yes none" "$([ -e "$o/.rc" ] && echo yes || echo no) $(xlist "$o")"
+
+# Published only at the scan's normal end, with no block anywhere.
+xadd w3
+mkfifo "$XL/w3/pipe"
+o=$(xscan retire-volume)
+assert_eq "one let through next to a block: no list" "1 none" \
+    "$(has_line "$o" "external-worktree $XL/w2") $(xlist "$o")"
+rm "$XL/w3/pipe"
+mkdir -p "$XT/xfakebin"
+cat > "$XT/xfakebin/git" <<EOF
+#!/bin/bash
+for a in "\$@"; do [ "\$a" != bundle ] || exit 1; done
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$XT/xfakebin/git"
+o=$(xscan retire-volume PATH="$XT/xfakebin:$PATH")
+assert_eq "a scan that fails after the checkout checks publishes no list" \
+    "yes none" \
+    "$([ -e "$o/.rc" ] && echo yes || echo no) $(xlist "$o")"
+xdrop w2
+xdrop w3
+git -C "$XW" worktree prune
 
 echo ""
 echo "==============================="

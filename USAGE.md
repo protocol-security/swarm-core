@@ -1377,7 +1377,8 @@ refuses when one
   Git environment variables of its own, or a `HOME` that is empty,
   relative or not normalized;
 - has repository data outside `/workspace`: a worktree registered
-  elsewhere, a `.git` that is a link or a gitfile, repository config
+  elsewhere (except the linked worktrees below), a `.git` that is a
+  link or a gitfile, repository config
   that includes files or sets `core.worktree` outside, `core.hooksPath`,
   `lfs.storage` or a filter driver, alternates outside, or a
   repository inside the volume that the scan cannot carry (see
@@ -1405,6 +1406,21 @@ it is kept with it, the way cleanup keeps one in a volume. A container's
 checkouts may take `SWARM_RETIRE_LAYER_LIMIT_MB` megabytes (default
 100) as bundles; above that, copy out what you need and remove the
 container yourself.
+
+A linked worktree of a repository in the volume that lies in the
+container's own layer (`git worktree add /tmp/base` run in a checkout
+under `/workspace`) is checked the same way, without a bundle of its
+own, since its history and its admin files are in the volume: its work
+outside Git's history stops retire unless `--discard-uncommitted` drops
+exactly what it lists. Retire lets it through only when its registered
+path is absolute, passes no link and no mount, has no mount below it,
+holds a `.git` file naming that repository's admin directory for it,
+and holds no other repository, no special file and no link that leads
+out of it; anything else refuses as before (a relative path, a worktree
+of a checkout in the layer, a volume repository's worktree inside such
+a checkout). A registration whose directory is verifiably not there
+(each directory on the way listed, none of them a link or on a mount)
+stops nothing; its admin files are kept with the repository.
 
 The checks run in a throwaway container started from a snapshot of the
 stopped container (`docker commit`, removed afterwards, also when
@@ -1499,6 +1515,13 @@ so save the containers' logs and stats first if you need them
 (`./launch.sh logs N`, `costs.sh`). A `.new` that a run cut off while
 it cloned the bare repo or a mirror is copied as it is (every file)
 and deleted too.
+
+A repository in a volume that registers a linked worktree outside it
+does not stop those checks: such a worktree is in a container's layer,
+which retire checks first (see
+[Retiring containers](#retiring-containers)), or it is gone. Only a
+directory at that path in the image the checks run from that holds a
+`.git` file naming the repository back stops them.
 
 The recovery refs are `refs/swarm-recovery/e<hex>/<snapshot>/s<n>/...`
 (cleanup) and `.../l<n>/...` (the checkouts retire keeps), `<hex>`

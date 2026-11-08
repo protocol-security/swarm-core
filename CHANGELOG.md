@@ -8,6 +8,7 @@
 
 
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -56,6 +57,20 @@
   that is set but empty is refused by every command, as it named no
   engagement and let `post-process` and `interactive` create one.
 
+- **Retire and cleanup let a linked worktree outside the volume
+  through when it can be checked.** An agent that ran `git worktree
+  add /tmp/<dir>` in a repository under `/workspace` (to build or test
+  another commit, say) left a registration outside the volume: retire
+  refused the container (`external`), cleanup refused the volume
+  (`missing-worktree`), and only steps by hand could end the
+  engagement. Retire's scan of the volume now checks such a worktree in
+  the container's own layer like a checkout there (work outside Git's
+  history refuses unless `--discard-uncommitted`), when it is a plain
+  checkout: an absolute path that passes no link and no mount, a
+  `.git` file naming its admin directory, and no repository, special
+  file or link out inside it. A registration whose directory is gone
+  is a note, and cleanup's scans leave the registration to retire.
+  Anything else refuses as before.
 - **Fix: Git leaves nothing running that holds the engagement lock.**
   Every process started under the lock inherits its descriptor, so
   Git's fsmonitor daemon, started by a merge in a checkout with

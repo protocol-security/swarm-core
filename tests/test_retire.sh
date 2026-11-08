@@ -202,12 +202,21 @@ case "$1" in
                     prev="$a"
                 done
                 root="$F/snaproot"
+                # $F/repos-unmapped: the root resolved and the paths
+                # passed on as found, for paths the volume scan names
+                # the same way (linked worktrees, section 6).
+                [ ! -e "$F/repos-unmapped" ] \
+                    || root=$(cd -P "$F/snaproot" && pwd -P)
                 bash -c "$prog" swarm-repos "$root" > "$d/found" || exit $?
                 # "<kind><path>" records ended by NUL, mapped back to
                 # the snapshot's names.
                 while IFS= read -r -d '' r; do
                     k="${r:0:1}"
                     r="${r:1}"
+                    if [ -e "$F/repos-unmapped" ]; then
+                        printf '%s%s\0' "$k" "$r"
+                        continue
+                    fi
                     case "$r" in
                         "$root") printf '%s/\0' "$k" ;;
                         "$root"/*) printf '%s%s\0' "$k" "${r#"$root"}" ;;
@@ -324,26 +333,65 @@ case "$1" in
         if [ -n "$vol" ] && [ -e "$F/term-on-scan" ]; then
             kill -TERM "$PPID"
         fi
-        # A volume with a directory under voldir/ is scanned for real:
-        # the scanner script comes on stdin, the context is the last
-        # argument.
+        # A volume with a directory under voldir/ is scanned for real,
+        # by the production helper's own script (the -c argument): its
+        # scratch under $F instead of /, the volume at voldir/<vol>
+        # instead of /workspace; the scanner comes on stdin, the context
+        # is the last argument.  $F/xtamper: the archive is unpacked and
+        # changed before it goes back (a helper's output is its
+        # container's to choose).
         if [ -d "$F/voldir/$vol" ]; then
-            cat > "$d/scan.sh"
-            mkdir "$d/out"
+            prog=""
             prev=""
             for a in "$@"; do
+                [ "$prev" != -c ] || prog="$a"
                 ctx="$a"
                 if [ "$prev" = -e ]; then
                     case "$a" in
                         SWARM_SCAN_MOUNTS=*)
                             export SWARM_SCAN_MOUNTS="${a#SWARM_SCAN_MOUNTS=}" ;;
+                        SWARM_SCAN_ORIGIN=*)
+                            export SWARM_SCAN_ORIGIN="${a#SWARM_SCAN_ORIGIN=}" ;;
                     esac
                 fi
                 prev="$a"
             done
-            bash "$d/scan.sh" worktree "$F/voldir/$vol" "$ctx" "$d/out" \
-                >&2 || exit $?
-            tar -C "$d/out" -cf - report
+            mkdir -p "$F/scratch"
+            printf '%s\n' "$prog" > "$F/helper-prog"
+            prog=$(printf '%s\n' "$prog" | sed \
+                -e "s|mktemp -d /swarm-volume-scan\.XXXXXX|mktemp -d $F/scratch/swarm-volume-scan.XXXXXX|" \
+                -e "s| worktree /workspace | worktree $F/voldir/$vol |")
+            if [ ! -e "$F/xtamper" ]; then
+                bash -c "$prog" scan "$ctx"
+                exit $?
+            fi
+            bash -c "$prog" scan "$ctx" > "$d/prod.tar" || exit $?
+            mkdir "$d/x"
+            tar -C "$d/x" -xf "$d/prod.tar" || exit 3
+            xp=$(tr '\0' '\n' < "$d/x/external-worktrees" 2>/dev/null | head -1)
+            case "$(cat "$F/xtamper")" in
+                unterminated) printf '%s' "$xp" > "$d/x/external-worktrees" ;;
+                duplicate) printf '%s\0%s\0' "$xp" "$xp" > "$d/x/external-worktrees" ;;
+                relative) printf 'rel/wt\0' > "$d/x/external-worktrees" ;;
+                control) printf '%s\t\0' "$xp" > "$d/x/external-worktrees" ;;
+                extra) printf '%s/other\0' "$xp" >> "$d/x/external-worktrees" ;;
+                forged) printf 'external-worktree %s/forged\n' "$xp" >> "$d/x/report" ;;
+                nolist) rm -f "$d/x/external-worktrees" ;;
+                big) head -c 70000 /dev/zero > "$d/x/external-worktrees" ;;
+                empty) : > "$d/x/external-worktrees" ;;
+                emptyrec) printf '\0' > "$d/x/external-worktrees" ;;
+                utf8) printf '%s\377\0' "$xp" > "$d/x/external-worktrees" ;;
+                b65536) head -c 65536 /dev/zero | tr '\0' a \
+                    > "$d/x/external-worktrees" ;;
+                b65537) head -c 65537 /dev/zero | tr '\0' a \
+                    > "$d/x/external-worktrees" ;;
+            esac
+            (cd "$d/x" && set -- report \
+                && { [ ! -f bundle ] || set -- "$@" bundle; } \
+                && { [ ! -f objects ] || set -- "$@" objects; } \
+                && { [ ! -f external-worktrees ] \
+                     || set -- "$@" external-worktrees; } \
+                && tar -cf - "$@") || exit 3
             exit 0
         fi
         cat > /dev/null
@@ -2174,6 +2222,139 @@ jq '.[0].State.StartedAt = "S2"' "$F/inspect/id-proj-agent-1" \
 assert_eq "a container restarted during the import is left" "1" "$(retire)"
 assert_eq "the other one goes" "1" "$(removed)"
 SHIM_DIR=""
+
+# ============================================================
+echo ""
+echo "=== 6. Linked worktrees of the volume's repositories in the layer ==="
+# One container (proj-agent-2) whose volume holds a repository that
+# registers a linked worktree in the container's layer ($F/snaproot,
+# resolved; repos-unmapped so the layer search names it the way the
+# volume scan does).  The real scanner runs through the production
+# helper's script.
+xw_setup() {  # NAME: the worktree's name
+    reset_fake
+    add proj-agent-2
+    touch "$F/repos-unmapped"
+    XS=$(cd -P "$F/snaproot" && pwd -P)
+    _d=$(real_ws)
+    echo a > "$_d/a"
+    git -C "$_d" add a
+    git -C "$_d" -c user.name=t -c user.email=t@t -c commit.gpgsign=false \
+        commit -q -m a
+    git -C "$_d" worktree add -q --detach "$XS/$1" HEAD 2>/dev/null
+}
+xw_setup wt
+assert_eq "a clean linked worktree in the layer: retired" "0" "$(retire)"
+assert_eq "  the container removed" "1" "$(removed)"
+assert_eq "  scanned by the helper's script from swarm_scan_volume" "1" \
+    "$(grep -c 'mktemp -d /swarm-volume-scan\.XXXXXX' "$F/helper-prog")"
+xw_setup wt
+echo u > "$XS/wt/untracked.txt"
+refused "work outside Git's history in it" \
+    "a linked worktree outside /workspace, in its layer, holds work"
+assert_eq "  naming the file" "1" \
+    "$(grep -cF "dirty $XS/wt: ?? untracked.txt" "$TMPDIR/out")"
+assert_eq "--discard-uncommitted retires it" "0" \
+    "$(retire --discard-uncommitted)"
+assert_eq "  listing what it drops" "1" \
+    "$(grep -cF "dirty $XS/wt: ?? untracked.txt" "$TMPDIR/out")"
+# A submodule not initialized in such a worktree: a file under its
+# directory is work in the layer too, never taken for the volume's.
+xw_setup wt
+git -C "$_d" update-index --add --cacheinfo \
+    "160000,$(git -C "$_d" rev-parse HEAD),sub"
+git -C "$_d" -c user.name=t -c user.email=t@t -c commit.gpgsign=false \
+    commit -q -m gitlink
+mkdir -p "$_d/sub"
+git -C "$_d" worktree add -q --detach "$XS/wtg" HEAD 2>/dev/null
+mkdir -p "$XS/wtg/sub"
+echo n > "$XS/wtg/sub/notes.txt"
+refused "a file under a submodule not initialized in it" \
+    "a linked worktree outside /workspace, in its layer, holds work"
+assert_eq "  naming the file" "1" \
+    "$(grep -cF "dirty $XS/wtg: ?? sub/notes.txt" "$TMPDIR/out")"
+xw_setup wt
+echo v > "$F/voldir/proj-agent-2-ws-00000000/in-volume.txt"
+assert_eq "the volume's own untracked file still never stops retire" "0" \
+    "$(retire)"
+xw_setup wt
+rm -rf "${XS:?}/wt"
+assert_eq "a registration whose directory is gone: retired" "0" "$(retire)"
+xw_setup wt
+mkdir -p "$XS/wt2"
+cp "$XS/wt/.git" "$XS/wt2/.git"
+refused "another .git file in the layer is still refused" \
+    "a .git file or link"
+xw_setup wt
+add proj-agent-1
+refused "the same path in a container whose scan did not check it" \
+    "a .git file or link"
+for _xt in "unterminated:sent a malformed list" \
+        "duplicate:sent a malformed list" "relative:sent a malformed list" \
+        "control:sent a malformed list" \
+        "extra:lists a linked worktree its report does not name" \
+        "forged:its list of linked worktrees disagree" \
+        "nolist:sent no list of them" "big:external-worktrees is too large" \
+        "empty:its list of linked worktrees disagree" \
+        "emptyrec:sent a malformed list" "utf8:sent a malformed list" \
+        "b65536:sent a malformed list" \
+        "b65537:external-worktrees is too large"
+do
+    xw_setup wt
+    echo "${_xt%%:*}" > "$F/xtamper"
+    refused "a list or report changed on the way (${_xt%%:*})" "${_xt#*:}"
+done
+rm -f "$F/xtamper"
+# A path with a space, a backslash and glob characters, compared as it
+# is.
+xw_setup 'w t\*?[x]'
+assert_eq "a worktree path with a space, a backslash and globs: retired" \
+    "0" "$(retire)"
+# A check of the list whose read fails is not an answer.
+xw_setup wt
+mkdir -p "$TMPDIR/xshim2"
+cat > "$TMPDIR/xshim2/grep" <<EOF
+#!/bin/bash
+for a in "\$@"; do
+    case "\$a" in */external.ok) exit 2 ;; esac
+done
+exec $(command -v grep) "\$@"
+EOF
+chmod +x "$TMPDIR/xshim2/grep"
+SHIM_DIR="$TMPDIR/xshim2"
+refused "a list retire cannot check" \
+    "cannot check the list of linked worktrees"
+SHIM_DIR=""
+# A read of the report that fails is not a report without such lines.
+xw_setup wt
+mkdir -p "$TMPDIR/xshim"
+cat > "$TMPDIR/xshim/grep" <<EOF
+#!/bin/bash
+for a in "\$@"; do [ "\$a" != '^external-worktree ' ] || exit 2; done
+exec $(command -v grep) "\$@"
+EOF
+chmod +x "$TMPDIR/xshim/grep"
+SHIM_DIR="$TMPDIR/xshim"
+refused "a report retire cannot read" "cannot read the workspace scan"
+SHIM_DIR=""
+# A worktree let through (with a link inside it) does not hide the
+# volume's own link out.
+xw_setup wt
+_d="$F/voldir/proj-agent-2-ws-00000000"
+ln -s a "$_d/inner-link"
+git -C "$_d" add inner-link
+git -C "$_d" -c user.name=t -c user.email=t@t -c commit.gpgsign=false \
+    commit -q -m link
+git -C "$XS/wt" checkout -q --detach "$(git -C "$_d" rev-parse HEAD)"
+rm "$_d/inner-link"
+git -C "$_d" -c user.name=t -c user.email=t@t -c commit.gpgsign=false \
+    commit -q -am "no link"
+assert_eq "  the worktree holds a tracked link and nothing else to report" \
+    "" "$(git -C "$XS/wt" status --porcelain)"
+ln -s "$L/lfs" "$F/voldir/proj-agent-2-ws-00000000/lfs-link"
+printf 'A %s/lfs\nA %s/lfs/objects\n' "$L" "$L" > "$F/diff/id-proj-agent-2"
+refused "a volume link to data the container wrote, next to a worktree" \
+    "links out of its volume to data"
 
 echo ""
 echo "==============================="
