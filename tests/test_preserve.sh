@@ -540,7 +540,7 @@ mkfifo "$IB/config.worktree"
 git -C "$IB" config --unset includeIf.onbranch:x.path
 out=$(scan gitdir "$IB" -)
 assert_eq "a config file that is no regular file blocks" "1" \
-    "$(has_line "$out" 'block config-unreadable ')"
+    "$(has_line "$out" 'block special-file ')"
 ln -s /tmp "$W/.git/out-link"
 assert_eq "a git-dir symlink to a directory out of the volume blocks" "1" \
     "$(has_line "$(scan worktree "$W" full)" 'block outside-dir-link .git/out-link')"
@@ -1887,14 +1887,15 @@ assert_eq "the workspace's config including a FIFO: the scan ends" "" \
     "$(cat "$out/.rc" 2>/dev/null)"
 assert_eq "blocking on the include" "1" \
     "$(has_line "$out" 'block config-include .git')"
-# In gitdir mode (a repository the engine made), lfs.storage counts also
-# when an include sets it.
+# In gitdir mode (a repository the engine made), Git would follow an
+# include wherever it points: the engine writes none, so one blocks,
+# also one that sets lfs.storage.
 LB="$TMPDIR/sf-lfs-bare.git"
 git init -q --bare "$LB"
 printf '[lfs]\n\tstorage = /elsewhere\n' > "$TMPDIR/sf-lfs-inc"
 git --git-dir="$LB" config include.path "$TMPDIR/sf-lfs-inc"
 assert_eq "gitdir mode: lfs.storage set through an include blocks" "1" \
-    "$(grep -c '^block lfs-storage .* /elsewhere$' \
+    "$(grep -c '^block config-include ' \
         "$(scan gitdir "$LB" -)/report" || true)"
 LB2="$TMPDIR/sf-lfs-bare2.git"
 git init -q --bare "$LB2"
@@ -1903,7 +1904,7 @@ printf '[lfs]\n\tstorage = /elsewhere2\n' > "$TMPDIR/sf-lfs-home/storage.conf"
 # shellcheck disable=SC2088  # the config holds the ~ itself, for Git
 git --git-dir="$LB2" config include.path '~/storage.conf'
 assert_eq "also an include under ~, the host's own home" "1" \
-    "$(grep -c '^block lfs-storage .* /elsewhere2$' \
+    "$(grep -c '^block config-include ' \
         "$(scan gitdir "$LB2" - HOME="$TMPDIR/sf-lfs-home")/report" || true)"
 # userconfig mode (retire's check of the container user's git config):
 # a FIFO where Git reads the global file, a global file that includes
