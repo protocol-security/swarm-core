@@ -218,7 +218,9 @@ swarm_recovery_snapshot_id() {
 }
 
 # Git in the checkout for recovery work: no environment redirection,
-# no hooks or fsmonitor, no lazy fetches from promisor remotes.
+# no hooks or fsmonitor, no lazy fetches from promisor remotes, and no
+# automatic gc or maintenance left running with the engagement lock
+# (swarm_git_no_background, whose environment this clears).
 swarm_recovery_git() {
     env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR -u GIT_INDEX_FILE \
         -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
@@ -226,6 +228,7 @@ swarm_recovery_git() {
         GIT_NO_LAZY_FETCH=1 GIT_NO_REPLACE_OBJECTS=1 GIT_TERMINAL_PROMPT=0 \
         GIT_GRAFT_FILE=/dev/null \
         git -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+        -c gc.auto=0 -c maintenance.auto=false \
         -c fetch.prune=false -c fetch.pruneTags=false \
         -c advice.graftFileDeprecated=false "$@"
 }

@@ -8,7 +8,7 @@ unset GIT_CONFIG GIT_CONFIG_PARAMETERS
 
 # Keep it independent of the caller's swarm-core settings too.
 unset SWARM_PROJECT SWARM_RUNTIME_DIR SWARM_ENGAGEMENT_ID SWARM_LOCK_FD \
-    SWARM_ENGAGEMENT_TOKEN
+    SWARM_ENGAGEMENT_TOKEN SWARM_GIT_NO_BACKGROUND
 
 # Succeed when a job started under job control can be stopped by
 # SIGINT: not when the test started with SIGINT ignored (a background

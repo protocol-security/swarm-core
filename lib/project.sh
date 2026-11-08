@@ -1074,6 +1074,33 @@ swarm_lock() {
     fi
     SWARM_LOCK_FD="$fd"
     export SWARM_LOCK_FD
+    swarm_git_no_background
+}
+
+# Every process started under the engagement lock inherits its
+# descriptor, and so does whatever Git leaves running after it exits:
+# its fsmonitor daemon (core.fsmonitor), an automatic gc it detaches, or
+# background maintenance.  One such process kept the lock, and every
+# later command refused.  These settings, passed through the environment
+# so that every git under the lock sees them, keep Git from starting
+# any.  Entries the caller already passes this way stay; a second call
+# adds nothing.
+swarm_git_no_background() {
+    local n="${GIT_CONFIG_COUNT:-0}"
+    [ -z "${SWARM_GIT_NO_BACKGROUND:-}" ] || return 0
+    case "$n" in
+        ''|*[!0123456789]*) n=0 ;;
+    esac
+    export "GIT_CONFIG_KEY_${n}=core.fsmonitor" \
+        "GIT_CONFIG_VALUE_${n}=false"
+    n=$((n + 1))
+    export "GIT_CONFIG_KEY_${n}=gc.auto" "GIT_CONFIG_VALUE_${n}=0"
+    n=$((n + 1))
+    export "GIT_CONFIG_KEY_${n}=maintenance.auto" \
+        "GIT_CONFIG_VALUE_${n}=false"
+    GIT_CONFIG_COUNT=$((n + 1))
+    SWARM_GIT_NO_BACKGROUND=1
+    export GIT_CONFIG_COUNT SWARM_GIT_NO_BACKGROUND
 }
 
 # Close this process's lock descriptor.  A lock that a caller passed in
