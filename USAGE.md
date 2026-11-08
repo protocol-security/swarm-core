@@ -384,7 +384,8 @@ read as one CSV record: a quote opens a field only at its start
 
 Swarmfiles of earlier releases that passed the target with
 `-e TARGET_REPO -e TARGET_REV` move it to the host environment, where
-`launch.sh` resolves it (see [Target](#target)); an abbreviated
+`launch.sh` resolves it (see [Target](#target)), and their setup hooks
+call `swarm-target-checkout` instead of cloning it; an abbreviated
 `TARGET_REV` becomes a full commit id, a branch or a tag. Joining an
 engagement started without a target is rejected while `TARGET_*` is
 set: unset it, or finish the engagement (`./launch.sh stop`,
@@ -495,33 +496,43 @@ access to the snapshot's files and read and search access to its
 directories, and a default ACL on the runtime directory or a parent of
 it that takes that away makes the containers' reads fail.
 
-Until the image has a helper that checks the target out, a setup hook
-(see [Setup hook](#setup-hook)) can make a checkout from the snapshot
-without the network:
+A setup hook (see [Setup hook](#setup-hook)) checks the target out
+with the image's helper, without the network:
 
 ```bash
-set -eu
-dir=/workspace/target
-mkdir "$dir"
-fmt=$(git -c safe.directory=/target-upstream \
-    --git-dir=/target-upstream rev-parse --show-object-format)
-git init -q --template= --object-format="$fmt" "$dir"
-set -- refs/swarm/target:refs/swarm/target
-if [ -n "$TARGET_REV_BASE" ]; then
-    set -- "$@" refs/swarm/target-base:refs/swarm/target-base
-fi
-git -C "$dir" fetch -q --no-tags --no-recurse-submodules \
-    --upload-pack='git -c safe.directory=/target-upstream upload-pack' \
-    /target-upstream "$@"
-git -C "$dir" checkout -q --detach "$TARGET_REV"
+swarm-target-checkout /workspace/target
 ```
 
-`mkdir` fails when anything is there already, a link included, so the
-hook stops before it touches another repository; `safe.directory`
-lets Git read a snapshot that another user owns. The target's
-submodules and LFS content are not fetched. A hook that clones
-`TARGET_REPO` over the network instead works only for a source the
-container can reach.
+By default, the harness tells agents to commit with `git add -A`.
+For a target checkout inside `/workspace`, ignore its directory in
+this checkout's root `.gitignore` (`/target/` for the hook above),
+and commit the rule before `start`, `post-process` or `interactive`
+creates the engagement. Otherwise an agent's commit can record the
+target checkout as a gitlink, and `harvest.sh` merges that commit
+into this checkout.
+
+`swarm-target-checkout DIR` makes `DIR` a checkout of the recorded
+commit, `HEAD` detached at `TARGET_REV`, with its pin as
+`refs/swarm/target` and, with a base, `refs/swarm/target-base`; a
+snapshot whose pins are not `TARGET_REV` and `TARGET_REV_BASE`
+themselves is refused. `DIR` must not exist, or be an empty directory,
+and must not be a link; its parent directory must exist. The checkout
+is built in a temporary directory beside `DIR` and renamed to `DIR` at
+the end: until then a failure leaves `DIR` as it was (a helper that
+was killed can leave a `.swarm-target-checkout.*` directory there,
+which may be deleted), and the rename fails when `DIR` has become a
+link, a file or a directory that is not empty meanwhile. A second run
+on the same `DIR` refuses. The checkout's mode follows the umask: made
+as root with umask 022 outside `/workspace`, it is readable by the
+agent when its parent directories are. Its Git
+commands run with no user or system configuration and none of the
+caller's `GIT_*` variables, with hooks, fsmonitor and submodule
+recursion off: no filter, hook or URL rewrite of the caller's applies,
+and an LFS pointer stays a pointer. The target's submodules and LFS
+content are not fetched. It works as root (setup) and as the agent.
+Custom images get it by copying `lib/target-checkout.sh` the way the
+Dockerfile does. A hook that clones `TARGET_REPO` over the network
+instead works only for a source the container can reach.
 
 ### Commit signing
 

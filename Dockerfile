@@ -73,6 +73,7 @@ COPY --chmod=755 lib/harness.sh /harness.sh
 COPY --chmod=755 lib/interactive.sh /interactive.sh
 COPY --chmod=755 lib/signing.sh /signing.sh
 COPY --chmod=755 lib/activity-filter.sh /activity-filter.sh
+COPY --chmod=755 lib/target-checkout.sh /usr/local/bin/swarm-target-checkout
 COPY --chmod=644 lib/agent-system-prompt.md /agent-system-prompt.md
 COPY --chmod=644 VERSION /swarm-version
 COPY --chmod=755 lib/drivers/ /drivers/
