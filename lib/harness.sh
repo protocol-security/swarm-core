@@ -137,9 +137,15 @@ hlog_pipe() {
 #   the worktree submodule-free sidesteps the submodule-drift
 #   dirtiness that tripped Pattern C.
 #
+# Sets _SCRATCH_SOURCE to the commit whose history it transplants and,
+# after a push, _SCRATCH_PUSHED to the commit it pushed (see
+# _transplant_settled).  origin/agent-work is read once, as the base
+# the commits are listed against and transplanted onto.
 # Returns: 0 on successful push, 1 on any failure.
 _scratch_worktree_push() {
-    local _scratch _shas _n_shas sha _rc=0
+    local _scratch _src _base _tip _shas _n_shas sha _rc=0
+    _SCRATCH_SOURCE=""
+    _SCRATCH_PUSHED=""
 
     # The retry loop may have left a half-rebased state behind.
     # Clean it up so `origin/agent-work..HEAD` below names the
@@ -155,11 +161,16 @@ _scratch_worktree_push() {
     git fetch --no-recurse-submodules origin agent-work 2>&1 \
         | hlog_pipe || true
 
-    if ! _shas=$(git rev-list --reverse origin/agent-work..HEAD 2>/dev/null)
+    if ! _src=$(git rev-parse -q --verify HEAD 2>/dev/null) \
+            || ! _base=$(git rev-parse -q --verify origin/agent-work \
+                2>/dev/null) \
+            || ! _shas=$(git rev-list --reverse "${_base}..${_src}" \
+                2>/dev/null)
     then
         hlog_err "scratch push: cannot list the unpushed commits"
         return 1
     fi
+    _SCRATCH_SOURCE=$_src
     if [ -z "$_shas" ]; then
         hlog "scratch push: no unpushed commits (already in sync)"
         return 0
@@ -181,7 +192,7 @@ _scratch_worktree_push() {
     # Hooks are irrelevant for a detached scratch worktree anyway --
     # we only use it to cherry-pick and push.
     if ! git -c core.hooksPath=/dev/null worktree add --detach --quiet \
-            "$_scratch" origin/agent-work 2>&1 | hlog_pipe; then
+            "$_scratch" "$_base" 2>&1 | hlog_pipe; then
         hlog_err "scratch push: worktree add failed"
         rm -rf "$_scratch" 2>/dev/null || true
         git worktree prune 2>/dev/null || true
@@ -207,8 +218,13 @@ _scratch_worktree_push() {
         fi
         # If the apply produced no net change (both the index and
         # the worktree match HEAD), this commit's diff is already
-        # present upstream -- drop it silently and move on.
-        if git -C "$_scratch" diff --cached --quiet 2>/dev/null \
+        # present upstream -- drop it silently and move on.  The
+        # index, which is what gets committed, is compared as a tree,
+        # so that no diff setting (diff.ignoreSubmodules hides a
+        # gitlink change) drops a commit that changes something.
+        if [ "$(git -C "$_scratch" write-tree 2>/dev/null)" \
+                    = "$(git -C "$_scratch" rev-parse -q --verify \
+                        'HEAD^{tree}' 2>/dev/null)" ] \
                 && git -C "$_scratch" diff --quiet 2>/dev/null; then
             hlog "scratch push: dropping redundant commit ${sha:0:12}"
             continue
@@ -224,9 +240,16 @@ _scratch_worktree_push() {
     done
 
     if [ "$_rc" -eq 0 ]; then
-        if git -C "$_scratch" push origin HEAD:agent-work 2>&1 \
+        # Nothing else moves the scratch HEAD, so it is what the push
+        # below sends.
+        if ! _tip=$(git -C "$_scratch" rev-parse -q --verify HEAD \
+                2>/dev/null); then
+            hlog_err "scratch push: cannot read the transplanted tip"
+            _rc=1
+        elif git -C "$_scratch" push origin HEAD:agent-work 2>&1 \
                 | hlog_pipe; then
             hlog "scratch push: succeeded"
+            _SCRATCH_PUSHED=$_tip
         else
             hlog_err "scratch push: push rejected"
             _rc=1
@@ -275,6 +298,46 @@ _scratch_worktree_push() {
     return "$_rc"
 }
 
+# Succeed when resetting the branch to DEST, origin/agent-work as
+# fetched after a scratch transplant that succeeded, loses nothing.
+# The transplant shipped a copy of every commit in the history of
+# _SCRATCH_SOURCE that origin lacked, or dropped one whose replay
+# changed nothing (its change was on origin already, or a merge driver
+# the config defines resolved it away, as `git pull --rebase` does
+# too); it fails otherwise.  So nothing is lost when
+# `git status` shows no change, HEAD is still _SCRATCH_SOURCE (no commit
+# came after the transplant listed them), and DEST has _SCRATCH_PUSHED
+# (or, when there was nothing to push, _SCRATCH_SOURCE itself).  `git
+# cherry` cannot tell, since it compares patch ids: a copy whose
+# context moved (a nearby line changed on origin), an empty commit, or
+# a change origin has from another commit all look missing to it.
+# Otherwise _UNSETTLED says why; any failure counts as "not settled".
+# Nothing may write the workspace meanwhile: the emergency push of a
+# signal, with the agent perhaps still running, does not reset.
+_transplant_settled() {
+    local _dest="$1" _st
+    if ! _st=$(git status --porcelain 2>/dev/null); then
+        _UNSETTLED="the tree's status cannot be read"
+        return 1
+    fi
+    if [ -n "$_st" ]; then
+        _UNSETTLED="the tree is dirty"
+        return 1
+    fi
+    if [ -z "${_SCRATCH_SOURCE:-}" ] \
+            || [ "$(git rev-parse -q --verify HEAD 2>/dev/null)" \
+                != "$_SCRATCH_SOURCE" ]; then
+        _UNSETTLED="HEAD is not the commit it transplanted"
+        return 1
+    fi
+    if ! git merge-base --is-ancestor \
+            "${_SCRATCH_PUSHED:-$_SCRATCH_SOURCE}" "$_dest" 2>/dev/null; then
+        _UNSETTLED="origin/agent-work does not have what was shipped"
+        return 1
+    fi
+    return 0
+}
+
 # Ship any local commits to origin/agent-work.  Called both
 # inline at session end and before fatal-error exits / signal
 # trap handlers so commits an agent made during a session that
@@ -286,23 +349,6 @@ _scratch_worktree_push() {
 # Returns 0 on success or no-op (nothing to push, or pushed
 # cleanly), 1 if there were unpushed commits and every push
 # path failed.
-# Succeed when resetting the branch to origin/agent-work after a
-# scratch transplant loses nothing: `git status` shows no change and
-# `git cherry` finds an equivalent on origin/agent-work for every
-# local commit.  Any failure counts as "not settled".
-_transplant_settled() {
-    local _st _ch
-    _st=$(git status --porcelain 2>/dev/null) || return 1
-    [ -z "$_st" ] || return 1
-    _ch=$(git cherry origin/agent-work HEAD 2>/dev/null) || return 1
-    # A pattern match, not a pipe into grep: under pipefail an early
-    # grep exit can fail printf with SIGPIPE.
-    case $'\n'"$_ch" in
-        *$'\n+'*) return 1 ;;
-    esac
-    return 0
-}
-
 _session_end_push() {
     git fetch --no-recurse-submodules origin 2>&1 | hlog_pipe
     AFTER=$(git rev-parse origin/agent-work)
@@ -449,17 +495,16 @@ _session_end_push() {
         # originals are still on this branch and on no origin ref.
         # Move the branch to what was pushed, so the workspace does
         # not look like it holds unshipped work, but only when that
-        # loses nothing: the tree is clean (the pre-push stash took
-        # every edit) and origin has an equivalent of every original
-        # commit.  Otherwise the branch stays, and the loop top stops
-        # the harness with the commits in /workspace.
-        if [ "$_transplanted" = true ]; then
-            if _transplant_settled; then
-                git reset -q --hard origin/agent-work 2>&1 \
-                    | hlog_pipe || true
+        # loses nothing (_transplant_settled).  Otherwise the branch
+        # stays, and the loop top pushes again or stops the harness
+        # with the commits and the edits in /workspace.  An emergency
+        # push (_SEP_EMERGENCY) ends the harness anyway, and keeps it.
+        if [ "$_transplanted" = true ] && [ -z "${_SEP_EMERGENCY:-}" ]; then
+            if _transplant_settled "$AFTER"; then
+                git reset -q --hard "$AFTER" 2>&1 | hlog_pipe || true
             else
                 hlog_err "scratch push: keeping the local branch;" \
-                    "the tree is dirty or a commit has no copy on origin"
+                    "${_UNSETTLED}"
             fi
         fi
         return 0
@@ -524,6 +569,7 @@ _on_signal() {
         kill -KILL "$_SESSION_PID" 2>/dev/null || true
     fi
     if cd /workspace 2>/dev/null; then
+        _SEP_EMERGENCY=1
         _session_end_push || true
     fi
     hlog "emergency shutdown complete"

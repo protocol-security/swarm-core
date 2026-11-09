@@ -1085,9 +1085,9 @@ assert_eq "fallback cherry-picks with --no-commit" \
     "1" \
     "$(grep -cE 'cherry-pick -n "\$sha"' "$HARNESS_FILE")"
 
-assert_eq "fallback detects empty applies via diff --cached" \
+assert_eq "fallback detects empty applies by the index's tree" \
     "1" \
-    "$(grep -cE 'diff --cached --quiet' "$HARNESS_FILE")"
+    "$(grep -cE 'git -C "\$_scratch" write-tree' "$HARNESS_FILE")"
 
 assert_eq "fallback commits with -C to keep author metadata" \
     "1" \
@@ -1157,7 +1157,7 @@ sc_hlog_err()  { :; }
 sc_hlog_pipe() { cat >/dev/null; }
 
 _test_scratch_push() {
-    local _scratch _shas _n_shas sha _rc=0
+    local _scratch _base _shas _n_shas sha _rc=0
     if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
         git rebase --abort 2>/dev/null \
             || rm -rf .git/rebase-merge .git/rebase-apply
@@ -1165,7 +1165,8 @@ _test_scratch_push() {
     git fetch --no-recurse-submodules origin agent-work 2>&1 \
         | sc_hlog_pipe || true
 
-    _shas=$(git rev-list --reverse origin/agent-work..HEAD 2>/dev/null)
+    _base=$(git rev-parse -q --verify origin/agent-work 2>/dev/null)
+    _shas=$(git rev-list --reverse "${_base}..HEAD" 2>/dev/null)
     if [ -z "$_shas" ]; then
         sc_hlog "no unpushed"
         return 0
@@ -1177,7 +1178,7 @@ _test_scratch_push() {
     rm -rf "$_scratch" 2>/dev/null || true
 
     if ! git -c core.hooksPath=/dev/null worktree add --detach --quiet \
-            "$_scratch" origin/agent-work 2>&1 | sc_hlog_pipe; then
+            "$_scratch" "$_base" 2>&1 | sc_hlog_pipe; then
         sc_hlog_err "worktree add failed"
         rm -rf "$_scratch" 2>/dev/null || true
         git worktree prune 2>/dev/null || true
@@ -1192,7 +1193,9 @@ _test_scratch_push() {
             _rc=1
             break
         fi
-        if git -C "$_scratch" diff --cached --quiet 2>/dev/null \
+        if [ "$(git -C "$_scratch" write-tree 2>/dev/null)" \
+                    = "$(git -C "$_scratch" rev-parse -q --verify \
+                        'HEAD^{tree}' 2>/dev/null)" ] \
                 && git -C "$_scratch" diff --quiet 2>/dev/null; then
             sc_hlog "dropping redundant commit ${sha:0:12}"
             continue
@@ -1448,20 +1451,21 @@ rm -f "$SC_WORK/.git/hooks/post-checkout"
 # harness.sh's top-level needs SWARM_PROMPT and a driver.
 _test_scratch_push_with_park() {
     local agent_id="$1"
-    local _scratch _shas _n_shas sha _rc=0
+    local _scratch _base _shas _n_shas sha _rc=0
     if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
         git rebase --abort 2>/dev/null \
             || rm -rf .git/rebase-merge .git/rebase-apply
     fi
     git fetch --no-recurse-submodules origin agent-work 2>&1 \
         | sc_hlog_pipe || true
-    _shas=$(git rev-list --reverse origin/agent-work..HEAD 2>/dev/null)
+    _base=$(git rev-parse -q --verify origin/agent-work 2>/dev/null)
+    _shas=$(git rev-list --reverse "${_base}..HEAD" 2>/dev/null)
     if [ -z "$_shas" ]; then return 0; fi
     _n_shas=$(printf '%s\n' "$_shas" | wc -l | tr -d ' ')
     _scratch="$TMPDIR/scratch-$$-${RANDOM}"
     rm -rf "$_scratch" 2>/dev/null || true
     if ! git -c core.hooksPath=/dev/null worktree add --detach --quiet \
-            "$_scratch" origin/agent-work 2>&1 | sc_hlog_pipe; then
+            "$_scratch" "$_base" 2>&1 | sc_hlog_pipe; then
         rm -rf "$_scratch" 2>/dev/null || true
         git worktree prune 2>/dev/null || true
         return 1
@@ -1472,7 +1476,9 @@ _test_scratch_push_with_park() {
             git -C "$_scratch" reset --hard HEAD 2>/dev/null || true
             _rc=1; break
         fi
-        if git -C "$_scratch" diff --cached --quiet 2>/dev/null \
+        if [ "$(git -C "$_scratch" write-tree 2>/dev/null)" \
+                    = "$(git -C "$_scratch" rev-parse -q --verify \
+                        'HEAD^{tree}' 2>/dev/null)" ] \
                 && git -C "$_scratch" diff --quiet 2>/dev/null; then
             continue
         fi
