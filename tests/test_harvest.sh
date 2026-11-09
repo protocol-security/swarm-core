@@ -1394,21 +1394,39 @@ assert_eq "saying so" "true" \
         && echo true || echo false)"
 assert_eq "before merging anything" "$before" "$(git rev-parse HEAD)"
 bash "$HARVEST_SH" >/dev/null 2>&1
+# Harvest runs no hooks, so a test acts during its merges through this
+# git, put first on PATH for harvest.sh alone: around a merge (the
+# command after git's -c options), it runs the command HV_BEFORE_MERGE,
+# the merge, then HV_AFTER_MERGE if the merge succeeded, as a post-merge
+# hook would, with harvest.sh's pid in HV_PARENT.  It passes every
+# command on as it was given.
+_hv_bin="$TMPDIR/hv-bin"
+mkdir -p "$_hv_bin"
+cat > "$_hv_bin/git" <<'EOF'
+#!/bin/bash
+i=1
+while [ "${!i:-}" = -c ]; do i=$((i + 2)); done
+[ "${!i:-}" = merge ] || exec "$HV_REAL_GIT" "$@"
+HV_PARENT=$PPID
+export HV_PARENT
+[ -z "${HV_BEFORE_MERGE:-}" ] || sh -c "$HV_BEFORE_MERGE"
+rc=0
+"$HV_REAL_GIT" "$@" || rc=$?
+if [ "$rc" -eq 0 ] && [ -n "${HV_AFTER_MERGE:-}" ]; then
+    sh -c "$HV_AFTER_MERGE"
+fi
+exit "$rc"
+EOF
+chmod +x "$_hv_bin/git"
+HV_REAL_GIT=$(command -v git)
+export HV_REAL_GIT
 # A harvest killed after a merge, before its last record: that merge
-# was recorded as pending, so dropping it is refused.  git runs the
-# hook below once the merge is done; git's parent is harvest.sh.
+# was recorded as pending, so dropping it is refused.
 agent_commit k.txt k "agent seven"
 before=$(git rev-parse HEAD)
-mkdir -p "$TMPDIR/kill-hooks"
-cat > "$TMPDIR/kill-hooks/post-merge" <<'EOF'
-#!/bin/sh
-kill -9 "$(ps -o ppid= -p "$PPID" | tr -d ' ')"
-EOF
-chmod +x "$TMPDIR/kill-hooks/post-merge"
-git config core.hooksPath "$TMPDIR/kill-hooks"
 k_rc=0
-bash "$HARVEST_SH" >/dev/null 2>&1 || k_rc=$?
-git config --unset core.hooksPath
+PATH="$_hv_bin:$PATH" HV_AFTER_MERGE='kill -9 "$HV_PARENT"' \
+    bash "$HARVEST_SH" >/dev/null 2>&1 || k_rc=$?
 assert_eq "a harvest killed after its merge" "137" "$k_rc"
 assert_eq "the merge is in HEAD" "true" \
     "$([ -f k.txt ] && echo true || echo false)"
@@ -1448,7 +1466,11 @@ n_git=$(command -v git)
 mkdir -p "$TMPDIR/nocommit-bin"
 cat > "$TMPDIR/nocommit-bin/git" <<EOF
 #!/bin/bash
-if [ "\$1" = merge ] && [ "\${2:-}" != --abort ]; then
+# The command follows the options harvest passes with -c.
+i=1
+while [ "\${!i:-}" = -c ]; do i=\$((i + 2)); done
+j=\$((i + 1))
+if [ "\${!i:-}" = merge ] && [ "\${!j:-}" != --abort ]; then
     exec "$n_git" "\$@" --no-commit
 fi
 exec "$n_git" "\$@"
@@ -1669,7 +1691,7 @@ assert_eq "with nothing left pending" "[]" \
     "$(jq -c '.harvest_pending // []' "$SWARM_RUNTIME_DIR/state.json")"
 # While --again merges the first of two recorded commits, the record
 # keeps the second (a harvest killed during that merge loses neither):
-# a pre-merge-commit hook copies the state during the first merge.
+# the git on _hv_bin copies the state as the first merge starts.
 AG_K=$(ag_commit swarm/again/interactive-k-1 k.txt k)
 AG_L=$(ag_commit swarm/again/interactive-l-1 l.txt l)
 assert_eq "two more harvested" "0 yes yes" \
@@ -1678,20 +1700,16 @@ git -C "$AG_WORK" reset -q --hard \
     "$(git -C "$AG_WORK" tag --list 'swarm-harvest-*' | tail -1)"
 git -C "$AG_BARE" update-ref -d refs/heads/swarm/again/interactive-k-1
 git -C "$AG_BARE" update-ref -d refs/heads/swarm/again/interactive-l-1
-cat > "$AG_WORK/.git/hooks/pre-merge-commit" <<EOF
-#!/bin/sh
-[ -e "$TMPDIR/ag-during.json" ] \
-    || cp "$SWARM_RUNTIME_DIR/state.json" "$TMPDIR/ag-during.json"
-EOF
-chmod +x "$AG_WORK/.git/hooks/pre-merge-commit"
 assert_eq "--again merges both" "0 yes yes" \
-    "$(ag_harvest --again) $(ag_in_head "$AG_K") $(ag_in_head "$AG_L")"
+    "$(PATH="$_hv_bin:$PATH" HV_SRC="$SWARM_RUNTIME_DIR/state.json" \
+        HV_DST="$TMPDIR/ag-during.json" \
+        HV_BEFORE_MERGE='[ -e "$HV_DST" ] || cp "$HV_SRC" "$HV_DST"' \
+        ag_harvest --again) $(ag_in_head "$AG_K") $(ag_in_head "$AG_L")"
 assert_eq "during the first merge, both were in the record" "true true" \
     "$(jq -r --arg k "$AG_K" --arg l "$AG_L" '
         [((.harvested // []) + (.harvest_pending // [])) | index($k),
          index($l)] | map(. != null) | map(tostring) | join(" ")' \
         "$TMPDIR/ag-during.json" 2>/dev/null)"
-rm -f "$AG_WORK/.git/hooks/pre-merge-commit"
 # A harvest stopped on a conflict, the merge given up and the branch
 # deleted: the commit is only pending in the record, and --again merges
 # it by id.
@@ -1737,6 +1755,331 @@ assert_eq "undone, the branch still there: --again merges it" "0 yes" \
 assert_eq "through the branch, not by id" "1 0" \
     "$(grep -c '^--- Merging agent-work ---$' "$TMPDIR/ag.out" || true) $(
         grep -c 'no branch brings back' "$TMPDIR/ag.out" || true)"
+
+echo ""
+echo "=== 24. Behavioural: harvest.sh runs no hook or fsmonitor command ==="
+
+# Harvest puts the agents' files in the checkout.  With core.hooksPath
+# at a directory of it (as husky sets it), a hook the Git config defines
+# running a file of it (Git 2.54 and later), or core.fsmonitor naming
+# one, Git would run what an agent's branch wrote, here on the host.
+# The agent's branch adds a hook for every event, the script the
+# configured hooks run and the fsmonitor command.  Harvest runs none of
+# them: on a fast-forward; with them on disk, on a dry run, and on a
+# real merge with local changes (Git asks the submodule's status then)
+# and the caller's settings turning them back on; on a merge a conflict
+# stops.  A plain git command in the checkout runs them afterwards, so
+# they were there to run.  A hook name -c cannot pass, and a config
+# harvest cannot read, refuse.
+HK_WORK="$TMPDIR/swarmtest-harvest-hooks-$$"
+use_runtime hooks
+HK_BARE="$SWARM_RUNTIME_DIR/upstream.git"
+HK_AGENT="$TMPDIR/harvest-hooks-agent"
+HK_RAN="$TMPDIR/hooks-ran"
+hk() {
+    git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"
+}
+# Every event githooks(5) lists (Git 2.56).
+HK_EVENTS="applypatch-msg pre-applypatch post-applypatch pre-commit
+pre-merge-commit prepare-commit-msg commit-msg post-commit pre-rebase
+post-checkout post-merge pre-push pre-receive update proc-receive
+post-receive post-update reference-transaction push-to-checkout
+pre-auto-gc post-rewrite sendemail-validate fsmonitor-watchman
+p4-changelist p4-prepare-changelist p4-post-changelist p4-pre-submit
+post-index-change"
+git init -q "$HK_WORK"
+git -C "$HK_WORK" config user.name test
+git -C "$HK_WORK" config user.email t@t
+git -C "$HK_WORK" config commit.gpgsign false
+mkdir "$HK_WORK/.githooks"
+printf 'hooks\n' > "$HK_WORK/.githooks/README"
+printf 'one\n' > "$HK_WORK/f"
+printf 'mine\n' > "$HK_WORK/dirty.txt"
+hk -C "$HK_WORK" add .githooks f dirty.txt
+hk -C "$HK_WORK" commit -qm start
+# A submodule checked out, whose own hooks directory has a hook for
+# every event, each running the checkout's .githooks/configured.
+git init -q "$TMPDIR/hk-subsrc"
+printf 'sub\n' > "$TMPDIR/hk-subsrc/s"
+hk -C "$TMPDIR/hk-subsrc" add s
+hk -C "$TMPDIR/hk-subsrc" commit -qm sub
+hk -C "$HK_WORK" -c protocol.file.allow=always submodule --quiet add \
+    "$TMPDIR/hk-subsrc" sub
+hk -C "$HK_WORK" commit -qm "a submodule"
+for _hk_ev in $HK_EVENTS; do
+    printf '#!/bin/sh\ntest ! -x ../.githooks/configured || ../.githooks/configured subfile\n' \
+        > "$HK_WORK/.git/modules/sub/hooks/$_hk_ev"
+    chmod +x "$HK_WORK/.git/modules/sub/hooks/$_hk_ev"
+done
+git clone -q --bare "$HK_WORK" "$HK_BARE"
+git -C "$HK_BARE" branch agent-work HEAD
+record_base "$HK_BARE"
+git clone -q "$HK_BARE" "$HK_AGENT"
+git -C "$HK_AGENT" checkout -q agent-work
+for _hk_ev in $HK_EVENTS; do
+    printf '#!/bin/sh\necho %s >> "%s"\n' "$_hk_ev" "$HK_RAN" \
+        > "$HK_AGENT/.githooks/$_hk_ev"
+    chmod +x "$HK_AGENT/.githooks/$_hk_ev"
+done
+printf '#!/bin/sh\necho "configured $1" >> "%s"\n' "$HK_RAN" \
+    > "$HK_AGENT/.githooks/configured"
+chmod +x "$HK_AGENT/.githooks/configured"
+printf 'agent\n' > "$HK_AGENT/a.txt"
+hk -C "$HK_AGENT" add a.txt .githooks
+hk -C "$HK_AGENT" commit -qm "agent work, and hooks"
+git -C "$HK_AGENT" push -q origin agent-work
+git -C "$HK_WORK" config core.hooksPath .githooks
+git -C "$HK_WORK" config core.fsmonitor .githooks/fsmonitor-watchman
+# Hooks the config defines, with names harvest must take as they are
+# (empty, with spaces, quotes, a backslash, a byte that is not UTF-8,
+# two that differ in case only): hook N runs the checkout's
+# .githooks/configured cN once it is there.  The one named "" sits in a
+# file the config includes, so that a test below can take it away; the
+# last comes from a file the config includes once a remote's URL ends
+# in upstream.git, as harvest's own does.
+# Print the config lines that define hook NAME, as hook N (in a quoted
+# subsection, a backslash and a double quote take a backslash).
+hk_hook_cfg() {
+    local ev name="$1"
+    name=${name//\\/\\\\}
+    name=${name//\"/\\\"}
+    printf '[hook "%s"]\n\tcommand = test ! -x .githooks/configured || .githooks/configured c%s\n' \
+        "$name" "$2"
+    for ev in $HK_EVENTS; do
+        printf '\tevent = %s\n' "$ev"
+    done
+}
+_hk_n=0
+for _hk_name in Hk-Configured hk.dotted 'hk "odd" name' 'hk\back' '' \
+        ' lead' 'trail ' "$(printf 'hk\377byte')" HkCase hkcase; do
+    _hk_n=$((_hk_n + 1))
+    if [ -z "$_hk_name" ]; then
+        hk_hook_cfg "$_hk_name" "$_hk_n" > "$TMPDIR/hk-empty.cfg"
+    else
+        hk_hook_cfg "$_hk_name" "$_hk_n" >> "$HK_WORK/.git/config"
+    fi
+done
+: > "$TMPDIR/hk-nosub.cfg"
+printf '[include]\n\tpath = %s\n\tpath = %s\n' "$TMPDIR/hk-empty.cfg" \
+    "$TMPDIR/hk-nosub.cfg" >> "$HK_WORK/.git/config"
+_hk_n=$((_hk_n + 1))
+HK_HOOKS=$_hk_n
+hk_hook_cfg hk-remote "$_hk_n" > "$TMPDIR/hk-remote-hooks.cfg"
+printf '[includeIf "hasconfig:remote.*.url:**/upstream.git"]\n\tpath = %s\n' \
+    "$TMPDIR/hk-remote-hooks.cfg" >> "$HK_WORK/.git/config"
+# Run harvest.sh ARGS in the checkout, with what ran (one name per line
+# in HK_RAN) cleared first, TMPDIR set to HK_HARVEST_TMPDIR and the
+# shell options of HK_HARVEST_BASHOPTS on, if set; print its status.
+hk_harvest() {
+    local rc=0 out="$TMPDIR/hk.out" tmp="${HK_HARVEST_TMPDIR:-$TMPDIR}"
+    : > "$HK_RAN"
+    (cd "$HK_WORK" && env \
+        ${HK_HARVEST_BASHOPTS:+"BASHOPTS=$HK_HARVEST_BASHOPTS"} \
+        TMPDIR="$tmp" bash "$HARVEST_SH" "$@" > "$out" 2>&1) || rc=$?
+    printf '%s' "$rc"
+}
+hk_ran() {
+    tr '\n' ' ' < "$HK_RAN" | sed 's/ $//'
+}
+# Print true when the output of the last harvest has STRING.
+hk_says() {
+    grep -qF -- "$1" "$TMPDIR/hk.out" && echo true || echo false
+}
+assert_eq "a branch that adds hooks: harvest fast-forwards to it" \
+    "0 $(git -C "$HK_AGENT" rev-parse HEAD)" \
+    "$(hk_harvest) $(git -C "$HK_WORK" rev-parse HEAD)"
+assert_eq "which puts them in the checkout" "true" \
+    "$([ -x "$HK_WORK/.githooks/post-merge" ] \
+        && [ -x "$HK_WORK/.githooks/configured" ] && echo true || echo false)"
+assert_eq "and runs none of them" "" "$(hk_ran)"
+# Plain git commands in the checkout now run them; their output goes.
+printf 'local\n' > "$HK_WORK/local.txt"
+hk -C "$HK_WORK" add local.txt 2>/dev/null
+hk -C "$HK_WORK" commit -qm "local after start" 2>/dev/null
+printf 'more\n' > "$HK_AGENT/b.txt"
+hk -C "$HK_AGENT" add b.txt
+hk -C "$HK_AGENT" commit -qm "more agent work"
+git -C "$HK_AGENT" push -q origin agent-work
+# A harvest cut short leaves its remote, which the next one removes
+# first; this dry run has no directory for temporary files either (in
+# which /bin/bash 3.2 would put a here-string).
+git -C "$HK_WORK" remote add _agent-harvest "$HK_BARE" 2>/dev/null
+git -C "$HK_WORK" update-ref refs/remotes/_agent-harvest/agent-work HEAD \
+    2>/dev/null
+assert_eq "with them on disk, a dry run" "0|" \
+    "$(HK_HARVEST_TMPDIR="$TMPDIR/hk-no-such-dir" hk_harvest --dry)|$(hk_ran)"
+# A real merge with local changes, stashed around it (merge.autoStash),
+# and a file of the submodule that looks changed, so that the
+# submodule's status writes its index.  The caller's Git config turns
+# the hooks back on, GIT_CONFIG points git config elsewhere, GIT_DIR
+# names the checkout's, the locale is UTF-8, and its Bash matches case
+# patterns ignoring case (nocasematch, Bash 4.1 and later).
+git -C "$HK_WORK" config merge.autoStash true
+printf 'mine, changed\n' > "$HK_WORK/dirty.txt"
+touch "$HK_WORK/sub/s"
+hk_rc=$(HK_HARVEST_BASHOPTS=nocasematch LC_ALL=C.UTF-8 GIT_CONFIG=/dev/null \
+    GIT_DIR="$HK_WORK/.git" \
+    GIT_CONFIG_PARAMETERS="'core.hooksPath=.githooks' 'hook.Hk-Configured.enabled=true' 'core.fsmonitor=.githooks/fsmonitor-watchman'" \
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=hook.hk.dotted.enabled \
+    GIT_CONFIG_VALUE_0=true hk_harvest)
+assert_eq "a real merge with local changes, the caller turning them on" \
+    "0 3" "$hk_rc $(git -C "$HK_WORK" rev-list --no-walk --parents HEAD \
+        | wc -w | tr -d ' ')"
+assert_eq "local changes kept" "true|mine, changed" \
+    "$([ -f "$HK_WORK/b.txt" ] && echo true || echo false)|$(
+        cat "$HK_WORK/dirty.txt")"
+assert_eq "runs none of them" "" "$(hk_ran)"
+git -C "$HK_WORK" config --unset merge.autoStash
+git -C "$HK_WORK" checkout -q -- dirty.txt 2>/dev/null
+# A conflict stops the merge.
+printf 'two, here\n' > "$HK_WORK/f"
+hk -C "$HK_WORK" commit -qam "f here" 2>/dev/null
+printf 'two, there\n' > "$HK_AGENT/f"
+hk -C "$HK_AGENT" commit -qam "f there"
+git -C "$HK_AGENT" push -q origin agent-work
+assert_eq "a merge a conflict stops" "1 true" \
+    "$(hk_harvest) $(hk_says "merging agent-work stopped")"
+assert_eq "runs none of them either" "" "$(hk_ran)"
+git -C "$HK_WORK" merge --abort 2>/dev/null
+# Does this Git run hooks the config defines (Git 2.54 and later)?
+git init -q "$TMPDIR/hk-probe"
+hk -C "$TMPDIR/hk-probe" -c hook.hkprobe.event=pre-commit \
+    -c "hook.hkprobe.command=touch '$TMPDIR/hk-probe-ran'" \
+    commit -q --allow-empty -m probe
+hk_configured=$([ -e "$TMPDIR/hk-probe-ran" ] && echo true || echo false)
+: > "$HK_RAN"
+git -C "$HK_WORK" remote add hk-probe "$HK_BARE" 2>/dev/null
+hk -C "$HK_WORK" tag hk-probe 2>/dev/null
+touch "$HK_WORK/sub/s"
+git -C "$HK_WORK" status --porcelain >/dev/null 2>&1
+git -C "$HK_WORK" remote remove hk-probe 2>/dev/null
+assert_eq "a plain git command runs the hooks, the fsmonitor command, and the submodule's" \
+    "true true true" "$(grep -qx reference-transaction "$HK_RAN" \
+        && echo true || echo false) $(grep -qx fsmonitor-watchman "$HK_RAN" \
+        && echo true || echo false) $(grep -qx "configured subfile" "$HK_RAN" \
+        && echo true || echo false)"
+assert_eq "and each configured hook, on a Git that has them" \
+    "$(for _hk_c in $(seq 1 "$HK_HOOKS"); do echo "$hk_configured"; done \
+        | tr '\n' ' ' | sed 's/ $//')" \
+    "$(for _hk_c in $(seq 1 "$HK_HOOKS"); do grep -qx "configured c${_hk_c}" \
+        "$HK_RAN" && echo true || echo false; done | tr '\n' ' ' \
+        | sed 's/ $//')"
+# A hook defined with no subsection ([hook] command): Git 2.54 runs it
+# as the hook named "", later ones not at all.  Alone here, with no hook
+# named "" whose disable would cover it.
+git init -q "$TMPDIR/hk-nosub-probe"
+printf '[hook]\n\tcommand = touch %s\n\tevent = pre-commit\n' \
+    "$TMPDIR/hk-nosub-ran" >> "$TMPDIR/hk-nosub-probe/.git/config"
+hk -C "$TMPDIR/hk-nosub-probe" commit -q --allow-empty -m probe 2>/dev/null
+hk_nosub=$([ -e "$TMPDIR/hk-nosub-ran" ] && echo true || echo false)
+cp "$TMPDIR/hk-empty.cfg" "$TMPDIR/hk-empty.keep"
+: > "$TMPDIR/hk-empty.cfg"
+{
+    printf '[hook]\n\tcommand = test ! -x .githooks/configured || .githooks/configured nosub\n'
+    for _hk_ev in $HK_EVENTS; do
+        printf '\tevent = %s\n' "$_hk_ev"
+    done
+} > "$TMPDIR/hk-nosub.cfg"
+assert_eq "a hook defined with no subsection: harvest runs it not" "" \
+    "$(hk_harvest > /dev/null; hk_ran)"
+: > "$HK_RAN"
+hk -C "$HK_WORK" tag hk-probe-nosub 2>/dev/null
+assert_eq "a plain git command runs it, on a Git that does" "$hk_nosub" \
+    "$(grep -qx 'configured nosub' "$HK_RAN" && echo true || echo false)"
+: > "$TMPDIR/hk-nosub.cfg"
+cp "$TMPDIR/hk-empty.keep" "$TMPDIR/hk-empty.cfg"
+# A configured hook whose name -c cannot pass: harvest refuses before it
+# runs any git that could start a hook.
+git -C "$HK_WORK" config 'hook.hk=odd.command' true
+git -C "$HK_WORK" config 'hook.hk=odd.event' post-merge
+assert_eq "a hook named with \"=\": refused" "1 true" \
+    "$(hk_harvest) $(hk_says "cannot turn off the Git hook hook.hk=odd")"
+git -C "$HK_WORK" config --unset 'hook.hk=odd.command'
+git -C "$HK_WORK" config --unset 'hook.hk=odd.event'
+# A hook named with "=" that the config includes only once harvest adds
+# its remote (Git 2.36 and later read that condition): harvest refuses
+# then, and takes its remote away running nothing, from the checkout's
+# config though GIT_CONFIG names another file.
+git init -q "$TMPDIR/hk-cond"
+printf '[hk]\n\tseen = yes\n' > "$TMPDIR/hk-cond.cfg"
+printf '[includeIf "hasconfig:remote.*.url:**/hk-cond-remote"]\n\tpath = %s\n' \
+    "$TMPDIR/hk-cond.cfg" >> "$TMPDIR/hk-cond/.git/config"
+git -C "$TMPDIR/hk-cond" remote add r "$TMPDIR/hk-cond-remote"
+if [ "$(git -C "$TMPDIR/hk-cond" config hk.seen 2>/dev/null)" = yes ]; then
+    cp "$TMPDIR/hk-remote-hooks.cfg" "$TMPDIR/hk-remote-hooks.keep"
+    printf '[hook "hk=remote"]\n\tcommand = true\n\tevent = post-merge\n' \
+        >> "$TMPDIR/hk-remote-hooks.cfg"
+    assert_eq "a hook named with \"=\" once harvest adds its remote: refused" \
+        "1 true" \
+        "$(GIT_CONFIG=/dev/null hk_harvest) $(
+            hk_says "cannot turn off the Git hook hook.hk=remote")"
+    assert_eq "its remote gone, and nothing run" "|" \
+        "$(git -C "$HK_WORK" remote)|$(hk_ran)"
+    cp "$TMPDIR/hk-remote-hooks.keep" "$TMPDIR/hk-remote-hooks.cfg"
+else
+    echo "  SKIP: this Git reads no hasconfig:remote.*.url condition"
+fi
+# The bare repo, as an agent can set it up: a partial clone of a
+# promisor that has an object an agent-work commit needs and the bare
+# repo lacks, a refspec for that object, and a reference-transaction
+# hook.  A fetch whose upload-pack fetched that object (as one does
+# with a caller's GIT_NO_LAZY_FETCH=0) would run the hook; harvest's
+# fetch fails instead, running nothing.
+printf 'lazy\n' > "$HK_AGENT/l.txt"
+hk -C "$HK_AGENT" add l.txt
+hk -C "$HK_AGENT" commit -qm "a blob the bare repo will lack"
+git -C "$HK_AGENT" push -q origin agent-work
+HK_LAZY=$(git -C "$HK_AGENT" rev-parse HEAD:l.txt)
+git clone -q --bare "$HK_AGENT" "$TMPDIR/hk-promisor.git"
+rm -f "$HK_BARE/objects/${HK_LAZY:0:2}/${HK_LAZY:2}"
+git -C "$HK_BARE" config core.repositoryformatversion 1
+git -C "$HK_BARE" config extensions.partialClone hkp
+git -C "$HK_BARE" config remote.hkp.url "$TMPDIR/hk-promisor.git"
+git -C "$HK_BARE" config remote.hkp.promisor true
+git -C "$HK_BARE" config remote.hkp.fetch "+${HK_LAZY}:refs/cache/probe"
+printf '#!/bin/sh\necho bare-rt >> "%s"\n' "$HK_RAN" \
+    > "$HK_BARE/hooks/reference-transaction"
+chmod +x "$HK_BARE/hooks/reference-transaction"
+assert_eq "a bare repo that would fetch what it lacks: nothing run" \
+    "false|" "$( [ "$(GIT_NO_LAZY_FETCH=0 hk_harvest)" = 0 ] && echo true \
+        || echo false)|$(hk_ran)"
+: > "$HK_RAN"
+git init -q "$TMPDIR/hk-lazy-probe"
+GIT_NO_LAZY_FETCH=0 git -C "$TMPDIR/hk-lazy-probe" fetch -q "$HK_BARE" \
+    "+refs/heads/agent-work:refs/remotes/probe/agent-work" \
+    > /dev/null 2>&1 || true
+assert_eq "which a plain fetch runs" "true" \
+    "$(grep -qx bare-rt "$HK_RAN" && echo true || echo false)"
+# Whatever GIT_NO_LAZY_FETCH the caller sets, the git harvest runs sees
+# none but 1 (which harvest sets itself to read the bare repo).
+mkdir -p "$TMPDIR/hk-envlog"
+cat > "$TMPDIR/hk-envlog/git" <<'EOF'
+#!/bin/bash
+echo "${GIT_NO_LAZY_FETCH-unset}" >> "$HK_ENVLOG"
+exec "$HV_REAL_GIT" "$@"
+EOF
+chmod +x "$TMPDIR/hk-envlog/git"
+for _hk_v in 0 false 1; do
+    : > "$TMPDIR/hk-envlog.log"
+    PATH="$TMPDIR/hk-envlog:$PATH" HK_ENVLOG="$TMPDIR/hk-envlog.log" \
+        GIT_NO_LAZY_FETCH="$_hk_v" hk_harvest > /dev/null
+    assert_eq "GIT_NO_LAZY_FETCH=${_hk_v} from the caller: harvest's git sees none other" \
+        "true|" "$([ -s "$TMPDIR/hk-envlog.log" ] && echo true || echo false)|$(
+            grep -vxE '1|unset' "$TMPDIR/hk-envlog.log" | sort -u)"
+done
+# A Git config harvest cannot read the hooks of: refused.
+mkdir -p "$TMPDIR/hk-cfgfail"
+cat > "$TMPDIR/hk-cfgfail/git" <<'EOF'
+#!/bin/bash
+for a in "$@"; do
+    [ "$a" = --get-regexp ] && exit 3
+done
+exec "$HV_REAL_GIT" "$@"
+EOF
+chmod +x "$TMPDIR/hk-cfgfail/git"
+assert_eq "a Git config harvest cannot read: refused" "1 true" \
+    "$(PATH="$TMPDIR/hk-cfgfail:$PATH" hk_harvest) $(
+        hk_says "cannot read the Git config of")"
 
 # ============================================================
 echo ""

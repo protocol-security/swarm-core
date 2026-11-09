@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -9,6 +10,20 @@
   `PI_REASONING` or `PI_COMPACTION_RESERVE_TOKENS` exported, as on a
   host that runs Pi agents, `tests/test_pi.sh` and
   `tests/test_launch.sh` failed.
+- **Fix: harvest runs no hook or fsmonitor command of the checkout.**
+  Harvest merges the agents' work into the checkout, and its Git
+  commands ran the checkout's hooks: with `core.hooksPath` at a
+  directory of the checkout (as husky sets it), a hook an agent's branch
+  added ran on the host. A hook the Git config defines (Git 2.54 and
+  later), or the command `core.fsmonitor` names, could do the same when
+  it runs a file of the checkout. Every Git command harvest runs now
+  passes `core.hooksPath=/dev/null`, an empty `core.fsmonitor` and
+  `hook.<name>.enabled=false` for each hook the config defines; a hook
+  name with `=`, which `git -c` cannot pass, makes harvest refuse.
+  Harvest's fetch has upload-pack, on the bare repo, fetch nothing it
+  lacks, and harvest drops a caller's `GIT_NO_LAZY_FETCH` other than
+  1, which let upload-pack fetch: such a fetch ran that repository's
+  hooks.
 - **Fix: Git leaves nothing running that holds the engagement lock.**
   Every process started under the lock inherits its descriptor, so
   Git's fsmonitor daemon, started by a merge in a checkout with
