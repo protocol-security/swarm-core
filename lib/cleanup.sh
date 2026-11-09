@@ -180,8 +180,10 @@ cleanup_check_evidence() {
     printf '%s' "$cp" | jq -r '.runs[]? as $r
         | ($r.sources[]? | select(.inventory != null)
            | "src\t\(.prefix)\t\(.inventory)"),
-          "map\t\($r.sources_ref)\t\($r.sources_oid)"' > "$tmp/evidence" \
-        || return 1
+          "map\t\($r.sources_ref)\t\($r.sources_oid)",
+          (if $r.manifest_ref == null then empty
+           else "map\t\($r.manifest_ref)\t\($r.manifest_oid)" end)' \
+        > "$tmp/evidence" || return 1
     while IFS="$(printf '\t')" read -r -u 3 kind prefix want; do
         seen=$((seen + 1))
         case "$kind" in
@@ -341,6 +343,14 @@ cleanup_sources() {
             case "$name" in
                 *.removing) continue ;;
                 *$'\t'*|*$'\n'*) odd="${odd}  ${e}"$'\n'; continue ;;
+                manifest.json|manifest.json.new)
+                    # The mirrors' list (lib/mirrors.sh), not a source:
+                    # cleanup_run keeps it under a recovery ref and
+                    # deletes it after the mirrors.  Only a file.
+                    if [ -L "$e" ] || [ ! -f "$e" ]; then
+                        rest="${rest}  ${e}"$'\n'
+                    fi
+                    continue ;;
                 *.new)
                     # A mirror cut off while it was made.
                     if [ -L "$e" ]; then
@@ -876,19 +886,43 @@ HELP
     sources_blob=$(swarm_recovery_git -C "$REPO_ROOT" hash-object -w \
         --stdin < "$RETIRE_SCRATCH/map") || return 1
     sources_ref="${base}/sources"
+    # The mirrors' manifest (and one cut off while it was written), which
+    # says what submodule each numbered mirror was: a tree of the files
+    # as they are, under its own ref.
+    local mf mf_oid mf_entries="" mf_tree="" mf_ref=""
+    for mf in manifest.json manifest.json.new; do
+        [ -f "${MIRROR_DIR}/${mf}" ] && [ ! -L "${MIRROR_DIR}/${mf}" ] \
+            || continue
+        mf_oid=$(swarm_recovery_git -C "$REPO_ROOT" hash-object -w \
+            --no-filters "${MIRROR_DIR}/${mf}") || return 1
+        mf_entries="${mf_entries}100644 blob ${mf_oid}"$'\t'"${mf}"$'\n'
+    done
+    if [ -n "$mf_entries" ]; then
+        mf_tree=$(printf '%s' "$mf_entries" \
+            | swarm_recovery_git -C "$REPO_ROOT" mktree) || return 1
+        mf_ref="${base}/mirrors-manifest"
+    fi
     swarm_recovery_verify_checkout "$REPO_ROOT" || return 1
     swarm_recovery_git -C "$REPO_ROOT" update-ref "$sources_ref" \
         "$sources_blob" "" || return 1
+    if [ -n "$mf_ref" ]; then
+        swarm_recovery_git -C "$REPO_ROOT" update-ref "$mf_ref" \
+            "$mf_tree" "" || return 1
+    fi
 
     # The checkpoint, before the first deletion.
     swarm_state_update "$STATE_FILE" '
         .cleanup = ((.cleanup // {engagement: $e, started_at: $at,
                      runs: []})
             | .runs += [{snapshot: $s, sources_ref: $ref,
-                         sources_oid: $oid, sources: $src}])' \
+                         sources_oid: $oid, sources: $src}
+                        + (if $mref == "" then {}
+                           else {manifest_ref: $mref, manifest_oid: $moid}
+                           end)])' \
         --arg e "$engagement" \
         --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg s "$snap" --arg ref "$sources_ref" --arg oid "$sources_blob" \
+        --arg mref "$mf_ref" --arg moid "$mf_tree" \
         --argjson src "$(cat "$RETIRE_SCRATCH/run.json")" || return 1
 
     # Delete, volumes first and the bare repo last, each step checked
@@ -957,6 +991,41 @@ HELP
             esac
             echo "  deleted ${path}"
         done 3< "$RETIRE_SCRATCH/scanned" < /dev/null || return 1
+    done
+    # The manifest goes after the mirrors it lists, once each file is
+    # still what the checkpoint kept.
+    local mf_have mf_want mf_kept=""
+    # The ref the checkpoint recorded must still hold that tree.
+    if [ -n "$mf_tree" ]; then
+        mf_kept=$(swarm_state_read "$STATE_FILE" | jq -r \
+            --arg r "$mf_ref" --arg o "$mf_tree" '
+            .cleanup.runs[-1] | select(.manifest_ref == $r
+                and .manifest_oid == $o) | .manifest_oid') || mf_kept=""
+        if [ -z "$mf_kept" ] || [ "$(swarm_recovery_git -C "$REPO_ROOT" \
+                rev-parse --verify --quiet "$mf_ref" 2>/dev/null)" \
+                != "$mf_tree" ]; then
+            echo "ERROR: ${mf_ref}, which keeps the mirrors' manifest," \
+                 "changed or went; not deleting the manifest." >&2
+            return 1
+        fi
+    fi
+    for mf in manifest.json manifest.json.new; do
+        [ -e "${MIRROR_DIR}/${mf}" ] || [ -L "${MIRROR_DIR}/${mf}" ] \
+            || continue
+        mf_have="" mf_want=""
+        if [ -n "$mf_tree" ] && [ -f "${MIRROR_DIR}/${mf}" ] \
+                && [ ! -L "${MIRROR_DIR}/${mf}" ]; then
+            mf_have=$(swarm_recovery_git -C "$REPO_ROOT" hash-object \
+                --no-filters "${MIRROR_DIR}/${mf}" 2>/dev/null) || mf_have=""
+            mf_want=$(swarm_recovery_git -C "$REPO_ROOT" rev-parse \
+                --verify --quiet "${mf_tree}:${mf}" 2>/dev/null) || mf_want=""
+        fi
+        if [ -z "$mf_have" ] || [ "$mf_have" != "$mf_want" ]; then
+            echo "ERROR: ${MIRROR_DIR}/${mf} changed during cleanup." >&2
+            return 1
+        fi
+        rm -f "${MIRROR_DIR}/${mf}" || return 1
+        echo "  deleted ${MIRROR_DIR}/${mf}"
     done
     if [ -d "$MIRROR_DIR" ] && ! rmdir "$MIRROR_DIR" 2>/dev/null; then
         echo "ERROR: ${MIRROR_DIR} is not empty after cleanup." >&2

@@ -989,10 +989,16 @@ assert_eq "push path pre-stashes with --include-untracked" \
 assert_eq "pre-push stash uses swarm-core branding" "1" \
     "$(grep -cF -- '-m "swarm-core pre-push ' "$HARNESS_FILE" || true)"
 
-# (2) Positive: submodule update --init --recursive --force after stash.
+# (2) Positive: every checked-out submodule put back at its gitlink
+# after the stash, without cloning or fetching anything
+# (swarm_submodules_sync, lib/submodules.sh; tests/test_mirrors.sh
+# runs it), and no `git submodule update` left there to reach the
+# network.
 assert_eq "push path force-syncs submodules" \
     "1" \
-    "$(grep -cE '^[[:space:]]*git submodule update --init --recursive --force' "$HARNESS_FILE")"
+    "$(grep -cE '^[[:space:]]*swarm_submodules_sync /workspace hlog$' "$HARNESS_FILE")"
+assert_eq "and runs no git submodule update" "0" \
+    "$(grep -cE '^[[:space:]]*[^#]*git submodule update' "$HARNESS_FILE" || true)"
 
 # (3) Positive: bare rebase -- pre-stashed state guarantees a clean tree.
 # The leading `-c core.hooksPath=/dev/null` override was added in the

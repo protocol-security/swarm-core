@@ -18,6 +18,12 @@ source "$TESTS_DIR/../lib/project.sh"
 # The functions extracted from launch.sh below call into it.
 # shellcheck source=../lib/target.sh
 source "$TESTS_DIR/../lib/target.sh"
+# shellcheck source=../lib/preserve.sh
+source "$TESTS_DIR/../lib/preserve.sh"
+# shellcheck source=../lib/submodules.sh
+source "$TESTS_DIR/../lib/submodules.sh"
+# shellcheck source=../lib/mirrors.sh
+source "$TESTS_DIR/../lib/mirrors.sh"
 
 # The fake docker CLIs below hand "docker volume" to this script, which
 # keeps each volume's labels in a file, so launch.sh can create and
@@ -1433,7 +1439,7 @@ for _hl_fn in create_bare_repo prepare_bare_repo begin_engagement \
 done > "$TMPDIR/hl_funcs.sh"
 _hl_runtime="$_hl_dir/runtime"
 mkdir -m 700 "$_hl_runtime"
-_hl_mirror="$_hl_runtime/mirrors/sub.git"
+_hl_mirror="$_hl_runtime/mirrors/1.git"
 (
     # shellcheck source=/dev/null
     source "$TMPDIR/hl_funcs.sh"
@@ -1478,6 +1484,9 @@ assert_eq "bare repo keeps the borrowed objects" "yes" "$_hl_kept"
 assert_eq "every bare clone in launch.sh goes through Git's transport" \
     "$(grep -c 'git clone --bare ' "$_hl_launch")" \
     "$(grep -c 'git clone --bare --no-local ' "$_hl_launch")"
+assert_eq "and every one in lib/mirrors.sh" \
+    "$(grep -c 'clone --bare ' "$TESTS_DIR/../lib/mirrors.sh")" \
+    "$(grep -c 'clone --bare --no-local ' "$TESTS_DIR/../lib/mirrors.sh")"
 
 rm -rf "$_hl_dir"
 
@@ -1491,8 +1500,8 @@ echo "=== 35c. Bare repo and mirrors hold what branches, tags and HEAD reach ===
 # submodule's branches, tags and HEAD reach, and the commit the
 # engagement's base records for the submodule under refs/swarm/gitlink,
 # fetched by id when the submodule's checkout moved on; a base that
-# records a commit the submodule lacks gets a warning.  The live
-# functions again (extracted in 35b).
+# records a commit the submodule lacks is refused before any mirror is
+# made.  The live functions again (extracted in 35b).
 _tr_has() {  # REPO OID: yes when REPO has the object
     if git -C "$1" cat-file -e "$2" 2>/dev/null; then echo yes
     else echo no; fi
@@ -1547,10 +1556,8 @@ _hl_git -C "$_tr_src" stash -q
 _tr_stash=$(git -C "$_tr_src" rev-parse refs/stash)
 _tr_none=$(printf 'kept by nothing\n' \
     | git -C "$_tr_src" hash-object -w --stdin)
-# The base records, for sub2, a commit sub2 never had.
+# A commit no repository here has.
 _tr_fake=$(printf 'no such commit\n' | git -C "$_tr_src" hash-object --stdin)
-git -C "$_tr_src" update-index --cacheinfo "160000,${_tr_fake},sub2"
-_hl_git -C "$_tr_src" commit -m 'Point sub2 at a commit it lacks' -q
 # sub's checkout moves on: HEAD to a commit of its own, and of its refs
 # only a remote-tracking one stays, at a child of the commit the base
 # records (so no ref has that commit as its tip, and protocol v0 would
@@ -1578,8 +1585,8 @@ _tr_rc=0
 _tr_run eval 'create_bare_repo && mirror_submodules' || _tr_rc=$?
 assert_eq "start's bare repo and mirrors are made" 0 "$_tr_rc"
 _tr_bare="$_tr_dir/bare.git"
-_tr_mirror="$_tr_runtime/mirrors/sub.git"
-_tr_mirror2="$_tr_runtime/mirrors/sub2.git"
+_tr_mirror="$_tr_runtime/mirrors/1.git"
+_tr_mirror2="$_tr_runtime/mirrors/2.git"
 assert_eq "bare repo: agent-work at the checkout's HEAD" \
     "$(git -C "$_tr_src" rev-parse HEAD)" \
     "$(git -C "$_tr_bare" rev-parse agent-work 2>/dev/null)"
@@ -1609,13 +1616,10 @@ git clone -q "$_tr_mirror" "$_tr_dir/subclone" 2>/dev/null \
     && git -C "$_tr_dir/subclone" checkout -q "$_tr_gitlink" 2>/dev/null \
     && _tr_ck=yes
 assert_eq "a clone of the mirror checks the base's commit out" yes "$_tr_ck"
-assert_eq "sub2: mirrored all the same" yes \
-    "$([ -d "$_tr_mirror2" ] && echo yes || echo no)"
-assert_eq "sub2: no refs/swarm/gitlink" no \
+assert_eq "sub2: mirrored with its pin" \
+    "$(git -C "$_tr_src" rev-parse HEAD:sub2)" \
     "$(git -C "$_tr_mirror2" rev-parse -q --verify refs/swarm/gitlink \
-        >/dev/null 2>&1 && echo yes || echo no)"
-assert_eq "sub2: a warning names the commit it lacks" 1 \
-    "$(grep -c "^WARNING: .* has no commit ${_tr_fake}, " "$TMPDIR/tr.out")"
+        2>/dev/null)"
 # A session that joins adds a missing mirror for the engagement's base,
 # not for the checkout's HEAD, which moved since.
 _hl_git -C "$_tr_src/sub" checkout -q --detach "$_tr_subside"
@@ -1638,19 +1642,37 @@ assert_eq "a base that is no commit id refuses" 1 "$_tr_rc"
 assert_eq "saying so" 1 "$(grep -c 'records no base commit' "$TMPDIR/tr.out")"
 assert_eq "and mirrors nothing" no \
     "$([ -e "$_tr_mirror" ] && echo yes || echo no)"
-# A commit id the checkout does not have: refused before anything is
-# made.
+# A commit id the checkout does not have: the manifest is another
+# base's, refused before anything is made.
 jq -c --arg base "$_tr_fake" '.base_commit = $base' \
     "$_tr_runtime/state.json" > "$_tr_runtime/state.json.tmp"
 mv "$_tr_runtime/state.json.tmp" "$_tr_runtime/state.json"
 _tr_rc=0
 _tr_run mirror_submodules missing || _tr_rc=$?
 assert_eq "a base the checkout lacks refuses" 1 "$_tr_rc"
-assert_eq "naming it" 1 \
-    "$(grep -c "^ERROR: cannot read .* in the engagement's base ${_tr_fake}" \
+assert_eq "saying the manifest is not this engagement's" 1 \
+    "$(grep -c "manifest.json is not a manifest of this engagement's mirrors" \
         "$TMPDIR/tr.out")"
 assert_eq "and makes no mirror, not even a .new" no \
     "$([ -e "$_tr_mirror" ] || [ -e "$_tr_mirror.new" ] && echo yes || echo no)"
+# A base that records, for sub2, a commit sub2 lacks: refused before any
+# mirror is made, naming the submodule and the commit (an engagement
+# the containers would stop in).
+git -C "$_tr_src" update-index --cacheinfo "160000,${_tr_fake},sub2"
+_hl_git -C "$_tr_src" commit -m 'Point sub2 at a commit it lacks' -q
+rm -rf "$_tr_runtime/mirrors"
+jq -c --arg base "$(git -C "$_tr_src" rev-parse HEAD)" \
+    '.base_commit = $base' "$_tr_runtime/state.json" \
+    > "$_tr_runtime/state.json.tmp"
+mv "$_tr_runtime/state.json.tmp" "$_tr_runtime/state.json"
+_tr_rc=0
+_tr_run mirror_submodules || _tr_rc=$?
+assert_eq "a submodule lacking the base's commit refuses" 1 "$_tr_rc"
+assert_eq "naming it and the commit" 1 \
+    "$(grep -c "^ERROR: submodule sub2: .* has no commit ${_tr_fake}," \
+        "$TMPDIR/tr.out")"
+assert_eq "before any mirror is made" no \
+    "$([ -e "$_tr_runtime/mirrors" ] && echo yes || echo no)"
 
 rm -rf "$_tr_dir"
 
@@ -1661,9 +1683,9 @@ echo "=== 35d. Each mirror comes from its submodule's own Git directory ==="
 # A submodule's Git directory is .git/modules/<name>, not <path>, and
 # some keep theirs in their work tree: one moved with git mv, two whose
 # names are each other's paths, and one added from a repository already
-# there.  Each mirror, named after its submodule, holds that
-# submodule's commits, and a clone of the bare repo whose submodules
-# point at the mirrors, as a container's does, checks each of them out.
+# there.  Each mirror, listed in the manifest under its path, holds
+# that submodule's commits, and a clone of the bare repo checks each of
+# them out from its mirror, as a container does (swarm_submodules_init).
 # The live functions again (extracted in 35b).
 _gd_dir="$TMPDIR/gd"
 mkdir -p "$_gd_dir"
@@ -1715,6 +1737,12 @@ _gd_run() {  # 'FUNCTION [ARG]'...: each in turn, under set -e as in
     _gd_rc=$?
     set -e
 }
+_gd_mirror() {  # PATH: the mirror the manifest lists for that path
+    printf '%s/mirrors/%s.git' "$_gd_runtime" "$(jq -r --arg p \
+        "$(printf '%s' "$1" | base64 | tr -d '\n')" \
+        '.mirrors[] | select(.parent == 0 and .path == $p) | .id' \
+        "$_gd_runtime/mirrors/manifest.json" 2>/dev/null)"
+}
 _gd_run create_bare_repo mirror_submodules
 assert_eq "start's bare repo and mirrors are made" 0 "$_gd_rc"
 assert_eq "with no warning" 0 "$(grep -c '^WARNING' "$TMPDIR/gd.out" || true)"
@@ -1725,23 +1753,22 @@ for _gd_case in first:lib/moved:one x:y:rx y:x:ry inner:inner:src/inner; do
         "$(git -C "$_gd_dir/$_gd_repo" rev-parse HEAD)" "$_gd_link"
     assert_eq "${_gd_name}: its mirror has it under refs/swarm/gitlink" \
         "$_gd_link" \
-        "$(git -C "$_gd_runtime/mirrors/${_gd_name}.git" rev-parse -q \
+        "$(git -C "$(_gd_mirror "$_gd_path")" rev-parse -q \
             --verify refs/swarm/gitlink 2>/dev/null)"
 done
-# What a container does with the mounts: a clone of the bare repo whose
-# submodules, by name, point at the mirrors.
+# What a container does with the mount: a clone of the bare repo, each
+# listed submodule checked out from its mirror.
 _gd_ck="$_gd_dir/ck"
 _hl_git clone -q "$_gd_dir/bare.git" "$_gd_ck" 2>/dev/null || true
-git config --file "$_gd_ck/.gitmodules" --get-regexp 'submodule\..*\.path' \
-    > "$TMPDIR/gd.paths" 2>/dev/null || true
-while read -r _gd_key _gd_path; do
-    _gd_name="${_gd_key#submodule.}"
-    _gd_name="${_gd_name%.path}"
-    git -C "$_gd_ck" config "submodule.${_gd_name}.url" \
-        "$_gd_runtime/mirrors/${_gd_name}.git"
-    _hl_git -C "$_gd_ck" submodule update --init -q -- "$_gd_path" \
-        2>/dev/null || true
-done < "$TMPDIR/gd.paths"
+_gd_ck=$(cd -P "$_gd_ck" && pwd -P)
+_gd_log() { printf '%s\n' "$*"; }
+SWARM_MIRRORS_BASE=$(git -C "$_gd_src" rev-parse HEAD) \
+    SWARM_MIRRORS_COUNT=4 \
+    swarm_submodules_init "$_gd_runtime/mirrors/manifest.json" "$_gd_ck" \
+    _gd_log > "$TMPDIR/gd.init" 2>&1 || true
+assert_eq "the clone checks all four out from their mirrors" \
+    "submodules: 4 of 4 checked out from mirrors" \
+    "$(tail -1 "$TMPDIR/gd.init")"
 for _gd_path in lib/moved y x inner; do
     # " <commit>": checked out at the commit the base records.
     assert_eq "the clone checks ${_gd_path} out at the base's commit" \
@@ -1766,9 +1793,8 @@ printf 'gitdir: %s\n' "$_gd_dir/nowhere" > "$_gd_src/lib/moved/.git"
 _gd_run create_bare_repo mirror_submodules
 assert_eq "a submodule whose .git leads nowhere stops start" 1 \
     "$([ "$_gd_rc" -ne 0 ] && echo 1 || echo 0)"
-assert_eq "and gets no mirror" no \
-    "$([ -e "$_gd_runtime/mirrors/first.git" ] \
-        || [ -e "$_gd_runtime/mirrors/first.git.new" ] && echo yes || echo no)"
+assert_eq "and no mirror is made" no \
+    "$([ -e "$_gd_runtime/mirrors" ] && echo yes || echo no)"
 mv "$_gd_dir/moved.gitfile" "$_gd_src/lib/moved/.git"
 _gd_again 2
 cp "$_gd_src/.git/modules/first/config" "$_gd_dir/first.config"
@@ -1778,11 +1804,11 @@ assert_eq "a submodule whose config Git cannot read stops start" 1 \
     "$([ "$_gd_rc" -ne 0 ] && echo 1 || echo 0)"
 assert_eq "naming the file" 1 \
     "$(grep -q "modules/first/config" "$TMPDIR/gd.out" && echo 1 || echo 0)"
-assert_eq "and gets no mirror" no \
-    "$([ -e "$_gd_runtime/mirrors/first.git" ] \
-        || [ -e "$_gd_runtime/mirrors/first.git.new" ] && echo yes || echo no)"
+assert_eq "and no mirror is made" no \
+    "$([ -e "$_gd_runtime/mirrors" ] && echo yes || echo no)"
 # A session that joins the first engagement, whose mirrors are all
-# there, stops too, and leaves them as they are.
+# there, needs nothing of first's git dir: it goes through and leaves
+# them as they are.
 _gd_again 3
 rmdir "$_gd_runtime"
 mv "$_gd_dir/runtime-1" "$_gd_runtime"
@@ -1792,24 +1818,21 @@ fi
 # A file of the test's own in first's mirror, and its refs: both stay
 # if the mirror does.
 _gd_refs() {
-    git -C "$_gd_runtime/mirrors/first.git" for-each-ref \
+    git -C "$(_gd_mirror lib/moved)" for-each-ref \
         --format='%(objectname) %(refname)' 2>/dev/null || true
 }
-touch "$_gd_runtime/mirrors/first.git/gd-sentinel" 2>/dev/null || true
+touch "$(_gd_mirror lib/moved)/gd-sentinel" 2>/dev/null || true
 _gd_before=$(_gd_refs)
 _gd_run 'mirror_submodules missing'
-assert_eq "a joining session stops on that config too" 1 \
-    "$([ "$_gd_rc" -ne 0 ] && echo 1 || echo 0)"
-assert_eq "naming the file" 1 \
-    "$(grep -q "modules/first/config" "$TMPDIR/gd.out" && echo 1 || echo 0)"
+assert_eq "a joining session does not need that config" 0 "$_gd_rc"
 assert_eq "and leaves first's mirror in place" yes \
-    "$([ -e "$_gd_runtime/mirrors/first.git/gd-sentinel" ] && echo yes || echo no)"
+    "$([ -e "$(_gd_mirror lib/moved)/gd-sentinel" ] && echo yes || echo no)"
 assert_eq "with the same refs" "$_gd_before" "$(_gd_refs)"
 assert_eq "among them the pin" 1 \
     "$(printf '%s\n' "$_gd_before" | grep -c ' refs/swarm/gitlink$' || true)"
 cp "$_gd_dir/first.config" "$_gd_src/.git/modules/first/config"
 _gd_run 'mirror_submodules missing'
-assert_eq "with the config back, the session joins" 0 "$_gd_rc"
+assert_eq "with the config back, the session joins all the same" 0 "$_gd_rc"
 
 rm -rf "$_gd_dir"
 
@@ -2671,19 +2694,17 @@ done
 
 # ============================================================
 echo ""
-echo "=== 44. mirror_volume_args keeps each mount whole ==="
+echo "=== 44. mirror_volume_args mounts the mirrors once they are ready ==="
 
-# Source the live helper.  Mounts used to go through a text file that
-# was re-read with word splitting, so a space split one mount into
-# several docker arguments.
+# The live helpers, on a checkout with two submodules, its runtime
+# directory under a path with a space (it lives under $HOME, which can
+# hold one): one mount, a single argument, and the engagement's base.
 _mva_fn="$TMPDIR/mirror_volume_args.sh"
-awk '/^mirror_volume_args\(\)[[:space:]]*\{/ { p = 1 }
-     p { print }
-     p && /^\}[[:space:]]*$/ { exit }' \
-    "$_LAUNCH_SH" > "$_mva_fn"
-# shellcheck source=/dev/null
-source "$_mva_fn"
-
+for _mva_f in engagement_base mirror_submodules mirror_volume_args; do
+    awk -v fn="$_mva_f" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
+         p { print }
+         p && /^\}[[:space:]]*$/ { exit }' "$_LAUNCH_SH"
+done > "$_mva_fn"
 _mva_sub="$TMPDIR/mva-sub"
 _mva_top="$TMPDIR/mva-top"
 git init -q "$_mva_sub"
@@ -2693,45 +2714,77 @@ git init -q "$_mva_top"
 git -C "$_mva_top" -c protocol.file.allow=always \
     submodule add -q "$_mva_sub" "lib space" 2>/dev/null
 git -C "$_mva_top" -c protocol.file.allow=always \
-    submodule add -q "$_mva_sub" "no-mirror" 2>/dev/null
-
-# The runtime directory lives under $HOME, which can contain a space.
-_mva_mirrors="$TMPDIR/state dir/mirrors"
-_mva_mirror="${_mva_mirrors}/lib space.git"
-mkdir -p "$_mva_mirror"
-_mva_out=$(
-    MIRROR_DIR="$_mva_mirrors"
+    submodule add -q "$_mva_sub" "other" 2>/dev/null
+git -C "$_mva_top" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q -m subs
+_mva_rt="$TMPDIR/state dir"
+mkdir -p "$_mva_rt"
+_mva_state() {  # REPO: a state file recording REPO's HEAD as the base
+    jq -n --arg schema "$SWARM_STATE_SCHEMA" \
+        --arg base "$(git -C "$1" rev-parse HEAD)" \
+        '{schema: $schema, base_commit: $base}' > "$_mva_rt/state.json"
+}
+_mva_run() {  # REPO DIR: mirror_volume_args's arguments, one per line
+    (
+        # shellcheck source=/dev/null
+        source "$_mva_fn"
+        REPO_ROOT="$1"
+        MIRROR_DIR="$2"
+        STATE_FILE="$_mva_rt/state.json"
+        MIRROR_ARGS=()
+        mirror_volume_args || exit 1
+        printf '<%s>\n' "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}"
+    )
+}
+_mva_state "$_mva_top"
+(
+    # shellcheck source=/dev/null
+    source "$_mva_fn"
     REPO_ROOT="$_mva_top"
-    mirror_volume_args
-    printf '<%s>\n' "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}"
-)
-
-assert_eq "spaces in the path and the name stay in one mount" \
-    "<-v>
-<${_mva_mirror}:/mirrors/lib space:ro>" "$_mva_out"
-
+    MIRROR_DIR="$_mva_rt/mirrors"
+    STATE_FILE="$_mva_rt/state.json"
+    mirror_submodules
+) >/dev/null 2>&1
+assert_eq "one read-only mount of mirrors/, whole, and the base" \
+    "<--mount>
+<type=bind,src=${_mva_rt}/mirrors,dst=/mirrors,readonly>
+<-e>
+<SWARM_MIRRORS_BASE=$(git -C "$_mva_top" rev-parse HEAD)>
+<-e>
+<SWARM_MIRRORS_COUNT=2>" \
+    "$(_mva_run "$_mva_top" "$_mva_rt/mirrors")"
+# No submodules: an empty manifest, no mount.
 _mva_plain="$TMPDIR/mva-plain"
 git init -q "$_mva_plain"
+git -C "$_mva_plain" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m init
+_mva_state "$_mva_plain"
 _mva_rc=0
 _mva_out=$(
-    MIRROR_DIR="$_mva_mirrors"
+    # shellcheck source=/dev/null
+    source "$_mva_fn"
     REPO_ROOT="$_mva_plain"
+    MIRROR_DIR="$_mva_rt/plain-mirrors"
+    STATE_FILE="$_mva_rt/state.json"
+    mirror_submodules >/dev/null 2>&1
+    MIRROR_ARGS=()
     mirror_volume_args
     printf '%s' "${#MIRROR_ARGS[@]}"
 ) || _mva_rc=$?
 assert_eq "no submodules: success" "0" "$_mva_rc"
 assert_eq "no submodules: no mounts" "0" "$_mva_out"
-
-# A failed submodule listing must stop the launch instead of starting
-# containers without their mirrors.
-mkdir -p "$TMPDIR/mva-not-a-repo"
+# Mirrors that are not ready stop the launch instead of starting
+# containers without them: one gone, and an earlier release's layout.
+_mva_state "$_mva_top"
+mv "$_mva_rt/mirrors/2.git" "$_mva_rt/two.git"
 _mva_rc=0
-(
-    MIRROR_DIR="$_mva_mirrors"
-    REPO_ROOT="$TMPDIR/mva-not-a-repo"
-    mirror_volume_args
-) >/dev/null 2>&1 || _mva_rc=$?
-assert_eq "failed submodule listing returns an error" "1" "$_mva_rc"
+_mva_run "$_mva_top" "$_mva_rt/mirrors" >/dev/null 2>&1 || _mva_rc=$?
+assert_eq "a listed mirror gone: an error" "1" "$_mva_rc"
+mv "$_mva_rt/two.git" "$_mva_rt/mirrors/2.git"
+mkdir -p "$_mva_rt/old-mirrors/lib space.git"
+_mva_rc=0
+_mva_run "$_mva_top" "$_mva_rt/old-mirrors" >/dev/null 2>&1 || _mva_rc=$?
+assert_eq "an earlier release's mirrors: an error" "1" "$_mva_rc"
 
 # ============================================================
 echo ""
@@ -3762,8 +3815,11 @@ unset -f docker
 # (which counts open sessions) first, then builds the image, and
 # interactive mirrors only when it creates the bare repo.
 assert_eq "each bare repo creation checks for a clean runtime" "3" \
-    "$(grep -B2 '^ *create_bare_repo "' "$_LAUNCH_SH" \
+    "$(grep -B3 '^ *create_bare_repo "' "$_LAUNCH_SH" \
         | grep -c '^ *require_clean_runtime$')"
+assert_eq "and the submodules it would mirror, before anything is made" "3" \
+    "$(grep -B2 '^ *create_bare_repo "' "$_LAUNCH_SH" \
+        | grep -c '^ *mirror_preflight$')"
 assert_eq "and builds the image between the two" "3" \
     "$(grep -B1 '^ *create_bare_repo "' "$_LAUNCH_SH" \
         | grep -c '^ *build_image$')"
@@ -3807,32 +3863,32 @@ _mm_run() {
 }
 _mm_run
 assert_eq "the submodule is mirrored" "true" \
-    "$([ -d "$_mm_dir/mirrors/lib.git" ] && echo true || echo false)"
-touch "$_mm_dir/mirrors/lib.git/keep"
+    "$([ -d "$_mm_dir/mirrors/1.git" ] && echo true || echo false)"
+touch "$_mm_dir/mirrors/1.git/keep"
 _mm_run missing
 assert_eq "a joining session leaves an existing mirror alone" "true" \
-    "$([ -e "$_mm_dir/mirrors/lib.git/keep" ] && echo true || echo false)"
-rm -rf "$_mm_dir/mirrors/lib.git"
+    "$([ -e "$_mm_dir/mirrors/1.git/keep" ] && echo true || echo false)"
+rm -rf "$_mm_dir/mirrors/1.git"
 _mm_run missing
 assert_eq "a joining session adds a missing mirror" "true" \
-    "$(git -C "$_mm_dir/mirrors/lib.git" rev-parse --is-bare-repository \
+    "$(git -C "$_mm_dir/mirrors/1.git" rev-parse --is-bare-repository \
         2>/dev/null || echo false)"
 assert_eq "a mirror is made under .new and then renamed" "false" \
-    "$([ -e "$_mm_dir/mirrors/lib.git.new" ] && echo true || echo false)"
-touch "$_mm_dir/mirrors/lib.git/keep"
+    "$([ -e "$_mm_dir/mirrors/1.git.new" ] && echo true || echo false)"
+touch "$_mm_dir/mirrors/1.git/keep"
 _mm_rc=0
 _mm_run || _mm_rc=$?
 assert_eq "a new engagement never replaces a mirror: refused" "1" \
     "$([ "$_mm_rc" -ne 0 ] && echo 1 || echo 0)"
 assert_eq "and the mirror stays" "true" \
-    "$([ -e "$_mm_dir/mirrors/lib.git/keep" ] && echo true || echo false)"
-rm -rf "$_mm_dir/mirrors/lib.git"
-mkdir "$_mm_dir/mirrors/lib.git.new"
+    "$([ -e "$_mm_dir/mirrors/1.git/keep" ] && echo true || echo false)"
+rm -rf "$_mm_dir/mirrors/1.git"
+mkdir "$_mm_dir/mirrors/1.git.new"
 _mm_rc=0
 _mm_run missing || _mm_rc=$?
 assert_eq "a .new a stopped run left: refused" "1" \
     "$([ "$_mm_rc" -ne 0 ] && echo 1 || echo 0)"
-rmdir "$_mm_dir/mirrors/lib.git.new"
+rmdir "$_mm_dir/mirrors/1.git.new"
 
 # Through launch.sh: with a session open, start leaves the bare repo
 # alone, and another interactive session still joins it.  Once the
