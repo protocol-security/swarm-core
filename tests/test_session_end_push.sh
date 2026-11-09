@@ -523,6 +523,12 @@ assert_contains "_on_signal kills the running agent session" \
     'kill -TERM "$_SESSION_PID"' "$ON_SIGNAL_BODY"
 assert_contains "_on_signal calls _session_end_push" \
     '_session_end_push' "$ON_SIGNAL_BODY"
+# The agent may still be running then: the push must not reset the
+# branch (_SEP_EMERGENCY, set just before it).
+assert_eq "_on_signal marks its push an emergency one" "yes" \
+    "$(printf '%s\n' "$ON_SIGNAL_BODY" | awk '
+        /_SEP_EMERGENCY=1/ { set = 1; next }
+        /_session_end_push/ { print (set ? "yes" : "no"); exit }')"
 assert_contains "_on_signal exits with TERM code 143" \
     'exit_code=143' "$ON_SIGNAL_BODY"
 assert_contains "_on_signal exits with INT code 130" \
@@ -672,16 +678,38 @@ _tp_run() {
         sleep() { :; }
         # shellcheck disable=SC2329
         git() {
+            local rc=0
+            case " $* " in
+                *" worktree add "*) eval "${_tp_before_worktree:-}" ;;
+                *" merge-base --is-ancestor "*)
+                    eval "${_tp_before_ancestry:-}" ;;
+            esac
             case " $* " in
                 *" pull "*) return 1 ;;
                 *" $stub "*) return 1 ;;
+                *" push origin HEAD:agent-work "*)
+                    eval "${_tp_before_push:-}"
+                    command git "$@" || rc=$?
+                    eval "${_tp_after_push:-}"
+                    return "$rc" ;;
             esac
             command git -c user.name=t -c user.email=t@t \
                 -c commit.gpgsign=false "$@"
         }
+        # shellcheck disable=SC2034
+        [ -z "${_tp_emergency:-}" ] || _SEP_EMERGENCY=1
         _session_end_push
     ) >/dev/null 2>&1
 }
+# Commands _tp_run evaluates in the workspace just before and just
+# after the scratch push, before the scratch worktree is added, and
+# before the settle check's ancestry test; set _tp_emergency for an
+# emergency push.
+_tp_before_push=""
+_tp_after_push=""
+_tp_before_worktree=""
+_tp_before_ancestry=""
+_tp_emergency=""
 # Prepare a workspace with one local commit that changes a file, while
 # origin moved on, so the transplanted copy is a different commit.
 _tp_setup() {
@@ -698,34 +726,62 @@ _tp_setup() {
     echo "$ws"
 }
 
-# The check reads `git cherry` output: any "+" line, wherever it is,
-# means a commit has no copy on origin.  A long output must not hide it.
+# The check settles with a clean tree, HEAD still the commit the
+# transplant listed the commits of, and the fetched origin/agent-work
+# having what it pushed (or that commit, when there was nothing to
+# push); anything else, or a status that fails, keeps the branch.
 _ts_check() {
     (
         set -euo pipefail
         # shellcheck source=/dev/null
         source "$TMPDIR/transplant.sh"
+        # shellcheck disable=SC2034
+        _SCRATCH_SOURCE="$_ts_src"
+        # shellcheck disable=SC2034
+        _SCRATCH_PUSHED="$_ts_pushed"
         # shellcheck disable=SC2329
         git() {
             case "$1" in
-                status) return 0 ;;
-                cherry) printf '%s' "$_ts_out"; return "$_ts_rc" ;;
+                status) printf '%s' "$_ts_out"; return "$_ts_rc" ;;
+                rev-parse) printf '%s\n' "$_ts_head" ;;
+                # Asked about what was pushed, or with nothing pushed
+                # about the listed commit, against DEST.
+                merge-base)
+                    [ "$3" = "${_ts_pushed:-$_ts_src}" ] \
+                        && [ "$4" = ddd ] || return 9
+                    return "$_ts_anc" ;;
             esac
         }
-        _transplant_settled
+        _transplant_settled ddd
     ) && echo settled || echo kept
 }
-_ts_rc=0
-_ts_out="- aaa"$'\n'"- bbb"
-assert_eq "every commit has a copy: settled" "settled" "$(_ts_check)"
-_ts_out="+ aaa"$'\n'"$(printf -- '- x\n%.0s' $(seq 1 10000))"
-assert_eq "first commit unmatched before a long list: kept" "kept" \
+_ts_reset() {
+    _ts_rc=0 _ts_out="" _ts_src=aaa _ts_head=aaa _ts_pushed=ppp _ts_anc=0
+}
+_ts_reset
+assert_eq "clean tree, HEAD as listed, push on origin: settled" "settled" \
     "$(_ts_check)"
-_ts_out="- aaa"$'\n'"+ bbb"
-assert_eq "last commit unmatched: kept" "kept" "$(_ts_check)"
-_ts_out=""
+_ts_out="?? wip.txt"
+assert_eq "something in the tree: kept" "kept" "$(_ts_check)"
+_ts_reset
 _ts_rc=1
-assert_eq "git cherry fails: kept" "kept" "$(_ts_check)"
+assert_eq "git status fails: kept" "kept" "$(_ts_check)"
+_ts_reset
+_ts_head=bbb
+assert_eq "HEAD moved since the listing: kept" "kept" "$(_ts_check)"
+_ts_reset
+_ts_src=""
+assert_eq "no commit listed from: kept" "kept" "$(_ts_check)"
+_ts_reset
+_ts_anc=1
+assert_eq "origin no longer has the push: kept" "kept" "$(_ts_check)"
+_ts_reset
+_ts_pushed=""
+assert_eq "nothing pushed, origin has the commit: settled" "settled" \
+    "$(_ts_check)"
+_ts_anc=1
+assert_eq "nothing pushed, origin lacks the commit: kept" "kept" \
+    "$(_ts_check)"
 
 _tp_ws=$(_tp_setup clean)
 _tp_rc=0
@@ -738,6 +794,141 @@ assert_eq "the pushed tip carries the change" "change" \
     "$(git -C "$_tp_ws/../origin.git" show agent-work:a.txt 2>/dev/null)"
 assert_eq "the pushed tip also keeps origin's commit" "other" \
     "$(git -C "$_tp_ws/../origin.git" show agent-work:b.txt 2>/dev/null)"
+
+# Commits whose copy `git cherry` cannot match settle too: the
+# transplant shipped or dropped each, so the branch moves to the pushed
+# tip, and the loop top finds nothing unshipped.  Print "rc moved" for
+# a transplant in WS.
+_tp_moved() {
+    local ws="$1" rc=0
+    _tp_run "$ws" none-such || rc=$?
+    printf '%s %s' "$rc" "$([ "$(git -C "$ws" rev-parse HEAD)" \
+        = "$(git -C "$ws/../origin.git" rev-parse agent-work)" ] \
+        && echo moved || echo kept)"
+}
+# An empty commit after one that changes a file: the transplant drops
+# the empty one.
+_tp_ws=$(_tp_setup empty)
+_lt_git -C "$_tp_ws" commit -q --allow-empty -m "empty"
+assert_eq "an empty commit the transplant dropped: moved" "0 moved" \
+    "$(_tp_moved "$_tp_ws")"
+assert_eq "with the other commit's change on origin" "change" \
+    "$(git -C "$_tp_ws/../origin.git" show agent-work:a.txt 2>/dev/null)"
+# A commit whose change origin already has, from another commit.
+_tp_ws=$(_lt_setup equiv)
+echo same > "$_tp_ws/a.txt"
+git -C "$_tp_ws" add a.txt
+_lt_git -C "$_tp_ws" commit -q -m "local: a"
+echo same > "$_tp_ws/../seed/a.txt"
+echo more > "$_tp_ws/../seed/c.txt"
+git -C "$_tp_ws/../seed" add a.txt c.txt
+_lt_git -C "$_tp_ws/../seed" commit -q -m "other: a and c"
+git -C "$_tp_ws/../seed" push -q "$_tp_ws/../origin.git" \
+    HEAD:refs/heads/agent-work
+assert_eq "a change origin has from another commit: moved" "0 moved" \
+    "$(_tp_moved "$_tp_ws")"
+# A commit copied onto an origin that changed a line near it, so the
+# copy's patch differs from the original's.
+_tp_ws=$(_lt_setup context)
+printf '%s\n' 1 2 3 4 5 6 7 8 9 > "$_tp_ws/../seed/n.txt"
+git -C "$_tp_ws/../seed" add n.txt
+_lt_git -C "$_tp_ws/../seed" commit -q -m "nine lines"
+git -C "$_tp_ws/../seed" push -q "$_tp_ws/../origin.git" \
+    HEAD:refs/heads/agent-work
+git -C "$_tp_ws" pull -q origin agent-work 2>/dev/null
+printf '%s\n' 1 2 3 4 5 six 7 8 9 > "$_tp_ws/n.txt"
+git -C "$_tp_ws" add n.txt
+_lt_git -C "$_tp_ws" commit -q -m "local: line 6"
+printf '%s\n' 1 2 3 four 5 6 7 8 9 > "$_tp_ws/../seed/n.txt"
+git -C "$_tp_ws/../seed" add n.txt
+_lt_git -C "$_tp_ws/../seed" commit -q -m "other: line 4"
+git -C "$_tp_ws/../seed" push -q "$_tp_ws/../origin.git" \
+    HEAD:refs/heads/agent-work
+assert_eq "a copy whose context moved: moved" "0 moved" \
+    "$(_tp_moved "$_tp_ws")"
+assert_eq "with both changes on origin" "1,2,3,four,5,six,7,8,9," \
+    "$(git -C "$_tp_ws/../origin.git" show agent-work:n.txt \
+        2>/dev/null | tr '\n' ',')"
+assert_eq "and the loop top goes on without a push" "0 0" \
+    "$(_lt_run "$_tp_ws" fail)"
+
+# The agent commits while the transplant runs (as one still running
+# after a signal can): that commit is on HEAD after it, and stays.
+_tp_ws=$(_tp_setup late)
+_tp_before_push="command git -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false commit -q --allow-empty -m late"
+_tp_rc=0
+_tp_run "$_tp_ws" none-such || _tp_rc=$?
+_tp_before_push=""
+assert_eq "a commit made while the transplant ran: kept" "0 late" \
+    "$_tp_rc $(git -C "$_tp_ws" log -1 --format=%s)"
+# origin/agent-work moves back (a fetch elsewhere) after the transplant
+# listed the commits against it: the scratch worktree starts from what
+# they were listed against, so the push still fast-forwards.
+_tp_ws=$(_tp_setup basemove)
+_tp_before_worktree="command git update-ref refs/remotes/origin/agent-work \
+    refs/remotes/origin/agent-work~1"
+assert_eq "origin/agent-work moved before the scratch worktree: moved" \
+    "0 moved" "$(_tp_moved "$_tp_ws")"
+_tp_before_worktree=""
+# It moves back after the push was fetched and read: the branch moves
+# to what was read and checked, the pushed tip.
+_tp_ws=$(_tp_setup destmove)
+_tp_before_ancestry="command git update-ref refs/remotes/origin/agent-work \
+    refs/remotes/origin/agent-work~1"
+assert_eq "origin/agent-work moved before the reset: moved to the push" \
+    "0 moved" "$(_tp_moved "$_tp_ws")"
+_tp_before_ancestry=""
+# An emergency push (a signal: the agent may still be running) keeps
+# the branch, though the transplant settled.
+_tp_ws=$(_tp_setup emergency)
+_tp_tip=$(git -C "$_tp_ws" rev-parse HEAD)
+_tp_emergency=1
+_tp_rc=0
+_tp_run "$_tp_ws" none-such || _tp_rc=$?
+_tp_emergency=""
+assert_eq "an emergency push: shipped, branch kept" "0 $_tp_tip change" \
+    "$_tp_rc $(git -C "$_tp_ws" rev-parse HEAD) $(git -C \
+        "$_tp_ws/../origin.git" show agent-work:a.txt 2>/dev/null)"
+# origin/agent-work is replaced right after the push: the branch stays.
+_tp_ws=$(_tp_setup forced)
+_tp_tip=$(git -C "$_tp_ws" rev-parse HEAD)
+_tp_after_push="command git --git-dir='$_tp_ws/../origin.git' update-ref \
+    refs/heads/agent-work \
+    $(git -C "$_tp_ws/../origin.git" rev-parse agent-work~1)"
+_tp_run "$_tp_ws" none-such || true
+_tp_after_push=""
+assert_eq "origin replaced right after the push: kept" "$_tp_tip" \
+    "$(git -C "$_tp_ws" rev-parse HEAD)"
+# A last commit that only adds a gitlink, with diff.ignoreSubmodules=all
+# hiding it from git diff: the transplant does not drop it.  It ships
+# it where git commit takes a staged gitlink under that setting; Git
+# 2.30 does not ("nothing to commit"), so there the transplant fails
+# and parks the commit.
+_tp_ws=$(_tp_setup gitlink)
+git -C "$_tp_ws" update-index --add --cacheinfo \
+    "160000,$(git -C "$_tp_ws" rev-parse HEAD),sub"
+_lt_git -C "$_tp_ws" commit -q -m "gitlink only"
+_tp_tip=$(git -C "$_tp_ws" rev-parse HEAD)
+git -C "$_tp_ws" config diff.ignoreSubmodules all
+git init -q "$TMPDIR/gl-probe"
+_lt_git -C "$TMPDIR/gl-probe" commit -q --allow-empty -m base
+git -C "$TMPDIR/gl-probe" config diff.ignoreSubmodules all
+git -C "$TMPDIR/gl-probe" update-index --add --cacheinfo \
+    "160000,$(git -C "$TMPDIR/gl-probe" rev-parse HEAD),sub"
+if _lt_git -C "$TMPDIR/gl-probe" commit -q -m probe >/dev/null 2>&1; then
+    assert_eq "a commit that only adds a gitlink: moved" "0 moved" \
+        "$(_tp_moved "$_tp_ws")"
+    assert_eq "with the gitlink on origin" "160000" \
+        "$(git -C "$_tp_ws/../origin.git" ls-tree agent-work sub \
+            | cut -c1-6)"
+else
+    assert_eq "a commit that only adds a gitlink: parked, kept" "1 kept" \
+        "$(_tp_moved "$_tp_ws")"
+    assert_eq "with the commit on a park ref" "$_tp_tip" \
+        "$(git -C "$_tp_ws/../origin.git" for-each-ref \
+            --format='%(objectname)' 'refs/heads/agent-parked/')"
+fi
 
 # The stash fails, so an untracked file stays in the tree: no reset.
 _tp_ws=$(_tp_setup dirty)
