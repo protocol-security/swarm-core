@@ -608,6 +608,19 @@ repo's branches no longer bring back (a branch deleted there, or
 this checkout, which keeps them recorded until HEAD has them, and
 refuses one the checkout no longer has.
 
+The files a harvest merges are the agents', so Git runs no hook and no
+fsmonitor command for `harvest.sh` on the host
+(`core.hooksPath=/dev/null`, an empty `core.fsmonitor`, and each hook
+the checkout's Git config defines turned off by name; a hook name with
+`=` makes it refuse). It still runs the commands your Git config names
+for Git to run (filters and merge drivers, on the files an agent's
+`.gitattributes` assigns them to; `uploadpack.packObjectsHook`, for its
+fetch), and the hooks a submodule's own config defines. And the files
+stay in the checkout: a hook an agent added there can run with later
+Git commands, and a Git config that includes a file of the checkout
+takes what an agent wrote there. Review what a harvest merged, as you
+would a pull request, before you run anything in the checkout.
+
 Before merging, `harvest.sh` tags the current branch tip with a
 local `swarm-harvest-<date>-<time>` tag (`-2`, `-3` and so on for
 another harvest within the same second; skipped on `--dry` and
