@@ -1299,8 +1299,9 @@ Each project keeps its host-side state in one directory:
 | Path | Content |
 |------|---------|
 | `upstream.git` | Bare repo that containers mount at `/upstream`. |
-| `mirrors/<name>.git` | Submodule mirrors (`/mirrors`, read-only). |
-| `upstream.git.new`, `mirrors/<name>.git.new` | A bare repo or mirror being cloned, renamed once ready. |
+| `mirrors/<id>.git` | Submodule mirrors, numbered (`/mirrors`, read-only). |
+| `mirrors/manifest.json` | Which submodule each mirror is (see [Submodule mirrors](#submodule-mirrors)). |
+| `upstream.git.new`, `mirrors/<id>.git.new`, `mirrors/manifest.json.new` | A bare repo, mirror or manifest being made, renamed once ready. |
 | `state.json` | State file for a standalone dashboard. |
 | `engagement.lock` | Lock that lifecycle commands hold. |
 
@@ -1406,14 +1407,9 @@ checkout's (or the submodule's) branches, tags and HEAD reach, and not
 the objects that only remote-tracking branches, the stash, the reflogs
 or recovery refs keep. A mirror also keeps the commit the base records
 for its submodule, under `refs/swarm/gitlink`, fetched by id when the
-submodule's own checkout has moved on; when the submodule does not
-have that commit at all, `start` warns, since the containers cannot
-check that submodule out. Each mirror is cloned from the Git directory
-the submodule uses, which Git keeps under `.git/modules/` by the
-submodule's name (not its path) or in the submodule's work tree. A
-submodule whose Git directory Git cannot find or read stops the
-commands that mirror submodules, an interactive session that joins
-included, even when its mirror is there already.
+submodule's own checkout has moved on. Which submodules are mirrored,
+and how the containers check them out, is in
+[Submodule mirrors](#submodule-mirrors).
 
 The state file also records the Docker daemon (`docker info` ID) the
 engagement runs on, and a token of 16 random hex digits that
@@ -1464,7 +1460,8 @@ snapshot to pass the target's check, and `wait` checks it before it
 polls (see [Target](#target)). The engagement is recorded before
 anything of it is made (a target is resolved into scratch first and
 published as `target.git` right after the record), and a bare repo or
-a mirror is cloned to `<name>.new` and renamed once ready, so a run
+a mirror is cloned to `<name>.new` and renamed once ready (the mirrors'
+manifest is written before the mirrors it lists), so a run
 stopped half way leaves the record and whatever it had made by then
 (`target.git`, target scratch, a `.new`, the bare repo, mirrors),
 which `cleanup` finishes, keeping what Git holds in the bare repo, the
@@ -1473,6 +1470,66 @@ unknown driver or context mode) or a failed image build stops `start`
 before the engagement is created. Containers mount the bare repo with
 `--mount`, which fails on a missing source rather than creating an
 empty directory there.
+
+### Submodule mirrors
+
+Every submodule initialized on the host is mirrored, at any depth: the
+submodules the engagement's base records (each submodule at the commit
+its superproject's commit records) whose name the host's own
+`.gitmodules` maps to a path with a `.git` there. A submodule moved on
+the host is found under its name; a linked worktree's submodules are
+its own; one that `git submodule deinit` left without its `.git` is not
+initialized, and neither is anything under it. Each mirror is cloned
+from the Git directory that `.git` leads to, with none of your system
+or global Git configuration (no URL rewrite applies), into
+`mirrors/<id>.git`, numbered in the order of the walk, parents first.
+`mirrors/manifest.json` (`swarm-core.mirrors/v1`) lists each with its
+id, its superproject's id (0 for the checkout), its name and its path
+in that superproject (base64, so that any bytes go through) and its
+commit.
+
+Before an engagement is created, `start`, and `post-process` or
+`interactive` when they create one, refuse a submodule the containers
+could not get, and say what to do: one whose Git directory lacks the
+commit the base records (fetch it there, `git submodule update`, or
+deinit the submodule), a shallow or partial clone, one reached through
+a link or outside its superproject, a `.git` that leads nowhere, a
+name or path with a tab or a newline, two names whose Git directories
+would be one inside the other, a `.gitmodules` Git refuses (a key
+without a value, `update = !command`), a name the host's `.gitmodules`
+gives two paths, or a repository at a submodule's path that the host's
+`.gitmodules` gives to no submodule. Earlier releases warned about a
+missing commit and went on; every container then stopped at that
+submodule.
+
+An interactive session that joins keeps the mirrors there, makes again
+one that is gone, and adds the submodules initialized on the host
+since; one whose mirror is there needs nothing more from the host.
+`post-process` joining adds none. Before any container starts, every
+mirror the manifest lists must be there with its commit; otherwise the
+command stops and says whether an interactive session that joins can
+make it again or only `./launch.sh cleanup` deals with it. With no
+submodule, nothing is mounted.
+
+Containers mount `mirrors/` read-only at `/mirrors`. At startup, before
+the agent runs, each submodule the manifest listed when the launch found
+the mirrors ready (a join may add more meanwhile) is checked out from its
+mirror,
+parents first, at the commit its superproject's checkout records,
+through the file protocol only and never with `--recursive`: no
+submodule is fetched over the network, and one the manifest does not
+list stays uninitialized (the agent can still initialize it itself).
+A submodule that agent-work moved, replaced, renamed or set to
+`update = none` is skipped; one that cannot be checked out from its
+mirror stops the startup. When the agent leaves submodules off their
+gitlinks, the push path puts every checked-out one under `/workspace`
+back with a forced checkout, without fetching anything. The target's
+submodules are not mirrored (see [Target](#target)).
+
+An engagement an earlier release created has its mirrors named after
+the submodules and no manifest: this release does not join it
+(`post-process` and `interactive` refuse); finish it with that release,
+or end it with `./launch.sh cleanup`, which handles both layouts.
 
 ### Engagements of earlier releases
 
@@ -1506,9 +1563,9 @@ or was created and may still start (found by its `swarm-core.session`
 label, which a rename keeps),
 `start`, and `post-process` or `interactive` when they would create
 the bare repo, fail instead of replacing them. Every command that
-creates the bare repo mirrors the submodules; a session that joins an
-existing bare repo keeps the mirrors already there and only adds
-missing ones. Once the session's process has ended, a check from
+creates the bare repo mirrors the submodules; an interactive session
+that joins an existing bare repo keeps the mirrors already there and
+only adds missing ones. Once the session's process has ended, a check from
 another Docker daemon (another Docker context or `DOCKER_HOST`) fails
 instead of guessing, and each check and launch pins one Docker context
 for all its Docker commands. `start --dashboard` lets the lock go before
@@ -1707,7 +1764,8 @@ It stops, and deletes nothing of the engagement, when
   exactly what it lists;
 - a repository in a workspace is a partial clone (its history is not
   all there, and cleanup never fetches);
-- `mirrors/` holds anything that is not a mirror;
+- `mirrors/` holds anything that is not a mirror, a remnant of one, or
+  the manifest as a regular file;
 - `target.git` or `target.git.removing` is a link, is not a directory
   or is another user's, or both are there;
 - the checkout cannot keep the copies by itself (a shallow or partial
@@ -1745,7 +1803,9 @@ The recovery refs are `refs/swarm-recovery/e<hex>/<snapshot>/s<n>/...`
 (cleanup) and `.../l<n>/...` (the checkouts retire keeps), `<hex>`
 being the engagement id in hex;
 `git cat-file blob refs/swarm-recovery/e<hex>/<snapshot>/sources`
-says what each `s<n>` or `l<n>` was. Under each, every git dir copied
+says what each `s<n>` or `l<n>` was, and the tree at
+`.../<snapshot>/mirrors-manifest` holds the mirrors' manifest as it was
+(which submodule each `mirrors/<id>.git` was). Under each, every git dir copied
 has a number `<k>`: `<k>/path` holds where it was (`.git`, or
 `engagement_target/.git` for a repository nested in the workspace),
 `<k>/t/...` hold its objects. The files of the workspace's `.git` are

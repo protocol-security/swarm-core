@@ -71,6 +71,10 @@ check_deps git jq docker perl
 source "$SWARM_DIR/lib/project.sh"
 # shellcheck source=lib/preserve.sh
 source "$SWARM_DIR/lib/preserve.sh"
+# shellcheck source=lib/submodules.sh
+source "$SWARM_DIR/lib/submodules.sh"
+# shellcheck source=lib/mirrors.sh
+source "$SWARM_DIR/lib/mirrors.sh"
 # shellcheck source=lib/target.sh
 source "$SWARM_DIR/lib/target.sh"
 # shellcheck source=lib/docker-args.sh
@@ -499,6 +503,7 @@ ensure_bare_repo_for_interactive() {
             swarm_target_inputs_check || exit 1
         fi
         require_clean_runtime
+        mirror_preflight
         build_image
         create_bare_repo "bare repo for interactive session"
         mirror_submodules
@@ -543,14 +548,21 @@ engagement_base() {
     esac
 }
 
-# Mirror every submodule into MIRROR_DIR.  A new engagement finds none
-# (clean runtime), and one that is there refuses; with "missing", only
-# the mirrors that do not exist yet are made and the others, which a
-# session may be about to mount, stay.  Each is cloned to <name>.git.new
-# and renamed once ready, so a run stopped half way leaves only a .new,
-# which cleanup preserves and removes.
+# Refuse, before an engagement is created, what the submodule mirrors
+# could not give the containers (swarm_mirrors_preflight), so that the
+# advice "then start again" works.
+mirror_preflight() {
+    swarm_mirrors_preflight "$REPO_ROOT" || exit 1
+}
+
+# Mirror into MIRROR_DIR the submodules the containers check out, at
+# any depth, with mirrors/manifest.json listing them (lib/mirrors.sh).
+# A new engagement makes them all.  With "missing", a session that joins
+# keeps the mirrors there, which other sessions may be about to mount,
+# makes again the ones gone and adds the ones initialized on the host
+# since.
 mirror_submodules() {
-    local only_missing="${1:-}" base
+    local base
     # The containers check out the submodule commits the engagement's
     # base records.
     base=$(engagement_base) || {
@@ -558,87 +570,21 @@ mirror_submodules() {
         exit 1
     }
     cd "$REPO_ROOT"
-    mkdir -p "$MIRROR_DIR"
-    # Git says where each submodule's Git directory is: under
-    # .git/modules/ by name, not by path (a submodule moved with git mv
-    # keeps its name), or in the submodule's work tree.  One that Git
-    # cannot find or read stops the listing, and the command with it,
-    # even an interactive session that joins and has that mirror
-    # already.
-    git submodule foreach --quiet \
-        'gitdir=$(git rev-parse --absolute-git-dir) &&
-         echo "$name|$sm_path|$gitdir"' | \
-    while IFS='|' read -r name path gitdir; do
-        local safe_name mirror entry mode oid
-        safe_name="${name//\//_}"
-        mirror="${MIRROR_DIR}/${safe_name}.git"
-        if [ -e "$mirror" ] || [ -L "$mirror" ]; then
-            [ "$only_missing" = missing ] && continue
-            echo "ERROR: ${mirror} is there already." >&2
-            exit 1
-        fi
-        if [ -e "$mirror.new" ] || [ -L "$mirror.new" ]; then
-            echo "ERROR: ${mirror}.new is left from a run stopped half" \
-                 "way; ./launch.sh cleanup removes it." >&2
-            exit 1
-        fi
-        # What the base records at the submodule's path, read before
-        # anything is made.
-        if ! entry=$(git --literal-pathspecs ls-tree "$base" -- "$path")
-        then
-            echo "ERROR: cannot read ${path} in the engagement's base" \
-                 "${base}." >&2
-            exit 1
-        fi
-        mode="" oid=""
-        read -r mode _ oid _ <<< "$entry"
-        echo "--- Mirroring submodule: ${name} ---"
-        # Through Git's transport, as create_bare_repo does: new files,
-        # so the chmod below cannot reach the submodule's Git directory
-        # through hardlinks, holding what the submodule's branches, tags
-        # and HEAD reach.
-        git clone --bare --no-local "$gitdir" "$mirror.new"
-        # The commit the base records there stays in the mirror under
-        # refs/swarm/gitlink, fetched by id when none of those reaches
-        # it (the submodule's checkout moved on).
-        if [ "$mode" = 160000 ]; then
-            git -C "$mirror.new" cat-file -e "${oid}^{commit}" 2>/dev/null \
-                || git -C "$mirror.new" -c protocol.version=2 fetch -q \
-                    --no-tags --no-write-fetch-head "$gitdir" "$oid" \
-                    2>/dev/null \
-                || true
-            if git -C "$mirror.new" cat-file -e "${oid}^{commit}" \
-                    2>/dev/null; then
-                git -C "$mirror.new" update-ref refs/swarm/gitlink "$oid"
-            else
-                echo "WARNING: ${gitdir} has no commit ${oid}, which" \
-                     "the engagement's base records for ${path}; the" \
-                     "containers cannot check that submodule out." >&2
-            fi
-        fi
-        chmod -R a+rwX "$mirror.new"
-        mv "$mirror.new" "$mirror"
-    done
+    swarm_mirrors_make "$REPO_ROOT" "$MIRROR_DIR" "$base" "${1:-}" \
+        || exit 1
 }
 
-# Fill MIRROR_ARGS with one read-only mount per mirrored submodule.
-# Each mount stays a single argument, so a space in a path or in a
-# submodule name does not split it.
+# Fill MIRROR_ARGS with the read-only mount of MIRROR_DIR at /mirrors,
+# once every mirror its manifest lists is there (swarm_mirrors_ready);
+# none when the engagement has nothing to mirror.
 mirror_volume_args() {
-    local names name safe_name mirror
-    names=$(cd "$REPO_ROOT" \
-        && git submodule foreach --quiet 'echo "$name"' 2>/dev/null) || {
-        echo "ERROR: cannot list the submodules of ${REPO_ROOT}." >&2
+    local base
+    base=$(engagement_base) || {
+        echo "ERROR: ${STATE_FILE} records no base commit." >&2
         return 1
     }
-    MIRROR_ARGS=()
-    while IFS= read -r name; do
-        [ -n "$name" ] || continue
-        safe_name="${name//\//_}"
-        mirror="${MIRROR_DIR}/${safe_name}.git"
-        [ -d "$mirror" ] || continue
-        MIRROR_ARGS+=(-v "${mirror}:/mirrors/${name}:ro")
-    done <<< "$names"
+    swarm_mirrors_mount_args "$REPO_ROOT" "$MIRROR_DIR" "$base" || return 1
+    MIRROR_ARGS=(${SWARM_MIRROR_ARGS[@]+"${SWARM_MIRROR_ARGS[@]}"})
 }
 
 available_drivers() {
@@ -1184,6 +1130,7 @@ cmd_start() {
     # image is built before it is created, so a failed build leaves the
     # runtime directory clean.
     require_clean_runtime
+    mirror_preflight
     build_image
     create_bare_repo "bare repo"
 
@@ -1707,6 +1654,7 @@ cmd_post_process() {
             swarm_target_inputs_check || exit 1
         fi
         require_clean_runtime
+        mirror_preflight
         build_image
         create_bare_repo "bare repo for post-process"
         mirror_submodules

@@ -884,6 +884,14 @@ read() {
         if [ "$c" -eq "$HOOK_AT" ]; then
             case "$HOOK_DO" in
                 fail) return 1 ;;
+                manifest) printf ' ' >> "$MIRROR_DIR/manifest.json" ;;
+                manifest-new) printf 'late' > "$MIRROR_DIR/manifest.json.new" ;;
+                manifest-ref)
+                    git -C "$REPO_ROOT" for-each-ref --format='%(refname)' \
+                        refs/swarm-recovery/ | grep '/mirrors-manifest$' \
+                        | while read -r r; do
+                            git -C "$REPO_ROOT" update-ref -d "$r"
+                        done ;;
                 drop)
                     jq -c 'del(.cleanup.runs[-1].sources[]
                         | select(.kind == "bare"))' "$STATE_FILE" \
@@ -1654,6 +1662,77 @@ elif unshare -rm true 2>/dev/null; then
 else
     echo "  SKIP: no mount table to fake and no bind mount (unshare -rm)"
 fi
+
+echo ""
+echo "=== 8. The mirrors' manifest ==="
+
+# The mirrors' list, and one cut off while it was written, are kept
+# under one recovery ref and deleted after the mirrors.
+manifest_ref() {
+    git -C "$REPO" for-each-ref --format='%(refname)' refs/swarm-recovery/ \
+        | grep '/mirrors-manifest$' || true
+}
+setup
+printf '{"schema":"swarm-core.mirrors/v1"}\n' > "$RT/mirrors/manifest.json"
+printf 'cut off' > "$RT/mirrors/manifest.json.new"
+assert_eq "cleanup succeeds" "0" "$(cleanup)"
+assert_eq "mirrors/ is gone, manifest and all" "no" "$(present "$RT/mirrors")"
+mref=$(manifest_ref)
+assert_eq "one recovery ref keeps the manifest" 1 \
+    "$(printf '%s' "$mref" | grep -c . || true)"
+assert_eq "as it was" '{"schema":"swarm-core.mirrors/v1"}' \
+    "$(git -C "$REPO" cat-file blob "${mref}:manifest.json" 2>/dev/null)"
+assert_eq "and the one cut off" "cut off" \
+    "$(git -C "$REPO" cat-file blob "${mref}:manifest.json.new" 2>/dev/null)"
+assert_eq "beside the run's sources" "${mref%/mirrors-manifest}/sources" \
+    "$(git -C "$REPO" for-each-ref --format='%(refname)' \
+        "${mref%/mirrors-manifest}/sources")"
+setup
+assert_eq "without a manifest, no such ref" "0 " "$(cleanup) $(manifest_ref)"
+setup
+mkdir "$RT/mirrors/manifest.json"
+refused "a directory named manifest.json" "holds what is not a mirror"
+setup
+ln -s "$REPO/a" "$RT/mirrors/manifest.json"
+refused "a link named manifest.json" "holds what is not a mirror"
+assert_eq "the file it leads to stays" "a" "$(cat "$REPO/a")"
+# Changed after the checkpoint (the first read of the deletion pass):
+# not deleted.
+setup
+printf '{}\n' > "$RT/mirrors/manifest.json"
+assert_eq "a manifest changed during cleanup: refused" "1" \
+    "$(hooked mode 4 manifest)"
+assert_eq "for that reason" "1" "$(said "manifest.json changed during cleanup")"
+assert_eq "it stays" "yes" "$(present "$RT/mirrors/manifest.json")"
+# Its recovery ref gone after the checkpoint: not deleted.
+setup
+printf '{}\n' > "$RT/mirrors/manifest.json"
+assert_eq "a manifest whose recovery ref went: refused" "1" \
+    "$(hooked mode 4 manifest-ref)"
+assert_eq "for that reason" "1" "$(said "keeps the mirrors' manifest, changed or went")"
+assert_eq "it stays" "yes" "$(present "$RT/mirrors/manifest.json")"
+# One that appears after the checkpoint was never kept: not deleted.
+setup
+printf '{}\n' > "$RT/mirrors/manifest.json"
+assert_eq "a manifest.json.new that appears during cleanup: refused" "1" \
+    "$(hooked mode 4 manifest-new)"
+assert_eq "for that reason" "1" \
+    "$(said "manifest.json.new changed during cleanup")"
+assert_eq "it stays" "late" "$(cat "$RT/mirrors/manifest.json.new")"
+setup
+assert_eq "one that appears when there was none: refused too" "1" \
+    "$(hooked mode 4 manifest-new)"
+assert_eq "it stays" "late" "$(cat "$RT/mirrors/manifest.json.new")"
+# A later run checks the ref an earlier one wrote.
+setup
+printf '{}\n' > "$RT/mirrors/manifest.json"
+assert_eq "a run that stops after the checkpoint" "1" \
+    "$(hooked mode 4 manifest)"
+mref=$(manifest_ref)
+git -C "$REPO" update-ref -d "$mref"
+assert_eq "its recovery ref gone, the next run refuses" "1" "$(cleanup)"
+assert_eq "for that reason" "1" \
+    "$(said "recovery refs an earlier cleanup wrote changed or went")"
 
 echo ""
 echo "==============================="
