@@ -247,10 +247,14 @@ EOF
     # commit runs in a process group of its own (a Ctrl-C does not reach
     # it) and retire_cleanup waits for it.  The engine's labels on the
     # snapshot are emptied: a check container that outlived retire must
-    # not pass for one of the engine's.
+    # not pass for one of the engine's, nor for a workload container of
+    # the engagement to a caller that finds those by label.
     local strip
     strip="LABEL ${SWARM_PROJECT_LABEL}=\"\" ${SWARM_CHECKOUT_LABEL}=\"\""
-    strip+=" ${SWARM_SESSION_LABEL}=\"\""
+    strip+=" ${SWARM_SESSION_LABEL}=\"\" ${SWARM_ENGAGEMENT_LABEL}=\"\""
+    strip+=" ${SWARM_TOKEN_LABEL}=\"\" ${SWARM_ROLE_LABEL}=\"\""
+    strip+=" ${SWARM_PROFILE_INDEX_LABEL}=\"\""
+    strip+=" ${SWARM_AGENT_NUMBER_LABEL}=\"\""
     if ! swarm_docker_own_group commit --change "$strip" \
             "$id" "$RETIRE_SNAP_REF" < /dev/null > "$tmp/commit" \
             2>"$tmp/err"; then

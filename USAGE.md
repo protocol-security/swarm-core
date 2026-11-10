@@ -78,6 +78,9 @@ names, and existing bind mounts still refer to their original paths.
                                   # engagement.
 ```
 
+A program that drives engagements runs them through `control.sh`
+instead (see [Control interface](#control-interface)).
+
 ## Environment variables
 
 Credentials stay as env vars (not in shell history).
@@ -353,6 +356,13 @@ and interactive's `--entrypoint` (agents and post-process set none, so
 `--label` key given twice the later value wins, and a mount that
 conflicts with one the engine makes (`/workspace`, `/upstream`) makes
 `docker run` fail.
+
+Labels in the engine's namespace cannot come from `docker_args`: the
+check rejects `--label` or `-l`, in any spelling, whose key starts with
+`swarm-core.` (whatever the case of its letters, leading spaces and
+tabs aside), and `--label-file`, which could bring one. The engine sets
+those labels, and programs find its containers by them (see
+[Labels](#labels)).
 
 Docker's `-e` flag accepts two forms: `-e VAR=value` passes a
 literal value, and `-e VAR` (no `=value`) inherits `VAR` from the
@@ -1359,7 +1369,8 @@ needed. `launch.sh stop` keeps the state file.
 Container names are shared by everything on the Docker host, and the
 runtime directory can live anywhere, so containers carry their project
 id and the checkout that created them in `swarm-core.project` and
-`swarm-core.checkout` labels. Every command refuses to act while one of
+`swarm-core.checkout` labels, with the others [Labels](#labels)
+lists. Every command refuses to act while one of
 the project's containers belongs to another checkout, or has no labels
 because an older release created it (see
 [Upgrading from `/tmp` state](#upgrading-from-tmp-state)). Removing or
@@ -1832,6 +1843,234 @@ and harvest.sh refuse until `./launch.sh cleanup` runs again and
 finishes. Each run checks everything again and copies whatever is still
 there; it also checks that the recovery refs earlier runs wrote are
 intact. The engagement lock, the runtime directory and its claim stay.
+
+## Control interface
+
+A program that drives engagements (a CI job, a scheduler) uses
+`control.sh`: it names the interface it was written for, runs the
+engine's commands, and observes an engagement without changing
+anything. This section is `swarm-core.control/v1`. Such a program
+depends on it and on nothing else of swarm-core: paths, the files in
+the runtime directory (`state.json`, the mirrors' manifest), container
+names and the output of commands may change from one release to the
+next.
+
+```bash
+./control.sh version
+./control.sh --interface swarm-core.control/v1 observe
+./control.sh --interface swarm-core.control/v1 start
+./control.sh --interface swarm-core.control/v1 wait
+./control.sh --interface swarm-core.control/v1 cleanup
+```
+
+### Commands
+
+Every command but `version` and `--help` takes
+`--interface swarm-core.control/v1` first, as two arguments. Another
+interface, none, no command, an unknown command, or an argument to
+`version` or `observe` exits 2, before anything is read, with one line
+on stderr: `swarm-core: usage: <message>`, or
+`swarm-core: unsupported-interface: <message>`.
+
+Actions are the engine's commands: `start`, `stop`, `wait`,
+`post-process`, `retire`, `cleanup`, `interactive`, `chat` and `shell`
+run `launch.sh` with that command and the arguments that follow it,
+`harvest` runs `harvest.sh` with its arguments. `control.sh` runs them
+by `exec`, before it reads anything: the same process, working
+directory, environment, descriptors and terminal, and that command's
+output and exit status. Each does what the rest of this document says
+it does and needs what it needs (`retire` and `cleanup` need no
+swarmfile, `harvest` no Docker). They exit 0 when they did it, and
+non-zero with a message otherwise. `post-process` exits with the status
+of the harvest it runs when that harvest fails, and with its container's
+otherwise; the interactive commands exit with `docker run`'s, which is
+the session's. v1 does not tell failures apart: a program reads
+`observe` before it decides what to do next. `status` and `logs` are for people, and not part of v1.
+
+Queries change nothing. No file, directory, lock, container, volume,
+image, Git object or ref, Docker context or Docker configuration is
+created, changed or removed, and no temporary file is made; reading
+still updates what any read updates (access times). Queries take no
+lock, and their only Docker calls are `docker context show`,
+`docker info`, `docker ps`, `docker container inspect`,
+`docker volume ls` and `docker volume inspect`. On macOS, where
+`/usr/bin/git` is a shim that can write a cache of the developer tools'
+place in a temporary directory, a query runs the developer tools' git
+itself (the one `xcode-select -p` names) when the git on `PATH` is that
+shim.
+
+- `version` prints
+  `{"schema":"swarm-core.version/v1","engine":"<version>","interfaces":["swarm-core.control/v1"]}`.
+  It reads only the engine's `VERSION` file, from any directory.
+- `observe` prints one JSON document, `swarm-core.observation/v1`
+  (below), for the checkout of the current directory, once it is
+  complete.
+
+A query exits 0, or 1 with nothing on stdout and, first on stderr, one
+line `swarm-core: <reason>: <message>`:
+
+| Reason | When |
+|--------|------|
+| `not-a-checkout` | The current directory is in no Git working tree. |
+| `bad-environment` | `SWARM_PROJECT` is no project id, or the runtime directory (from `SWARM_RUNTIME_DIR`, `XDG_STATE_HOME` or `HOME`; see [Runtime directory](#runtime-directory)) is a place it cannot be, as `start` refuses it: not an absolute path, `/` or `HOME`, the checkout, its git dir or something in or around them, or a path with a comma, a quote, a tab or a newline. |
+| `runtime-unsafe` | The runtime directory exists, and is a link, no directory, another user's, has permission bits other than 700 (special bits such as the sticky bit aside), or on macOS has an ACL with an allow entry. |
+| `runtime-foreign` | The runtime directory belongs to another checkout, or to another project id. |
+| `state-unreadable` | The state file is no regular file, is not one `swarm-core.state/v1` object, or has a field of the wrong type. |
+| `state-unstable` | The state file changed between the two reads of `observe` three times running. |
+| `missing-tool` | `jq`, `git` or `perl` is not installed, or neither `sha256sum` nor `shasum` is; on macOS, also when `git` is Apple's shim and no developer tools with a git are there. |
+| `engine-unreadable` | The engine's `VERSION` file, or one of its `lib/` files, cannot be read. |
+| `internal` | A tool the query runs failed where it should not; the message says at which step. |
+
+The environment a program sets for these commands, as this document
+describes each variable: `SWARM_CONFIG`, `SWARM_PROJECT`,
+`SWARM_RUNTIME_DIR`, `XDG_STATE_HOME`, `SWARM_ENGAGEMENT_ID`,
+`SWARM_ENGAGEMENT_TOKEN`, `TARGET_REPO`, `TARGET_REV`,
+`TARGET_REV_BASE`, `TARGET_REV_BASE_REPO`, `DOCKER_HOST` and
+`DOCKER_CONTEXT`. Of these, `observe` reads only `SWARM_PROJECT`,
+`SWARM_RUNTIME_DIR`, `XDG_STATE_HOME`, `DOCKER_HOST` and
+`DOCKER_CONTEXT` (and `HOME`). The other variables of
+[Environment variables](#environment-variables) (credentials,
+timeouts, limits) work as described there, outside v1; `SWARM_LOCK_FD`
+is not part of v1.
+
+### Observation
+
+`observe` reads the state file once, and everything it says of the
+state comes from that read. It checks whether the engagement's bare
+repo is published between that read and a second one; when the two
+differ, it starts again, three times at most (then `state-unstable`).
+Every Docker call uses the same choice of
+daemon (the context read once, or `DOCKER_HOST`), so another terminal
+that switches the current context meanwhile changes nothing; the calls
+span an interval, so the lists are no atomic snapshot of Docker, and
+a container or volume that goes between its listing and its inspection
+is left out.
+
+Every field is always there, with its type; "or null" says when it can
+be null.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `schema` | string | `swarm-core.observation/v1`. |
+| `interface` | string | `swarm-core.control/v1`. |
+| `engine` | string | The engine's version. |
+| `observed_at` | string | When the reads began, UTC (`2026-01-31T12:00:00Z`). |
+| `project` | string | The project id. |
+| `checkout` | string | The checkout's path, links resolved. |
+| `runtime_dir` | string | The runtime directory, for people: what it holds is not part of the interface. |
+| `docker.context` | string or null | The Docker context every call used (`DOCKER_CONTEXT`, or the current one); null when `DOCKER_HOST` chose the daemon, or no context could be read. |
+| `docker.daemon` | string or null | The ID of the daemon Docker talks to; null when it could not be reached. |
+| `conditions` | array of strings | The conditions below that hold, sorted. |
+| `engagement` | object or null | The engagement the state records; null when it records none. |
+| `containers` | array or null | This checkout's workload containers, sorted by name; null when Docker did not answer. |
+| `workspaces` | array or null | This checkout's workspace volumes, sorted by name; null when Docker did not answer. |
+
+When Docker answered `docker info` but a listing or an inspection then
+failed, `docker.daemon` has the ID and `containers` and `workspaces`
+are null: null never stands for an empty list.
+
+`engagement`:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `id` | string | The engagement id. |
+| `token` | string or null | Its token; null for an earlier release's engagement. |
+| `started_at` | string or null | When it began, UTC; null when not recorded. |
+| `base_commit` | string or null | The checkout's commit the agents started from; null when not recorded. |
+| `docker_daemon` | string or null | The daemon it runs on; null for an earlier release's engagement. Compare it with `docker.daemon`: `stop`, `wait`, `post-process`, an interactive session that joins, `retire` and `cleanup` refuse another daemon; `harvest`, which reads the bare repo, does not. |
+| `revision` | string | A digest of the state record the document comes from: two documents with the same revision come from the same record, and a record that changed gets another one. |
+| `complete` | boolean | Its bare repo is published and usable (a bare repository whose `HEAD` names a commit). False while `start` is still making it, after a run stopped before it was, or when it is gone or damaged. |
+| `target` | object or null | Its audit target as recorded when the engagement began (see [Target](#target)): `repo` and `rev` as given, `commit` resolved then, `format` (`sha1` or `sha256`), and `base`, null or `repo`, `rev` and `commit` of the base. All strings. |
+| `cleanup_checkpoint` | object or null | A cleanup recorded its checkpoint and has not finished; it may be running, or may have stopped. `recorded_at` (string, UTC) and `run_count` (integer: the runs that recorded one). `recorded_at` is when the first run recorded it. Null does not mean no cleanup ran. |
+
+Each of `containers`:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `id` | string | Docker's full container ID. |
+| `name` | string | Its name now. |
+| `role` | string or null | `agent` (a numbered agent), `post-process`, `interactive` or `shell` (the mode a session opened in); null for a container an earlier release made. |
+| `profile_index` | integer or null | The `agents[]` entry (from 1) its profile is; null for post-process. |
+| `agent_number` | integer or null | A numbered agent's N; null for the others. |
+| `engagement` | string or null | The engagement it belongs to. |
+| `engagement_token` | string or null | That engagement's token. |
+| `state` | string | Docker's: `created`, `running`, `paused`, `restarting`, `removing`, `exited`, `dead`, or a later value as Docker gives it. |
+| `error` | string or null | Docker's error starting it: a container that failed to start stays `created` with one. |
+| `exit_code` | integer or null | Its exit code when `exited` or `dead`; null otherwise. |
+| `oom_killed` | boolean | Docker says the kernel ended it for memory. |
+| `created_at` | string | Docker's time (RFC 3339, UTC). |
+| `started_at` | string or null | Docker's time; null when it never started. |
+| `finished_at` | string or null | Docker's time; null when it never finished. |
+
+Each of `workspaces`:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `volume` | string | The volume's name. |
+| `container` | string or null | The name of the container it was made for; that container may since be gone, or renamed. |
+| `kind` | string or null | `agent` (numbered agents and post-process) or `interactive` (interactive and shell sessions). |
+| `engagement` | string or null | The engagement it belongs to. |
+| `engagement_token` | string or null | That engagement's token. |
+
+Conditions:
+
+| Condition | Meaning |
+|-----------|---------|
+| `cleanup-pending` | A cleanup recorded its checkpoint and has not finished. Every action but `retire` and `cleanup` refuses; `cleanup` goes on with it. |
+| `legacy-engagement` | An earlier release recorded the engagement (it records no Docker daemon). Every action refuses it: finish it with that release (see [Engagements of earlier releases](#engagements-of-earlier-releases)). |
+| `legacy-mirrors` | The runtime directory holds submodule mirrors an earlier release made, without a manifest. `post-process` and `interactive` do not join the engagement; `cleanup` ends it. |
+| `mirrors-incomplete` | A run stopped while it wrote the mirrors' manifest or a mirror (`manifest.json.new`, or a mirror's `.git.new`), the mirrors directory or its manifest is not one this release can use (a link, no regular file, not this engagement's manifest, a name or path in it that is none), or a mirror it lists is a link or its `refs/swarm/gitlink` is not the commit the manifest gives (the pin that `post-process` checks too; the commit object itself is not looked for). `post-process` and `interactive` do not join the engagement; `cleanup` ends it, unless the mirrors directory or a manifest is a link or no regular file. Without the engagement's base commit (an earlier release's record), only the manifest's form is checked. |
+| `mirrors-missing` | A mirror the manifest lists is gone. `post-process` does not join the engagement; an interactive session that joins makes the mirror again while the host still has that submodule initialized, and `cleanup` ends the engagement. |
+| `unrecorded-leftovers` | No engagement is recorded, but the runtime directory or Docker holds part of one, which an earlier release made. A new engagement does not start, and `retire` and `cleanup` refuse, until it is finished with that release. |
+| `unlabeled-containers` | Containers named like this project's carry no owner label: an earlier release made them. Every action refuses (`harvest` when Docker answers) until they are gone. |
+| `foreign-containers` | Containers of this project id belong to another checkout. Every action refuses (`harvest` when Docker answers) until they are gone, or this checkout has its own `SWARM_PROJECT`. |
+| `legacy-tmp-state` | An earlier release left state in `/tmp` (see [Upgrading from `/tmp` state](#upgrading-from-tmp-state)). `start`, `post-process`, `interactive` and `harvest` refuse, and so does `wait` once its agents are done, until it is finished with that release. |
+
+`observe` looks for the conditions that need Docker
+(`unlabeled-containers`, `foreign-containers`, and the containers and
+volumes behind `unrecorded-leftovers`) only when `containers` is not
+null. The list names states this release knows: an action can still
+refuse for another reason, and then says why.
+
+What `observe` does not tell: a `start` that is still running (the
+engagement is recorded before its target, bare repo and agents, and
+`complete` turns true once the bare repo is published), and how many
+agents a run was meant to have (the program keeps the plan it gave;
+none is recorded until every agent was launched).
+
+### Labels
+
+Workload containers (numbered agents, post-process, interactive and
+shell sessions) carry these labels, which are part of the interface:
+`swarm-core.project` (the project id), `swarm-core.checkout` (the
+checkout's path, links resolved), `swarm-core.engagement`,
+`swarm-core.engagement-token`, `swarm-core.role` (`agent`,
+`post-process`, `interactive`, `shell`), `swarm-core.profile-index`
+(the `agents[]` entry, from 1; empty for post-process) and
+`swarm-core.agent-number` (a numbered agent's N; empty for the
+others). The engine sets every one of them on every workload
+container, from the profile it chose and the mode a session opens in
+(`interactive --shell` is `shell`, `shell --chat` is `interactive`).
+`docker_args` cannot set a `swarm-core.` label (see
+[Extra Docker arguments](#extra-docker-arguments)). The helper
+containers of `retire` and `cleanup` carry none of them with a value:
+retire's checks run from snapshots that have them emptied. A label keeps
+its meaning for good; another meaning would take another key. Other
+`swarm-core.` labels are the engine's own.
+
+### Compatibility
+
+`swarm-core.control/v1` covers the grammar above; the commands, their
+arguments and the environment above, as this document describes them;
+what each action does; exit statuses; the `observe` fields with their
+types and nullability; the reasons and conditions with their meanings;
+and the labels. A program ignores fields it does not know, and takes an
+unknown `state`, `role`, `kind`, reason or condition for one it cannot
+act on. v1 may gain commands, optional arguments, fields, reasons,
+conditions and values, and nothing else: no field becomes required or
+nullable, or changes meaning or type, and no exit status changes.
+Anything else is a new interface, which `version` lists and
+`--interface` selects.
 
 ## Verify image
 

@@ -12,6 +12,7 @@
 
 
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -19,6 +20,29 @@
   `PI_REASONING` or `PI_COMPACTION_RESERVE_TOKENS` exported, as on a
   host that runs Pi agents, `tests/test_pi.sh` and
   `tests/test_launch.sh` failed.
+- **A versioned control interface for programs.** `control.sh` serves
+  `swarm-core.control/v1` for a program that drives engagements (a CI
+  job, a scheduler): `--interface swarm-core.control/v1` before every
+  command; the engine's commands run through it by `exec`; `version`
+  lists the interfaces; `observe` prints one JSON document of the
+  engagement, its containers and workspace volumes and the conditions
+  that block commands, and changes nothing (no file, lock, temporary
+  file or Docker object; a fixed set of Docker reads). USAGE.md,
+  "Control interface", documents the fields, types, reasons,
+  conditions and what v1 may and may not change. Workload containers
+  now also carry `swarm-core.role`, `swarm-core.profile-index` and
+  `swarm-core.agent-number`, set by the engine from the profile it
+  chose and the mode a session opened in.
+
+- **`docker_args` cannot set the engine's labels.** A `--label` or `-l`
+  whose key starts with `swarm-core.` is refused, and so is
+  `--label-file`. Retire's snapshots empty every label of the
+  interface, so its check containers pass for none of the engine's.
+
+- **`interactive --agent-index` reads the index as a decimal number.**
+  `08` selected nothing (Bash read it as octal); it is the eighth
+  profile now.
+
 - **Submodules are mirrored at any depth.** Every submodule initialized
   on the host, nested ones and a linked worktree's included, gets a
   numbered mirror in the runtime directory's `mirrors/`, and
