@@ -4,13 +4,99 @@ set -euo pipefail
 # Fetch agent-work from the bare repo, merge into current branch.
 # Usage: ./harvest.sh [--dry] [--again]
 
+# upload-pack, which Git starts in a local repository for a fetch (or a
+# partial clone's lazy fetch), fetches nothing it lacks (Git 2.45.1 and
+# later, and the fixes before them) unless the caller's
+# GIT_NO_LAZY_FETCH says otherwise; such a fetch would run that
+# repository's hooks, without the options harvest gives Git (below).
+# Any value but 1 goes.
+[ "${GIT_NO_LAZY_FETCH-1}" = 1 ] || unset GIT_NO_LAZY_FETCH
+
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq
 # shellcheck source=lib/project.sh
 source "$SWARM_DIR/lib/project.sh"
 
+# Git runs no hook and no fsmonitor command for harvest on the host (the
+# status it asks of a running interactive container runs there, among
+# the agents' own work).  Its merges put the agents' files in the
+# checkout, and Git would run what an agent wrote, here on the host: a
+# hook in a directory of the checkout (core.hooksPath, as husky sets
+# it), a hook the Git config defines (Git 2.54 and later) running a file
+# of it, or the command core.fsmonitor names.  Every git below goes
+# through this function: with no hooks directory, no fsmonitor (empty:
+# Git before 2.36 runs any other value, "false" included, as a command),
+# and each hook the checkout's Git config defines turned off by name
+# (harvest_no_config_hooks).  Options given with -c come last, so the
+# caller's GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT do not override
+# them, and they reach Git in a submodule too (a merge with local
+# changes asks each submodule's status).  Not covered: hooks that a
+# submodule's own config defines, the hooks of a local repository a
+# partial clone's lazy fetch reaches (should its upload-pack fetch
+# further: Git before 2.45.1 without that fix), the commands the Git
+# config names for Git to run (filters, merge drivers,
+# uploadpack.packObjectsHook for the fetch), and a Git config that
+# includes a file of the checkout, which is the agents' to write.
+HARVEST_GIT_BASE=(-c core.hooksPath=/dev/null -c core.fsmonitor=)
+HARVEST_GIT_OPTS=("${HARVEST_GIT_BASE[@]}")
+git() {
+    command git "${HARVEST_GIT_OPTS[@]}" "$@"
+}
+
+# Turn off each hook the checkout's Git config defines, which
+# core.hooksPath leaves on: by name, the only way Git 2.54 has
+# (hook.<event>.enabled came in 2.55), an empty one included (Git 2.54
+# also gives that name to a hook defined with no subsection, [hook]
+# command).  Harvest scans again once it adds its remote, on which a
+# conditional include can depend.  The scan reads bytes (LC_ALL=C: a
+# regexp in a UTF-8 locale can miss a name that is not UTF-8) without
+# GIT_CONFIG, which git config reads and other commands ignore; the
+# shell takes the names apart, which needs no temporary file.  A name
+# -c cannot pass (with "=") refuses, as does a config that cannot be
+# read.
+harvest_no_config_hooks() {
+    local keys key name prev=$'\n' rc=0
+    local opts=("${HARVEST_GIT_BASE[@]}")
+    keys=$(unset GIT_CONFIG
+        LC_ALL=C git -C "$REPO_ROOT" config --includes --name-only \
+            --get-regexp '^hook\.(.*\.)?(command|event)$') || rc=$?
+    case "$rc" in
+        0|1) ;;
+        *)
+            echo "ERROR: cannot read the Git config of ${REPO_ROOT}." >&2
+            return 1
+            ;;
+    esac
+    keys="${keys}"$'\n'
+    # One name per hook key; [ = ] compares bytes, whatever the
+    # caller's shell options (nocasematch) do to case patterns.
+    while [ -n "$keys" ]; do
+        key=${keys%%$'\n'*}
+        keys=${keys#*$'\n'}
+        [ -n "$key" ] || continue
+        name=${key#hook.}
+        case "$name" in
+            *.*) name=${name%.*} ;;
+            *) name="" ;;
+        esac
+        [ "$name" != "$prev" ] || continue
+        prev=$name
+        case "$name" in
+            *=*)
+                echo "ERROR: harvest cannot turn off the Git hook" \
+                     "hook.${name}: a name with \"=\" cannot be passed" \
+                     "with git -c.  Rename it, then harvest again." >&2
+                return 1
+                ;;
+        esac
+        opts+=(-c "hook.${name}.enabled=false")
+    done
+    HARVEST_GIT_OPTS=("${opts[@]}")
+}
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+harvest_no_config_hooks || exit 1
 PROJECT="$(swarm_project_resolve "$REPO_ROOT")" || exit 1
 RUNTIME_DIR="$(swarm_runtime_dir "$PROJECT")" || exit 1
 BARE_REPO="${RUNTIME_DIR}/upstream.git"
@@ -149,10 +235,24 @@ git remote remove "$REMOTE_NAME" 2>/dev/null || true
 
 echo "--- Fetching agent work ---"
 git remote add "$REMOTE_NAME" "$BARE_REPO"
+# Refused now, a hook this remote brought in may be on: the remote goes
+# with git config, which runs none (nothing was fetched into it yet),
+# from this checkout's config whatever GIT_CONFIG names.
+if ! harvest_no_config_hooks; then
+    (unset GIT_CONFIG
+        git config --local --remove-section "remote.${REMOTE_NAME}")
+    exit 1
+fi
 # Branches only: no tag from the bare repo (agents can push tags there)
-# comes into this checkout.
-git fetch --no-recurse-submodules --no-tags "$REMOTE_NAME" \
-    '+refs/heads/*:refs/remotes/_agent-harvest/*'
+# comes into this checkout.  upload-pack, which this fetch runs on the
+# bare repo, whose config and hooks the agents write, gets none of the
+# options above (Git clears them for the local transport), so it fetches
+# nothing it lacks: such a fetch would run the bare repo's hooks.  No
+# lazy fetch, and no protocol allowed, should its upload-pack fetch by
+# default (Git before 2.45.1 without that fix).
+git fetch --no-recurse-submodules --no-tags \
+    --upload-pack='GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL= git-upload-pack' \
+    "$REMOTE_NAME" '+refs/heads/*:refs/remotes/_agent-harvest/*'
 
 HARVEST_BRANCHES=(agent-work)
 while IFS= read -r branch; do
