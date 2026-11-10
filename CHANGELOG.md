@@ -3,6 +3,7 @@
 ## Unreleased
 
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -26,6 +27,12 @@
   script writes to it. It now runs only on Bash before 4.1, which can
   end a stopped run with status 0 itself; there a signal can print the
   line too. A signal's status stays on every version.
+- **Fix: `launch.sh stop` with no runtime directory says there is
+  nothing to stop again.** Since stop waits for the engagement lock when
+  no engagement is recorded, it failed in a checkout that never started
+  one, with an error about the lock and the advice to run stop again. It
+  now ends with 0 when nothing at all is at the runtime path; anything
+  there, or a path it cannot look into, still goes through the lock.
 - **Feature: `PI_COMPACTION_RESERVE_TOKENS` sets Pi's compaction
   reserve.** Pi caps a compaction summary at a share of
   `compaction.reserveTokens` (16384 by default) and of `maxTokens`; a
