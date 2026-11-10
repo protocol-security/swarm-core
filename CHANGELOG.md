@@ -28,6 +28,7 @@
   file or link out inside it. A registration whose directory is gone
   is a note, and cleanup's scans leave the registration to retire.
   Anything else refuses as before.
+
 - **Fix: harvest runs no hook or fsmonitor command of the checkout.**
   Harvest merges the agents' work into the checkout, and its Git
   commands ran the checkout's hooks: with `core.hooksPath` at a
@@ -42,6 +43,20 @@
   lacks, and harvest drops a caller's `GIT_NO_LAZY_FETCH` other than
   1, which let upload-pack fetch: such a fetch ran that repository's
   hooks.
+- **Fix: after a scratch push, the harness moves its branch whenever
+  that loses nothing.** It required `git cherry` to find every local
+  commit on origin, but `git cherry` compares patch ids: a commit
+  copied onto an origin that changed a nearby line, an empty commit,
+  or a change origin had from another commit looked missing. The
+  branch stayed, and with the rebase path still failing the harness
+  exited 1 though its work was on origin. The scratch push ships a
+  copy of every local commit, or drops one whose replay changes
+  nothing, as the rebase path does, and fails otherwise; the branch
+  now moves when the tree is clean, HEAD is still the commit whose
+  history it transplanted, and origin still has what it pushed, but
+  not on the emergency push of a signal. To tell a commit with no net
+  change, the scratch push now compares the index as a tree, so
+  `diff.ignoreSubmodules` cannot make it drop a gitlink change.
 - **Fix: Git leaves nothing running that holds the engagement lock.**
   Every process started under the lock inherits its descriptor, so
   Git's fsmonitor daemon, started by a merge in a checkout with
