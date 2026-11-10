@@ -867,14 +867,20 @@ swarm_engagement_new() {
     printf '%s-%s' "$(date -u +%Y%m%dT%H%M%SZ)" "$rand"
 }
 
-# Fail when SWARM_ENGAGEMENT_ID is set and is not a usable id.  Set but
-# empty counts as set: only an unset variable means "no engagement
-# named".
+# Fail when SWARM_ENGAGEMENT_ID is set and is not a usable id, or when
+# SWARM_ENGAGEMENT_TOKEN is set and empty.  Set but empty counts as set:
+# only an unset variable means "no engagement named".
 swarm_engagement_env_check() {
     if [ -n "${SWARM_ENGAGEMENT_ID+x}" ] \
             && ! swarm_engagement_id_valid "$SWARM_ENGAGEMENT_ID"; then
         echo "ERROR: SWARM_ENGAGEMENT_ID must be 1-64 letters, digits," \
              "'.', '_' or '-', starting with a letter or digit." >&2
+        return 1
+    fi
+    if [ -n "${SWARM_ENGAGEMENT_TOKEN+x}" ] \
+            && [ -z "$SWARM_ENGAGEMENT_TOKEN" ]; then
+        echo "ERROR: SWARM_ENGAGEMENT_TOKEN is set but empty; unset it," \
+             "or set it to the engagement's token." >&2
         return 1
     fi
 }
@@ -908,10 +914,12 @@ swarm_engagement_token() {
 
 # Fail when SWARM_ENGAGEMENT_TOKEN is set and state file FILE records
 # another engagement token, or none: the command was started for an
-# engagement that has gone since (cleaned up, maybe started again).
+# engagement that has gone since (cleaned up, maybe started again).  Set
+# and empty fails too (swarm_engagement_env_check).
 swarm_engagement_token_check() {
     local file="$1" token
-    [ -n "${SWARM_ENGAGEMENT_TOKEN:-}" ] || return 0
+    [ -n "${SWARM_ENGAGEMENT_TOKEN+x}" ] || return 0
+    swarm_engagement_env_check || return 1
     token=$(swarm_engagement_token "$file") || return 1
     if [ "$token" != "$SWARM_ENGAGEMENT_TOKEN" ]; then
         echo "ERROR: the engagement this command was started for is" \

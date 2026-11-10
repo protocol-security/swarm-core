@@ -4664,6 +4664,18 @@ for _v_cmd in stop wait post-process; do
     assert_eq "another token: $_v_cmd changes nothing" "0" "$(v_writes)"
 done
 
+# A token set but empty names no engagement: refused, nothing changed.
+for _v_cmd in stop wait post-process; do
+    if [ "$_v_cmd" = stop ]; then v_agents running; else v_agents exited; fi
+    : > "$V_DIR/log"
+    _v_rc=0
+    _v_out=$(SWARM_ENGAGEMENT_TOKEN='' v_run "$_v_cmd") || _v_rc=$?
+    assert_eq "an empty token: $_v_cmd refused" "1" "$_v_rc"
+    assert_eq "an empty token: $_v_cmd says so" "true" \
+        "$(v_has "SWARM_ENGAGEMENT_TOKEN is set but empty" "$_v_out")"
+    assert_eq "an empty token: $_v_cmd changes nothing" "0" "$(v_writes)"
+done
+
 # A token names an engagement: once it is gone (cleaned up, or no state
 # file at all), a stop bound to it refuses instead of finding nothing
 # to stop.
@@ -4687,6 +4699,31 @@ for _v_st in cleaned missing; do
 done
 cp "$_v_root/state.saved" "$V_STATE"
 chmod 600 "$V_STATE"
+
+# start makes a new engagement, and a token names one to join: refused
+# before anything is prepared, here with the token of an engagement a
+# failed clone recorded and left nothing of, which start would replace.
+_v_keep="$V_DIR|$V_RT|$V_STATE"
+v_new
+mkdir -m 700 "$V_RT"
+jq -cn --arg r "$_v_checkout" '{schema: "swarm-core.state/v1",
+    project: "start-repo", repo_root: $r, engagement_id: "e-failed",
+    engagement_started_at: "2026-01-01T00:00:00Z",
+    base_commit: "0000000000000000000000000000000000000001",
+    docker_daemon: "daemon-a", engagement_token: "aaaaaaaaaaaaaaaa"}' \
+    > "$V_STATE"
+chmod 600 "$V_STATE"
+_v_before=$(v_snap)
+_v_rc=0
+_v_out=$(SWARM_ENGAGEMENT_TOKEN=aaaaaaaaaaaaaaaa v_run start) || _v_rc=$?
+assert_eq "a token-bound start: refused" "1" "$_v_rc"
+assert_eq "a token-bound start: says why" "true" \
+    "$(v_has "SWARM_ENGAGEMENT_TOKEN names an engagement to join" "$_v_out")"
+assert_eq "a token-bound start: the engagement stays recorded" \
+    "$_v_before" "$(v_snap)"
+assert_eq "a token-bound start: builds and runs nothing" "0" \
+    "$(v_writes)"
+IFS='|' read -r V_DIR V_RT V_STATE <<< "$_v_keep"
 
 # wait reads the token once; an engagement started again while it polls
 # makes it stop before post-process and harvest.

@@ -1703,6 +1703,44 @@ rc=0
     SWARM_ENGAGEMENT_ID=e2 "$BASH" "$LAUNCH" retire > /dev/null 2>&1) \
     || rc=$?
 assert_eq "another engagement id is refused" "1" "$rc"
+# A token names the engagement: another one, none recorded, or an empty
+# token is refused under the lock, before anything is removed; the
+# engagement's own token goes on.
+swarm_state_update "$RT/state.json" '.engagement_token = "aaaaaaaaaaaaaaaa"'
+reset_fake
+add proj-agent-1
+assert_eq "another engagement's token: retire refused" "1" \
+    "$(SWARM_ENGAGEMENT_TOKEN=bbbbbbbbbbbbbbbb retire)"
+assert_eq "saying the engagement is gone" "1" \
+    "$(grep -c 'the engagement this command was started for is gone' \
+        "$TMPDIR/out" || true)"
+assert_eq "and removes nothing" "0" "$(removed)"
+reset_fake
+add proj-agent-1
+assert_eq "an empty token: retire refused" "1" \
+    "$(SWARM_ENGAGEMENT_TOKEN='' retire)"
+assert_eq "saying it is empty" "1" \
+    "$(grep -c 'SWARM_ENGAGEMENT_TOKEN is set but empty' "$TMPDIR/out" \
+        || true)"
+assert_eq "and removes nothing" "0" "$(removed)"
+reset_fake
+add proj-agent-1
+assert_eq "the engagement's own token: retire goes on" "0" \
+    "$(SWARM_ENGAGEMENT_TOKEN=aaaaaaaaaaaaaaaa retire)"
+assert_eq "and removes the stopped agent" "1" "$(removed)"
+# With no engagement recorded and nothing left, retire has nothing to
+# do; with a token, that engagement is gone.
+swarm_state_update "$RT/state.json" \
+    'del(.engagement_id, .docker_daemon, .engagement_token)'
+reset_fake
+assert_eq "a token with no engagement recorded: retire refused" "1" \
+    "$(SWARM_ENGAGEMENT_TOKEN=aaaaaaaaaaaaaaaa retire)"
+assert_eq "saying the engagement is gone" "1" \
+    "$(grep -c 'the engagement this command was started for is gone' \
+        "$TMPDIR/out" || true)"
+assert_eq "without a token: nothing to retire" "0" "$(retire)"
+swarm_state_update "$RT/state.json" \
+    '.engagement_id = "e1" | .docker_daemon = "d1"'
 exec 8>>"$RT/engagement.lock"
 flock -n 8
 assert_eq "a held lock is refused" "1" "$(retire 8>&-)"
