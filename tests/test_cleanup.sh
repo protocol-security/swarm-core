@@ -158,20 +158,56 @@ case "$1" in
         exit 1 ;;
     run)
         d=$(mktemp -d "$F/run.XXXXXX")
-        # A volume scan: the real scanner over voldir/<volume>, its
-        # script on stdin, its output streamed back as a tar.
+        # A volume scan: the production helper's own script (the -c
+        # argument) with its scratch under $F and the volume at
+        # voldir/<volume>, the scanner on stdin, the output streamed
+        # back as a tar; the origin it gets is recorded in scan-origins.
+        # $F/xtamper-lunc: a layer-uncommitted line is added to the
+        # report on the way.
         vol=$(printf '%s\n' "$*" \
             | sed -n 's/.*type=volume,src=\([^,]*\),.*/\1/p')
         if [ -n "$vol" ]; then
-            cat > "$d/scan.sh"
-            mkdir "$d/out"
+            prog=""
+            prev=""
+            for a in "$@"; do
+                [ "$prev" != -c ] || prog="$a"
+                if [ "$prev" = -e ]; then
+                    case "$a" in
+                        SWARM_SCAN_MOUNTS=*)
+                            export SWARM_SCAN_MOUNTS="${a#SWARM_SCAN_MOUNTS=}" ;;
+                        SWARM_SCAN_ORIGIN=*)
+                            export SWARM_SCAN_ORIGIN="${a#SWARM_SCAN_ORIGIN=}"
+                            printf '%s\n' "$SWARM_SCAN_ORIGIN" \
+                                >> "$F/scan-origins" ;;
+                    esac
+                fi
+                prev="$a"
+            done
             ctx="${*: -1}"
-            bash "$d/scan.sh" worktree "$F/voldir/$vol" "$ctx" "$d/out" \
-                >&2 || exit $?
-            set -- report
-            [ ! -f "$d/out/bundle" ] || set -- "$@" bundle
-            [ ! -f "$d/out/objects" ] || set -- "$@" objects
-            tar -C "$d/out" -cf - "$@"
+            mkdir -p "$F/scratch"
+            prog=$(printf '%s\n' "$prog" | sed \
+                -e "s|mktemp -d /swarm-volume-scan\.XXXXXX|mktemp -d $F/scratch/swarm-volume-scan.XXXXXX|" \
+                -e "s| worktree /workspace | worktree $F/voldir/$vol |")
+            # $F/xtamper-lunc-2: the same, on a volume's second scan only
+            # (after retire, before anything is deleted).
+            nscan=$(grep -cxF "$vol" "$F/scan-count" 2>/dev/null || true)
+            printf '%s\n' "$vol" >> "$F/scan-count"
+            tamper=""
+            [ ! -e "$F/xtamper-lunc" ] || tamper=yes
+            [ ! -e "$F/xtamper-lunc-2" ] || [ "${nscan:-0}" != 1 ] \
+                || tamper=yes
+            if [ -z "$tamper" ]; then
+                bash -c "$prog" scan "$ctx"
+                exit $?
+            fi
+            bash -c "$prog" scan "$ctx" > "$d/prod.tar" || exit $?
+            mkdir "$d/x"
+            tar -C "$d/x" -xf "$d/prod.tar" || exit 3
+            echo 'layer-uncommitted dirty /tmp/wt: ?? f' >> "$d/x/report"
+            (cd "$d/x" && set -- report \
+                && { [ ! -f bundle ] || set -- "$@" bundle; } \
+                && { [ ! -f objects ] || set -- "$@" objects; } \
+                && tar -cf - "$@") || exit 3
             exit 0
         fi
         # A deletion helper: cleanup's own program, run here with the
@@ -548,6 +584,55 @@ add_volume proj-agent-1-ws-00000001
 jq -n '{"swarm-core.project": "proj", "swarm-core.checkout": "/elsewhere"}' \
     > "$F/vollabels/proj-agent-1-ws-00000001"
 refused "a volume of another checkout" "is not this checkout's"
+# A repository in a volume that registers a linked worktree outside it:
+# cleanup's scans (origin cleanup) leave it to retire when it is not
+# there, and refuse one that is there where cleanup scans.
+XC=$(cd -P "$TMPDIR" && pwd -P)
+setup
+add_volume proj-agent-1-ws-00000001
+_cv="$F/voldir/proj-agent-1-ws-00000001"
+mkdir -p "$XC/xc-layer"
+git -C "$_cv" worktree add -q --detach "$XC/xc-layer/wt" HEAD 2>/dev/null
+rm -rf "$XC/xc-layer/wt"
+assert_eq "a registration whose directory is not there: cleanup succeeds" \
+    "0" "$(cleanup)"
+assert_eq "  the scans ran as cleanup's" "cleanup" \
+    "$(sort -u "$F/scan-origins" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "  the volume is removed" "0" "$(grep -c . "$F/volumes" || true)"
+setup
+add_volume proj-agent-1-ws-00000001
+_cv="$F/voldir/proj-agent-1-ws-00000001"
+git -C "$_cv" worktree add -q --detach "$XC/xc-layer/wt2" HEAD 2>/dev/null
+refused "one that is there where cleanup scans" \
+    "present where cleanup scans"
+rm -rf "$XC/xc-layer"
+# A directory at that path that is not the worktree (no .git naming the
+# repository back, as in the image cleanup scans from): left to retire.
+setup
+add_volume proj-agent-1-ws-00000001
+_cv="$F/voldir/proj-agent-1-ws-00000001"
+git -C "$_cv" worktree add -q --detach "$XC/xc-img/wt" HEAD 2>/dev/null
+rm -f "$XC/xc-img/wt/.git"
+assert_eq "a directory there that is not the worktree: cleanup succeeds" \
+    "0" "$(cleanup)"
+rm -rf "$XC/xc-img"
+# A failure on the second pass, after retire: nothing is deleted.
+setup
+add_volume proj-agent-1-ws-00000001
+touch "$F/xtamper-lunc-2"
+refused "a second-pass scan that reports work in a container layer" \
+    "reports work in a container layer"
+assert_eq "  the volume, a source of the engagement, stays" "1" \
+    "$(grep -cxF proj-agent-1-ws-00000001 "$F/volumes")"
+rm -f "$F/xtamper-lunc-2"
+setup
+add_volume proj-agent-1-ws-00000001
+touch "$F/xtamper-lunc"
+refused "a scan that reports work in a container layer" \
+    "reports work in a container layer"
+assert_eq "  --discard-uncommitted does not get past it" "1" \
+    "$(cleanup --discard-uncommitted)"
+rm -f "$F/xtamper-lunc"
 
 echo ""
 echo "=== 4. A run that stops half way, and the next one ==="
