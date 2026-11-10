@@ -526,6 +526,18 @@ SWARM_NONCE_LABEL="swarm-core.nonce"
 # (SWARM_ENGAGEMENT_ID) and so repeat, the token cannot.
 # shellcheck disable=SC2034
 SWARM_TOKEN_LABEL="swarm-core.engagement-token"
+# A workload container (numbered agent, post-process, interactive or
+# shell session) carries its role, the agents[] entry its profile is
+# (from 1) and a numbered agent's number, each empty where it does not
+# apply.  With the project, checkout, engagement and token labels these
+# are part of the control interface (USAGE.md, "Control interface"):
+# each keeps its meaning for good.
+# shellcheck disable=SC2034
+SWARM_ROLE_LABEL="swarm-core.role"
+# shellcheck disable=SC2034
+SWARM_PROFILE_INDEX_LABEL="swarm-core.profile-index"
+# shellcheck disable=SC2034
+SWARM_AGENT_NUMBER_LABEL="swarm-core.agent-number"
 
 # Succeed when nothing at all exists at path $1, as the file system
 # says: test -e and -L also fail when the path cannot be looked up (a
@@ -831,15 +843,13 @@ swarm_no_mounts() {
     fi
 }
 
-# Print what runtime directory DIR holds of an engagement, one entry per
-# line: its bare repo and upstream.git.new, mirrors/, its target
-# snapshot, any remnant of a cleanup (hidden names too), and the
-# containers and workspace volumes of the checkout at ROOT (canonical
-# path CHECKOUT) under project id PROJECT.  Fails, saying so, when
-# Docker cannot list them.  Target scratch (.target-fetch.*,
-# .target-prep.*) is never part of an engagement.
-swarm_runtime_leftovers() {
-    local dir="$1" project="$2" root="$3" checkout="$4" e containers vols
+# Print the files runtime directory DIR holds of an engagement, one
+# "  PATH" line each: its bare repo and upstream.git.new, mirrors/, its
+# target snapshot, any remnant of a cleanup (hidden names too).  Target
+# scratch (.target-fetch.*, .target-prep.*) is never part of an
+# engagement.
+swarm_runtime_leftover_files() {
+    local dir="$1" e
     for e in "$dir/upstream.git" "$dir/upstream.git.new" "$dir/mirrors" \
             "$dir/target.git" \
             "$dir"/*.removing "$dir"/.[!.]*.removing \
@@ -848,6 +858,16 @@ swarm_runtime_leftovers() {
             printf '  %s\n' "$e"
         fi
     done
+}
+
+# Print what runtime directory DIR holds of an engagement, one entry per
+# line: its files (swarm_runtime_leftover_files), and the containers
+# and workspace volumes of the checkout at ROOT (canonical path
+# CHECKOUT) under project id PROJECT.  Fails, saying so, when Docker
+# cannot list them.
+swarm_runtime_leftovers() {
+    local dir="$1" project="$2" root="$3" checkout="$4" containers vols
+    swarm_runtime_leftover_files "$dir"
     if ! containers=$(swarm_own_containers "$project" "$root"); then
         echo "ERROR: cannot list Docker containers." >&2
         return 1
@@ -1023,6 +1043,8 @@ swarm_bare_repo_ready() {
                 *) unset "$v" ;;
             esac
         done
+        # No trace file either, whatever a configuration file says.
+        export GIT_TRACE2=0 GIT_TRACE2_EVENT=0 GIT_TRACE2_PERF=0
         export GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=''
         [ "$(swarm_bounded "$_SWARM_GIT_READ_SECS" git --git-dir="$phys" \
             rev-parse --is-bare-repository 2>/dev/null < /dev/null)" = true ] \

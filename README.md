@@ -109,7 +109,9 @@ SWARM_CONFIG=swarm.json ./launch.sh interactive hunter
 ```
 
 See [USAGE.md](USAGE.md) for all commands, dashboard keys,
-and testing.
+and testing. A program that drives engagements (a CI job, a
+scheduler) uses `control.sh`, a versioned interface: see
+[Control interface](USAGE.md#control-interface).
 
 ## Configuration
 

@@ -107,7 +107,7 @@ run_all_tests() {
         local rt_test rt_start rt_elapsed rt_rc
         for rt_test in runtime_signal_trap.sh runtime_pi.sh \
                 runtime_retire.sh runtime_cleanup.sh runtime_target.sh \
-                runtime_mirrors.sh; do
+                runtime_mirrors.sh runtime_control.sh; do
             rt_rc=0
             rt_start=$(date +%s)
             "$TESTS_DIR/$rt_test" || rt_rc=$?
@@ -498,6 +498,7 @@ if $RUN_RUNTIME; then
     "$TESTS_DIR/runtime_cleanup.sh" || rt_rc=1
     "$TESTS_DIR/runtime_target.sh" || rt_rc=1
     "$TESTS_DIR/runtime_mirrors.sh" || rt_rc=1
+    "$TESTS_DIR/runtime_control.sh" || rt_rc=1
     exit "$rt_rc"
 fi
 

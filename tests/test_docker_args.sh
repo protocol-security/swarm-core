@@ -260,7 +260,32 @@ refused "reads variables from a file" --env-file /dev/null
 refused "reads variables from a file" --env-file=/dev/null
 refused "takes every mount of another container" --volumes-from c1
 refused "takes every mount of another container" --volumes-from=c1:ro
-accepted --label-file /dev/null
+# The engine's labels: a key in swarm-core.'s namespace, in every
+# spelling the grammar takes, whatever the case of its letters and
+# with leading spaces or tabs, with or without a value; and every label
+# of a file.
+L="sets a label in the engine's namespace (swarm-core.)"
+refused "$L" --label swarm-core.role=agent
+refused "$L" --label swarm-core.project
+refused "$L" --label=swarm-core.engagement-token=x
+refused "$L" -l swarm-core.profile-index=1
+refused "$L" -lswarm-core.agent-number=2
+refused "$L" -l=swarm-core.checkout=/x
+refused "$L" --label SWARM-CORE.role=x
+refused "$L" --label Swarm-Core.Role=x
+refused "$L" --label ' swarm-core.role=x'
+refused "$L" --label $'\t swarm-core.role=x'
+refused "$L" --label swarm-core.=x
+refused "$L" --label swarm-core.anything-new=x
+refused "element 3 (--label) sets a label" --rm -i --label swarm-core.x=1
+accepted --label swarm-core=x
+accepted --label swarm-corex.role=x
+accepted --label com.example.swarm-core.role=x
+accepted --label role=swarm-core.role
+accepted -l team=a
+accepted --label=x
+refused "reads labels from a file" --label-file /dev/null
+refused "reads labels from a file" --label-file=/dev/null
 # Mounts at or below /target-upstream, after Go's path.Clean: every
 # field of -v and --device (a host path there counts too), the part of
 # --tmpfs before its first ":".

@@ -897,7 +897,7 @@ assert_eq "a link that leads back into the volume is fine" "0" "$(retire)"
 assert_eq "the scan ran from a snapshot of the container" "1" \
     "$(grep -c '^commit .* id-proj-agent-2 proj-agent-retire:' "$F/log" || true)"
 assert_eq "with the engine's labels emptied on the snapshot" "2" \
-    "$(grep -cF -- '--change LABEL swarm-core.project="" swarm-core.checkout="" swarm-core.session=""' \
+    "$(grep -cF -- '--change LABEL swarm-core.project="" swarm-core.checkout="" swarm-core.session="" swarm-core.engagement="" swarm-core.engagement-token="" swarm-core.role="" swarm-core.profile-index="" swarm-core.agent-number=""' \
         "$F/log" || true)"
 assert_eq "each snapshot is removed after, by its name" "2" \
     "$(grep -c '^rmi proj-agent-retire:id-proj-agen-[0-9][0-9]*$' "$F/log" \
