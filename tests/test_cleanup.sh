@@ -1127,6 +1127,37 @@ _rc=$(BASH_ENV="$TMPDIR/unset-hook.sh" cleanup)
 assert_eq "cleanup stopped on an unset variable: not status 0" "true" \
     "$([ "$_rc" -ne 0 ] && echo true || echo false)"
 assert_eq "the bare repo stays" "yes" "$(present "$RT/upstream.git")"
+# That holds on Bash 3.2 because cleanup's EXIT trap is retire's
+# (retire_stopped, which makes the check where Bash needs it); checked
+# here on every Bash.
+_sg_traps=$(awk '/^cmd_cleanup\(\)[[:space:]]*\{/ { p = 1 }
+                 p { print }
+                 p && /^\}[[:space:]]*$/ { exit }' \
+                "$REPO_ROOT/lib/cleanup.sh" \
+            | grep -E '^[[:space:]]*trap [A-Za-z_]+ EXIT$' \
+            | sed 's/^[[:space:]]*//')
+assert_eq "cleanup's EXIT trap is retire_stopped" \
+    "trap retire_stopped EXIT" "$_sg_traps"
+# And the check in it is made where swarm_stop_guard_needed says so: a
+# cleanup that ends with status 0 short of its end (a flock, through
+# BASH_ENV, that sets the version test's answer and exits 0) ends with
+# 1 and says why only when the answer is yes; on every Bash.
+for _sg_need in 0 1; do
+    cat > "$TMPDIR/stop-hook.sh" <<EOF
+flock() { swarm_stop_guard_needed() { return $_sg_need; }; exit 0; }
+EOF
+    setup
+    _rc=$(BASH_ENV="$TMPDIR/stop-hook.sh" cleanup)
+    _n=$(grep -c 'the run stopped before its end' "$TMPDIR/out" || true)
+    if [ "$_sg_need" = 0 ]; then
+        assert_eq "a 0 short of the end, the check made: status 1" "1" "$_rc"
+        assert_eq "  saying so" "1" "$_n"
+    else
+        assert_eq "a 0 short of the end, no check: status 0" "0" "$_rc"
+        assert_eq "  saying nothing" "0" "$_n"
+    fi
+    assert_eq "  the bare repo stays" "yes" "$(present "$RT/upstream.git")"
+done
 
 echo ""
 echo "==============================="

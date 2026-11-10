@@ -1002,15 +1002,15 @@ assert_eq "the same run without the stop ends with 0" "0" "$progress_rc"
 # The check is made only on Bash before 4.1 (later versions end a run
 # that set -u stops with a nonzero status themselves; every version runs
 # the EXIT trap with $? at 0 when a signal ends the script).  The
-# script's own version test and trap, extracted; the trap runs in a
-# child of each Bash the runner has, with the version test stubbed both
-# ways.
+# shared version test (lib/project.sh) and the script's trap, extracted;
+# the trap runs in a child of each Bash the runner has, with the version
+# test stubbed both ways.
 _px_extract() {  # FUNCTION FILE
     awk -v f="$1" '$0 ~ "^" f "\\(\\)[[:space:]]*\\{" { p = 1 }
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' "$2"
 }
-_px_extract progress_stop_guard_needed "$REPO_ROOT/progress.sh" \
+_px_extract swarm_stop_guard_needed "$REPO_ROOT/lib/project.sh" \
     > "$TMPDIR/progress-guard.sh"
 _px_extract progress_exit_trap "$REPO_ROOT/progress.sh" \
     > "$TMPDIR/progress-trap.sh"
@@ -1018,7 +1018,7 @@ _px_guard() {
     (
         # shellcheck source=/dev/null
         source "$TMPDIR/progress-guard.sh"
-        if progress_stop_guard_needed "$1" "$2"; then
+        if swarm_stop_guard_needed "$1" "$2"; then
             echo yes
         else
             echo no
@@ -1049,7 +1049,7 @@ set -euo pipefail
 PROGRESS_EXIT_OK=false
 # shellcheck source=/dev/null
 source "$TMPDIR/progress-trap.sh"
-progress_stop_guard_needed() { return $2; }
+swarm_stop_guard_needed() { return $2; }
 trap progress_exit_trap EXIT
 $3
 EOF

@@ -1427,6 +1427,219 @@ rc=$(BASH_ENV="$TMPDIR/unset-hook.sh" retire)
 assert_eq "retire stopped on an unset variable: not status 0" "true" \
     "$([ "$rc" -ne 0 ] && echo true || echo false)"
 assert_eq "and removes nothing" "0" "$(removed)"
+# The check is made only where swarm_stop_guard_needed says so (Bash
+# before 4.1): retire's EXIT trap, extracted, in a child Bash with
+# retire_cleanup recording its call and the version test stubbed both
+# ways.  Status 0 prints the line and ends with 1 only where the check is
+# made; another status stays; the cleanup runs every time.
+_sg_bashes="/bin/bash"
+_sg_brew=""
+if command -v brew >/dev/null 2>&1; then
+    _sg_brew="$(brew --prefix)/bin/bash"
+fi
+if [ -n "$_sg_brew" ] && [ -x "$_sg_brew" ]; then
+    _sg_bashes="$_sg_bashes $_sg_brew"
+elif [ "$(uname)" = Darwin ]; then
+    if [ -n "${CI:-}" ]; then
+        assert_eq "CI has the Homebrew bash" "yes" "no"
+    else
+        echo "  SKIP: no Homebrew bash, so only /bin/bash is checked"
+    fi
+fi
+awk '/^retire_stopped\(\)[[:space:]]*\{/ { p = 1 }
+     p { print }
+     p && /^\}[[:space:]]*$/ { exit }' "$REPO_ROOT/lib/retire.sh" \
+    > "$TMPDIR/sg-trap.sh"
+assert_eq "retire's EXIT trap is extracted" "1" \
+    "$(grep -c '^retire_stopped()' "$TMPDIR/sg-trap.sh")"
+_sg_run() {  # BASH NEEDED(0 yes, 1 no) END
+    : > "$TMPDIR/sg-cleanups"
+    cat > "$TMPDIR/sg-run.sh" <<EOF
+set -euo pipefail
+# shellcheck source=/dev/null
+source "$TMPDIR/sg-trap.sh"
+retire_cleanup() { echo cleanup >> "$TMPDIR/sg-cleanups"; }
+swarm_stop_guard_needed() { return $2; }
+trap retire_stopped EXIT
+$3
+EOF
+    "$1" "$TMPDIR/sg-run.sh" 2>&1
+}
+_sg_line='the run stopped before its end'
+for _sg_b in $_sg_bashes; do
+    _sg_rc=0
+    _sg_out=$(_sg_run "$_sg_b" 0 ':') || _sg_rc=$?
+    assert_eq "$_sg_b: status 0 where the check is made: status 1" "1" \
+        "$_sg_rc"
+    assert_eq "$_sg_b:   saying so once" "1" \
+        "$(grep -c "$_sg_line" <<< "$_sg_out")"
+    assert_eq "$_sg_b:   having cleaned up once" "1" \
+        "$(grep -c cleanup "$TMPDIR/sg-cleanups")"
+    _sg_rc=0
+    _sg_out=$(_sg_run "$_sg_b" 1 ':') || _sg_rc=$?
+    assert_eq "$_sg_b: status 0 where it is not: status 0" "0" "$_sg_rc"
+    assert_eq "$_sg_b:   no line" "0" \
+        "$(grep -c "$_sg_line" <<< "$_sg_out")"
+    assert_eq "$_sg_b:   having cleaned up once" "1" \
+        "$(grep -c cleanup "$TMPDIR/sg-cleanups")"
+    _sg_rc=0
+    _sg_out=$(_sg_run "$_sg_b" 0 'exit 3') || _sg_rc=$?
+    assert_eq "$_sg_b: another status stays" "3" "$_sg_rc"
+    assert_eq "$_sg_b:   with no line" "0" \
+        "$(grep -c "$_sg_line" <<< "$_sg_out")"
+    assert_eq "$_sg_b:   having cleaned up once" "1" \
+        "$(grep -c cleanup "$TMPDIR/sg-cleanups")"
+done
+# End to end: retire waits in docker images (the listing of snapshots an
+# earlier retire left, entered with status 0), after its traps are set
+# and its scratch directory made, and before any helper starts a process
+# group of its own, when it gets a signal.
+# SIGPIPE, which a closed pipe sends and retire does not trap, reaches
+# the EXIT trap: the line only before Bash 4.1, death by the signal on
+# every version.  SIGTERM goes through retire's own trap: status 143, no
+# line.  The scratch directory goes either way.  python3 starts the run
+# in a session of its own, signals launch.sh only, then lets the held
+# docker go (Bash may hold the signal until it returns), and kills the
+# whole session at the end.
+_sg_py=yes
+if ! command -v python3 >/dev/null 2>&1; then
+    _sg_py=no
+    if [ -n "${CI:-}" ]; then
+        assert_eq "CI has python3" "yes" "no"
+    else
+        echo "  SKIP: no python3, so no signal is sent"
+    fi
+fi
+mkdir -p "$TMPDIR/bin-hold"
+cat > "$TMPDIR/bin-hold/docker" <<EOF
+#!/bin/bash
+if [ "\$1" = images ] && [ -e "$TMPDIR/sg/hold" ]; then
+    rm -f "$TMPDIR/sg/hold"
+    trap 'kill "\$s" 2>/dev/null; exit 0' TERM
+    sleep 30 &
+    s=\$!
+    printf '%s\n' "\$\$" > "$TMPDIR/sg/ready.tmp"
+    mv "$TMPDIR/sg/ready.tmp" "$TMPDIR/sg/ready"
+    wait "\$s"
+    exit 1
+fi
+exec "$TMPDIR/bin/docker" "\$@"
+EOF
+chmod +x "$TMPDIR/bin-hold/docker"
+cat > "$TMPDIR/sg-sigrun.py" <<'EOF'
+import glob, os, signal, subprocess, sys, time
+bash, script, cwd, ready, errfile, signame, watch = sys.argv[1:8]
+args = sys.argv[8:]
+def made():
+    return "yes" if glob.glob(watch) else "no"
+p = None
+held = None
+def release(sig=signal.SIGTERM):
+    # The held command traps SIGTERM and exits with 0.
+    if held is not None:
+        try:
+            os.kill(held, sig)
+        except ProcessLookupError:
+            pass
+def killgroup():
+    release(signal.SIGKILL)
+    if p is None:
+        return
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        p.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+# A TERM, HUP or INT to this supervisor (a test run cancelled) ends it
+# through the finally block, which kills the run's session.  They are
+# blocked while the run is made, and unblocked in the run before exec.
+def stop(signum, frame):
+    raise SystemExit(128 + signum)
+caught = {signal.SIGTERM, signal.SIGHUP, signal.SIGINT}
+for s in caught:
+    signal.signal(s, stop)
+try:
+    signal.pthread_sigmask(signal.SIG_BLOCK, caught)
+    try:
+        with open(errfile, "w") as err:
+            p = subprocess.Popen(
+                [bash, script] + args, cwd=cwd, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=err,
+                start_new_session=True,
+                preexec_fn=lambda: signal.pthread_sigmask(
+                    signal.SIG_UNBLOCK, caught))
+    finally:
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, caught)
+    deadline = time.time() + 20
+    while time.time() < deadline and not os.path.exists(ready):
+        if p.poll() is not None:
+            break
+        time.sleep(0.1)
+    if not os.path.exists(ready):
+        print("ready no")
+        sys.exit(0)
+    with open(ready) as f:
+        held = int(f.read().strip())
+    print("ready yes")
+    print("before", made())
+    # Then let the held command end with 0 at once: whether Bash acts
+    # on its signal before or after it sees that end, the status it
+    # has is 0, as it would be in a run the signal stops there.
+    os.kill(p.pid, getattr(signal, signame))
+    release()
+    try:
+        rc = p.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        print("rc timeout")
+        sys.exit(0)
+    print("rc", rc)
+    print("after", made())
+finally:
+    killgroup()
+EOF
+if [ "$_sg_py" = yes ]; then
+    for _sg_b in $_sg_bashes; do
+        _sg_v=$("$_sg_b" -c 'echo "${BASH_VERSINFO[0]} ${BASH_VERSINFO[1]}"')
+        # shellcheck disable=SC2086  # major and minor as two words
+        if swarm_stop_guard_needed $_sg_v; then _sg_n=1; else _sg_n=0; fi
+        for _sg_sig in PIPE:-13:"$_sg_n" TERM:143:0; do
+            _sg_s="${_sg_sig%%:*}"
+            _sg_want="${_sg_sig#*:}"
+            _sg_lines="${_sg_want#*:}"
+            _sg_want="${_sg_want%%:*}"
+            _sg_name="$_sg_b, SIG${_sg_s}"
+            reset_fake
+            add proj-agent-1
+            rm -rf "$TMPDIR/sg"
+            mkdir -p "$TMPDIR/sg/tmp"
+            : > "$TMPDIR/sg/hold"
+            _sg_out=$(cd "$REPO" \
+                && env PATH="$TMPDIR/bin-hold:$TMPDIR/bin:$PATH" \
+                    FAKE_DOCKER="$F" FAKE_CK="$CK" SWARM_RUNTIME_DIR="$RT" \
+                    SWARM_PROJECT="$P" SWARM_SKIP_DEP_CHECK=1 \
+                    TMPDIR="$TMPDIR/sg/tmp" \
+                    python3 "$TMPDIR/sg-sigrun.py" "$_sg_b" "$LAUNCH" \
+                        "$REPO" "$TMPDIR/sg/ready" "$TMPDIR/sg/err" \
+                        "SIG${_sg_s}" "$TMPDIR/sg/tmp/swarm-retire.*" \
+                        retire 2>&1)
+            assert_eq "$_sg_name: retire waits in docker images" "yes" \
+                "$(sed -n 's/^ready //p' <<< "$_sg_out")"
+            assert_eq "$_sg_name:   its scratch directory there" "yes" \
+                "$(sed -n 's/^before //p' <<< "$_sg_out")"
+            assert_eq "$_sg_name:   ends with $_sg_want" "$_sg_want" \
+                "$(sed -n 's/^rc //p' <<< "$_sg_out")"
+            assert_eq "$_sg_name:   the line $_sg_lines time(s)" \
+                "$_sg_lines" \
+                "$(grep -c "$_sg_line" "$TMPDIR/sg/err" || true)"
+            assert_eq "$_sg_name:   the scratch directory goes" "no" \
+                "$(sed -n 's/^after //p' <<< "$_sg_out")"
+            assert_eq "$_sg_name:   nothing removed" "0" "$(removed)"
+        done
+    done
+fi
 swarm_state_update "$RT/state.json" 'del(.engagement_id, .docker_daemon)'
 reset_fake
 assert_eq "no engagement and nothing left: retire succeeds" "0" "$(retire)"
