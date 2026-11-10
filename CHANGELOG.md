@@ -6,6 +6,7 @@
 
 
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -41,6 +42,19 @@
   not on the emergency push of a signal. To tell a commit with no net
   change, the scratch push now compares the index as a tree, so
   `diff.ignoreSubmodules` cannot make it drop a gitlink change.
+- **Fix: a token reaches no other engagement through `retire`,
+  `cleanup` or `start`.** With `SWARM_ENGAGEMENT_TOKEN` set, `stop`, `post-process`,
+  `interactive` and `harvest.sh` refused another engagement, but
+  `retire` and `cleanup` did not: a caller whose engagement had been
+  cleaned up and started again under the same id could retire the new
+  one's containers or delete its bare repo. Both now check the token
+  under the engagement lock, before anything changes, and refuse when
+  the state file records another token or none. `start` refuses a
+  token: with the token of an engagement whose bare repo was never made
+  (a failed clone), it replaced that engagement with a new one. A token
+  that is set but empty is refused by every command, as it named no
+  engagement and let `post-process` and `interactive` create one.
+
 - **Fix: Git leaves nothing running that holds the engagement lock.**
   Every process started under the lock inherits its descriptor, so
   Git's fsmonitor daemon, started by a merge in a checkout with

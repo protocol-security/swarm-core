@@ -1010,6 +1010,15 @@ HELP
 }
 
 cmd_start() {
+    # A token names an engagement to join, and start makes a new one:
+    # with the token of one whose bare repo was never made, it would
+    # replace that engagement.  Refused before anything is prepared.
+    if [ -n "${SWARM_ENGAGEMENT_TOKEN+x}" ]; then
+        echo "ERROR: SWARM_ENGAGEMENT_TOKEN names an engagement to" \
+             "join; start makes a new one.  Unset it to start one." >&2
+        exit 1
+    fi
+
     # Top-level prompt is optional when every agent group defines its own.
     local all_groups_have_prompt
     all_groups_have_prompt=$(jq \

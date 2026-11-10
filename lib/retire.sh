@@ -1082,6 +1082,9 @@ HELP
     # id could have claimed the runtime and started in between.
     swarm_runtime_verify "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || return 1
     swarm_engagement_join "$STATE_FILE" || return 1
+    # A caller that names its engagement by token acts on that one only:
+    # another started since under the same id is not its to retire.
+    swarm_engagement_token_check "$STATE_FILE" || return 1
     swarm_legacy_refuse "$RUNTIME_DIR" "$STATE_FILE" || return 1
     local engagement
     engagement=$(swarm_engagement_recorded "$STATE_FILE") || return 1
