@@ -102,7 +102,7 @@ hlog_pipe() {
 # we cherry-pick onto, then push from.
 #
 # WHY THIS EXISTS:
-#   Empirically (see CHANGELOG 0.20.5 for the full trace) the
+#   Empirically (see CHANGELOG.md 0.20.5 at tag v0.24.0) the
 #   in-place rebase path fails on real-world codex-cli swarms that
 #   run against a superproject with submodules and context-stripping
 #   git hooks: stash + submodule-sync put the tree clean, but by the
@@ -376,8 +376,8 @@ _session_end_push() {
     #
     # v0.20.2 tried to solve this with `rebase.autoStash=true`, but
     # autoStash has three documented gaps that caused real push
-    # failures in production (see CHANGELOG 0.20.4 for the
-    # failure-mode breakdown):
+    # failures in production (see CHANGELOG.md 0.20.4 at tag v0.24.0
+    # for the failure-mode breakdown):
     #
     #   (1) `git stash` defaults to NOT stashing untracked files, so
     #       autoStash silently leaves `?? <path>` in the worktree and

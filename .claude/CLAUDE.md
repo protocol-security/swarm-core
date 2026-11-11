@@ -44,7 +44,7 @@ Avoid:
 - fixup! Add Codex driver
 - wip driver changes
 
-This isn't pedantry: commit subjects flow into CHANGELOG
+This isn't pedantry: commit subjects flow into NEWS
 entries and the annotated message of each release tag, so a
 clean subject saves everyone a moment of "wait, what does
 this say?" months later.  Don't agonize over any single
@@ -102,8 +102,12 @@ Drafting the PR:
 
 - Every feature change must update relevant `.md` files
   (README.md, USAGE.md, CLAUDE.md).
-- Update CHANGELOG.md with a new entry under the current
-  version when adding features, fixes, or notable changes.
+- Add an entry to NEWS, under `Unreleased` at the top, when
+  adding features, fixes, or notable changes.  NEWS is plain
+  text: one or two lines per change, imperative, no Markdown
+  emphasis and no `Fix:` or `Feature:` label.  Start a
+  breaking change with `Breaking:`.  The why belongs in the
+  commit message.
 - Check thoroughly: add new fields to tables, update
   examples, add test cases to matrices, remove stale
   references.
@@ -113,11 +117,14 @@ Drafting the PR:
 - Version-bump commit subject: `Bump x.y.z -- <summary>`.
   Use two ASCII hyphens, no colon, no em dash.  Do not use
   `Release x.y.z:` or `Ship x.y.z:`.
-- Version-bump commits touch only `VERSION` and
-  `CHANGELOG.md`.  Code lives in its own preceding commit.
+- Version-bump commits touch only `VERSION` and `NEWS`,
+  where `Unreleased` becomes `x.y.z (YYYY-MM-DD)`.  Code
+  lives in its own preceding commit.
 - After every merge to master that changes VERSION,
   immediately create an annotated tag on the merge commit:
   `git tag -a v$VERSION $MERGE_COMMIT -m "v$VERSION -- summary"`.
+  The summary starts lowercase unless its first word is a
+  proper noun or an acronym.
 - Verify: `git tag -l "v$(cat VERSION)"`.  If the tag is
   missing, create it before doing anything else.
 - Always prompt the user to push: `git push origin --tags`.

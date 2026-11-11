@@ -30,7 +30,7 @@ Each agent CLI sits behind a driver, selected per group in `swarm.json`.
 ## Documentation
 
 [USAGE.md](USAGE.md) covers configuration, commands, authentication, and
-the control interface. [CHANGELOG.md](CHANGELOG.md) covers releases.
+the control interface. [NEWS](NEWS) lists the changes in each release.
 
 ## License
 

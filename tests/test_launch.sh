@@ -5268,7 +5268,7 @@ assert_eq "a HEAD commit check that does not return ends" "no 1" \
     "$(rb_slow --verify "$_rb/bare.git")"
 assert_eq "with the stand-in sleeping on nothing, it is ready" "ready 1" \
     "$(rb_slow --no-such-argument "$_rb/bare.git")"
-assert_eq "each read gets 60 seconds (as CHANGELOG.md says)" 60 \
+assert_eq "each read gets 60 seconds" 60 \
     "$_SWARM_GIT_READ_SECS"
 # The bound holds where the caller ignores SIGALRM.
 assert_eq "swarm_bounded ends a command whose SIGALRM was ignored" "142 1" \
