@@ -1047,7 +1047,7 @@ echo "=== 18. Session-end scratch-worktree push fallback ==="
 # worktree: cherry-pick unpushed commits onto a fresh detached
 # checkout of origin/agent-work, push from that worktree, then
 # tear it down.  The fallback sidesteps every failure pattern
-# documented in CHANGELOG 0.20.5 because it ignores the main
+# documented in CHANGELOG.md 0.20.5 (tag v0.24.0) because it ignores the main
 # worktree's state entirely -- submodule drift, context-stripping
 # hooks firing during rebase-merge checkouts, and "skipped
 # previously applied commit" all become irrelevant when the push

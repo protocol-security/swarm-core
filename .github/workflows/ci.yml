@@ -108,9 +108,9 @@ jobs:
             echo "::error::VERSION must increment: $old -> $new"
             exit 1
           fi
-          # Check CHANGELOG has entry for new version.
-          if ! grep -qF "## $new" CHANGELOG.md; then
-            echo "::error::CHANGELOG.md missing entry for version $new"
+          # Check NEWS has entry for new version.
+          if ! grep -q "^$new (" NEWS; then
+            echo "::error::NEWS missing entry for version $new"
             exit 1
           fi
           echo "Version bump OK: $old -> $new"
