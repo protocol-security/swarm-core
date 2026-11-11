@@ -75,14 +75,19 @@ Drafting the PR:
 2. Title: imperative, concise.
 3. Body:
 
-       ## Summary
+       SUMMARY
        - Bullet per logical change. What and why.
 
-       ## Changes
+       CHANGES
        - Per-file summary: what changed and why.
 
-       ## Test plan
+       TEST PLAN
        - [ ] Concrete verification steps.
+
+   Section names are plain uppercase lines, as in a man page,
+   not Markdown headings.  The body is not indented: GitHub
+   would render it as a code block and the checkboxes would
+   stop working.
 
 4. 3-6 summary bullets. Group related commits.
 5. Each bullet is one line; surrounding prose 1-2
