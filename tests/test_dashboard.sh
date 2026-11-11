@@ -1396,7 +1396,7 @@ assert_eq "every exit 0 after the trap is marked, and there is one (q)" \
 # The check itself, on each form: unmarked exits it must count, and
 # lines it must leave alone (another status, the awk program's exit,
 # marked exits).
-_ex_form() {  # LINES...: after the trap; prints unmarked and all
+_ex_form() {  # LINES...: after the trap; prints unmarked and all.
     { echo 'trap cleanup EXIT'; printf '%s\n' "$@"; } > "$_ex_tmp/form.sh"
     awk "$_ex_exits" "$_ex_tmp/form.sh"
 }

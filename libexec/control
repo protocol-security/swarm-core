@@ -67,7 +67,7 @@ control_engine_version() {
     printf '%s' "$v"
 }
 
-# version: the engine's version and the interfaces it has, printed
+# Version: the engine's version and the interfaces it has, printed
 # without jq (its characters were checked).
 control_version() {
     local v
@@ -434,7 +434,7 @@ control_mirrors_condition() {
     }
 }
 
-# observe: print the observation document (USAGE, CONTROL
+# Observe: print the observation document (USAGE, CONTROL
 # INTERFACE).
 control_observe() {
     local observed_at root canonical project rt out legacy

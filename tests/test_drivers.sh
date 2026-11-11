@@ -1426,7 +1426,7 @@ assert_eq "watchdog reads SWARM_WATCHDOG_GRACE knob" "1" \
 assert_eq "watchdog polls for SIGTERM effect rather than fixed sleep" "1" \
     "$(grep -cE 'for _i in \$\(seq 1 "\$_grace"\); do' "$COMMON_FILE")"
 
-# mtime probe uses GNU stat first (-c %Y) with a BSD fallback
+# The mtime probe uses GNU stat first (-c %Y) with a BSD fallback
 # (-f %m), so the helper is exercised the same way on macOS CI
 # and on the Linux production container.  Three hits each: the
 # preamble comment, the _last_mtime seed, and the per-poll read.

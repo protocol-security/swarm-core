@@ -105,7 +105,7 @@ ctl() {
         "$@" > "$WORKDIR/out" 2> "$WORKDIR/err") || rc=$?
     printf '%s' "$rc"
 }
-# observe, with the document in $WORKDIR/obs.json; prints the status.
+# Observe, with the document in $WORKDIR/obs.json; prints the status.
 observe() {
     local rc
     rc=$(ctl observe)

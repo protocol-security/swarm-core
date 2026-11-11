@@ -308,7 +308,7 @@ in_refused "a target pin at another commit" \
     "$S1" "$BASEC" ""
 assert_eq "  nothing of the helper's left" "" "$(leftovers)"
 # Pins that are annotated tags of the commit, in copies of the snapshot.
-tagged_copy() {   # NAME REF COMMIT: prints the tag object's id
+tagged_copy() {   # NAME REF COMMIT: prints the tag object's id.
     local c="$TMPDIR/snap-$1" t
     cp -Rp "$S1" "$c"
     chmod -R u+w "$c"
@@ -554,7 +554,7 @@ assert_eq "  Git saw only the helper's GIT_* variables" "$OWN" \
     "$(sed 's/=.*//' "$MARK/env" | LC_ALL=C sort -u | tr '\n' ' ')"
 assert_eq "  its graft file is not the caller's" "" \
     "$(grep -F "GIT_GRAFT_FILE=$TMPDIR/grafts" "$MARK/env" || true)"
-# fsmonitor: Git 2.30 reads core.fsmonitor as a hook to run, so a
+# Fsmonitor: Git 2.30 reads core.fsmonitor as a hook to run, so a
 # value of false would run a program called false.
 mkdir -p "$TMPDIR/falsebin"
 printf '#!/bin/sh\necho false >> "%s/false"\nexit 1\n' "$MARK" \

@@ -97,7 +97,7 @@ source "$SWARM_DIR/lib/target.sh"
 # shellcheck source=lib/docker-args.sh
 source "$SWARM_DIR/lib/docker-args.sh"
 
-# retire and cleanup read and write Git data: none of the caller's GIT_*
+# Retire and cleanup read and write Git data: none of the caller's GIT_*
 # variables may point them at another repository or inject settings
 # (only the choice of config files stays).  Before the repository is
 # looked up below.
@@ -614,7 +614,7 @@ available_drivers() {
         -exec basename {} .sh \; | tr '\n' ' '
 }
 
-# retire needs no swarmfile: it acts on what the runtime directory and
+# Retire needs no swarmfile: it acts on what the runtime directory and
 # Docker already hold.
 case "${1:-}" in
     retire)
@@ -1317,7 +1317,7 @@ cmd_stop() {
             exit 1 ;;
     esac
     stop_timeout=$((10#$stop_timeout))
-    # stop acts on the engagement the state file records now, through
+    # Stop acts on the engagement the state file records now, through
     # its token: every check reads the same copy of the state, and a
     # container of a later engagement, under a reused name or engagement
     # id, is never stopped.
@@ -1557,7 +1557,7 @@ wait_agents() {
 
 cmd_wait() {
     local snap token own_lock=true
-    # wait holds no lock while it polls: every check reads the same copy
+    # Wait holds no lock while it polls: every check reads the same copy
     # of the state, and the engagement waited for is the one its token
     # names there.
     state_snapshot snap || exit 1

@@ -690,7 +690,7 @@ fi
 HOOK
     chmod +x .git/hooks/prepare-commit-msg
 
-    # post-rewrite hook: re-inject trailers lost during rebase/amend.
+    # Post-rewrite hook: re-inject trailers lost during rebase/amend.
     # Not affected by --no-verify, so acts as a safety net.
     cat > .git/hooks/post-rewrite <<'HOOK'
 #!/bin/bash
@@ -716,7 +716,7 @@ git commit --amend --no-verify --no-edit -m "${msg}${trailer}" \
 HOOK
     chmod +x .git/hooks/post-rewrite
 
-    # pre-commit hook: prevent accidental staging of internal files
+    # Pre-commit hook: prevent accidental staging of internal files
     # and submodule pointer changes from broad `git add`.
     cat > .git/hooks/pre-commit <<'HOOK'
 #!/bin/bash

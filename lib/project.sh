@@ -813,7 +813,7 @@ swarm_mounts_under() {
                 print m
         }' /proc/self/mountinfo
     else
-        # mount prints "<device> on <mount point> (<options>)".
+        # Mount prints "<device> on <mount point> (<options>)".
         table=$(mount) || return 1
         printf '%s\n' "$table" | D="$dir" AT="$at" awk '{
             d = ENVIRON["D"]

@@ -1040,7 +1040,7 @@ swarm_retire_same_as_image() {
         swarm_docker_own_group run --rm -i --pull never --network none \
             --user 0 --label "${RETIRE_HELPER_LABEL}=${PROJECT}" \
             --entrypoint bash "$img" -c '
-                # swarm-compare: one line per path read on stdin
+                # swarm-compare: one line per path read on stdin.
                 while IFS= read -r p; do
                     if [ -L "$p" ]; then
                         printf "%s\tl\t%s\n" "$p" "$(readlink -n "$p")"

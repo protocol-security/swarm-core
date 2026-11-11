@@ -2231,7 +2231,7 @@ echo "=== 6. Linked worktrees of the volume's repositories in the layer ==="
 # resolved; repos-unmapped so the layer search names it the way the
 # volume scan does).  The real scanner runs through the production
 # helper's script.
-xw_setup() {  # NAME: the worktree's name
+xw_setup() {  # NAME: the worktree's name.
     reset_fake
     add proj-agent-2
     touch "$F/repos-unmapped"
