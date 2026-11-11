@@ -14,7 +14,7 @@ TMPDIR=$(mktemp -d)
 # scratch files here, under the cleanup below.
 export TMPDIR
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LAUNCH="$REPO_ROOT/launch.sh"
+LAUNCH="$REPO_ROOT/bin/launch.sh"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # The git config check asks git which files it reads (git var, Git 2.42

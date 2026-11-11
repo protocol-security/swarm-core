@@ -2,6 +2,9 @@ swarm-core NEWS -- history of user-visible changes.
 
 Unreleased
 
+  - Move the commands into bin/: bin/launch.sh, bin/harvest.sh,
+    bin/dashboard.sh, bin/costs.sh, bin/progress.sh, bin/control.sh.
+    Wrappers at the old paths run them and go away in a later release.
   - Rename LICENSE to COPYING and drop .md from the agent system prompt.
 
 0.24.0 (2026-11-11)

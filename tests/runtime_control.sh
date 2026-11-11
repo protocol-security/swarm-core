@@ -19,7 +19,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
-CONTROL="${REPO_ROOT}/control.sh"
+CONTROL="${REPO_ROOT}/bin/control.sh"
 IFACE="swarm-core.control/v1"
 
 if ! command -v docker >/dev/null 2>&1; then

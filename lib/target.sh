@@ -892,7 +892,7 @@ swarm_target_record_read() {
     fi
     if [ -n "$what" ]; then
         echo "ERROR: ${state} records a damaged target (${what}).  Run" \
-             "./launch.sh cleanup to finish this engagement." >&2
+             "./bin/launch.sh cleanup to finish this engagement." >&2
         return 1
     fi
     SWARM_TARGET_RECORDED=true
@@ -947,8 +947,8 @@ _swarm_target_request_check() {
     if ! $SWARM_TARGET_RECORDED; then
         swarm_target_requested || return 0
         echo "ERROR: this engagement has no target, and TARGET_* is set;" \
-             "unset it, or finish the engagement (./launch.sh stop," \
-             "harvest.sh, ./launch.sh cleanup) before one with a target" \
+             "unset it, or finish the engagement (./bin/launch.sh stop," \
+             "harvest.sh, ./bin/launch.sh cleanup) before one with a target" \
              "starts." >&2
         return 1
     fi
@@ -960,8 +960,8 @@ _swarm_target_request_check() {
         [ -n "${TARGET_REV_BASE+x}${TARGET_REV_BASE_REPO+x}" ] || return 0
         echo "ERROR: this engagement's target has no base, and" \
              "TARGET_REV_BASE or TARGET_REV_BASE_REPO is set; unset them," \
-             "or finish the engagement (./launch.sh stop, harvest.sh," \
-             "./launch.sh cleanup) before one with a base starts." >&2
+             "or finish the engagement (./bin/launch.sh stop, harvest.sh," \
+             "./bin/launch.sh cleanup) before one with a base starts." >&2
         return 1
     fi
     _swarm_target_request_one TARGET_REV_BASE "$SWARM_TARGET_REC_BASE_REV" \
@@ -984,8 +984,8 @@ _swarm_target_request_one() {
     fi
     echo "ERROR: ${name} does not name this engagement's target (it" \
          "records ${2}); unset ${name} to take the recorded one, or" \
-         "finish the engagement (./launch.sh stop, harvest.sh," \
-         "./launch.sh cleanup) before another target starts." >&2
+         "finish the engagement (./bin/launch.sh stop, harvest.sh," \
+         "./bin/launch.sh cleanup) before another target starts." >&2
     return 1
 }
 
@@ -1025,8 +1025,8 @@ swarm_target_join_check() {
     rm -rf -- "$SWARM_TARGET_TMP" 2>/dev/null || true
     if [ "$rc" -eq 1 ]; then
         echo "  A damaged snapshot cannot be repaired in place: stop the" \
-             "agents (./launch.sh stop), run harvest.sh, then" \
-             "./launch.sh cleanup.  A check that ran out of time can run" \
+             "agents (./bin/launch.sh stop), run harvest.sh, then" \
+             "./bin/launch.sh cleanup.  A check that ran out of time can run" \
              "again with a larger SWARM_TARGET_VERIFY_TIMEOUT." >&2
     fi
     [ "$rc" -eq 0 ]
@@ -1060,7 +1060,7 @@ _swarm_target_snapshot_check() {
     local snap="$1" owner canon found key fmt bare oid want
     if [ -L "$snap" ] || [ ! -d "$snap" ]; then
         echo "ERROR: this engagement is incomplete: ${snap} is missing or" \
-             "is not a directory.  Run ./launch.sh cleanup to finish it." >&2
+             "is not a directory.  Run ./bin/launch.sh cleanup to finish it." >&2
         return 2
     fi
     if ! owner=$(swarm_owner_uid "$snap") || [ "$owner" != "$(id -u)" ]

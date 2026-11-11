@@ -149,7 +149,7 @@ swarm_preservation_explain() {
         qref=$(printf '%q' "$ref")
         case "$ref" in
             refs/heads/agent-work|refs/heads/swarm/*/interactive-*)
-                echo "  ${ref#refs/heads/} ${sha:0:12}: run ./harvest.sh" \
+                echo "  ${ref#refs/heads/} ${sha:0:12}: run ./bin/harvest.sh" \
                      "to merge it" >&2 ;;
             *)
                 echo "  ${ref#refs/heads/} ${sha:0:12}: look at it with" \

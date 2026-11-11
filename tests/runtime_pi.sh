@@ -119,9 +119,9 @@ for ((i = 0; i < 30; i++)); do
 done
 docker exec "$API" curl -fsS http://localhost:8080/health >/dev/null
 
-"$ROOT/launch.sh" start
+"$ROOT/bin/launch.sh" start
 wait_container "$IMAGE-1" 0
-"$ROOT/launch.sh" post-process
+"$ROOT/bin/launch.sh" post-process
 wait_container "$IMAGE-post" 0
 
 test "$(< test-results/pi.txt)" = PI_MAIN_DONE
@@ -147,7 +147,7 @@ for name in "$IMAGE-1" "$IMAGE-post"; do
     ' "$stats"
     rm -rf "$WORK/logs"
 done
-"$ROOT/costs.sh" --json > "$WORK/costs.json"
+"$ROOT/bin/costs.sh" --json > "$WORK/costs.json"
 jq -e '.total.cost_usd > 0 and .total.input_tokens > 0' \
     "$WORK/costs.json" >/dev/null
 printf 'PASS: activity stream and cost/token/turn accounting\n'
@@ -213,7 +213,7 @@ printf 'PASS: Codex subscription auth, one shared refresh, and SSE responses\n'
 # Docker's interactive launcher requires a host PTY. Python is optional
 # and used only for this native-UI check, never for the driver itself.
 if command -v python3 >/dev/null 2>&1; then
-    python3 - "$ROOT/launch.sh" <<'PY'
+    python3 - "$ROOT/bin/launch.sh" <<'PY'
 import os
 import pty
 import re

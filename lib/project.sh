@@ -458,7 +458,7 @@ swarm_runtime_owner_check() {
         echo "  this one: ${canonical}" >&2
         echo "Give this checkout its own id with SWARM_PROJECT. If it" \
              "is the same checkout at a new path, run harvest.sh and" \
-             "./launch.sh cleanup from the old path." >&2
+             "./bin/launch.sh cleanup from the old path." >&2
         return 1
     fi
     # The runtime directory can be named apart from the project id
@@ -732,7 +732,7 @@ swarm_containers_verify() {
     if [ "$others" != 0 ]; then
         echo "Give this checkout its own id with SWARM_PROJECT, or" \
              "retire or clean up those containers from the checkout" \
-             "that owns them (./launch.sh retire, ./launch.sh cleanup" \
+             "that owns them (./bin/launch.sh retire, ./bin/launch.sh cleanup" \
              "there)." >&2
     fi
     # An older release started these, and their files may live only in
@@ -1063,7 +1063,7 @@ swarm_engagement_complete() {
     local engagement="$1" bare="$2"
     swarm_bare_repo_ready "$bare" && return 0
     echo "ERROR: engagement ${engagement} is incomplete: ${bare} is" \
-         "missing or is no usable bare repository.  Run ./launch.sh" \
+         "missing or is no usable bare repository.  Run ./bin/launch.sh" \
          "cleanup to finish it (it refuses, and says why, what it" \
          "cannot preserve)." >&2
     return 1
@@ -1192,7 +1192,7 @@ swarm_cleanup_pending_check() {
         return 1
     fi
     if [ "$pending" = true ]; then
-        echo "ERROR: cleanup in progress: run ./launch.sh cleanup again." >&2
+        echo "ERROR: cleanup in progress: run ./bin/launch.sh cleanup again." >&2
         return 1
     fi
 }

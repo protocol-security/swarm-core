@@ -1206,7 +1206,7 @@ Usage: $0 retire [--post-process] [--discard-uncommitted]
 
 Remove this checkout's stopped engine containers (or only the
 post-process container) after checking that nothing lives only in
-them.  Their workspace volumes stay (./launch.sh cleanup deletes them
+them.  Their workspace volumes stay (./bin/launch.sh cleanup deletes them
 after its own checks).  Git checkouts a container has outside its
 volume (a test's fixture in /tmp, say) are first copied into this
 checkout as recovery refs (refs/swarm-recovery/...), up to
@@ -1318,7 +1318,7 @@ EOF
         fi
     done 3< "$checked" < /dev/null
     echo "Workspace volumes stay, with the files of the removed containers;" \
-         "./launch.sh cleanup deletes them after its checks."
+         "./bin/launch.sh cleanup deletes them after its checks."
     if [ -n "$kept_prefix" ]; then
         echo "The Git checkouts they had outside their volumes are kept" \
              "as recovery refs under ${kept_prefix}/ (git cat-file blob" \

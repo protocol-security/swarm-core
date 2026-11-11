@@ -2,10 +2,10 @@ NAME
     swarm-core - run coding agents in Docker over a shared Git repository
 
 SYNOPSIS
-    launch.sh start [--dashboard]
-    launch.sh wait
-    launch.sh interactive NAME
-    launch.sh cleanup
+    bin/launch.sh start [--dashboard]
+    bin/launch.sh wait
+    bin/launch.sh interactive NAME
+    bin/launch.sh cleanup
 
 DESCRIPTION
     Each agent runs in a container of its own and pushes to one bare

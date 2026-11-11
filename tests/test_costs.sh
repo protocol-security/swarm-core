@@ -209,7 +209,7 @@ STUB
 chmod +x "$STUB_BIN/docker"
 git -C "$PROJ_DIR" init -q
 
-COSTS_SH="$(cd "$(dirname "$0")/.." && pwd)/costs.sh"
+COSTS_SH="$(cd "$(dirname "$0")/.." && pwd)/bin/costs.sh"
 rc=0
 out=$(cd "$PROJ_DIR" && PATH="$STUB_BIN:$PATH" SWARM_SKIP_DEP_CHECK=1 \
     SWARM_RUNTIME_DIR="$TMPDIR/no-runtime" STUB_OWNER="$PROJ_OWNER" \
@@ -249,7 +249,7 @@ esac
 EOF
 chmod +x "$_fake_bin/docker"
 
-_costs_sh="$(cd "$(dirname "$0")/.." && pwd)/costs.sh"
+_costs_sh="$(cd "$(dirname "$0")/.." && pwd)/bin/costs.sh"
 git init -q "$_costs_repo"
 _costs_out=$(cd "$_costs_repo" \
     && PATH="$_fake_bin:$PATH" SWARM_RUNTIME_DIR="$TMPDIR/no-runtime" \
@@ -316,7 +316,7 @@ _extract() {  # FUNCTION FILE
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' "$2"
 }
-_extract swarm_stop_guard_needed "$(dirname "$_costs_sh")/lib/project.sh" \
+_extract swarm_stop_guard_needed "$(dirname "$_costs_sh")/../lib/project.sh" \
     > "$TMPDIR/stop-guard.sh"
 _extract costs_exit_trap "$_costs_sh" > "$TMPDIR/exit-trap.sh"
 _guard() {

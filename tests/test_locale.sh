@@ -55,7 +55,7 @@ echo "=== 1. Structural: LC_NUMERIC=C pinned near script top ==="
 
 # The export must appear within the first 20 lines so it fires
 # before any function runs or any `bc`/`awk`/`printf` call.
-for f in dashboard.sh costs.sh lib/harness.sh; do
+for f in bin/dashboard.sh bin/costs.sh lib/harness.sh; do
     path="$REPO_ROOT/$f"
     head_lines=$(head -20 "$path")
     if grep -qE '^export LC_NUMERIC=C$' <<< "$head_lines"; then
@@ -130,11 +130,11 @@ extract_fn() {
 FORMAT_LIB="$TMPDIR/format_lib.sh"
 {
     echo '#!/bin/bash'
-    extract_fn format_tokens "$REPO_ROOT/dashboard.sh"
+    extract_fn format_tokens "$REPO_ROOT/bin/dashboard.sh"
     echo
-    extract_fn format_cost   "$REPO_ROOT/dashboard.sh"
+    extract_fn format_cost   "$REPO_ROOT/bin/dashboard.sh"
     echo
-    extract_fn format_tps    "$REPO_ROOT/dashboard.sh"
+    extract_fn format_tps    "$REPO_ROOT/bin/dashboard.sh"
 } > "$FORMAT_LIB"
 
 # Sanity-check the extraction: each function must be present

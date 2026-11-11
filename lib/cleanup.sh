@@ -162,7 +162,7 @@ cleanup_none_running() {
     done
     if [ -n "$live" ]; then
         echo "ERROR: containers of this engagement still run, or Docker" \
-             "cannot tell; stop them first (./launch.sh stop):" >&2
+             "cannot tell; stop them first (./bin/launch.sh stop):" >&2
         printf '%s' "$live" >&2
         return 1
     fi
@@ -1046,7 +1046,7 @@ HELP
     if [ -s "$RETIRE_SCRATCH/left" ]; then
         echo "ERROR: cleanup left these in place:" >&2
         cut -f2 "$RETIRE_SCRATCH/left" | sed 's/^/  /' >&2
-        echo "  Run ./launch.sh cleanup again." >&2
+        echo "  Run ./bin/launch.sh cleanup again." >&2
         return 1
     fi
 

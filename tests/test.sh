@@ -722,7 +722,7 @@ cleanup() {
     echo "--- Cleaning up ---"
     cd "$REPO_ROOT"
     SWARM_CONFIG="$TEMP_CONFIG" \
-        "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
+        "$SWARM_DIR/bin/launch.sh" stop 2>/dev/null || true
     # This run's containers and volumes, and nothing else: those with
     # its engagement's token, which its own runtime directory records.
     local token id vol
@@ -760,7 +760,7 @@ echo ""
 SWARM_CONFIG="$TEMP_CONFIG" \
     ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
-    "$SWARM_DIR/launch.sh" start
+    "$SWARM_DIR/bin/launch.sh" start
 
 # Inject prompt + setup into bare repo via a temp clone.
 # Agents fetch at the start of each session so they pick this up

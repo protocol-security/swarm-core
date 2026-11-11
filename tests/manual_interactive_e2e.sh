@@ -84,9 +84,9 @@ mkdir -p \
     "$REPO_DIR/scripts" \
     "$REPO_DIR/test-results"
 
-write_wrapper "$REPO_DIR/launch.sh" "$SWARM_DIR/launch.sh"
-write_wrapper "$REPO_DIR/dashboard.sh" "$SWARM_DIR/dashboard.sh"
-write_wrapper "$REPO_DIR/harvest.sh" "$SWARM_DIR/harvest.sh"
+write_wrapper "$REPO_DIR/launch.sh" "$SWARM_DIR/bin/launch.sh"
+write_wrapper "$REPO_DIR/dashboard.sh" "$SWARM_DIR/bin/dashboard.sh"
+write_wrapper "$REPO_DIR/harvest.sh" "$SWARM_DIR/bin/harvest.sh"
 
 cat > "$REPO_DIR/README.md" <<'EOF'
 # swarm-core manual interactive fixture

@@ -23,7 +23,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
-LAUNCH_SH="${REPO_ROOT}/launch.sh"
+LAUNCH_SH="${REPO_ROOT}/bin/launch.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "SKIP: docker not found"
@@ -521,7 +521,7 @@ check "  the helper does not" \
 echo "--- stop, harvest.sh, retire, cleanup ---"
 run_launch -- stop >/dev/null 2>&1 || true
 (cd "$CHECKOUT" && SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" \
-    SWARM_SKIP_DEP_CHECK=1 "$BASH" "$REPO_ROOT/harvest.sh") \
+    SWARM_SKIP_DEP_CHECK=1 "$BASH" "$REPO_ROOT/bin/harvest.sh") \
     >/dev/null 2>&1 || true
 rc=0
 out=$(run_launch -- retire 2>&1) || rc=$?

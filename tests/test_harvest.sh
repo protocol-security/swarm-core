@@ -11,7 +11,7 @@ PASS=0
 FAIL=0
 TMPDIR=$(mktemp -d)
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HARVEST_SH="$REPO_ROOT/harvest.sh"
+HARVEST_SH="$REPO_ROOT/bin/harvest.sh"
 LEGACY_BARE=""
 cleanup() {
     rm -rf "$TMPDIR"
@@ -930,7 +930,7 @@ echo "=== 18. Behavioural: progress.sh with the Docker daemon down ==="
 # containers as unavailable.
 cd "$DOWN_WORK"
 progress_rc=0
-progress_out=$(bash "$REPO_ROOT/progress.sh" 2>&1) || progress_rc=$?
+progress_out=$(bash "$REPO_ROOT/bin/progress.sh" 2>&1) || progress_rc=$?
 assert_eq "progress runs with the daemon down" "0" "$progress_rc"
 assert_eq "progress shows the history" "true" \
     "$(grep -qF '=== Recent commits ===' <<< "$progress_out" \
@@ -951,7 +951,7 @@ git --git-dir="$_pb" config log.showSignature true
 git --git-dir="$_pb" config gpg.program "touch $TMPDIR/progress-gpg-ran"
 _pb_tmp=$(mktemp -d)
 progress_rc=0
-progress_out=$(TMPDIR="$_pb_tmp" bash "$REPO_ROOT/progress.sh" 2>&1) \
+progress_out=$(TMPDIR="$_pb_tmp" bash "$REPO_ROOT/bin/progress.sh" 2>&1) \
     || progress_rc=$?
 assert_eq "progress shows agent-work's latest commit" "0 true" \
     "$progress_rc $(grep -qF 'agent progress marker' <<< "$progress_out" \
@@ -961,7 +961,7 @@ assert_eq "progress runs no pager or gpg of the bare repo's" "false false" \
     "$([ -e "$TMPDIR/progress-pager-ran" ] && echo true || echo false) $(
         [ -e "$TMPDIR/progress-gpg-ran" ] && echo true || echo false)"
 assert_eq "progress turns the pager off" "1" \
-    "$(grep -c 'git --no-pager' "$REPO_ROOT/progress.sh")"
+    "$(grep -c 'git --no-pager' "$REPO_ROOT/bin/progress.sh")"
 rmdir "$_pb_tmp"
 git --git-dir="$_pb" config --unset core.pager
 git --git-dir="$_pb" config --unset log.showSignature
@@ -989,14 +989,14 @@ echo() {
 EOF
 progress_rc=0
 progress_out=$(BASH_ENV="$TMPDIR/progress-stop-env.sh" SWARM_TEST_STOP=1 \
-    "$REPO_ROOT/progress.sh" 2>&1) || progress_rc=$?
+    "$REPO_ROOT/bin/progress.sh" 2>&1) || progress_rc=$?
 assert_eq "progress stopped on an unset variable ends with 1" "1" \
     "$progress_rc"
 assert_eq "saying so where Bash 3.2 would end with 0" "$_stop_says" \
     "$(grep -c 'progress.sh stopped before the end of its run' \
         <<< "$progress_out")"
 progress_rc=0
-BASH_ENV="$TMPDIR/progress-stop-env.sh" "$REPO_ROOT/progress.sh" \
+BASH_ENV="$TMPDIR/progress-stop-env.sh" "$REPO_ROOT/bin/progress.sh" \
     >/dev/null 2>&1 || progress_rc=$?
 assert_eq "the same run without the stop ends with 0" "0" "$progress_rc"
 # The check is made only on Bash before 4.1 (later versions end a run
@@ -1012,7 +1012,7 @@ _px_extract() {  # FUNCTION FILE
 }
 _px_extract swarm_stop_guard_needed "$REPO_ROOT/lib/project.sh" \
     > "$TMPDIR/progress-guard.sh"
-_px_extract progress_exit_trap "$REPO_ROOT/progress.sh" \
+_px_extract progress_exit_trap "$REPO_ROOT/bin/progress.sh" \
     > "$TMPDIR/progress-trap.sh"
 _px_guard() {
     (
@@ -1283,7 +1283,7 @@ p_out=$(bash "$HARVEST_SH" 2>&1) || p_rc=$?
 assert_eq "a merge given up: harvest refuses" "1" "$p_rc"
 assert_eq "naming --again" "true" \
     "$(grep -qF "harvest left to merge: that merge stopped" \
-        <<< "$p_out" && grep -qF "./harvest.sh --again" <<< "$p_out" \
+        <<< "$p_out" && grep -qF "./bin/harvest.sh --again" <<< "$p_out" \
         && echo true || echo false)"
 p_rc=0
 bash "$HARVEST_SH" --again >/dev/null 2>&1 || p_rc=$?
@@ -1363,7 +1363,7 @@ assert_eq "saying so" "true" \
     "$(grep -qF "HEAD no longer has what an earlier harvest merged" \
         <<< "$w_out" && echo true || echo false)"
 assert_eq "and naming --again" "true" \
-    "$(grep -qF "./harvest.sh --again" <<< "$w_out" \
+    "$(grep -qF "./bin/harvest.sh --again" <<< "$w_out" \
         && echo true || echo false)"
 assert_eq "HEAD is as it was" "$before" "$(git rev-parse HEAD)"
 w_rc=0
@@ -1436,7 +1436,7 @@ k_out=$(bash "$HARVEST_SH" 2>&1) || k_rc=$?
 assert_eq "that merge dropped: refused" "1" "$k_rc"
 assert_eq "naming --again" "true" \
     "$(grep -qF "harvest left to merge: that merge stopped" <<< "$k_out" \
-        && grep -qF "./harvest.sh --again" <<< "$k_out" \
+        && grep -qF "./bin/harvest.sh --again" <<< "$k_out" \
         && echo true || echo false)"
 k_rc=0
 bash "$HARVEST_SH" --again >/dev/null 2>&1 || k_rc=$?

@@ -610,7 +610,7 @@ assert_eq "tag empty" "" "$g4"
 echo ""
 echo "=== 16. parse_start_args — dashboard flag ==="
 
-_LAUNCH="$TESTS_DIR/../launch.sh"
+_LAUNCH="$TESTS_DIR/../bin/launch.sh"
 eval "$(sed -n '/^parse_start_args()/,/^}/p' "$_LAUNCH")"
 
 parse_start_args --dashboard
@@ -872,7 +872,7 @@ for cmd in bash dirname basename cat date git; do
 done
 
 # launch.sh --help should exit 0 even without jq/docker.
-out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../launch.sh" --help 2>&1) \
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../bin/launch.sh" --help 2>&1) \
     && rc=0 || rc=$?
 assert_eq "launch --help exits 0 without jq" "0" "$rc"
 assert_eq "launch help says wait does not start agents" "true" \
@@ -886,19 +886,19 @@ assert_eq "launch help lists interactive command" "true" \
         && "$out" == *"agent profile"* ]] && echo true || echo false)"
 
 # dashboard.sh --help should exit 0 even without jq/docker/tput/bc.
-out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../dashboard.sh" --help 2>&1) \
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../bin/dashboard.sh" --help 2>&1) \
     && rc=0 || rc=$?
 assert_eq "dashboard --help exits 0 without jq" "0" "$rc"
 
 # launch.sh start should fail and mention missing tools.
-out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../launch.sh" start 2>&1) \
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../bin/launch.sh" start 2>&1) \
     && rc=0 || rc=$?
 assert_eq "launch start exits nonzero without jq" "1" "$rc"
 assert_eq "launch start error mentions jq" "true" \
     "$([[ "$out" == *"jq"* ]] && echo true || echo false)"
 
 # dashboard.sh (no args) should fail and mention missing tools.
-out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../dashboard.sh" 2>&1) \
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../bin/dashboard.sh" 2>&1) \
     && rc=0 || rc=$?
 assert_eq "dashboard exits nonzero without jq" "1" "$rc"
 assert_eq "dashboard error mentions jq" "true" \
@@ -922,7 +922,7 @@ printf '#!/bin/bash\n[ "$1 $2" = "context show" ] && echo default\nexit 0\n' \
 chmod +x "$_no_cfg_bin/docker"
 git -C "$_no_cfg_dir" init -q
 out=$(cd "$_no_cfg_dir" && PATH="$_no_cfg_bin:$PATH" SWARM_CONFIG="" \
-    bash "$TESTS_DIR/../launch.sh" start 2>&1) && rc=0 || rc=$?
+    bash "$TESTS_DIR/../bin/launch.sh" start 2>&1) && rc=0 || rc=$?
 rm -rf "$_no_cfg_dir" "$_no_cfg_bin"
 assert_eq "no config exits nonzero" "1" "$rc"
 assert_eq "no config says swarmfile" "true" \
@@ -1405,7 +1405,7 @@ _hl_links() {
 _hl_mode() {
     stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
-_hl_launch="$TESTS_DIR/../launch.sh"
+_hl_launch="$TESTS_DIR/../bin/launch.sh"
 _hl_dir="$TMPDIR/hl"
 _hl_git() {
     git -c user.name=test -c user.email=test@test \
@@ -1972,7 +1972,7 @@ echo "=== 38. compute_swarm_agents helper (live function from launch.sh) ==="
 # real helper, not a mirror.  compute_swarm_agents has no globals
 # beyond jq, so extracting and sourcing it is safe.  Catches any
 # refactor that breaks the SWARM_AGENTS build-arg union.
-_LAUNCH_SH="$TESTS_DIR/../launch.sh"
+_LAUNCH_SH="$TESTS_DIR/../bin/launch.sh"
 _EXTRACTED="$TMPDIR/compute_swarm_agents.sh"
 awk '/^compute_swarm_agents\(\)[[:space:]]*\{/ { p = 1 }
      p { print }
@@ -2185,7 +2185,7 @@ echo "=== 40. cmd_stop gives the harness time to push ==="
 # 10s to land.  Without `-t`, that emergency push gets cut
 # mid-rebase and the commits die with the container.  Pin the
 # flag's presence, the default, and the env-var override.
-LAUNCH_FILE="$TESTS_DIR/../launch.sh"
+LAUNCH_FILE="$TESTS_DIR/../bin/launch.sh"
 CMD_STOP_BODY=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
 # cmd_stop checks a copy of the state, which these make.
 STOP_HELPERS=$(awk '/^(state_snapshot|swarm_tmp_file)\(\) \{/,/^\}$/' \
@@ -2799,8 +2799,8 @@ echo "=== 45. No fixed /tmp paths in the engine scripts ==="
 _root="$TESTS_DIR/.."
 assert_eq "no fixed /tmp paths" "" \
     "$(grep -n '/tmp/' \
-        "$_root/launch.sh" "$_root/harvest.sh" "$_root/dashboard.sh" \
-        "$_root/costs.sh" "$_root/progress.sh" || true)"
+        "$_root/bin/launch.sh" "$_root/bin/harvest.sh" "$_root/bin/dashboard.sh" \
+        "$_root/bin/costs.sh" "$_root/bin/progress.sh" || true)"
 
 # ============================================================
 echo ""
@@ -3368,7 +3368,7 @@ assert_eq "a reader that waits for EOF gets it and the exit status" "3" \
 # lock must be released first.
 assert_eq "start --dashboard unlocks before exec" "1" \
     "$(awk '/^    start\)/,/;;/' "$_LAUNCH_SH" \
-        | grep -A1 'swarm_unlock' | grep -c 'exec "$SWARM_DIR/dashboard.sh"' \
+        | grep -A1 'swarm_unlock' | grep -c 'exec "$SWARM_DIR/bin/dashboard.sh"' \
         || true)"
 
 # ============================================================
@@ -3896,7 +3896,7 @@ rmdir "$_mm_dir/mirrors/1.git.new"
 # Through launch.sh: with a session open, start leaves the bare repo
 # alone, and another interactive session still joins it.  Once the
 # session ends, start still refuses: a new engagement waits for
-# ./launch.sh cleanup.
+# ./bin/launch.sh cleanup.
 _pd_rt="$TMPDIR/pending-runtime"
 run_pd() {
     (cd "$_st_repo" && PATH="$_st_bin:$PATH" SWARM_RUNTIME_DIR="$_pd_rt" \
@@ -4749,7 +4749,7 @@ _v_rc=0
 _v_out=$(v_run post-process) || _v_rc=$?
 assert_eq "post-process while a numbered agent runs: refused" "1" "$_v_rc"
 assert_eq "with the next step" "true" \
-    "$(v_has "stop them (./launch.sh stop --numbered) or wait for them" \
+    "$(v_has "stop them (./bin/launch.sh stop --numbered) or wait for them" \
         "$_v_out")"
 assert_eq "and nothing made" "0" "$(v_writes)"
 : > "$V_DIR/containers"
@@ -4948,8 +4948,8 @@ for _v_state in running exited; do
     assert_eq "a $_v_state -post container: post-process refused" "1" \
         "$_v_rc"
     case "$_v_state" in
-        running) _v_next="stop it first (./launch.sh stop)" ;;
-        *) _v_next="retire it first: ./launch.sh retire --post-process" ;;
+        running) _v_next="stop it first (./bin/launch.sh stop)" ;;
+        *) _v_next="retire it first: ./bin/launch.sh retire --post-process" ;;
     esac
     assert_eq "a $_v_state -post container: the next step" "true" \
         "$(v_has "$_v_next" "$_v_out")"
@@ -4999,7 +4999,7 @@ for _v_cmd in post-process "interactive --agent-index 1"; do
     assert_eq "token, no bare repo: $_v_cmd says why" "true" \
         "$(v_has "is incomplete: $V_RT/upstream.git is missing" "$_v_out")"
     assert_eq "token, no bare repo: $_v_cmd gives the way out" "true" \
-        "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
+        "$(v_has "Run ./bin/launch.sh cleanup" "$_v_out")"
     assert_eq "token, no bare repo: $_v_cmd makes nothing" "0" \
         "$(v_writes)"
 done
@@ -5064,12 +5064,12 @@ for _v_kind in work new mirrors remnant hidden container volume session; do
                     "a new engagement starts only on a clean runtime" \
                     "$_v_out")"
             assert_eq "$_v_kind left: $_v_cmd gives the way out" "true" \
-                "$(v_has "then ./launch.sh cleanup" "$_v_out")"
+                "$(v_has "then ./bin/launch.sh cleanup" "$_v_out")"
         else
             assert_eq "$_v_kind left: $_v_cmd finds it incomplete" "true" \
                 "$(v_has "is incomplete: $V_RT/upstream.git" "$_v_out")"
             assert_eq "$_v_kind left: $_v_cmd gives the way out" "true" \
-                "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
+                "$(v_has "Run ./bin/launch.sh cleanup" "$_v_out")"
         fi
         assert_eq "$_v_kind left: $_v_cmd changes nothing" "$_v_before" \
             "$(v_snap)"
@@ -5077,7 +5077,7 @@ for _v_kind in work new mirrors remnant hidden container volume session; do
             "$(v_writes)"
         if [ "$_v_kind" = work ]; then
             assert_eq "agent work the checkout lacks is named" "true" \
-                "$(v_has "agent-work $(cut -c1-12 "$_v_root/work-commit"): run ./harvest.sh" "$_v_out")"
+                "$(v_has "agent-work $(cut -c1-12 "$_v_root/work-commit"): run ./bin/harvest.sh" "$_v_out")"
         fi
     done
 done
@@ -5158,7 +5158,7 @@ assert_eq "the next start refuses" "1" "$_v_rc"
 assert_eq "naming the engagement still recorded" "true" \
     "$(v_has "still records engagement" "$_v_out")"
 assert_eq "and the way out" "true" \
-    "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
+    "$(v_has "Run ./bin/launch.sh cleanup" "$_v_out")"
 assert_eq "and changes nothing" "$_v_before" "$(v_snap)"
 assert_eq "nor makes anything in Docker" "0" "$(v_writes)"
 _v_rc=0
@@ -5893,7 +5893,7 @@ for _v_step in publish clone; do
         _v_out=$(v_target_on v_run $_v_cmd) || _v_rc=$?
         assert_eq "  then $_v_cmd refuses" "1" "$_v_rc"
         assert_eq "  pointing to cleanup" "true" \
-            "$(v_has "./launch.sh cleanup" "$_v_out")"
+            "$(v_has "./bin/launch.sh cleanup" "$_v_out")"
     done
     assert_eq "  changing nothing" "$_v_before" "$(v_snap)"
     assert_eq "  making nothing in Docker" "0" "$(v_writes)"

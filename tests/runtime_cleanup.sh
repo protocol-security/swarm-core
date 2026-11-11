@@ -20,7 +20,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
-LAUNCH_SH="${REPO_ROOT}/launch.sh"
+LAUNCH_SH="${REPO_ROOT}/bin/launch.sh"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "SKIP: docker not found"

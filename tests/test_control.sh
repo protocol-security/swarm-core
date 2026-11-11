@@ -16,7 +16,7 @@ TMPDIR=$(mktemp -d)
 TMPDIR=$(cd -P "$TMPDIR" && pwd -P)
 export TMPDIR
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CONTROL="$REPO_ROOT/control.sh"
+CONTROL="$REPO_ROOT/bin/control.sh"
 IFACE="swarm-core.control/v1"
 cleanup() {
     chmod -R u+rwx "$TMPDIR" 2>/dev/null || true
@@ -379,35 +379,37 @@ assert_eq "version with the interface: the same" "0|$WANT_VERSION" \
     "$rc|$(jq -c . "$TMPDIR/out" 2>/dev/null)"
 # Run by a relative path with CDPATH exported, which makes cd print
 # where it goes.
-mkdir -p "$TMPDIR/rel"
-cp -R "$REPO_ROOT/lib" "$REPO_ROOT/control.sh" "$REPO_ROOT/VERSION" \
-    "$TMPDIR/rel/"
+mkdir -p "$TMPDIR/rel/bin"
+cp -R "$REPO_ROOT/lib" "$REPO_ROOT/VERSION" "$TMPDIR/rel/"
+cp "$REPO_ROOT/bin/control.sh" "$TMPDIR/rel/bin/"
 rc=0
-(cd "$TMPDIR" && CDPATH=. "$BASH" rel/control.sh version > "$TMPDIR/out" \
+(cd "$TMPDIR" && CDPATH=. "$BASH" rel/bin/control.sh version > "$TMPDIR/out" \
     2> "$TMPDIR/err") || rc=$?
 assert_eq "version by a relative path, CDPATH set" "0|$WANT_VERSION|" \
     "$rc|$(jq -c . "$TMPDIR/out" 2>/dev/null)|$(cat "$TMPDIR/err")"
 # An engine without its VERSION file.
 E2="$TMPDIR/engine-noversion"
-mkdir -p "$E2"
-cp -R "$REPO_ROOT/lib" "$REPO_ROOT/control.sh" "$E2/"
+mkdir -p "$E2/bin"
+cp -R "$REPO_ROOT/lib" "$E2/"
+cp "$REPO_ROOT/bin/control.sh" "$E2/bin/"
 rc=0
-(cd / && "$BASH" "$E2/control.sh" version > "$TMPDIR/out" \
+(cd / && "$BASH" "$E2/bin/control.sh" version > "$TMPDIR/out" \
     2> "$TMPDIR/err") || rc=$?
 refused "no VERSION file" engine-unreadable "$rc"
 printf 'not a "version"\n' > "$E2/VERSION"
 rc=0
-(cd / && "$BASH" "$E2/control.sh" version > "$TMPDIR/out" \
+(cd / && "$BASH" "$E2/bin/control.sh" version > "$TMPDIR/out" \
     2> "$TMPDIR/err") || rc=$?
 refused "a VERSION file that holds no version" engine-unreadable "$rc"
 # An engine without one of the files observe reads: the reason first,
 # and nothing else on stderr.
 E3="$TMPDIR/engine-nolib"
-mkdir -p "$E3"
-cp -R "$REPO_ROOT/lib" "$REPO_ROOT/control.sh" "$REPO_ROOT/VERSION" "$E3/"
+mkdir -p "$E3/bin"
+cp -R "$REPO_ROOT/lib" "$REPO_ROOT/VERSION" "$E3/"
+cp "$REPO_ROOT/bin/control.sh" "$E3/bin/"
 rm -f "$E3/lib/target.sh"
 rc=0
-(cd "$CO" && "$BASH" "$E3/control.sh" --interface "$IFACE" observe \
+(cd "$CO" && "$BASH" "$E3/bin/control.sh" --interface "$IFACE" observe \
     > "$TMPDIR/out" 2> "$TMPDIR/err") || rc=$?
 refused "an engine without lib/target.sh" engine-unreadable "$rc"
 assert_eq "  one line on stderr" "1" "$(wc -l < "$TMPDIR/err" | tr -d ' ')"
@@ -418,10 +420,11 @@ echo "=== 3. Actions run by exec ==="
 # run: their pid, arguments, directory, environment, descriptor 3,
 # standard input; they exit with PROBE_STATUS.
 E="$TMPDIR/engine"
-mkdir -p "$E"
-cp -R "$REPO_ROOT/lib" "$REPO_ROOT/control.sh" "$REPO_ROOT/VERSION" "$E/"
+mkdir -p "$E/bin"
+cp -R "$REPO_ROOT/lib" "$REPO_ROOT/VERSION" "$E/"
+cp "$REPO_ROOT/bin/control.sh" "$E/bin/"
 for s in launch.sh harvest.sh; do
-    cat > "$E/$s" <<'EOF'
+    cat > "$E/bin/$s" <<'EOF'
 #!/bin/bash
 {
     echo "script=${0##*/}"
@@ -441,7 +444,7 @@ for s in launch.sh harvest.sh; do
 } > "$PROBE_OUT"
 exit "${PROBE_STATUS:-0}"
 EOF
-    chmod +x "$E/$s"
+    chmod +x "$E/bin/$s"
 done
 D="$TMPDIR/somewhere"
 mkdir -p "$D"
@@ -453,7 +456,7 @@ for c in start stop wait post-process retire cleanup interactive chat \
     rm -f "$PROBE_OUT"
     rc=0
     printf 'line on stdin\n' | (cd "$D" && CTL_MARKER=m-$c PROBE_STATUS=7 \
-        exec "$E/control.sh" --interface "$IFACE" "$c" --x "a b" "" \
+        exec "$E/bin/control.sh" --interface "$IFACE" "$c" --x "a b" "" \
         3> "$TMPDIR/fd3" > /dev/null) &
     pid=$!
     wait "$pid" || rc=$?
@@ -483,7 +486,7 @@ fd_reset
 rm -f "$PROBE_OUT"
 rc=0
 (cd / && PATH="$FBIN:$PATH" FD="$FD" PROBE_STATUS=0 \
-    "$E/control.sh" --interface "$IFACE" retire < /dev/null \
+    "$E/bin/control.sh" --interface "$IFACE" retire < /dev/null \
     > /dev/null 2>&1) || rc=$?
 assert_eq "an action outside a checkout still runs" "0|script=launch.sh" \
     "$rc|$(grep '^script=' "$PROBE_OUT" 2>/dev/null)"
@@ -491,10 +494,10 @@ assert_eq "  with no Docker call first" "" "$(cat "$FD/log")"
 # The terminal reaches the action (script(1) gives it one).
 rm -f "$PROBE_OUT"
 if script -q /dev/null true </dev/null >/dev/null 2>&1; then
-    script -q /dev/null "$E/control.sh" --interface "$IFACE" shell \
+    script -q /dev/null "$E/bin/control.sh" --interface "$IFACE" shell \
         </dev/null >/dev/null 2>&1 || true
 elif script -qec true /dev/null </dev/null >/dev/null 2>&1; then
-    script -qec "'$E/control.sh' --interface '$IFACE' shell" /dev/null \
+    script -qec "'$E/bin/control.sh' --interface '$IFACE' shell" /dev/null \
         </dev/null >/dev/null 2>&1 || true
 fi
 if [ -e "$PROBE_OUT" ]; then
