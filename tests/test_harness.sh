@@ -165,7 +165,7 @@ build_append_args() {
     local inject="$1" file_exists="$2"
     local -a APPEND_ARGS=()
     if [ "$inject" = "true" ] && [ "$file_exists" = "true" ]; then
-        APPEND_ARGS+=(--append-system-prompt-file /agent-system-prompt.md)
+        APPEND_ARGS+=(--append-system-prompt-file /agent-system-prompt)
     fi
     echo "${#APPEND_ARGS[@]}"
 }

@@ -218,8 +218,8 @@ cd /workspace
 write_interactive_state
 
 APPEND_FILE=""
-if [ "$INJECT_GIT_RULES" = "true" ] && [ -f /agent-system-prompt.md ]; then
-    APPEND_FILE="/agent-system-prompt.md"
+if [ "$INJECT_GIT_RULES" = "true" ] && [ -f /agent-system-prompt ]; then
+    APPEND_FILE="/agent-system-prompt"
 fi
 
 if [ -n "$SWARM_PROMPT" ]; then
