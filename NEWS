@@ -1,13 +1,18 @@
 swarm-core NEWS -- history of user-visible changes.
 
-Unreleased
+0.25.0 (2026-11-11)
 
   - Breaking: the six scripts are one command, bin/swarm.  launch.sh
     COMMAND is swarm COMMAND; harvest.sh, dashboard.sh, costs.sh,
     progress.sh and control.sh are swarm harvest, swarm dashboard,
     swarm costs, swarm progress and swarm control.  Nothing is left at
     the old paths.  USAGE, UPGRADING FROM 0.24, has the steps.
+  - Write the documents as plain text: README.md, USAGE.md and
+    CHANGELOG.md are README, USAGE and NEWS.
   - Rename LICENSE to COPYING and drop .md from the agent system prompt.
+  - Line up the unit test summary of tests/test.sh.
+  - Keep tests/test_preserve.sh from waiting on a terminal for an
+    answer nobody sees.
 
 0.24.0 (2026-11-11)
 
