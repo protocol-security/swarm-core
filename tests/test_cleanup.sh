@@ -1245,6 +1245,30 @@ EOF
 done
 
 echo ""
+echo "=== 7. A token names the engagement ==="
+
+# Another engagement's token, an empty one, or one with no engagement
+# recorded is refused under the lock, before anything is deleted; the
+# engagement's own token goes on.
+setup
+swarm_state_update "$RT/state.json" '.engagement_token = "aaaaaaaaaaaaaaaa"'
+SWARM_ENGAGEMENT_TOKEN=bbbbbbbbbbbbbbbb refused "another engagement's token" \
+    "the engagement this command was started for is gone"
+assert_eq "no recovery ref is written" "0" "$(recovery_refs)"
+assert_eq "the state still records the engagement" "e1" \
+    "$(jq -r '.engagement_id' "$RT/state.json")"
+SWARM_ENGAGEMENT_TOKEN='' refused "an empty token" \
+    "SWARM_ENGAGEMENT_TOKEN is set but empty"
+assert_eq "the engagement's own token: cleanup succeeds" "0" \
+    "$(SWARM_ENGAGEMENT_TOKEN=aaaaaaaaaaaaaaaa cleanup)"
+assert_eq "and deletes the bare repo" "no" "$(present "$RT/upstream.git")"
+# After that cleanup, the same token names an engagement that is gone.
+assert_eq "a token with no engagement recorded: refused" "1" \
+    "$(SWARM_ENGAGEMENT_TOKEN=aaaaaaaaaaaaaaaa cleanup)"
+assert_eq "saying the engagement is gone" "1" \
+    "$(said "the engagement this command was started for is gone")"
+
+echo ""
 echo "==============================="
 echo "  ${PASS} passed, ${FAIL} failed"
 echo "==============================="

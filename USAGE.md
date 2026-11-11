@@ -1241,9 +1241,14 @@ Docker context it found when it started for all its Docker calls, even
 if another terminal switches it meanwhile.
 
 `SWARM_ENGAGEMENT_TOKEN` binds a command to one engagement: `stop`,
-`post-process`, `interactive` and `harvest.sh` refuse when it is set
-and the state file records another token, and `post-process` and
-`interactive` then never create an engagement. `wait` reads the token
+`post-process`, `interactive`, `retire`, `cleanup` and `harvest.sh`
+refuse when it is set and the state file records another token or none
+(`retire` and `cleanup` check it under the engagement lock, before they
+change anything), and `post-process` and `interactive` then never
+create an engagement. `start` refuses it outright: it makes a new
+engagement, and a token names one to join. Set and empty is refused by
+every command: only an unset variable names no engagement. `wait`
+reads the token
 once, refuses to go on when the engagement changed while it waited
 (a cleanup and a new start in another terminal), and passes the token
 to the post-process or harvest it runs; the dashboard passes it to each
