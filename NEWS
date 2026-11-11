@@ -2,6 +2,11 @@ swarm-core NEWS -- history of user-visible changes.
 
 Unreleased
 
+  - Breaking: the six scripts are one command, bin/swarm.  launch.sh
+    COMMAND is swarm COMMAND; harvest.sh, dashboard.sh, costs.sh,
+    progress.sh and control.sh are swarm harvest, swarm dashboard,
+    swarm costs, swarm progress and swarm control.  Nothing is left at
+    the old paths.  USAGE, UPGRADING FROM 0.24, has the steps.
   - Rename LICENSE to COPYING and drop .md from the agent system prompt.
 
 0.24.0 (2026-11-11)

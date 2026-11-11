@@ -3,17 +3,17 @@ set -euo pipefail
 
 # Force C numeric locale so `bc`, `awk`, and `printf '%f'` all
 # parse and format decimals with `.` regardless of the user's
-# LC_NUMERIC.  See dashboard.sh header for details.
+# LC_NUMERIC.  See swarm dashboard header for details.
 export LC_NUMERIC=C
 
 # Print cost and usage summary for swarm containers.
-# Usage: ./costs.sh [--json]
+# Usage: swarm costs [--json]
 
-SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
+SWARM_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
-Usage: $0 [--json]
+Usage: swarm costs [--json]
 
 Print cost and usage summary for swarm containers
 (numbered agents and the post-process container).
@@ -60,7 +60,7 @@ costs_exit_trap() {
     if [ "$rc" -eq 0 ] && ! $COSTS_EXIT_OK \
             && swarm_stop_guard_needed "${BASH_VERSINFO[0]}" \
                 "${BASH_VERSINFO[1]}"; then
-        echo "ERROR: costs.sh stopped before the end of its run." >&2
+        echo "ERROR: swarm costs stopped before the end of its run." >&2
         exit 1
     fi
 }

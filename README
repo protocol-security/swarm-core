@@ -2,10 +2,10 @@ NAME
     swarm-core - run coding agents in Docker over a shared Git repository
 
 SYNOPSIS
-    launch.sh start [--dashboard]
-    launch.sh wait
-    launch.sh interactive NAME
-    launch.sh cleanup
+    swarm start [--dashboard]
+    swarm wait
+    swarm interactive NAME
+    swarm cleanup
 
 DESCRIPTION
     Each agent runs in a container of its own and pushes to one bare
@@ -15,6 +15,9 @@ DESCRIPTION
     start launches the agents.  wait post-processes and harvests their
     work into the checkout.  interactive opens a human-guided session.
     cleanup deletes the engagement and keeps recovery refs.
+
+    swarm is bin/swarm in this repository: call it by its path, or put
+    bin/ on your PATH.
 
 PREREQUISITES
     Docker, Bash 5, Git, jq, bc, perl, flock, tput, and credentials for

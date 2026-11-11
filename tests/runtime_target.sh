@@ -15,7 +15,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 # still check out the recorded commit.  Probe containers run the helper
 # as the agent, as root with umask 022 for the agent to read without a
 # chown, and as root against a hostile system Git configuration.  Then
-# stop, harvest.sh, retire and cleanup, which deletes the snapshot.
+# stop, swarm harvest, retire and cleanup, which deletes the snapshot.
 #
 # Requires Docker, Git 2.42 or later and python3 (the supervisor of the
 # runs that could hang, and the interactive session's terminal).  No API
@@ -23,7 +23,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
-LAUNCH_SH="${REPO_ROOT}/launch.sh"
+LAUNCH_SH="${REPO_ROOT}/bin/swarm"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "SKIP: docker not found"
@@ -56,7 +56,7 @@ WORKDIR=$(cd -P "$WORKDIR" && pwd -P)
 RT="$WORKDIR/runtime"
 CHECKOUT="$WORKDIR/checkout"
 
-# Everything of this run's project goes: containers of launch.sh,
+# Everything of this run's project goes: containers of swarm,
 # retire's and cleanup's helpers and the probes, then volumes, then the
 # engine image and retire's snapshot images.  The shared base image
 # stays, as the other runtime tests keep it.
@@ -124,7 +124,7 @@ gitc() {
 present() {
     if [ -e "$1" ] || [ -L "$1" ]; then echo yes; else echo no; fi
 }
-# Run launch.sh in the checkout (environment assignments first, then
+# Run swarm in the checkout (environment assignments first, then
 # its arguments, separated by --).
 run_launch() {
     local envs=()
@@ -138,7 +138,7 @@ run_launch() {
         "$BASH" "$LAUNCH_SH" "$@")
 }
 
-# The supervisor of a launch.sh run that could hang: the command under
+# The supervisor of a swarm run that could hang: the command under
 # a new pseudo-terminal (its own session, so one process group), its
 # output drained into LOG, at most SECS seconds; then SIGTERM to the
 # group, 10 seconds, SIGKILL, the child reaped, status 124.  Otherwise
@@ -241,7 +241,7 @@ if os.WIFEXITED(status):
     sys.exit(os.WEXITSTATUS(status))
 sys.exit(128 + os.WTERMSIG(status))
 EOF
-# Run launch.sh as run_launch does, through the supervisor, bounded to
+# Run swarm as run_launch does, through the supervisor, bounded to
 # SECS seconds, output in LOG; print the status.  A timeout sweeps the
 # project's containers at once.
 bounded_launch() {
@@ -431,7 +431,7 @@ check "(its container is there)" "$([ -n "$session" ] && echo yes)" yes
 echo "--- the helper in probe containers ---"
 PROBES="$WORKDIR/probes"
 mkdir -p "$PROBES"
-# The five variables launch.sh gives a container, from the record.
+# The five variables swarm gives a container, from the record.
 T_REPO=$(jq -r .target.repo "$RT/state.json")
 T_BASE_REPO=$(jq -r .target.base_repo "$RT/state.json")
 cat > "$PROBES/agent.sh" <<'EOF'
@@ -518,10 +518,10 @@ check "a system rewrite: plain git fetches from the rewritten path" \
 check "  the helper does not" \
     "$(field "$out" helper) $(field "$out" head)" "0 $X"
 
-echo "--- stop, harvest.sh, retire, cleanup ---"
+echo "--- stop, swarm harvest, retire, cleanup ---"
 run_launch -- stop >/dev/null 2>&1 || true
 (cd "$CHECKOUT" && SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" \
-    SWARM_SKIP_DEP_CHECK=1 "$BASH" "$REPO_ROOT/harvest.sh") \
+    SWARM_SKIP_DEP_CHECK=1 "$BASH" "$REPO_ROOT/libexec/harvest") \
     >/dev/null 2>&1 || true
 rc=0
 out=$(run_launch -- retire 2>&1) || rc=$?

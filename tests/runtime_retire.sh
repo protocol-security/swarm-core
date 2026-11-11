@@ -6,7 +6,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
 # tests/runtime_retire.sh
 #
-# launch.sh retire under real Docker.  Retire checks each container in
+# swarm retire under real Docker.  Retire checks each container in
 # a snapshot of it (docker commit) and through docker diff, which the
 # fake docker in test_retire.sh only imitates.  Each case leaves one
 # stopped container with a repository in its workspace volume and
@@ -42,7 +42,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
-LAUNCH_SH="${REPO_ROOT}/launch.sh"
+LAUNCH_SH="${REPO_ROOT}/bin/swarm"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "SKIP: docker not found"

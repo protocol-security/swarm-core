@@ -51,7 +51,7 @@ cleanup() {
             >/dev/null 2>&1 || true
     fi
     docker image rm "$IMAGE" >/dev/null 2>&1 || true
-    # The workspace volumes launch.sh made for this run's containers (the
+    # The workspace volumes swarm made for this run's containers (the
     # project id is this run's own).
     local vol
     for vol in $(docker volume ls -q \
@@ -103,7 +103,7 @@ git add .
 git commit -qm 'Seed Pi E2E fixture'
 SEED=$(git rev-parse HEAD)
 
-# Build before starting the API; launch.sh reuses these cached layers.
+# Build before starting the API; swarm reuses these cached layers.
 docker build --quiet -t "$IMAGE" --build-arg SWARM_AGENTS=pi \
     --build-arg "PI_VERSION=$VERSION" "$ROOT" >/dev/null
 docker network create "$NETWORK" >/dev/null
@@ -119,9 +119,9 @@ for ((i = 0; i < 30; i++)); do
 done
 docker exec "$API" curl -fsS http://localhost:8080/health >/dev/null
 
-"$ROOT/launch.sh" start
+"$ROOT/bin/swarm" start
 wait_container "$IMAGE-1" 0
-"$ROOT/launch.sh" post-process
+"$ROOT/bin/swarm" post-process
 wait_container "$IMAGE-post" 0
 
 test "$(< test-results/pi.txt)" = PI_MAIN_DONE
@@ -147,7 +147,7 @@ for name in "$IMAGE-1" "$IMAGE-post"; do
     ' "$stats"
     rm -rf "$WORK/logs"
 done
-"$ROOT/costs.sh" --json > "$WORK/costs.json"
+"$ROOT/libexec/costs" --json > "$WORK/costs.json"
 jq -e '.total.cost_usd > 0 and .total.input_tokens > 0' \
     "$WORK/costs.json" >/dev/null
 printf 'PASS: activity stream and cost/token/turn accounting\n'
@@ -213,7 +213,7 @@ printf 'PASS: Codex subscription auth, one shared refresh, and SSE responses\n'
 # Docker's interactive launcher requires a host PTY. Python is optional
 # and used only for this native-UI check, never for the driver itself.
 if command -v python3 >/dev/null 2>&1; then
-    python3 - "$ROOT/launch.sh" <<'PY'
+    python3 - "$ROOT/bin/swarm" <<'PY'
 import os
 import pty
 import re

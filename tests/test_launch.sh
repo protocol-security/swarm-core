@@ -5,7 +5,7 @@ set -euo pipefail
 # shellcheck source=_test_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
-# Unit tests for launch.sh parsing logic.
+# Unit tests for swarm parsing logic.
 # No Docker or API key required.
 
 PASS=0
@@ -15,7 +15,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../lib/project.sh
 source "$TESTS_DIR/../lib/project.sh"
-# The functions extracted from launch.sh below call into it.
+# The functions extracted from swarm below call into it.
 # shellcheck source=../lib/target.sh
 source "$TESTS_DIR/../lib/target.sh"
 # shellcheck source=../lib/preserve.sh
@@ -26,7 +26,7 @@ source "$TESTS_DIR/../lib/submodules.sh"
 source "$TESTS_DIR/../lib/mirrors.sh"
 
 # The fake docker CLIs below hand "docker volume" to this script, which
-# keeps each volume's labels in a file, so launch.sh can create and
+# keeps each volume's labels in a file, so swarm can create and
 # check workspace volumes.  FAKE_VOLUME_FAIL=create makes create fail;
 # FAKE_VOLUME_FAIL=labels makes inspect show the labels with another
 # nonce, as for a volume of that name another run made;
@@ -96,7 +96,7 @@ assert_eq() {
     fi
 }
 
-# --- Helpers: same logic used in launch.sh ---
+# --- Helpers: same logic used in swarm ---
 
 shorten_model() {
     local m="$1"
@@ -134,7 +134,7 @@ parse_num_agents() {
     jq '[.agents[]? | (.count // 0)] | add // 0' "$1"
 }
 
-# The per-agent lines launch.sh's start reads (its AGENTS_CFG), the
+# The per-agent lines swarm's start reads (its AGENTS_CFG), the
 # agents[] index of each one's profile first.
 parse_agents_cfg() {
     jq -r '.tag as $dt | .driver as $dd |
@@ -143,7 +143,7 @@ parse_agents_cfg() {
         [$p, .model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' "$1"
 }
 
-# Mirrors the per-agent credential selection in launch.sh.
+# Mirrors the per-agent credential selection in swarm.
 resolve_agent_creds() {
     local agent_auth="$1" agent_api_key="$2" global_api_key="$3" global_oauth="$4"
     local resolved_key="" oauth_env=""
@@ -164,7 +164,7 @@ resolve_agent_creds() {
     echo "${resolved_key}|${oauth_env}"
 }
 
-# Mirrors the auth_label computation in launch.sh (after credential resolution).
+# Mirrors the auth_label computation in swarm (after credential resolution).
 # Args: agent_auth agent_api_key agent_auth_token resolved_api_key global_oauth
 resolve_auth_label() {
     local agent_auth="$1" agent_api_key="$2" agent_auth_token="$3"
@@ -610,7 +610,7 @@ assert_eq "tag empty" "" "$g4"
 echo ""
 echo "=== 16. parse_start_args — dashboard flag ==="
 
-_LAUNCH="$TESTS_DIR/../launch.sh"
+_LAUNCH="$TESTS_DIR/../bin/swarm"
 eval "$(sed -n '/^parse_start_args()/,/^}/p' "$_LAUNCH")"
 
 parse_start_args --dashboard
@@ -871,8 +871,8 @@ for cmd in bash dirname basename cat date git; do
     p=$(command -v "$cmd" 2>/dev/null) && ln -s "$p" "$FAKE_BIN/"
 done
 
-# launch.sh --help should exit 0 even without jq/docker.
-out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../launch.sh" --help 2>&1) \
+# swarm --help should exit 0 even without jq/docker.
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../bin/swarm" --help 2>&1) \
     && rc=0 || rc=$?
 assert_eq "launch --help exits 0 without jq" "0" "$rc"
 assert_eq "launch help says wait does not start agents" "true" \
@@ -885,20 +885,20 @@ assert_eq "launch help lists interactive command" "true" \
     "$([[ "$out" == *"interactive PROFILE"* \
         && "$out" == *"agent profile"* ]] && echo true || echo false)"
 
-# dashboard.sh --help should exit 0 even without jq/docker/tput/bc.
-out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../dashboard.sh" --help 2>&1) \
+# swarm dashboard --help should exit 0 even without jq/docker/tput/bc.
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../libexec/dashboard" --help 2>&1) \
     && rc=0 || rc=$?
 assert_eq "dashboard --help exits 0 without jq" "0" "$rc"
 
-# launch.sh start should fail and mention missing tools.
-out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../launch.sh" start 2>&1) \
+# swarm start should fail and mention missing tools.
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../bin/swarm" start 2>&1) \
     && rc=0 || rc=$?
 assert_eq "launch start exits nonzero without jq" "1" "$rc"
 assert_eq "launch start error mentions jq" "true" \
     "$([[ "$out" == *"jq"* ]] && echo true || echo false)"
 
-# dashboard.sh (no args) should fail and mention missing tools.
-out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../dashboard.sh" 2>&1) \
+# swarm dashboard (no args) should fail and mention missing tools.
+out=$(PATH="$FAKE_BIN" bash "$TESTS_DIR/../libexec/dashboard" 2>&1) \
     && rc=0 || rc=$?
 assert_eq "dashboard exits nonzero without jq" "1" "$rc"
 assert_eq "dashboard error mentions jq" "true" \
@@ -911,8 +911,8 @@ trap 'rm -rf "$TMPDIR"' EXIT
 echo ""
 echo "=== 18. Swarmfile is required ==="
 
-# launch.sh start without a config should fail with a clear message.
-# Must run from a git repo (launch.sh needs git rev-parse).  The checks
+# swarm start without a config should fail with a clear message.
+# Must run from a git repo (swarm needs git rev-parse).  The checks
 # before it ask Docker for its context and containers: a fake docker
 # answers, with none.
 _no_cfg_dir=$(mktemp -d)
@@ -922,7 +922,7 @@ printf '#!/bin/bash\n[ "$1 $2" = "context show" ] && echo default\nexit 0\n' \
 chmod +x "$_no_cfg_bin/docker"
 git -C "$_no_cfg_dir" init -q
 out=$(cd "$_no_cfg_dir" && PATH="$_no_cfg_bin:$PATH" SWARM_CONFIG="" \
-    bash "$TESTS_DIR/../launch.sh" start 2>&1) && rc=0 || rc=$?
+    bash "$TESTS_DIR/../bin/swarm" start 2>&1) && rc=0 || rc=$?
 rm -rf "$_no_cfg_dir" "$_no_cfg_bin"
 assert_eq "no config exits nonzero" "1" "$rc"
 assert_eq "no config says swarmfile" "true" \
@@ -1019,7 +1019,7 @@ assert_eq "pp inherits top driver" "gemini-cli" \
 echo ""
 echo "=== 13. Pricing extraction from config ==="
 
-# Mirrors the jq pricing lookup in launch.sh.
+# Mirrors the jq pricing lookup in swarm.
 extract_pricing() {
     local config="$1" model="$2"
     jq -r --arg m "$model" \
@@ -1077,7 +1077,7 @@ assert_eq "cc version absent" "" \
     "$(jq -r '.claude_code_version // empty' "$TMPDIR/cc_no_version.json")"
 
 # Mirror of the cc version test for the codex_cli_version field
-# parsed by launch.sh's --build-arg plumbing -- pins the jq filter
+# parsed by swarm's --build-arg plumbing -- pins the jq filter
 # so a future typo in either path is caught immediately.
 cat > "$TMPDIR/codex_pinned.json" <<'JSON'
 {
@@ -1149,7 +1149,7 @@ assert_eq "absent top-level tag" "" "$g1"
 echo ""
 echo "=== 31. Tag env var expansion ==="
 
-# Mirrors expand_env_ref from launch.sh.
+# Mirrors expand_env_ref from swarm.
 expand_env_ref() {
     local val="$1"
     if [[ "$val" =~ ^\$([A-Za-z_][A-Za-z_0-9]*)$ ]]; then
@@ -1240,7 +1240,7 @@ assert_eq "pp tag env expansion" "expanded-pp" "$pp_expanded"
 echo ""
 echo "=== 33. docker_args array construction ==="
 
-# The reader launch.sh uses (lib/docker-args.sh), its elements joined by
+# The reader swarm uses (lib/docker-args.sh), its elements joined by
 # "|" so that their boundaries show.
 build_docker_extra_args() {
     (
@@ -1396,7 +1396,7 @@ echo "=== 35b. Bare repo and mirrors share no object files with the checkout ===
 # A local clone hardlinks object files unless told otherwise, and the
 # chmod -R a+rwX in create_bare_repo and mirror_submodules would then
 # make the checkout's own object files writable for every user.  Run
-# the live functions from launch.sh on a checkout with packed and loose
+# the live functions from swarm on a checkout with packed and loose
 # objects, a submodule, and objects borrowed through alternates, and
 # check that nothing is shared, changed or still borrowed.
 _hl_links() {
@@ -1405,7 +1405,7 @@ _hl_links() {
 _hl_mode() {
     stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null
 }
-_hl_launch="$TESTS_DIR/../launch.sh"
+_hl_launch="$TESTS_DIR/../bin/swarm"
 _hl_dir="$TMPDIR/hl"
 _hl_git() {
     git -c user.name=test -c user.email=test@test \
@@ -1484,7 +1484,7 @@ _hl_kept=no
 git -C "$_hl_dir/bare.git" cat-file -e "${_hl_base_head}^{commit}" \
     2>/dev/null && _hl_kept=yes
 assert_eq "bare repo keeps the borrowed objects" "yes" "$_hl_kept"
-assert_eq "every bare clone in launch.sh goes through Git's transport" \
+assert_eq "every bare clone in swarm goes through Git's transport" \
     "$(grep -c 'git clone --bare ' "$_hl_launch")" \
     "$(grep -c 'git clone --bare --no-local ' "$_hl_launch")"
 assert_eq "and every one in lib/mirrors.sh" \
@@ -1720,7 +1720,7 @@ assert_eq "inner keeps its Git directory in its work tree" "yes no" \
 _gd_runtime="$_gd_dir/runtime"
 mkdir -m 700 "$_gd_runtime"
 _gd_run() {  # 'FUNCTION [ARG]'...: each in turn, under set -e as in
-    # launch.sh (a subshell after || would ignore it)
+    # swarm (a subshell after || would ignore it)
     set +e
     (
         set -e
@@ -1843,7 +1843,7 @@ rm -rf "$_gd_dir"
 echo ""
 echo "=== 36. signing_key resolution ==="
 
-# Mirrors the signing-key resolution block in launch.sh.
+# Mirrors the signing-key resolution block in swarm.
 # Prints the resolved `-v` args (empty when no key configured),
 # returns 1 with an ERROR line on a missing file.
 resolve_signing_key_args() {
@@ -1966,13 +1966,13 @@ rm -rf "$_sk_dir" "$_sk_home"
 
 # ============================================================
 echo ""
-echo "=== 38. compute_swarm_agents helper (live function from launch.sh) ==="
+echo "=== 38. compute_swarm_agents helper (live function from swarm) ==="
 
-# Source the function from launch.sh so the regression net follows the
+# Source the function from swarm so the regression net follows the
 # real helper, not a mirror.  compute_swarm_agents has no globals
 # beyond jq, so extracting and sourcing it is safe.  Catches any
 # refactor that breaks the SWARM_AGENTS build-arg union.
-_LAUNCH_SH="$TESTS_DIR/../launch.sh"
+_LAUNCH_SH="$TESTS_DIR/../bin/swarm"
 _EXTRACTED="$TMPDIR/compute_swarm_agents.sh"
 awk '/^compute_swarm_agents\(\)[[:space:]]*\{/ { p = 1 }
      p { print }
@@ -2185,7 +2185,7 @@ echo "=== 40. cmd_stop gives the harness time to push ==="
 # 10s to land.  Without `-t`, that emergency push gets cut
 # mid-rebase and the commits die with the container.  Pin the
 # flag's presence, the default, and the env-var override.
-LAUNCH_FILE="$TESTS_DIR/../launch.sh"
+LAUNCH_FILE="$TESTS_DIR/../bin/swarm"
 CMD_STOP_BODY=$(awk '/^cmd_stop\(\) \{/,/^\}$/' "$LAUNCH_FILE")
 # cmd_stop checks a copy of the state, which these make.
 STOP_HELPERS=$(awk '/^(state_snapshot|swarm_tmp_file)\(\) \{/,/^\}$/' \
@@ -2799,8 +2799,8 @@ echo "=== 45. No fixed /tmp paths in the engine scripts ==="
 _root="$TESTS_DIR/.."
 assert_eq "no fixed /tmp paths" "" \
     "$(grep -n '/tmp/' \
-        "$_root/launch.sh" "$_root/harvest.sh" "$_root/dashboard.sh" \
-        "$_root/costs.sh" "$_root/progress.sh" || true)"
+        "$_root/bin/swarm" "$_root/libexec/harvest" "$_root/libexec/dashboard" \
+        "$_root/libexec/costs" "$_root/libexec/progress" || true)"
 
 # ============================================================
 echo ""
@@ -2848,7 +2848,7 @@ _hint_out=$(
 assert_eq "a stale bare repo: refused as stale" "1" \
     "$(printf '%s\n' "$_hint_out" | grep -c 'is stale (agent-work' || true)"
 assert_eq "a stale bare repo: the hint names cleanup" "1" \
-    "$(printf '%s\n' "$_hint_out" | grep -c 'launch.sh cleanup' || true)"
+    "$(printf '%s\n' "$_hint_out" | grep -c 'swarm cleanup' || true)"
 assert_eq "and offers no removal command" "0" \
     "$(printf '%s\n' "$_hint_out" | grep -cE 'docker run|rm -rf' || true)"
 
@@ -3235,7 +3235,7 @@ cat > "$_lk_bin/docker" <<EOF
 echo "\$*" >> "$_lk_log"
 [ "\$1 \$2" = "container inspect" ] && exit 1
 # docker run -it checks that the session record for its --name names
-# its own pid (exec keeps launch.sh's) and logs its arguments, checks
+# its own pid (exec keeps swarm's) and logs its arguments, checks
 # the lock while the session runs, prints a line and exits with
 # FAKE_EXIT.  With FAKE_NEVER_RUNS the container never starts.
 [ "\$1" = info ] && { echo d1; exit 0; }
@@ -3345,8 +3345,8 @@ for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     sleep 0.1
 done
 assert_eq "the lock is free soon after that" "0" "$_lk_free"
-# A caller that reads the output to EOF before it reaps launch.sh, as
-# Python's communicate() does, must get EOF once launch.sh is done: the
+# A caller that reads the output to EOF before it reaps swarm, as
+# Python's communicate() does, must get EOF once swarm is done: the
 # helper may not keep the output pipe open.  perl reads like that; the
 # alarm ends a hang after 20 s.
 _lk_rc=0
@@ -3368,7 +3368,7 @@ assert_eq "a reader that waits for EOF gets it and the exit status" "3" \
 # lock must be released first.
 assert_eq "start --dashboard unlocks before exec" "1" \
     "$(awk '/^    start\)/,/;;/' "$_LAUNCH_SH" \
-        | grep -A1 'swarm_unlock' | grep -c 'exec "$SWARM_DIR/dashboard.sh"' \
+        | grep -A1 'swarm_unlock' | grep -c 'exec "$SWARM_DIR/libexec/dashboard"' \
         || true)"
 
 # ============================================================
@@ -3893,10 +3893,10 @@ assert_eq "a .new a stopped run left: refused" "1" \
     "$([ "$_mm_rc" -ne 0 ] && echo 1 || echo 0)"
 rmdir "$_mm_dir/mirrors/1.git.new"
 
-# Through launch.sh: with a session open, start leaves the bare repo
+# Through swarm: with a session open, start leaves the bare repo
 # alone, and another interactive session still joins it.  Once the
 # session ends, start still refuses: a new engagement waits for
-# ./launch.sh cleanup.
+# swarm cleanup.
 _pd_rt="$TMPDIR/pending-runtime"
 run_pd() {
     (cd "$_st_repo" && PATH="$_st_bin:$PATH" SWARM_RUNTIME_DIR="$_pd_rt" \
@@ -3923,7 +3923,7 @@ _pd_rc=0
 _pd_out=$(run_pd start) || _pd_rc=$?
 assert_eq "after the session ends start still refuses" "1" "$_pd_rc"
 assert_eq "and says cleanup comes first" "true" \
-    "$(grep -q 'launch.sh cleanup' <<< "$_pd_out" \
+    "$(grep -q 'swarm cleanup' <<< "$_pd_out" \
         && echo true || echo false)"
 assert_eq "and the bare repo stays" "true" \
     "$([ -e "$_pd_rt/upstream.git/keep" ] && echo true || echo false)"
@@ -3933,7 +3933,7 @@ assert_eq "the old record is gone" "false" \
 
 # ============================================================
 echo ""
-echo "=== 54. No temporary file outlives launch.sh ==="
+echo "=== 54. No temporary file outlives swarm ==="
 
 # interactive stopped by an agent index that does not exist, start
 # stopped by a driver that does not exist once it wrote the agents'
@@ -4015,7 +4015,7 @@ assert_eq "every temporary file it made is gone" "0" "$(tf_left)"
 tf_drop
 rm -f "$_st_repo/sub/configs/tf.json"
 # A Ctrl-C at the terminal while the image builds: SIGINT to the
-# process group of launch.sh, run in one of its own with /bin/bash
+# process group of swarm, run in one of its own with /bin/bash
 # (Bash 3.2 on macOS), once docker build runs.
 if ! (sigint_works); then
     echo "  SKIP: a Ctrl-C while the image builds (SIGINT is ignored here)"
@@ -4279,7 +4279,7 @@ v_new() {
     echo a > "$V_DIR/context"
     : > "$V_DIR/log"
 }
-# Run launch.sh with ARGS in the start tests' checkout against this
+# Run swarm with ARGS in the start tests' checkout against this
 # case's fake Docker; print its output.  Variables set on the call
 # reach it; the lock descriptor of the test, 8, does not.
 v_run() {
@@ -4749,7 +4749,7 @@ _v_rc=0
 _v_out=$(v_run post-process) || _v_rc=$?
 assert_eq "post-process while a numbered agent runs: refused" "1" "$_v_rc"
 assert_eq "with the next step" "true" \
-    "$(v_has "stop them (./launch.sh stop --numbered) or wait for them" \
+    "$(v_has "stop them (swarm stop --numbered) or wait for them" \
         "$_v_out")"
 assert_eq "and nothing made" "0" "$(v_writes)"
 : > "$V_DIR/containers"
@@ -4948,8 +4948,8 @@ for _v_state in running exited; do
     assert_eq "a $_v_state -post container: post-process refused" "1" \
         "$_v_rc"
     case "$_v_state" in
-        running) _v_next="stop it first (./launch.sh stop)" ;;
-        *) _v_next="retire it first: ./launch.sh retire --post-process" ;;
+        running) _v_next="stop it first (swarm stop)" ;;
+        *) _v_next="retire it first: swarm retire --post-process" ;;
     esac
     assert_eq "a $_v_state -post container: the next step" "true" \
         "$(v_has "$_v_next" "$_v_out")"
@@ -4999,7 +4999,7 @@ for _v_cmd in post-process "interactive --agent-index 1"; do
     assert_eq "token, no bare repo: $_v_cmd says why" "true" \
         "$(v_has "is incomplete: $V_RT/upstream.git is missing" "$_v_out")"
     assert_eq "token, no bare repo: $_v_cmd gives the way out" "true" \
-        "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
+        "$(v_has "Run swarm cleanup" "$_v_out")"
     assert_eq "token, no bare repo: $_v_cmd makes nothing" "0" \
         "$(v_writes)"
 done
@@ -5064,12 +5064,12 @@ for _v_kind in work new mirrors remnant hidden container volume session; do
                     "a new engagement starts only on a clean runtime" \
                     "$_v_out")"
             assert_eq "$_v_kind left: $_v_cmd gives the way out" "true" \
-                "$(v_has "then ./launch.sh cleanup" "$_v_out")"
+                "$(v_has "then swarm cleanup" "$_v_out")"
         else
             assert_eq "$_v_kind left: $_v_cmd finds it incomplete" "true" \
                 "$(v_has "is incomplete: $V_RT/upstream.git" "$_v_out")"
             assert_eq "$_v_kind left: $_v_cmd gives the way out" "true" \
-                "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
+                "$(v_has "Run swarm cleanup" "$_v_out")"
         fi
         assert_eq "$_v_kind left: $_v_cmd changes nothing" "$_v_before" \
             "$(v_snap)"
@@ -5077,7 +5077,7 @@ for _v_kind in work new mirrors remnant hidden container volume session; do
             "$(v_writes)"
         if [ "$_v_kind" = work ]; then
             assert_eq "agent work the checkout lacks is named" "true" \
-                "$(v_has "agent-work $(cut -c1-12 "$_v_root/work-commit"): run ./harvest.sh" "$_v_out")"
+                "$(v_has "agent-work $(cut -c1-12 "$_v_root/work-commit"): run swarm harvest" "$_v_out")"
         fi
     done
 done
@@ -5158,7 +5158,7 @@ assert_eq "the next start refuses" "1" "$_v_rc"
 assert_eq "naming the engagement still recorded" "true" \
     "$(v_has "still records engagement" "$_v_out")"
 assert_eq "and the way out" "true" \
-    "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
+    "$(v_has "Run swarm cleanup" "$_v_out")"
 assert_eq "and changes nothing" "$_v_before" "$(v_snap)"
 assert_eq "nor makes anything in Docker" "0" "$(v_writes)"
 _v_rc=0
@@ -5625,7 +5625,7 @@ done
 V_CFG="$_v_cfg_saved"
 _v_tok="$_v_tok_saved"
 
-# What launch.sh gives a target's containers is refused in docker_args,
+# What swarm gives a target's containers is refused in docker_args,
 # by start, post-process and interactive alike, before they prepare
 # anything; the neighbours pass and reach docker run.
 for _v_da in '-e|TARGET_REPO|sets TARGET_REPO' \
@@ -5893,7 +5893,7 @@ for _v_step in publish clone; do
         _v_out=$(v_target_on v_run $_v_cmd) || _v_rc=$?
         assert_eq "  then $_v_cmd refuses" "1" "$_v_rc"
         assert_eq "  pointing to cleanup" "true" \
-            "$(v_has "./launch.sh cleanup" "$_v_out")"
+            "$(v_has "swarm cleanup" "$_v_out")"
     done
     assert_eq "  changing nothing" "$_v_before" "$(v_snap)"
     assert_eq "  making nothing in Docker" "0" "$(v_writes)"
@@ -6193,8 +6193,8 @@ assert_eq "naming what is left" "true" \
     "$(v_has "  $V_RT/upstream.git" "$_v_out")"
 assert_eq "and changes nothing" "$_v_before" "$(v_snap)"
 
-# --- launch.sh removes nothing by force ---------------------------------
-assert_eq "launch.sh has no docker rm -f" "0" \
+# --- swarm removes nothing by force ---------------------------------
+assert_eq "swarm has no docker rm -f" "0" \
     "$(grep -c 'docker rm -f' "$_LAUNCH_SH" || true)"
 assert_eq "no alpine helper" "0" "$(grep -c 'alpine' "$_LAUNCH_SH" || true)"
 assert_eq "no rm_docker_dir" "0" \
@@ -6218,7 +6218,7 @@ echo "=== 56. A run stopped on an unset variable does not end with 0 ==="
 
 # Bash 3.2 (macOS's /bin/bash, which runs these tests there) runs an
 # EXIT trap with $? at 0 when set -u stops the script on an unset
-# variable.  A flock that names one, through BASH_ENV, stops launch.sh in
+# variable.  A flock that names one, through BASH_ENV, stops swarm in
 # swarm_lock, in the main shell and after its EXIT trap is set.
 _u_hook="$TMPDIR/unset-hook.sh"
 cat > "$_u_hook" <<'EOF'
@@ -6266,7 +6266,7 @@ elif [ "$(uname)" = Darwin ]; then
         echo "  SKIP: no Homebrew bash, so only /bin/bash is checked"
     fi
 fi
-# launch.sh's EXIT trap and its temp-file cleanup, extracted, in a child
+# swarm's EXIT trap and its temp-file cleanup, extracted, in a child
 # Bash with the version test stubbed both ways: a run that ends without
 # the flag prints the line and ends with 1 only where the check is made;
 # the flag, or another status, is kept; the temp files go every time.
@@ -6279,7 +6279,7 @@ _sg_extract() {  # FUNCTION FILE
     _sg_extract swarm_tmp_cleanup "$_LAUNCH_SH"
     _sg_extract swarm_exit_trap "$_LAUNCH_SH"
 } > "$TMPDIR/sg-trap.sh"
-assert_eq "launch.sh's trap and its cleanup are extracted" "2" \
+assert_eq "swarm's trap and its cleanup are extracted" "2" \
     "$(grep -cE '^(swarm_tmp_cleanup|swarm_exit_trap)\(\)' \
         "$TMPDIR/sg-trap.sh")"
 _sg_run() {  # BASH NEEDED(0 yes, 1 no) END
@@ -6305,7 +6305,7 @@ _sg_gone() {
         echo yes
     fi
 }
-_sg_line='launch.sh stopped before the end of its run'
+_sg_line='swarm stopped before the end of its run'
 for _sg_b in $_sg_bashes; do
     _sg_rc=0
     _sg_out=$(_sg_run "$_sg_b" 0 ':') || _sg_rc=$?
@@ -6333,10 +6333,10 @@ for _sg_b in $_sg_bashes; do
         "$(grep -c 'stopped before the end' <<< "$_sg_out")"
     assert_eq "$_sg_b:   the temp files go" "yes" "$(_sg_gone)"
 done
-# End to end: SIGTERM and SIGHUP to launch.sh start while it waits in
+# End to end: SIGTERM and SIGHUP to swarm start while it waits in
 # docker build (the hold-build knob), which comes after its EXIT trap is
 # set and after it made its agents file, a temp file in TMPDIR.  python3
-# starts the run in a session of its own, signals launch.sh only, then
+# starts the run in a session of its own, signals swarm only, then
 # lets the held fake go (Bash may hold the signal until it returns), and
 # kills the whole session at the end.  On Bash 4.1 and later no line, on
 # earlier versions the line; death by the signal and the temp file gone

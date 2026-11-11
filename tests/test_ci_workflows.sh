@@ -58,7 +58,7 @@ echo ""
 echo "=== 3. Integration test runtime directory ==="
 
 # tests/test.sh must not remove a directory the caller pointed
-# SWARM_RUNTIME_DIR at, even when launch.sh refused it.
+# SWARM_RUNTIME_DIR at, even when swarm refused it.
 TEST_SH="$TESTS_DIR/test.sh"
 assert_eq "integration run allocates its own runtime directory" "1" \
     "$(grep -cE '^TEST_RUNTIME_DIR=\$\(mktemp -d\)$' "$TEST_SH")"
@@ -71,7 +71,7 @@ assert_eq "cleanup removes only that directory" \
 echo ""
 echo "=== 4. Unit test dependencies ==="
 
-# launch.sh and harvest.sh lock with flock(1), which macOS lacks.
+# swarm and swarm harvest lock with flock(1), which macOS lacks.
 assert_eq "macOS unit job installs flock" "1" \
     "$(grep -cE 'brew install .*flock' "$CI_YML")"
 

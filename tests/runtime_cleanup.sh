@@ -6,21 +6,21 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
 # tests/runtime_cleanup.sh
 #
-# launch.sh cleanup under real Docker: a bare repo a container wrote
+# swarm cleanup under real Docker: a bare repo a container wrote
 # into as its own user (on Linux another UID than this host user's, so
 # only the Docker helper can delete those files), a mirror, and a real
 # workspace volume of this checkout.  Cleanup refuses while a container
 # of the project remains that retire refuses (one without its workspace
 # volume, as an earlier release made them), then copies all three into
 # the checkout as recovery refs and deletes them.  Then one whole
-# engagement through launch.sh: start, wait, retire, cleanup, and a
+# engagement through swarm: start, wait, retire, cleanup, and a
 # second start on the cleaned runtime directory.
 #
 # Requires Docker.  No API key needed.
 
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
-LAUNCH_SH="${REPO_ROOT}/launch.sh"
+LAUNCH_SH="${REPO_ROOT}/bin/swarm"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "SKIP: docker not found"
@@ -40,7 +40,7 @@ source "$REPO_ROOT/lib/project.sh"
 
 BASE_IMAGE="swarm-core-runtime-test"
 P="swarm-core-cleanup-test"
-# The engagement launch.sh starts, under a project id of its own.
+# The engagement swarm starts, under a project id of its own.
 P2="swarm-core-cycle-test"
 # Cleanup's helpers run the engine image, <project>-agent.
 ENGINE_IMAGE="${P}-agent"

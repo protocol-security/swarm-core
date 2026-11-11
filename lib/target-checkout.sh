@@ -1,6 +1,6 @@
 #!/bin/bash
 # swarm-target-checkout DIR: make DIR a checkout of the engagement's
-# target, from the snapshot launch.sh mounts read-only in every
+# target, from the snapshot swarm mounts read-only in every
 # container (SWARM_TARGET_MIRROR, /target-upstream), without the network
 # and without the caller's Git configuration or environment.  DIR gets
 # HEAD detached at TARGET_REV, its pin as refs/swarm/target and, with a
@@ -27,7 +27,7 @@
 # of the target runs one (LFS pointers stay as they are), and no URL
 # rewrite applies.  Git's local transport runs upload-pack with the
 # repository-local variables cleared (the -c settings among them): it
-# reads the snapshot's own config, which launch.sh's join validator
+# reads the snapshot's own config, which swarm's join validator
 # checked on the host, with no global or system configuration.  The
 # target's submodules and LFS content are not fetched.  A second run on
 # the same DIR refuses: it is not empty.

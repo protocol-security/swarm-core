@@ -3,9 +3,9 @@
 # program that drives engagements (a CI job, a scheduler).  USAGE,
 # CONTROL INTERFACE, documents it.
 #
-#   control.sh --interface swarm-core.control/v1 COMMAND [ARGS...]
-#   control.sh version
-#   control.sh --help
+#   swarm control --interface swarm-core.control/v1 COMMAND [ARGS...]
+#   swarm control version
+#   swarm control --help
 #
 # Actions are the engine's own commands, run by exec before anything
 # else (same process, arguments, descriptors, output and exit status).
@@ -18,18 +18,18 @@
 set -uo pipefail
 
 # CDPATH off: with it, cd prints where it went.
-SWARM_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+SWARM_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
 CONTROL_INTERFACE="swarm-core.control/v1"
 
 control_usage() {
     printf '%s\n' \
-        "Usage: control.sh --interface ${CONTROL_INTERFACE} COMMAND [ARGS...]" \
-        "       control.sh version" \
+        "Usage: swarm control --interface ${CONTROL_INTERFACE} COMMAND [ARGS...]" \
+        "       swarm control version" \
         "" \
         "Queries: version, observe." \
         "Actions: start, stop, wait, post-process, retire, cleanup," \
-        "         interactive, chat, shell (launch.sh's), and harvest" \
-        "         (harvest.sh)." \
+        "         interactive, chat, shell (swarm's), and harvest" \
+        "         (swarm harvest)." \
         "" \
         "USAGE, CONTROL INTERFACE, documents each one."
 }
@@ -88,19 +88,19 @@ case "${1:-}" in
         [ $# -ge 2 ] || control_fail 2 usage "--interface needs a value"
         if [ "$2" != "$CONTROL_INTERFACE" ]; then
             control_fail 2 unsupported-interface "this engine has" \
-                "${CONTROL_INTERFACE} only (control.sh version lists them)"
+                "${CONTROL_INTERFACE} only (swarm control version lists them)"
         fi
         shift 2 ;;
     "")
         control_fail 2 usage "give --interface ${CONTROL_INTERFACE} and a" \
-            "command (control.sh --help shows the grammar)" ;;
+            "command (swarm control --help shows the grammar)" ;;
     *)
         control_fail 2 usage "give --interface ${CONTROL_INTERFACE}" \
             "before the command" ;;
 esac
 if [ $# -eq 0 ]; then
     control_fail 2 usage "no command after --interface" \
-        "(control.sh --help shows the grammar)"
+        "(swarm control --help shows the grammar)"
 fi
 CONTROL_CMD="$1"
 shift
@@ -108,9 +108,9 @@ shift
 # Actions: the engine's commands, by exec, before anything is read.
 case "$CONTROL_CMD" in
     start|stop|wait|post-process|retire|cleanup|interactive|chat|shell)
-        exec "$SWARM_DIR/launch.sh" "$CONTROL_CMD" "$@" ;;
+        exec "$SWARM_DIR/bin/swarm" "$CONTROL_CMD" "$@" ;;
     harvest)
-        exec "$SWARM_DIR/harvest.sh" "$@" ;;
+        exec "$SWARM_DIR/libexec/harvest" "$@" ;;
     version)
         [ $# -eq 0 ] || control_fail 2 usage "version takes no arguments"
         control_version

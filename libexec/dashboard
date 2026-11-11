@@ -14,11 +14,11 @@ export LC_NUMERIC=C
 # Always-on TUI dashboard for swarm agents.
 # Pure bash with ANSI escape codes and tput.
 
-SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
+SWARM_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
-Usage: $0
+Usage: swarm dashboard
 
 Always-on TUI dashboard for swarm agents.
 Refreshes every 3 seconds. Shows per-agent model, auth source,
@@ -108,7 +108,7 @@ DEFAULT_TITLE="${PROJECT_RAW}"
 # Save user's explicit env var so it takes priority over state file.
 USER_TITLE="${SWARM_TITLE:-}"
 
-# Load the state file written by launch.sh start into the variables a
+# Load the state file written by swarm start into the variables a
 # standalone dashboard would otherwise lack.  The file is JSON read with
 # jq, never sourced, and only from a runtime directory that no other
 # user can write to.
@@ -219,7 +219,7 @@ engagement_note() {
     if $DASH_CLEANUP; then
         printf ' %sA cleanup has not finished%s: %s\n' \
             "$YELLOW" "$RESET" \
-            "if it is not running, run ./launch.sh cleanup again."
+            "if it is not running, run swarm cleanup again."
         return 0
     fi
     $DASH_VOLUMES_OK && [ -n "$DASH_TOKEN" ] || return 0
@@ -231,7 +231,7 @@ engagement_note() {
     [ "$kept" -gt 0 ] || return 0
     printf ' %s%s workspace volume(s), no container: %s%s\n' \
         "$DIM" "$kept" \
-        "harvest, then ./launch.sh cleanup ends the engagement." "$RESET"
+        "harvest, then swarm cleanup ends the engagement." "$RESET"
 }
 
 DASHBOARD_TITLE="${USER_TITLE:-${SWARM_TITLE:-${DEFAULT_TITLE}}}"
@@ -342,7 +342,7 @@ cleanup() {
     if [ "$rc" -eq 0 ] && ! $DASH_EXIT_OK \
             && swarm_stop_guard_needed "${BASH_VERSINFO[0]}" \
                 "${BASH_VERSINFO[1]}"; then
-        echo "ERROR: dashboard.sh stopped before the end of its run." >&2
+        echo "ERROR: swarm dashboard stopped before the end of its run." >&2
         exit 1
     fi
 }
@@ -1019,7 +1019,7 @@ while true; do
                 ;;
             h|H)
                 leave_alt_screen
-                "$SWARM_DIR/harvest.sh" || true
+                "$SWARM_DIR/libexec/harvest" || true
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
                 enter_alt_screen
@@ -1027,7 +1027,7 @@ while true; do
             s|S)
                 leave_alt_screen
                 identity_ok || exit 1
-                # launch.sh stop, with its checks, on the engagement
+                # swarm stop, with its checks, on the engagement
                 # shown (its token, from the last refresh): never a
                 # later one, and nothing when none is shown.
                 _token="$DASH_TOKEN"
@@ -1036,7 +1036,7 @@ while true; do
                 else
                     SWARM_CONFIG="$CONFIG_FILE" \
                         SWARM_ENGAGEMENT_TOKEN="$_token" \
-                        "$SWARM_DIR/launch.sh" stop || echo "(stop failed)"
+                        "$SWARM_DIR/bin/swarm" stop || echo "(stop failed)"
                 fi
                 echo ""
                 read -rp "Press Enter to return to dashboard..." _
@@ -1065,7 +1065,7 @@ while true; do
                 fi
                 if post_process_container_exists; then
                     echo "(${_pp_name} is still there; retire it first:" \
-                         "./launch.sh retire --post-process)"
+                         "swarm retire --post-process)"
                     echo ""
                     read -rp "Press Enter to return to dashboard..." _
                     enter_alt_screen
@@ -1098,13 +1098,13 @@ while true; do
                 echo "--- Stopping agents ---"
                 if ! SWARM_CONFIG="$CONFIG_FILE" \
                         SWARM_ENGAGEMENT_TOKEN="$_token" \
-                        "$SWARM_DIR/launch.sh" stop --numbered >/dev/null; then
+                        "$SWARM_DIR/bin/swarm" stop --numbered >/dev/null; then
                     echo "(agents not stopped; post-processing not started)"
                 else
                     echo "--- Starting post-processing ---"
                     SWARM_CONFIG="$CONFIG_FILE" \
                         SWARM_ENGAGEMENT_TOKEN="$_token" \
-                        "$SWARM_DIR/launch.sh" post-process || \
+                        "$SWARM_DIR/bin/swarm" post-process || \
                         echo "(post-processing failed)"
                 fi
                 echo ""

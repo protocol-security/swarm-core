@@ -91,8 +91,8 @@ run_all_tests() {
     # actually fires; this phase does.  Skips cleanly when Docker
     # is unavailable so --all stays useful on hosts without it.
     # Also runs the real Pi CLI against a local test API, without keys,
-    # launch.sh retire on real containers, whose snapshots and docker
-    # diff test_retire.sh only imitates, launch.sh cleanup on files
+    # swarm retire on real containers, whose snapshots and docker
+    # diff test_retire.sh only imitates, swarm cleanup on files
     # a container wrote as its own user, and an engagement's target:
     # its read-only snapshot and swarm-target-checkout in the image.
     echo "=== Phase 1.5: Docker runtime tests ==="
@@ -437,8 +437,8 @@ Options:
   --runtime         Runtime tests (need Docker, no API key): drives
                     SIGTERM / SIGINT / fatal-exit paths under a real
                     container with a synthetic test-committer driver,
-                    then launch.sh retire on real stopped containers,
-                    launch.sh cleanup on what containers wrote, a
+                    then swarm retire on real stopped containers,
+                    swarm cleanup on what containers wrote, a
                     target checked out from its snapshot in the image,
                     and nested submodules checked out from their mirrors
                     with no network.
@@ -691,7 +691,7 @@ echo "Smoke test setup complete."
 SETUP
 }
 
-# Write prompt to repo root (uncommitted) so launch.sh's file-exists
+# Write prompt to repo root (uncommitted) so swarm's file-exists
 # check passes. Files are injected into the bare repo after launch.
 write_prompt "$REPO_ROOT"
 
@@ -722,7 +722,7 @@ cleanup() {
     echo "--- Cleaning up ---"
     cd "$REPO_ROOT"
     SWARM_CONFIG="$TEMP_CONFIG" \
-        "$SWARM_DIR/launch.sh" stop 2>/dev/null || true
+        "$SWARM_DIR/bin/swarm" stop 2>/dev/null || true
     # This run's containers and volumes, and nothing else: those with
     # its engagement's token, which its own runtime directory records.
     local token id vol
@@ -760,7 +760,7 @@ echo ""
 SWARM_CONFIG="$TEMP_CONFIG" \
     ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
-    "$SWARM_DIR/launch.sh" start
+    "$SWARM_DIR/bin/swarm" start
 
 # Inject prompt + setup into bare repo via a temp clone.
 # Agents fetch at the start of each session so they pick this up

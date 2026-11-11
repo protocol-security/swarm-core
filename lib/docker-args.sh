@@ -1,10 +1,10 @@
 #!/bin/bash
 # The swarmfile's docker_args: extra docker run arguments for the
-# containers launch.sh starts (agents, post-process, interactive
+# containers swarm starts (agents, post-process, interactive
 # sessions), read as the exact vector docker run gets and checked
 # against docker run's option grammar before anything of an engagement
 # is prepared.  The check is structural: values are Docker's to check,
-# when it runs, except where they would reach what launch.sh gives
+# when it runs, except where they would reach what swarm gives
 # every container of a target (the TARGET_* variables, the snapshot at
 # /target-upstream) or the labels it gives every container (the
 # swarm-core. namespace).  Compatible with Bash 3.2.  Functions print
@@ -240,7 +240,7 @@ _swarm_docker_label_reserved() {
 }
 
 # Refuse element POS (1-based) of docker_args, A, when option NAME (its
-# long name) with operand V would reach what launch.sh gives every
+# long name) with operand V would reach what swarm gives every
 # container of a target: one of the five variables (an env name is what
 # comes before the first "=", exactly), every variable of a file
 # (--env-file) or every mount of another container (--volumes-from), or
@@ -256,7 +256,7 @@ _swarm_docker_args_reserved() {
             if _swarm_docker_label_reserved "$v"; then
                 _swarm_docker_args_refuse "$pos" "$a" "sets a label in" \
                     "the engine's namespace (swarm-core.), which only" \
-                    "launch.sh sets"
+                    "swarm sets"
                 return 1
             fi
             return 0 ;;
@@ -270,7 +270,7 @@ _swarm_docker_args_reserved() {
                 TARGET_REPO|TARGET_REV|TARGET_REV_BASE|TARGET_REV_BASE_REPO\
                 |SWARM_TARGET_MIRROR)
                     _swarm_docker_args_refuse "$pos" "$a" "sets ${v%%=*}:" \
-                        "launch.sh sets it from the engagement's target" \
+                        "swarm sets it from the engagement's target" \
                         "(TARGET_REPO, TARGET_REV, TARGET_REV_BASE and" \
                         "TARGET_REV_BASE_REPO go in the host environment)"
                     return 1 ;;

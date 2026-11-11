@@ -1,14 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# Create bare repos, build image, launch N agent containers.
-# Usage: ./launch.sh {start|stop|logs N|status|wait|post-process|interactive}
+# Run coding agents in Docker: create the bare repo, build the image,
+# launch the agent containers, and run the other commands.
+# Usage: swarm COMMAND [OPTIONS]
 
-SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
+SWARM_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
-Usage: $0 [COMMAND] [OPTIONS]
+Usage: swarm [COMMAND] [OPTIONS]
 
 Orchestrate coding agents in Docker containers.
 Default command is 'start' when none is specified.
@@ -37,6 +38,14 @@ Commands:
                        Delete the engagement (containers, workspace
                        volumes, bare repo, mirrors) after copying what
                        Git keeps there into the checkout.
+  harvest [--dry] [--again]
+                       Merge the agents' work into the checkout.
+  dashboard            Open the TUI dashboard.
+  costs [--json]       Print a cost and usage summary.
+  progress             Print the agents' commits so far.
+  control ...          The versioned interface for programs.
+
+Run 'swarm COMMAND --help' for harvest, dashboard, costs and progress.
 
 Start options:
   --dashboard          Open the TUI dashboard after launch.
@@ -64,6 +73,14 @@ Environment:
 HELP
     exit 0
 fi
+
+# Commands that are programs of their own.
+case "${1:-}" in
+    harvest|dashboard|costs|progress|control)
+        _cmd=$1
+        shift
+        exec "$SWARM_DIR/libexec/$_cmd" "$@" ;;
+esac
 
 source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq docker perl
@@ -215,7 +232,7 @@ own_container_state() {
 # owner.  The lock stays held until the command exits, except that
 # interactive releases it once its session is recorded, before docker
 # run, and start --dashboard before the dashboard opens; children such
-# as harvest.sh inherit it.
+# as swarm harvest inherit it.
 prepare_runtime() {
     swarm_refuse_legacy_state "$(swarm_project_id "$PROJECT_RAW")" \
         || exit 1
@@ -233,7 +250,7 @@ prepare_runtime() {
 # the state file records none: no bare repo, no upstream.git.new, no
 # mirrors/, no remnant of a cleanup, no container or workspace volume of
 # this checkout, no interactive session open or starting.  A new
-# engagement starts only there, after ./launch.sh cleanup has preserved
+# engagement starts only there, after swarm cleanup has preserved
 # and removed the last one.  Called under the lock and the pin, by
 # start, and by post-process and interactive when they would create the
 # engagement.
@@ -253,7 +270,7 @@ require_clean_runtime() {
         # record alone; it still stands for that engagement.
         echo "ERROR: ${STATE_FILE} still records engagement ${engaged}," \
              "with nothing of it left in ${RUNTIME_DIR}.  Run" \
-             "./launch.sh cleanup to finish it before a new one" \
+             "swarm cleanup to finish it before a new one" \
              "starts." >&2
         exit 1
     fi
@@ -274,8 +291,8 @@ require_clean_runtime() {
         fi
         rm -f "$tmp"
     fi
-    echo "Stop the agents (./launch.sh stop), run harvest.sh, then" \
-         "./launch.sh cleanup: it keeps everything Git had there as" \
+    echo "Stop the agents (swarm stop), run swarm harvest, then" \
+         "swarm cleanup: it keeps everything Git had there as" \
          "recovery refs before it deletes anything." >&2
     exit 1
 }
@@ -355,7 +372,7 @@ create_bare_repo() {
     if [ -n "$format" ] \
             && ! mv "$SWARM_TARGET_PREP" "$RUNTIME_DIR/target.git"; then
         echo "ERROR: cannot publish the target's snapshot as" \
-             "${RUNTIME_DIR}/target.git.  Run ./launch.sh cleanup to" \
+             "${RUNTIME_DIR}/target.git.  Run swarm cleanup to" \
              "finish this engagement." >&2
         exit 1
     fi
@@ -529,8 +546,8 @@ ensure_bare_repo_for_interactive() {
              "${bare_head:0:7} behind local HEAD" \
              "${local_head:0:7})." >&2
         echo "       To start from the current HEAD, end this" \
-             "engagement: stop the agents, run harvest.sh, then" \
-             "./launch.sh cleanup, which keeps everything as recovery" \
+             "engagement: stop the agents, run swarm harvest, then" \
+             "swarm cleanup, which keeps everything as recovery" \
              "refs." >&2
         exit 1
     fi
@@ -649,7 +666,7 @@ swarm_exit_trap() {
     if [ "$rc" -eq 0 ] && ! $SWARM_EXIT_OK \
             && swarm_stop_guard_needed "${BASH_VERSINFO[0]}" \
                 "${BASH_VERSINFO[1]}"; then
-        echo "ERROR: launch.sh stopped before the end of its run." >&2
+        echo "ERROR: swarm stopped before the end of its run." >&2
         exit 1
     fi
 }
@@ -886,7 +903,7 @@ cmd_interactive() {
                 shift ;;
             -h|--help)
                 cat <<HELP
-Usage: $0 interactive [--agent NAME | --agent-index N] [--shell]
+Usage: swarm interactive [--agent NAME | --agent-index N] [--shell]
        $0 chat        [--agent NAME | --agent-index N]
        $0 shell       [--agent NAME | --agent-index N]
 
@@ -1282,7 +1299,7 @@ cmd_stop() {
     # `_session_end_push` before docker forces SIGKILL.  The 10s
     # default that docker ships with cuts the emergency push
     # mid-rebase on a busy bare repo.  Override via env:
-    #   SWARM_STOP_TIMEOUT=120 ./launch.sh stop
+    #   SWARM_STOP_TIMEOUT=120 swarm stop
     local stop_timeout="${SWARM_STOP_TIMEOUT:-60}" numbered=false
     local snap token list id info name rest state failed=0 pass=0 found
     local labels phase locked=false
@@ -1618,7 +1635,7 @@ cmd_wait() {
 
     echo ""
     echo "--- Harvesting results ---"
-    "$SWARM_DIR/harvest.sh"
+    "$SWARM_DIR/libexec/harvest"
 }
 
 cmd_post_process() {
@@ -1696,8 +1713,8 @@ cmd_post_process() {
         pp_counts=$(wait_agents "$pp_token") || exit 1
         if [ "${pp_counts% *}" -ne 0 ]; then
             echo "ERROR: numbered agents of this engagement still run;" \
-                 "stop them (./launch.sh stop --numbered) or wait for" \
-                 "them (./launch.sh wait) first." >&2
+                 "stop them (swarm stop --numbered) or wait for" \
+                 "them (swarm wait) first." >&2
             exit 1
         fi
         # An earlier post-process container is never replaced: its
@@ -1708,14 +1725,14 @@ cmd_post_process() {
             "not found") ;;
             running|restarting|paused|created)
                 echo "ERROR: ${NAME} is ${pp_state}; stop it first" \
-                     "(./launch.sh stop)." >&2
+                     "(swarm stop)." >&2
                 exit 1 ;;
             "not ours")
                 echo "ERROR: ${NAME} is not this checkout's container." >&2
                 exit 1 ;;
             *)
                 echo "ERROR: ${NAME} is there (${pp_state}); retire it" \
-                     "first: ./launch.sh retire --post-process." >&2
+                     "first: swarm retire --post-process." >&2
                 exit 1 ;;
         esac
         build_image
@@ -1825,7 +1842,7 @@ cmd_post_process() {
 
     echo ""
     echo "--- Harvesting results ---"
-    "$SWARM_DIR/harvest.sh"
+    "$SWARM_DIR/libexec/harvest"
 
     if [ "$exit_code" -ne 0 ]; then
         echo "WARNING: post-process container exited with code ${exit_code};" \
@@ -1842,7 +1859,7 @@ case "${1:-start}" in
         if $OPEN_DASHBOARD; then
             # The dashboard runs until closed; it must not keep the lock.
             swarm_unlock
-            exec "$SWARM_DIR/dashboard.sh"
+            exec "$SWARM_DIR/libexec/dashboard"
         fi
         ;;
     stop)          shift; cmd_stop "$@" ;;
@@ -1863,8 +1880,8 @@ case "${1:-start}" in
         cmd_interactive shell "$@"
         ;;
     *)
-        echo "Usage: $0 {start|stop|logs N|status|wait|post-process|interactive}" >&2
-        echo "Try '$0 --help' for more information." >&2
+        echo "Usage: swarm COMMAND [OPTIONS]" >&2
+        echo "Try 'swarm --help' for more information." >&2
         exit 1
         ;;
 esac

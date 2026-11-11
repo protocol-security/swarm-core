@@ -20,7 +20,7 @@ USER agent
 # Language toolchains are installed by SWARM_SETUP, not here.
 
 # Comma-separated list of drivers whose CLIs should be installed.
-# launch.sh derives this from the config and passes it as --build-arg.
+# swarm derives this from the config and passes it as --build-arg.
 ARG SWARM_AGENTS=claude-code
 
 # --- Claude Code CLI (default) ---

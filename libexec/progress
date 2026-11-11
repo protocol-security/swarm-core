@@ -5,7 +5,7 @@ set -euo pipefail
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     cat <<HELP
-Usage: $0
+Usage: swarm progress
 
 Show recent commits on agent-work and the swarm's containers.
 Displays the last 15 commits on the bare repo's agent-work and lists
@@ -14,7 +14,7 @@ HELP
     exit 0
 fi
 
-SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
+SWARM_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq docker
 # shellcheck source=lib/project.sh
@@ -52,7 +52,7 @@ progress_exit_trap() {
     if [ "$rc" -eq 0 ] && ! $PROGRESS_EXIT_OK \
             && swarm_stop_guard_needed "${BASH_VERSINFO[0]}" \
                 "${BASH_VERSINFO[1]}"; then
-        echo "ERROR: progress.sh stopped before the end of its run." >&2
+        echo "ERROR: swarm progress stopped before the end of its run." >&2
         exit 1
     fi
 }

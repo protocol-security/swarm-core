@@ -4,7 +4,7 @@ set -euo pipefail
 # shellcheck source=_test_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
-# Unit tests for launch.sh retire, with a fake docker CLI whose answers
+# Unit tests for swarm retire, with a fake docker CLI whose answers
 # come from files: no Docker or API key required.
 
 PASS=0
@@ -14,7 +14,7 @@ TMPDIR=$(mktemp -d)
 # scratch files here, under the cleanup below.
 export TMPDIR
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LAUNCH="$REPO_ROOT/launch.sh"
+LAUNCH="$REPO_ROOT/bin/swarm"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 # The git config check asks git which files it reads (git var, Git 2.42
@@ -521,7 +521,7 @@ reset_fake() {
     : > "$F/containers"
     : > "$F/log"
 }
-# Run launch.sh retire in a process group of its own, as from a
+# Run swarm retire in a process group of its own, as from a
 # terminal, so that a SIGINT to that group stays there; print
 # "<status>".
 retire_own_group() {
@@ -536,7 +536,7 @@ retire_own_group() {
     wait "$pid" || rc=$?
     printf '%s' "$rc"
 }
-# Run launch.sh retire ARGS, with SHIM_DIR (when set) first on PATH;
+# Run swarm retire ARGS, with SHIM_DIR (when set) first on PATH;
 # print "<status>".
 SHIM_DIR=""
 retire() {
@@ -1546,7 +1546,7 @@ done
 # the EXIT trap: the line only before Bash 4.1, death by the signal on
 # every version.  SIGTERM goes through retire's own trap: status 143, no
 # line.  The scratch directory goes either way.  python3 starts the run
-# in a session of its own, signals launch.sh only, then lets the held
+# in a session of its own, signals swarm only, then lets the held
 # docker go (Bash may hold the signal until it returns), and kills the
 # whole session at the end.
 _sg_py=yes

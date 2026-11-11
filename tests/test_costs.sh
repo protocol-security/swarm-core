@@ -4,7 +4,7 @@ set -euo pipefail
 # shellcheck source=_test_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
-# Unit tests for costs.sh aggregation and formatting logic.
+# Unit tests for swarm costs aggregation and formatting logic.
 # No Docker or API key required.
 
 PASS=0
@@ -25,7 +25,7 @@ assert_eq() {
     fi
 }
 
-# --- Helpers: same awk/logic used in costs.sh ---
+# --- Helpers: same awk/logic used in swarm costs ---
 
 aggregate_stats() {
     local tsv_file="$1"
@@ -136,7 +136,7 @@ assert_eq "zero"           "0.000000" "$(format_total_cost "0")"
 
 # ============================================================
 echo ""
-echo "=== 6. format_tokens (costs.sh copy) ==="
+echo "=== 6. format_tokens (swarm costs copy) ==="
 
 assert_eq "zero"   "0"     "$(format_tokens 0)"
 assert_eq "small"  "500"   "$(format_tokens 500)"
@@ -157,7 +157,7 @@ assert_eq "zero ms" "0" "$dur_s"
 
 # ============================================================
 echo ""
-echo "=== 8. format_duration (costs.sh) ==="
+echo "=== 8. format_duration (swarm costs) ==="
 
 format_duration() {
     local s=$1
@@ -179,9 +179,9 @@ assert_eq "7384 seconds" "2h 03m"  "$(format_duration 7384)"
 
 # ============================================================
 echo ""
-echo "=== 9. costs.sh effort tag (real script, stub docker) ==="
+echo "=== 9. swarm costs effort tag (real script, stub docker) ==="
 
-# Run costs.sh through its #!/bin/bash shebang, which is Bash 3.2 on
+# Run swarm costs through its #!/bin/bash shebang, which is Bash 3.2 on
 # macOS, against a stub docker that reports one agent with an effort.
 STUB_BIN="$TMPDIR/stub-bin"
 PROJ_DIR="$TMPDIR/proj"
@@ -209,7 +209,7 @@ STUB
 chmod +x "$STUB_BIN/docker"
 git -C "$PROJ_DIR" init -q
 
-COSTS_SH="$(cd "$(dirname "$0")/.." && pwd)/costs.sh"
+COSTS_SH="$(cd "$(dirname "$0")/.." && pwd)/libexec/costs"
 rc=0
 out=$(cd "$PROJ_DIR" && PATH="$STUB_BIN:$PATH" SWARM_SKIP_DEP_CHECK=1 \
     SWARM_RUNTIME_DIR="$TMPDIR/no-runtime" STUB_OWNER="$PROJ_OWNER" \
@@ -220,7 +220,7 @@ assert_eq "effort tag is uppercase" "1" \
 
 # ============================================================
 echo ""
-echo "=== 10. costs.sh copies stats into a private temp dir ==="
+echo "=== 10. swarm costs copies stats into a private temp dir ==="
 
 # Run the real script against a fake docker that serves one agent and
 # records where `docker cp` writes.  The copy used to land on a fixed
@@ -249,7 +249,7 @@ esac
 EOF
 chmod +x "$_fake_bin/docker"
 
-_costs_sh="$(cd "$(dirname "$0")/.." && pwd)/costs.sh"
+_costs_sh="$(cd "$(dirname "$0")/.." && pwd)/libexec/costs"
 git init -q "$_costs_repo"
 _costs_out=$(cd "$_costs_repo" \
     && PATH="$_fake_bin:$PATH" SWARM_RUNTIME_DIR="$TMPDIR/no-runtime" \
@@ -299,7 +299,7 @@ _stop_out=$(cd "$_costs_repo" \
         "$_costs_sh" 2>&1) || _stop_rc=$?
 assert_eq "a run stopped on an unset variable ends with 1" "1" "$_stop_rc"
 assert_eq "saying so where Bash 3.2 would end with 0" "$_stop_says" \
-    "$(grep -c 'costs.sh stopped before the end of its run' <<< "$_stop_out")"
+    "$(grep -c 'swarm costs stopped before the end of its run' <<< "$_stop_out")"
 _stop_rc=0
 (cd "$_costs_repo" \
     && PATH="$_fake_bin:$PATH" SWARM_RUNTIME_DIR="$TMPDIR/no-runtime" \
@@ -316,7 +316,7 @@ _extract() {  # FUNCTION FILE
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' "$2"
 }
-_extract swarm_stop_guard_needed "$(dirname "$_costs_sh")/lib/project.sh" \
+_extract swarm_stop_guard_needed "$(dirname "$_costs_sh")/../lib/project.sh" \
     > "$TMPDIR/stop-guard.sh"
 _extract costs_exit_trap "$_costs_sh" > "$TMPDIR/exit-trap.sh"
 _guard() {
@@ -372,7 +372,7 @@ for _b in $_bashes; do
     _tr_out=$(_trap_run "$_b" 0 ':') || _tr_rc=$?
     assert_eq "$_b: no flag where the check is made: status 1" "1" "$_tr_rc"
     assert_eq "$_b:   saying so once" "1" \
-        "$(grep -c 'costs.sh stopped before the end of its run' \
+        "$(grep -c 'swarm costs stopped before the end of its run' \
             <<< "$_tr_out")"
     assert_eq "$_b:   the scratch directory goes" "yes" "$(_trap_gone)"
     _tr_rc=0
@@ -524,7 +524,7 @@ if [ "$_have_py" = yes ]; then
                 "${_sig#*:}" "$(sed -n 's/^rc //p' <<< "$_sig_out")"
             assert_eq "$_sn:   the line only before Bash 4.1" \
                 "$_sig_line" \
-                "$(grep -c 'costs.sh stopped before the end of its run' \
+                "$(grep -c 'swarm costs stopped before the end of its run' \
                     "$_sig_fix/err" || true)"
             assert_eq "$_sn:   the scratch directory goes" "no" \
                 "$(sed -n 's/^after //p' <<< "$_sig_out")"

@@ -2,7 +2,7 @@
 
 # Preservation checks: before anything deletes engine state, every
 # piece of agent work in it has to be in the checkout.  Sourced by
-# launch.sh after lib/project.sh.
+# swarm after lib/project.sh.
 
 # Refs of the bare repo that hold agent work.  refs/swarm-runs/ is kept
 # for per-run namespaces.
@@ -149,7 +149,7 @@ swarm_preservation_explain() {
         qref=$(printf '%q' "$ref")
         case "$ref" in
             refs/heads/agent-work|refs/heads/swarm/*/interactive-*)
-                echo "  ${ref#refs/heads/} ${sha:0:12}: run ./harvest.sh" \
+                echo "  ${ref#refs/heads/} ${sha:0:12}: run swarm harvest" \
                      "to merge it" >&2 ;;
             *)
                 echo "  ${ref#refs/heads/} ${sha:0:12}: look at it with" \

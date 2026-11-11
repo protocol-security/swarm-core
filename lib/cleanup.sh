@@ -1,5 +1,5 @@
 #!/bin/bash
-# launch.sh cleanup: delete this checkout's engagement (its workspace
+# swarm cleanup: delete this checkout's engagement (its workspace
 # volumes, the bare repo, the mirrors, and the engagement's records)
 # without losing anything Git kept there.  Every repository location
 # about to go is first copied into the checkout as recovery refs
@@ -10,7 +10,7 @@
 # file records what each run preserved, so a run that stops half way
 # is finished by the next one, and other commands wait until it is.
 #
-# Sourced by launch.sh after lib/project.sh, lib/preserve.sh and
+# Sourced by swarm after lib/project.sh, lib/preserve.sh and
 # lib/retire.sh; uses PROJECT, REPO_ROOT, CHECKOUT_PATH, RUNTIME_DIR,
 # STATE_FILE, BARE_REPO, MIRROR_DIR and IMAGE_NAME.
 
@@ -143,7 +143,7 @@ cleanup_none_running() {
         return 1
     }
     # "<name> <id>" lines; no read loop over a here-string (see
-    # wait_count in launch.sh).  Names and ids hold no glob characters.
+    # wait_count in swarm).  Names and ids hold no glob characters.
     IFS=$'\n'
     for line in $list; do
         name="${line%% *}"
@@ -162,7 +162,7 @@ cleanup_none_running() {
     done
     if [ -n "$live" ]; then
         echo "ERROR: containers of this engagement still run, or Docker" \
-             "cannot tell; stop them first (./launch.sh stop):" >&2
+             "cannot tell; stop them first (swarm stop):" >&2
         printf '%s' "$live" >&2
         return 1
     fi
@@ -1046,7 +1046,7 @@ HELP
     if [ -s "$RETIRE_SCRATCH/left" ]; then
         echo "ERROR: cleanup left these in place:" >&2
         cut -f2 "$RETIRE_SCRATCH/left" | sed 's/^/  /' >&2
-        echo "  Run ./launch.sh cleanup again." >&2
+        echo "  Run swarm cleanup again." >&2
         return 1
     fi
 

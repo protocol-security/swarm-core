@@ -1,12 +1,12 @@
 #!/bin/bash
-# Submodules from the engagement's mirrors.  launch.sh lists, in
+# Submodules from the engagement's mirrors.  swarm lists, in
 # mirrors/manifest.json, every submodule it mirrored for the containers
 # (lib/mirrors.sh), parents first, and mounts mirrors/ read-only at
 # /mirrors; swarm_submodules_init checks each out there, never from the
 # network.  The .gitmodules reading both sides share is here too.
 #
 # Sourced by lib/harness.sh and lib/interactive.sh inside the container
-# (/submodules.sh), by launch.sh through lib/mirrors.sh, and by
+# (/submodules.sh), by swarm through lib/mirrors.sh, and by
 # tests/test_mirrors.sh.  Runs under Bash 3.2.  Names and paths are
 # bytes: what handles them runs in the C locale, as under a UTF-8 one
 # git config --get-regexp passes over a name that is not UTF-8 and tr
@@ -162,9 +162,9 @@ _swarm_b64d() {
 # the commit its superproject's checkout records.  Never --recursive:
 # what the manifest does not list stays uninitialized.  Only the file
 # protocol is allowed.  LOG names a function that prints one message.
-# The manifest must be valid for the engagement's base, which launch.sh
+# The manifest must be valid for the engagement's base, which swarm
 # passes in SWARM_MIRRORS_BASE, and only its first SWARM_MIRRORS_COUNT
-# entries are checked out: those launch.sh found ready (a join may
+# entries are checked out: those swarm found ready (a join may
 # append more meanwhile, their mirrors not made yet).
 #
 # An entry that does not apply to this checkout is skipped, with a

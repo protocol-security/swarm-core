@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Fetch agent-work from the bare repo, merge into current branch.
-# Usage: ./harvest.sh [--dry] [--again]
+# Usage: swarm harvest [--dry] [--again]
 
 # upload-pack, which Git starts in a local repository for a fetch (or a
 # partial clone's lazy fetch), fetches nothing it lacks (Git 2.45.1 and
@@ -12,7 +12,7 @@ set -euo pipefail
 # Any value but 1 goes.
 [ "${GIT_NO_LAZY_FETCH-1}" = 1 ] || unset GIT_NO_LAZY_FETCH
 
-SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"
+SWARM_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "$SWARM_DIR/lib/check-deps.sh"
 check_deps git jq
 # shellcheck source=lib/project.sh
@@ -108,7 +108,7 @@ for arg in "$@"; do
     case "$arg" in
         -h|--help)
             cat <<HELP
-Usage: $0 [--dry] [--again]
+Usage: swarm harvest [--dry] [--again]
 
 Fetch agent-work from the bare repo and merge into the current branch.
 
@@ -121,7 +121,7 @@ Options:
   -h, --help   Show this help message.
 
 The bare repo lives in the project's runtime directory, which
-launch.sh creates when starting agents: SWARM_RUNTIME_DIR if set,
+swarm creates when starting agents: SWARM_RUNTIME_DIR if set,
 else \$XDG_STATE_HOME/swarm-core/<project> (by default
 ~/.local/state/swarm-core/<project>).
 HELP
@@ -282,7 +282,7 @@ harvest_refuse() {
     echo "Take what you need from the bare repo by hand (git log" >&2
     echo "${REMOTE_NAME}/<branch>, cherry-pick), then end the engagement" >&2
     echo "with" >&2
-    echo "  ./launch.sh cleanup --allow-unharvested" >&2
+    echo "  swarm cleanup --allow-unharvested" >&2
     echo "which keeps everything in the bare repo as recovery refs," >&2
     echo "and start again from the current HEAD." >&2
     git remote remove "$REMOTE_NAME"
@@ -396,7 +396,7 @@ if ! $AGAIN; then
                 "harvest left to merge: that merge stopped (on a" \
                 "conflict, or with the harvest) and was given up, it" \
                 "was finished and dropped since, or a harvest --again" \
-                "stopped before it.  To merge it, run ./harvest.sh --again."
+                "stopped before it.  To merge it, run swarm harvest --again."
         fi
     done
     for c in $HARVESTED; do
@@ -410,7 +410,7 @@ if ! $AGAIN; then
                 "rebase, a reset), so merging again would bring back what" \
                 "was dropped.  If that harvest was undone on purpose (git" \
                 "reset --hard <restore tag>) and its work is wanted again," \
-                "run ./harvest.sh --again."
+                "run swarm harvest --again."
         fi
     done
 fi
@@ -498,7 +498,7 @@ if $AGAIN; then
         esac
         if $bad || ! git cat-file -e "${c}^{commit}" 2>/dev/null; then
             harvest_refuse \
-                "ERROR: ./harvest.sh --again cannot merge ${c:0:12}" \
+                "ERROR: swarm harvest --again cannot merge ${c:0:12}" \
                 "again: an earlier harvest recorded it, and neither this" \
                 "checkout nor a branch of the bare repo has it any more."
         fi
@@ -628,7 +628,7 @@ for item in "${MERGE_BRANCHES[@]}"; do
         else
             echo "ERROR: git did not start merging ${branch} (see above:" \
                  "local changes in the way, say), and changed nothing for" \
-                 "it.  Commit or stash those changes, then run harvest.sh" \
+                 "it.  Commit or stash those changes, then run swarm harvest" \
                  "again." >&2
         fi
         # What merged before this branch is recorded all the same, and
@@ -649,7 +649,7 @@ for item in "${MERGE_BRANCHES[@]}"; do
         echo "" >&2
         echo "ERROR: git left the merge of ${branch} uncommitted. Commit" \
              "it (git commit) to finish it, or give it up with git merge" \
-             "--abort; after that, harvest refuses until ./harvest.sh" \
+             "--abort; after that, harvest refuses until swarm harvest" \
              "--again." >&2
         harvest_record "${RECORD}"$'\n'"$(harvest_tips)" \
             "${tip}"$'\n'"$(harvest_owed)" || true

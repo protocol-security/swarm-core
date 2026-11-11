@@ -99,7 +99,8 @@ Drafting the PR:
 
 ## Linting
 
-- `shellcheck -s bash` on all `.sh` files before committing.
+- `shellcheck -s bash` on `bin/swarm`, `libexec/*` and all `.sh` files
+  before committing.
 - Only SC2016 (intentional single-quote) and SC2317 (trap
   handlers) info-level notices are acceptable.
 
