@@ -1626,11 +1626,11 @@ ag_in_head() {
     git -C "$AG_WORK" merge-base --is-ancestor "$1" HEAD 2>/dev/null \
         && echo yes || echo no
 }
-ag_state() {  # JQ-FILTER ARGS...: change the state file
+ag_state() {  # JQ-FILTER ARGS...: change the state file.
     local f="$SWARM_RUNTIME_DIR/state.json"
     jq "$@" "$f" > "$f.x" && mv "$f.x" "$f" && chmod 600 "$f"
 }
-ag_field() {  # FIELD COMMIT: true when the record's FIELD lists COMMIT
+ag_field() {  # FIELD COMMIT: true when the record's FIELD lists COMMIT.
     jq -r --arg f "$1" --arg c "$2" '(.[$f] // []) | index($c) != null' \
         "$SWARM_RUNTIME_DIR/state.json"
 }

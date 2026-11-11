@@ -391,7 +391,7 @@ for ORDER in other-first lib-first; do
         "1 1" "$RC $(grep -c 'gives lib two paths, or its path two names' \
             "$TMPDIR/out")"
 done
-# deinit: not initialized any more, so not mirrored.
+# Deinit: not initialized any more, so not mirrored.
 DI="$TMPDIR/deinit"
 host_clone "$DI"
 g -C "$DI" submodule deinit -q -f -- vendor/other >/dev/null 2>&1

@@ -961,7 +961,7 @@ fi
 
 TOP=""
 if [ "$MODE" = worktree ]; then
-    # find prints one x per entry, whatever bytes the names hold.
+    # Find prints one x per entry, whatever bytes the names hold.
     _entries=$(find "$ROOT" -mindepth 1 -maxdepth 1 -exec printf x \;) \
         || fail "cannot list ${ROOT}"
     if [ -z "$_entries" ]; then
@@ -1202,7 +1202,7 @@ if [ "$MODE" = worktree ]; then
             rc=0
             wtv=$(cfg -f "$cf" --get core.worktree 2>/dev/null \
                 && printf x) || rc=$?
-            # git prints the value and a newline; any other newline is
+            # Git prints the value and a newline; any other newline is
             # part of the value.
             wtv="${wtv%x}"
             wtv="${wtv%$'\n'}"

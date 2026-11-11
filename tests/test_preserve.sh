@@ -2818,7 +2818,7 @@ o=$(xscan retire-volume)
 assert_eq "so does one ending in CR LF" "1" \
     "$(has_line "$o" "block worktree-pointer .git/worktrees/w2 (not one short line)")"
 printf '%s\n' "$XL/w2/.git" > "$XW/.git/worktrees/w2/gitdir"
-# cleanup: a directory of its image at that path is the worktree only
+# Cleanup: a directory of its image at that path is the worktree only
 # when its .git names the admin dir back.
 o=$(xscan cleanup)
 assert_eq "cleanup: the worktree itself there blocks" "1" \

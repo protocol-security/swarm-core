@@ -726,7 +726,7 @@ assert_eq "ks12 effort"     "low"                         "$e"
 assert_eq "ks12 auth_token" "\$OPENROUTER_API_KEY"        "$t"
 assert_eq "ks12 prompt"     "prompts/explore.md"          "$p"
 
-# Post-process section
+# Post-process section.
 assert_eq "ks pp prompt"   "prompts/post.md"    "$(parse_pp_prompt "$TMPDIR/kitchen_sink.json")"
 assert_eq "ks pp model"    "claude-sonnet-4-6"  "$(parse_pp_model "$TMPDIR/kitchen_sink.json")"
 assert_eq "ks pp effort"   "high"               "$(parse_pp_effort "$TMPDIR/kitchen_sink.json")"
@@ -737,7 +737,7 @@ assert_eq "ks pp max_idle" "2"                  "$(parse_pp_max_idle "$TMPDIR/ki
 echo ""
 echo "=== 20. Post-process auth variants ==="
 
-# pp with auth_token (OpenRouter-style)
+# Post-process with auth_token (OpenRouter-style).
 cat > "$TMPDIR/pp_auth_token.json" <<'EOF'
 {
   "prompt": "p.md",
@@ -756,7 +756,7 @@ assert_eq "pp or auth_token" "\$OPENROUTER_API_KEY"     "$(jq -r '.post_process.
 assert_eq "pp or base_url"   "https://openrouter.ai/api" "$(jq -r '.post_process.base_url // empty' "$TMPDIR/pp_auth_token.json")"
 assert_eq "pp or api_key"    ""                         "$(jq -r '.post_process.api_key // empty' "$TMPDIR/pp_auth_token.json")"
 
-# pp with api_key (MiniMax-style)
+# Post-process with api_key (MiniMax-style).
 cat > "$TMPDIR/pp_apikey_custom.json" <<'EOF'
 {
   "prompt": "p.md",
@@ -774,7 +774,7 @@ assert_eq "pp mm model"    "MiniMax-M2.5"                     "$(parse_pp_model 
 assert_eq "pp mm api_key"  "\$MINIMAX_API_KEY"                 "$(jq -r '.post_process.api_key // empty' "$TMPDIR/pp_apikey_custom.json")"
 assert_eq "pp mm base_url" "https://api.minimax.io/anthropic" "$(jq -r '.post_process.base_url // empty' "$TMPDIR/pp_apikey_custom.json")"
 
-# pp with apikey auth (Claude API key)
+# Post-process with apikey auth (Claude API key).
 cat > "$TMPDIR/pp_apikey.json" <<'EOF'
 {
   "prompt": "p.md",
@@ -790,7 +790,7 @@ EOF
 assert_eq "pp apikey auth"  "apikey"          "$(parse_pp_auth "$TMPDIR/pp_apikey.json")"
 assert_eq "pp apikey model" "claude-opus-4-6" "$(parse_pp_model "$TMPDIR/pp_apikey.json")"
 
-# pp with default auth (no auth field)
+# Post-process with default auth (no auth field).
 cat > "$TMPDIR/pp_default.json" <<'EOF'
 {
   "prompt": "p.md",
@@ -861,7 +861,7 @@ EOF
 assert_eq "pp driver override" "other-driver" \
     "$(jq -r '.post_process.driver // .driver // "claude-code"' "$TMPDIR/pp_driver.json")"
 
-# pp inherits top-level driver when not set.
+# Post-process inherits top-level driver when not set.
 cat > "$TMPDIR/pp_driver_inherit.json" <<'EOF'
 {
   "prompt": "task.md",
@@ -873,7 +873,7 @@ EOF
 assert_eq "pp driver inherited" "fake" \
     "$(jq -r '.post_process.driver // .driver // "claude-code"' "$TMPDIR/pp_driver_inherit.json")"
 
-# pp defaults to claude-code when neither pp nor top-level set.
+# Post-process defaults to claude-code when neither pp nor top-level set.
 cat > "$TMPDIR/pp_driver_default.json" <<'EOF'
 {
   "prompt": "task.md",

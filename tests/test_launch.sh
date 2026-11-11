@@ -725,52 +725,52 @@ fi
 echo ""
 echo "=== 22. Auth label — credential source labels ==="
 
-# auth_token set → "token"
+# auth_token set → "token".
 assert_eq "auth_token → token" \
     "token" \
     "$(resolve_auth_label "" "" "sk-or-key" "" "")"
 
-# auth_token set with auth field → still "token" (takes priority)
+# auth_token set with auth field → still "token" (takes priority).
 assert_eq "auth_token + auth:apikey → token" \
     "token" \
     "$(resolve_auth_label "apikey" "" "sk-or-key" "" "")"
 
-# auth: "oauth" → "oauth"
+# auth: "oauth" → "oauth".
 assert_eq "auth:oauth → oauth" \
     "oauth" \
     "$(resolve_auth_label "oauth" "" "" "" "sk-oat-tok")"
 
-# custom api_key (no auth field) → "key"
+# Custom api_key (no auth field) → "key".
 assert_eq "custom api_key → key" \
     "key" \
     "$(resolve_auth_label "" "sk-custom" "" "" "")"
 
-# auth: "apikey" with resolved key → "key"
+# auth: "apikey" with resolved key → "key".
 assert_eq "auth:apikey → key" \
     "key" \
     "$(resolve_auth_label "apikey" "" "" "sk-global" "")"
 
-# auth: "apikey" with both host creds → still "key" (OAuth not forwarded)
+# auth: "apikey" with both host creds → still "key" (OAuth not forwarded).
 assert_eq "auth:apikey + host oauth → key" \
     "key" \
     "$(resolve_auth_label "apikey" "" "" "sk-global" "sk-oat-tok")"
 
-# default with both key + OAuth → "auto"
+# Default with both key + OAuth → "auto".
 assert_eq "default key+oauth → auto" \
     "auto" \
     "$(resolve_auth_label "" "" "" "sk-global" "sk-oat-tok")"
 
-# default with key only → "key"
+# Default with key only → "key".
 assert_eq "default key only → key" \
     "key" \
     "$(resolve_auth_label "" "" "" "sk-global" "")"
 
-# default with OAuth only → "oauth"
+# Default with OAuth only → "oauth".
 assert_eq "default oauth only → oauth" \
     "oauth" \
     "$(resolve_auth_label "" "" "" "" "sk-oat-tok")"
 
-# nothing at all → empty
+# Nothing at all → empty.
 assert_eq "no creds → empty" \
     "" \
     "$(resolve_auth_label "" "" "" "" "")"
@@ -1505,11 +1505,11 @@ echo "=== 35c. Bare repo and mirrors hold what branches, tags and HEAD reach ===
 # fetched by id when the submodule's checkout moved on; a base that
 # records a commit the submodule lacks is refused before any mirror is
 # made.  The live functions again (extracted in 35b).
-_tr_has() {  # REPO OID: yes when REPO has the object
+_tr_has() {  # REPO OID: yes when REPO has the object.
     if git -C "$1" cat-file -e "$2" 2>/dev/null; then echo yes
     else echo no; fi
 }
-_tr_unreachable() {  # REPO: how many objects no ref and no HEAD reach
+_tr_unreachable() {  # REPO: how many objects no ref and no HEAD reach.
     git -C "$1" cat-file --batch-all-objects \
         --batch-check='%(objectname)' | sort > "$TMPDIR/tr_all"
     git -C "$1" rev-list --objects --no-object-names --all HEAD \
@@ -1518,7 +1518,7 @@ _tr_unreachable() {  # REPO: how many objects no ref and no HEAD reach
 }
 # A user whose Git speaks protocol v0 by default.
 printf '[protocol]\n\tversion = 0\n' > "$TMPDIR/tr_v0.gitconfig"
-_tr_run() {  # FUNCTION ARGS...: one of the live functions, output kept
+_tr_run() {  # FUNCTION ARGS...: one of the live functions, output kept.
     (
         export GIT_CONFIG_GLOBAL="$TMPDIR/tr_v0.gitconfig"
         # shellcheck source=/dev/null
@@ -1720,7 +1720,7 @@ assert_eq "inner keeps its Git directory in its work tree" "yes no" \
 _gd_runtime="$_gd_dir/runtime"
 mkdir -m 700 "$_gd_runtime"
 _gd_run() {  # 'FUNCTION [ARG]'...: each in turn, under set -e as in
-    # swarm (a subshell after || would ignore it)
+    # swarm (a subshell after || would ignore it).
     set +e
     (
         set -e
@@ -1740,7 +1740,7 @@ _gd_run() {  # 'FUNCTION [ARG]'...: each in turn, under set -e as in
     _gd_rc=$?
     set -e
 }
-_gd_mirror() {  # PATH: the mirror the manifest lists for that path
+_gd_mirror() {  # PATH: the mirror the manifest lists for that path.
     printf '%s/mirrors/%s.git' "$_gd_runtime" "$(jq -r --arg p \
         "$(printf '%s' "$1" | base64 | tr -d '\n')" \
         '.mirrors[] | select(.parent == 0 and .path == $p) | .id' \
@@ -1783,7 +1783,7 @@ done
 # a .git that names no repository (Git's foreach refuses it before the
 # command runs), and a config Git cannot parse (git rev-parse fails in
 # the command).  Each time on a new runtime directory and bare repo.
-_gd_again() {  # N: put the last runtime directory and bare repo aside
+_gd_again() {  # N: put the last runtime directory and bare repo aside.
     mv "$_gd_runtime" "$_gd_dir/runtime-$1"
     if [ -e "$_gd_dir/bare.git" ]; then
         mv "$_gd_dir/bare.git" "$_gd_dir/bare-$1.git"
@@ -2394,7 +2394,7 @@ assert_eq "no engagement, lock held: says to run stop again" "1" \
     "$(grep -c 'no engagement is about to start' "$TMPDIR/stop.out" \
         || true)"
 
-# stop never creates the runtime directory and leaves the state file in
+# Stop never creates the runtime directory and leaves the state file in
 # place, since it names the owner.
 run_stop_with_runtime() {
     (
@@ -2722,12 +2722,12 @@ git -C "$_mva_top" -c user.name=t -c user.email=t@t \
     -c commit.gpgsign=false commit -q -m subs
 _mva_rt="$TMPDIR/state dir"
 mkdir -p "$_mva_rt"
-_mva_state() {  # REPO: a state file recording REPO's HEAD as the base
+_mva_state() {  # REPO: a state file recording REPO's HEAD as the base.
     jq -n --arg schema "$SWARM_STATE_SCHEMA" \
         --arg base "$(git -C "$1" rev-parse HEAD)" \
         '{schema: $schema, base_commit: $base}' > "$_mva_rt/state.json"
 }
-_mva_run() {  # REPO DIR: mirror_volume_args's arguments, one per line
+_mva_run() {  # REPO DIR: mirror_volume_args's arguments, one per line.
     (
         # shellcheck source=/dev/null
         source "$_mva_fn"
@@ -2900,7 +2900,7 @@ assert_eq "state file is mode 600" "600" \
 echo ""
 echo "=== 48. start from a subdirectory with a relative SWARM_CONFIG ==="
 
-# start changes into the repository root before it reads the swarmfile
+# Start changes into the repository root before it reads the swarmfile
 # again, so a relative SWARM_CONFIG has to be resolved first.  A fake
 # docker accepts every call; git, jq and the runtime directory are real.
 _st_bin="$TMPDIR/start-bin"
@@ -3159,7 +3159,7 @@ assert_eq "status reads nothing from it" "0" \
 echo ""
 echo "=== 50. Engagement id ==="
 
-# start records the engagement of the new bare repo; later phases
+# Start records the engagement of the new bare repo; later phases
 # refuse a different SWARM_ENGAGEMENT_ID.
 assert_eq "start records a generated engagement id" "true" \
     "$(engagement_id=$(jq -r .engagement_id "$_st_rt/state.json" \
@@ -3220,7 +3220,7 @@ assert_eq "wait refuses another engagement" "1" "$_eng_rc"
 echo ""
 echo "=== 51. Engagement lock ==="
 
-# start fails at once while another operation holds the lock, before
+# Start fails at once while another operation holds the lock, before
 # it touches the bare repo or Docker.
 _lk_rt="$TMPDIR/lock-runtime"
 _lk_log="$TMPDIR/lock-docker.log"
@@ -3935,7 +3935,7 @@ assert_eq "the old record is gone" "false" \
 echo ""
 echo "=== 54. No temporary file outlives swarm ==="
 
-# interactive stopped by an agent index that does not exist, start
+# Interactive stopped by an agent index that does not exist, start
 # stopped by a driver that does not exist once it wrote the agents'
 # list, and interactive stopped by a Ctrl-C while the image builds:
 # every file mktemp made for them is gone when they exit.  A mktemp
@@ -4053,7 +4053,7 @@ fi
 echo ""
 echo "=== 55. Workspace volumes, one daemon, clean runtimes ==="
 
-# start, post-process, interactive, stop and wait against a fake docker
+# Start, post-process, interactive, stop and wait against a fake docker
 # that keeps its world in files under V_DIR, one directory per case:
 #   context     the current context, a or b (DOCKER_CONTEXT overrides
 #               it); the daemon behind context X has id daemon-X
@@ -4603,7 +4603,7 @@ assert_eq "that agent stopped too" "1" \
 assert_eq "none of the engagement's agents runs then" "0" \
     "$(jq -r 'select(.state == "running") | .id' "$V_DIR/containers" \
         | grep -c . || true)"
-# wait takes the lock once the agents are done, which a stop holds for
+# Wait takes the lock once the agents are done, which a stop holds for
 # a moment then: wait waits for it rather than give up.
 v_agents exited
 echo run > "$V_DIR/fail"
@@ -4635,7 +4635,7 @@ assert_eq "stop that cannot stop an agent: fails" "1" "$_v_rc"
 assert_eq "without waiting for the lock" "0" \
     "$(cat "$V_DIR/flock.log" 2>/dev/null | grep -c '^-w ' || true)"
 
-# stop and wait take every check from one copy of the state: the state
+# Stop and wait take every check from one copy of the state: the state
 # file replaced right after that copy (a cleanup and a new start with
 # the same engagement id elsewhere) changes neither the engagement they
 # check nor the token they act on.  A cp first on PATH replaces it.
@@ -4740,7 +4740,7 @@ assert_eq "after three passes without the lock and three under it" "6" \
     "$(grep -c '|stop -t 60 ' "$V_DIR/log" || true)"
 assert_eq "saying so" "true" \
     "$(v_has "keep starting, even under the engagement lock" "$_v_out")"
-# post-process, under the lock, finds every numbered agent done (no
+# Post-process, under the lock, finds every numbered agent done (no
 # start can be launching more then) or refuses: the dashboard's p
 # stops them first without the lock.
 v_agents running
@@ -4826,7 +4826,7 @@ done
 cp "$_v_root/state.saved" "$V_STATE"
 chmod 600 "$V_STATE"
 
-# start makes a new engagement, and a token names one to join: refused
+# Start makes a new engagement, and a token names one to join: refused
 # before anything is prepared, here with the token of an engagement a
 # failed clone recorded and left nothing of, which start would replace.
 _v_keep="$V_DIR|$V_RT|$V_STATE"
@@ -4851,7 +4851,7 @@ assert_eq "a token-bound start: builds and runs nothing" "0" \
     "$(v_writes)"
 IFS='|' read -r V_DIR V_RT V_STATE <<< "$_v_keep"
 
-# wait reads the token once; an engagement started again while it polls
+# Wait reads the token once; an engagement started again while it polls
 # makes it stop before post-process and harvest.
 v_agents exited
 cp "$V_STATE" "$_v_root/state.saved"
@@ -4878,7 +4878,7 @@ assert_eq "wait: all agents done, post-process starts" "1" \
 assert_eq "wait: post-process ended at the failed docker run" "125" \
     "$_v_rc"
 
-# wait goes on only once no numbered agent runs: one that runs for two
+# Wait goes on only once no numbered agent runs: one that runs for two
 # more listings keeps it waiting for them (then one more listing, under
 # the lock).
 v_agents exited
@@ -5252,7 +5252,7 @@ exec "$RB_REAL_GIT" "$@"
 EOF
 chmod +x "$_rb_slow/git"
 _rb_git=$(command -v git)
-rb_slow() {  # ARGUMENT REPO: the result, then 1 when it took under 15 s
+rb_slow() {  # ARGUMENT REPO: the result, then 1 when it took under 15 s.
     local t0=$SECONDS out
     out=$(PATH="$_rb_slow:$PATH" RB_SLOW_ON="$1" RB_REAL_GIT="$_rb_git" \
         _SWARM_GIT_READ_SECS=1 rb "$2" 2>"$TMPDIR/rb-slow.err")
@@ -5339,7 +5339,7 @@ assert_eq "a record alone: start names it" "true" \
 assert_eq "a record alone: start changes nothing" "$_v_before" "$(v_snap)"
 assert_eq "a record alone: start makes nothing in Docker" "0" "$(v_writes)"
 
-# wait: once the agents are done, an incomplete engagement stops it
+# Wait: once the agents are done, an incomplete engagement stops it
 # before post-process, and before harvest without one.
 _v_tok_saved="$_v_tok"
 for _v_cfg in post harvest; do
@@ -5591,7 +5591,7 @@ for _v_cmd in start post-process "interactive --agent-index 1" \
 done
 V_CFG="$_v_cfg_saved"
 
-# wait reads docker_args only when it goes on to post-process; stop,
+# Wait reads docker_args only when it goes on to post-process; stop,
 # status and logs never do.
 v_new
 v_run start >/dev/null || true
@@ -5796,7 +5796,7 @@ assert_eq "  saying why" "true" \
     "$(v_has "a target needs both TARGET_REPO and TARGET_REV" "$_v_out")"
 assert_eq "  preparing nothing" "no" \
     "$([ -e "$V_RT" ] && echo yes || echo no)"
-# post-process and interactive check the pair once they know they
+# Post-process and interactive check the pair once they know they
 # create the engagement (alone, a variable may join one).
 for _v_cmd in post-process "interactive --agent-index 1"; do
     v_new
@@ -5908,7 +5908,7 @@ for _v_step in publish clone; do
     assert_eq "  then a start works" "0" "$_v_rc"
 done
 
-# post-process and interactive create a targeted engagement on their
+# Post-process and interactive create a targeted engagement on their
 # own too (docker run fails here after logging: post-process ends at
 # once).
 v_new
@@ -5983,7 +5983,7 @@ for _v_cmd in post-process "interactive --agent-index 1"; do
 done
 chmod o+r "$_v_obj"
 
-# wait: the whole check before it polls; under the lock the record and
+# Wait: the whole check before it polls; under the lock the record and
 # the request again, the snapshot where post-process mounts it.
 : > "$V_DIR/argv.jsonl"
 echo run > "$V_DIR/fail"

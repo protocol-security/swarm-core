@@ -821,7 +821,7 @@ in_cleanup() {
     builtin printf '%s' "$rc"
 }
 
-# cleanup retires the containers through retire, which keeps the Git
+# Cleanup retires the containers through retire, which keeps the Git
 # checkouts in their layers; --discard-uncommitted goes on to it.
 # shellcheck disable=SC2016  # expanded by the eval
 in_cleanup eval 'retire_run() { echo "retire:$*"; }; CLEANUP_DISCARD=true; cleanup_retire' > /dev/null

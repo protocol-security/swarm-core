@@ -1472,7 +1472,7 @@ scase "a directory without other read" "$R" chmod o-r "$S/objects"
 scase "a file without group read" "$R" chmod g-r "$S/config"
 scase "an object without other read" "$R" \
     eval 'chmod o-r "$(find "$S/objects" -type f | head -1)"'
-# find failing refuses: a directory its owner cannot list (not as root,
+# Find failing refuses: a directory its owner cannot list (not as root,
 # who can), and any failure of find itself.
 if [ "$(id -u)" != 0 ]; then
     fresh

@@ -413,7 +413,7 @@ fi
 _sig_bin="$TMPDIR/sig-bin"
 _sig_fix="$TMPDIR/sig-fixture"
 mkdir -p "$_sig_bin" "$_sig_fix"
-# mktemp makes its directory with the real one and records it, so the
+# Mktemp makes its directory with the real one and records it, so the
 # script's scratch directory is known even when the run never gets to
 # docker cp (macOS's mktemp -d ignores TMPDIR), and nothing is left.
 _real_mktemp=$(command -v mktemp)

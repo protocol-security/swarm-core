@@ -591,7 +591,7 @@ swarm_scan_extract() {
         rm -f "$archive"
         return 1
     fi
-    # tar printed less than 64 bytes, so it ended on its own: its status
+    # Tar printed less than 64 bytes, so it ended on its own: its status
     # counts.
     if ! (ulimit -f "$kb"; tar -tf "$archive" > /dev/null 2>"$out/.tar-err")
     then
