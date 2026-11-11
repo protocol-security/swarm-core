@@ -1065,7 +1065,7 @@ out=$(scan worktree "$CR" full)
 swarm_recovery_import "$CC" "$out" "refs/swarm-recovery/c/s1/v" 2>/dev/null
 # Turn the imported pack into loose objects, so one can be replaced.
 for _p in "$CC"/.git/objects/pack/pack-*.pack; do
-    mv "$_p" "$TMPDIR/cc.pack"
+    mv -f "$_p" "$TMPDIR/cc.pack"
     rm -f "${_p%.pack}".*
     git -C "$CC" unpack-objects -q < "$TMPDIR/cc.pack"
 done
@@ -1088,7 +1088,7 @@ g -C "$CC" commit -q --allow-empty -m base
 out=$(scan worktree "$CR" full)
 swarm_recovery_import "$CC" "$out" "refs/swarm-recovery/c/s1/v" 2>/dev/null
 for _p in "$CC"/.git/objects/pack/pack-*.pack; do
-    mv "$_p" "$TMPDIR/cc.pack"
+    mv -f "$_p" "$TMPDIR/cc.pack"
     rm -f "${_p%.pack}".*
     git -C "$CC" unpack-objects -q < "$TMPDIR/cc.pack"
 done
