@@ -865,9 +865,9 @@ ln -s "$(command -v dirname)" "$_nojq_bin/dirname"
 ln -s "$(command -v docker 2>/dev/null || command -v true)" \
     "$_nojq_bin/docker"
 cd "$LEGACY_WORK"
-for _tool in swarm harvest swarm progress; do
+for _tool in harvest progress; do
     nojq_rc=0
-    nojq_out=$(PATH="$_nojq_bin" /bin/bash "$REPO_ROOT/$_tool" 2>&1) \
+    nojq_out=$(PATH="$_nojq_bin" /bin/bash "$REPO_ROOT/libexec/$_tool" 2>&1) \
         || nojq_rc=$?
     assert_eq "${_tool} without jq fails" "1" "$nojq_rc"
     assert_eq "${_tool} names jq as missing" "true" \
