@@ -106,7 +106,8 @@ run_all_tests() {
     else
         local rt_test rt_start rt_elapsed rt_rc
         for rt_test in runtime_signal_trap.sh runtime_pi.sh \
-                runtime_retire.sh runtime_cleanup.sh runtime_target.sh; do
+                runtime_retire.sh runtime_cleanup.sh runtime_target.sh \
+                runtime_mirrors.sh; do
             rt_rc=0
             rt_start=$(date +%s)
             "$TESTS_DIR/$rt_test" || rt_rc=$?
@@ -430,8 +431,10 @@ Options:
                     SIGTERM / SIGINT / fatal-exit paths under a real
                     container with a synthetic test-committer driver,
                     then launch.sh retire on real stopped containers,
-                    launch.sh cleanup on what containers wrote, and a
-                    target checked out from its snapshot in the image.
+                    launch.sh cleanup on what containers wrote, a
+                    target checked out from its snapshot in the image,
+                    and nested submodules checked out from their mirrors
+                    with no network.
   --all             Unit + runtime, then full integration matrix.
   --oauth           Integration test using CLAUDE_CODE_OAUTH_TOKEN
                     (needs Docker + OAuth token).
@@ -494,6 +497,7 @@ if $RUN_RUNTIME; then
     "$TESTS_DIR/runtime_retire.sh" || rt_rc=1
     "$TESTS_DIR/runtime_cleanup.sh" || rt_rc=1
     "$TESTS_DIR/runtime_target.sh" || rt_rc=1
+    "$TESTS_DIR/runtime_mirrors.sh" || rt_rc=1
     exit "$rt_rc"
 fi
 

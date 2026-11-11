@@ -110,6 +110,8 @@ git config --global user.name "$GIT_USER_NAME"
 git config --global user.email "$GIT_USER_EMAIL"
 # shellcheck disable=SC1091
 source /signing.sh
+# shellcheck disable=SC1091
+source /submodules.sh
 configure_git_signing
 
 AGENT_CLI_VERSION=$(agent_version)
@@ -131,17 +133,9 @@ if [ ! -d /workspace/.git ]; then
         git checkout -q -B "$SWARM_INTERACTIVE_BRANCH" origin/agent-work
     fi
 
-    if [ -f .gitmodules ]; then
-        git config --file .gitmodules --get-regexp \
-            'submodule\..*\.path' | while read -r key path; do
-            name="${key#submodule.}"
-            name="${name%.path}"
-            if [ -d "/mirrors/${name}" ]; then
-                git config "submodule.${name}.url" "/mirrors/${name}"
-                git submodule update --init -q -- "$path"
-            fi
-        done
-    fi
+    # The submodules the engagement mirrored, at any depth, each from
+    # its mirror (lib/submodules.sh).
+    swarm_submodules_init /mirrors/manifest.json /workspace ilog
 
     if [ -d .claude ]; then
         case "$SWARM_CONTEXT" in

@@ -426,12 +426,13 @@ _session_end_push() {
 
         # (b) Re-sync submodule HEADs to the superproject's expected
         # gitlink.  This is what clears `M <submodule>` from status
-        # -- stash cannot reach it.  --force is safe here because
-        # dirty submodule state is ephemeral build output; anything
-        # worth preserving should already be in a commit or in the
-        # stash above.  `|| true` so a submodule-less repo or a
-        # transient network hiccup doesn't abort the push path.
-        git submodule update --init --recursive --force 2>&1 | hlog_pipe || true
+        # -- stash cannot reach it.  A forced checkout is safe here
+        # because dirty submodule state is ephemeral build output;
+        # anything worth preserving should already be in a commit or
+        # in the stash above.  Only submodules checked out already, at
+        # any depth, and nothing cloned or fetched: one that lacks its
+        # commit is logged and left (lib/submodules.sh).
+        swarm_submodules_sync /workspace hlog
     fi
 
     _push_ok=false
@@ -582,6 +583,8 @@ git config --global user.name "$GIT_USER_NAME"
 git config --global user.email "$GIT_USER_EMAIL"
 # shellcheck source=signing.sh
 source /signing.sh
+# shellcheck source=submodules.sh
+source /submodules.sh
 configure_git_signing
 
 # Capture CLI version once for the prepare-commit-msg hook.
@@ -608,20 +611,11 @@ if [ ! -d "/workspace/.git" ]; then
     git clone -q /upstream /workspace
     cd /workspace
 
-    # Init only submodules whose mirrors were mounted into the
-    # container. Client submodules without mirrors keep their
-    # upstream URLs and are left for the agent to init on demand.
-    if [ -f .gitmodules ]; then
-        git config --file .gitmodules --get-regexp 'submodule\..*\.path' | \
-        while read -r key path; do
-            name="${key#submodule.}"
-            name="${name%.path}"
-            if [ -d "/mirrors/${name}" ]; then
-                git config "submodule.${name}.url" "/mirrors/${name}"
-                git submodule update --init -q -- "$path"
-            fi
-        done
-    fi
+    # The submodules the engagement mirrored, at any depth, each from
+    # its mirror and never from the network (lib/submodules.sh).  The
+    # others keep their URLs and are left for the agent to init on
+    # demand.  One that cannot be checked out stops the startup.
+    swarm_submodules_init /mirrors/manifest.json /workspace hlog
 
     git checkout -q agent-work
 

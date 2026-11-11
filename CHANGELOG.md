@@ -11,6 +11,7 @@
 
 
 
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -18,6 +19,28 @@
   `PI_REASONING` or `PI_COMPACTION_RESERVE_TOKENS` exported, as on a
   host that runs Pi agents, `tests/test_pi.sh` and
   `tests/test_launch.sh` failed.
+- **Submodules are mirrored at any depth.** Every submodule initialized
+  on the host, nested ones and a linked worktree's included, gets a
+  numbered mirror in the runtime directory's `mirrors/`, and
+  `mirrors/manifest.json` says which submodule each is. Containers
+  mount `mirrors/` read-only at `/mirrors` and check each listed
+  submodule out from its mirror, parents first, before the agent runs,
+  through the file protocol only. Nested submodules were not mirrored:
+  the push path's `git submodule update --init --recursive` (and an
+  agent's) fetched them over the network, and two submodules of the
+  same name under different superprojects would have shared one
+  mirror. The push path now puts checked-out submodules back at their
+  gitlinks without fetching or initializing anything. A submodule the
+  containers could not get is refused before the engagement is
+  created, with what to do: a commit its Git directory lacks (this was
+  a warning, after which every container stopped at that submodule), a
+  shallow or partial clone, a link, a `.gitmodules` Git refuses, a name
+  or path with a tab or a newline. Mirrors are cloned without your
+  system or global Git configuration, so that no URL rewrite or default
+  repository format applies. Cleanup keeps the manifest under a
+  recovery ref. An engagement an earlier release mirrored is not
+  joined: finish it with that release, or clean it up.
+
 - **The image checks a target out: `swarm-target-checkout DIR`.** A
   setup hook or an agent makes `DIR` a checkout of the engagement's
   recorded commit from the read-only snapshot, without the network and
