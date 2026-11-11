@@ -6,7 +6,8 @@
 # is prepared.  The check is structural: values are Docker's to check,
 # when it runs, except where they would reach what launch.sh gives
 # every container of a target (the TARGET_* variables, the snapshot at
-# /target-upstream).  Compatible with Bash 3.2.  Functions print
+# /target-upstream) or the labels it gives every container (the
+# swarm-core. namespace).  Compatible with Bash 3.2.  Functions print
 # "ERROR: ..." and return 1 on refusal.
 
 # docker run's options, as Docker 24.0.9 or 29.8.2 registers them
@@ -220,6 +221,24 @@ if ($kind eq "mount") {
 }
 exit $rc;'
 
+# Succeed when label operand V (KEY or KEY=VALUE) has a key in the
+# engine's namespace: one that starts with "swarm-core.", whatever the
+# case of its letters, once any leading spaces and tabs are dropped
+# (Docker 29 keeps them in the key; an older one may not).
+_swarm_docker_label_reserved() {
+    local k="${1%%=*}" ws=$' \t'
+    while :; do
+        case "$k" in
+            ["$ws"]*) k="${k#?}" ;;
+            *) break ;;
+        esac
+    done
+    case "$k" in
+        [Ss][Ww][Aa][Rr][Mm]-[Cc][Oo][Rr][Ee].*) return 0 ;;
+    esac
+    return 1
+}
+
 # Refuse element POS (1-based) of docker_args, A, when option NAME (its
 # long name) with operand V would reach what launch.sh gives every
 # container of a target: one of the five variables (an env name is what
@@ -227,10 +246,25 @@ exit $rc;'
 # (--env-file) or every mount of another container (--volumes-from), or
 # a mount at or below /target-upstream (_SWARM_DOCKER_RESERVED).  The
 # place and the names are reserved whether or not the engagement has a
-# target.
+# target.  Labels in the engine's namespace (swarm-core.) are reserved
+# too, and with them every label of a file (--label-file): the engine
+# sets them, and callers find its containers by them.
 _swarm_docker_args_reserved() {
     local pos="$1" a="$2" name="$3" v="$4" kind rc=0
     case "$name" in
+        label)
+            if _swarm_docker_label_reserved "$v"; then
+                _swarm_docker_args_refuse "$pos" "$a" "sets a label in" \
+                    "the engine's namespace (swarm-core.), which only" \
+                    "launch.sh sets"
+                return 1
+            fi
+            return 0 ;;
+        label-file)
+            _swarm_docker_args_refuse "$pos" "$a" "reads labels from a" \
+                "file, which could set the engine's (swarm-core.); give" \
+                "each one with --label"
+            return 1 ;;
         env)
             case "${v%%=*}" in
                 TARGET_REPO|TARGET_REV|TARGET_REV_BASE|TARGET_REV_BASE_REPO\
@@ -351,6 +385,7 @@ swarm_docker_args_check() {
                 fi
                 case "$x" in
                     e) name="env" ;;
+                    l) name="label" ;;
                     v) name="volume" ;;
                     *) name="" ;;
                 esac

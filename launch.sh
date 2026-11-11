@@ -459,12 +459,14 @@ target_args_load() {
 # Fill WORKSPACE_ARGS with a new workspace volume for container NAME
 # (kind KIND, context CONTEXT) and the run arguments every engine
 # container gets after docker_args, so that an entry there cannot
-# replace them: the engagement and its token as labels, no restart
-# policy and no auto-remove (retire and cleanup refuse both).  Needs the
-# engagement recorded, so it runs once the bare repo was created or
-# joined.
+# replace them: the engagement, its token, the container's ROLE, its
+# PROFILE index and its agent NUMBER (the last two empty where they do
+# not apply) as labels, no restart policy and no auto-remove (retire and
+# cleanup refuse both).  Needs the engagement recorded, so it runs once
+# the bare repo was created or joined.
 workspace_args() {
-    local name="$1" kind="$2" context="$3" engagement token vol
+    local name="$1" kind="$2" context="$3" role="$4" profile="$5"
+    local number="$6" engagement token vol
     engagement=$(swarm_engagement_recorded "$STATE_FILE") || exit 1
     token=$(swarm_engagement_token "$STATE_FILE") || exit 1
     if [ -z "$engagement" ] || [ -z "$token" ]; then
@@ -478,6 +480,9 @@ workspace_args() {
         --mount "type=volume,src=${vol},dst=/workspace"
         --label "${SWARM_ENGAGEMENT_LABEL}=${engagement}"
         --label "${SWARM_TOKEN_LABEL}=${token}"
+        --label "${SWARM_ROLE_LABEL}=${role}"
+        --label "${SWARM_PROFILE_INDEX_LABEL}=${profile}"
+        --label "${SWARM_AGENT_NUMBER_LABEL}=${number}"
         --restart no --rm=false
     )
 }
@@ -780,17 +785,24 @@ print_interactive_profiles() {
     done >&2
 }
 
+# Write the agents[] profile an interactive session uses to OUTPUT_FILE:
+# the one named SELECTOR, the one at SELECTOR_INDEX (from 1), or with
+# neither, the only named one or the only one.  INTERACTIVE_PROFILE_INDEX
+# gets the index (from 1) of the profile written, for its container's
+# label.
 select_interactive_profile() {
     local selector="$1" selector_index="$2" output_file="$3"
-    local selected count
+    local selected count idx
 
     if [ -n "$selector_index" ]; then
         if ! [[ "$selector_index" =~ ^[0-9]+$ ]] \
-                || [ "$selector_index" -lt 1 ]; then
+                || [ "$((10#$selector_index))" -lt 1 ]; then
             echo "ERROR: --agent-index must be a positive integer." >&2
             exit 1
         fi
-        selected=$(jq -c --argjson idx "$((selector_index - 1))" \
+        # Decimal, whatever leading zeros it has.
+        idx=$((10#$selector_index))
+        selected=$(jq -c --argjson idx "$((idx - 1))" \
             '.agents[$idx] // empty' "$CONFIG_FILE")
         if [ -z "$selected" ] || [ "$selected" = "null" ]; then
             echo "ERROR: no agent at index ${selector_index}." >&2
@@ -798,6 +810,7 @@ select_interactive_profile() {
             exit 1
         fi
         printf '%s\n' "$selected" > "$output_file"
+        INTERACTIVE_PROFILE_INDEX="$idx"
         return
     fi
 
@@ -839,6 +852,11 @@ select_interactive_profile() {
     jq -c --arg name "$selector" \
         '.agents[] | select((.name // "") == $name)' \
         "$CONFIG_FILE" > "$output_file"
+    idx=$(jq --arg name "$selector" '[.agents | to_entries[]
+        | select((.value.name // "") == $name) | .key + 1]
+        | if length == 1 then .[0] else error("not one") end' \
+        "$CONFIG_FILE") || exit 1
+    INTERACTIVE_PROFILE_INDEX="$idx"
 }
 
 cmd_interactive() {
@@ -984,8 +1002,12 @@ HELP
     done
 
     # Its workspace volume, made under the lock before the session is
-    # recorded.
-    workspace_args "$name" interactive "$agent_context"
+    # recorded.  The role follows the mode it opens in: shell, or the
+    # driver's UI (interactive and chat).
+    local role=interactive
+    [ "$mode" != shell ] || role=shell
+    workspace_args "$name" interactive "$agent_context" "$role" \
+        "$INTERACTIVE_PROFILE_INDEX" ""
 
     # The session can last hours and only pushes through git, so it runs
     # without the lock.  It is recorded under the lock with this
@@ -1084,19 +1106,21 @@ cmd_start() {
         fi
     done <<< "$group_prompts"
 
-    # Build per-agent config (model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line).
+    # Build per-agent config (profile|model|base_url|api_key|effort|auth|context|prompt|auth_token|tag|driver per line),
+    # profile being the agents[] entry (from 1) the agent comes from.
     # Uses pipe delimiter because bash IFS=$'\t' collapses consecutive tabs.
     swarm_tmp_file AGENTS_CFG agents || exit 1
     jq -r '.tag as $dt | .driver as $dd |
-        .agents[] | range(.count // 0) as $i |
-        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' \
+        .agents | to_entries[] | (.key + 1 | tostring) as $p | .value |
+        range(.count // 0) as $i |
+        [$p, .model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' \
         "$CONFIG_FILE" > "$AGENTS_CFG"
 
     # Preflight: validate all referenced drivers and context modes
     # before anything is created, so that a mistake in the swarmfile
     # leaves the runtime directory clean.
     local _bad_drivers="" _checked_drivers=" " _ctx _bad_contexts=""
-    while IFS='|' read -r _ _ _ _ _ _ctx _ _ _ _drv; do
+    while IFS='|' read -r _ _ _ _ _ _ _ctx _ _ _ _drv; do
         case "${_ctx:-full}" in
             full|slim|none) ;;
             *) _bad_contexts+="  - ${_ctx}\n" ;;
@@ -1143,14 +1167,15 @@ cmd_start() {
     mirror_volume_args
 
     AGENT_IDX=0
-    while IFS='|' read -r agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt agent_auth_token agent_tag agent_driver; do
+    while IFS='|' read -r agent_profile agent_model agent_base_url agent_api_key agent_effort agent_auth agent_context agent_prompt agent_auth_token agent_tag agent_driver; do
         AGENT_IDX=$((AGENT_IDX + 1))
         NAME="${IMAGE_NAME}-${AGENT_IDX}"
         agent_api_key="$(expand_env_ref "$agent_api_key")"
         agent_auth_token="$(expand_env_ref "$agent_auth_token")"
         agent_tag="$(expand_env_ref "$agent_tag")"
         agent_context="${agent_context:-full}"
-        workspace_args "$NAME" agent "$agent_context"
+        workspace_args "$NAME" agent "$agent_context" agent "$agent_profile" \
+            "$AGENT_IDX"
         agent_driver="${agent_driver:-${SWARM_DRIVER_DEFAULT}}"
 
         # Source the driver to access agent_docker_env.
@@ -1697,7 +1722,7 @@ cmd_post_process() {
     fi
 
     target_args_load
-    workspace_args "$NAME" agent full
+    workspace_args "$NAME" agent full post-process "" ""
 
     # Build mirror volume args from existing mirrors.
     local MIRROR_ARGS=()

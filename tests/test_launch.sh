@@ -134,10 +134,13 @@ parse_num_agents() {
     jq '[.agents[]? | (.count // 0)] | add // 0' "$1"
 }
 
+# The per-agent lines launch.sh's start reads (its AGENTS_CFG), the
+# agents[] index of each one's profile first.
 parse_agents_cfg() {
     jq -r '.tag as $dt | .driver as $dd |
-        .agents[] | range(.count // 0) as $i |
-        [.model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' "$1"
+        .agents | to_entries[] | (.key + 1 | tostring) as $p | .value |
+        range(.count // 0) as $i |
+        [$p, .model, (.base_url // ""), (.api_key // ""), (.effort // ""), (.auth // ""), (.context // ""), (.prompt // ""), (.auth_token // ""), (.tag // $dt // ""), (.driver // $dd // "")] | join("|")' "$1"
 }
 
 # Mirrors the per-agent credential selection in launch.sh.
@@ -364,13 +367,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE4=$(echo "$CFG" | sed -n '4p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
+IFS='|' read -r _ m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "opus effort"  "high"   "$e1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
+IFS='|' read -r _ m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
 assert_eq "sonnet effort" "medium" "$e2"
 
-IFS='|' read -r m4 u4 k4 e4 a4 c4 p4 t4 g4 d4 <<< "$LINE4"
+IFS='|' read -r _ m4 u4 k4 e4 a4 c4 p4 t4 g4 d4 <<< "$LINE4"
 assert_eq "haiku effort (empty)" "" "$e4"
 
 cat > "$TMPDIR/omitted_count.json" <<'EOF'
@@ -476,14 +479,14 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
+IFS='|' read -r _ m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "auth apikey"  "apikey"  "$a1"
 assert_eq "auth apikey model" "claude-opus-4-6" "$m1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
+IFS='|' read -r _ m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
 assert_eq "auth oauth"   "oauth"   "$a2"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
+IFS='|' read -r _ m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
 assert_eq "auth custom (empty)" "" "$a3"
 assert_eq "auth custom key" "sk-mm" "$k3"
 
@@ -535,13 +538,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
+IFS='|' read -r _ m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "context default (empty)" "" "$c1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
+IFS='|' read -r _ m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
 assert_eq "context none" "none" "$c2"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
+IFS='|' read -r _ m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
 assert_eq "context slim" "slim" "$c3"
 
 # ============================================================
@@ -564,13 +567,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
+IFS='|' read -r _ m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "prompt default (empty)" "" "$p1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
+IFS='|' read -r _ m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
 assert_eq "prompt override" "tasks/review.md" "$p2"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
+IFS='|' read -r _ m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
 assert_eq "prompt + context" "tasks/explore.md" "$p3"
 assert_eq "context preserved" "none" "$c3"
 
@@ -594,13 +597,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 LINE4=$(echo "$CFG" | sed -n '4p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
+IFS='|' read -r _ m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "tag explore" "explore" "$g1"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
+IFS='|' read -r _ m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
 assert_eq "tag review" "review" "$g3"
 
-IFS='|' read -r m4 u4 k4 e4 a4 c4 p4 t4 g4 d4 <<< "$LINE4"
+IFS='|' read -r _ m4 u4 k4 e4 a4 c4 p4 t4 g4 d4 <<< "$LINE4"
 assert_eq "tag empty" "" "$g4"
 
 # ============================================================
@@ -1118,13 +1121,13 @@ LINE1=$(echo "$CFG" | sed -n '1p')
 LINE2=$(echo "$CFG" | sed -n '2p')
 LINE3=$(echo "$CFG" | sed -n '3p')
 
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
+IFS='|' read -r _ m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "inherits top-level tag" "custom-top-lvl-tag" "$g1"
 
-IFS='|' read -r m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
+IFS='|' read -r _ m2 u2 k2 e2 a2 c2 p2 t2 g2 d2 <<< "$LINE2"
 assert_eq "per-agent tag overrides" "custom-per-agent-tag" "$g2"
 
-IFS='|' read -r m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
+IFS='|' read -r _ m3 u3 k3 e3 a3 c3 p3 t3 g3 d3 <<< "$LINE3"
 assert_eq "no top-level tag no agent tag" "" "$g3"
 
 # No top-level tag. Agents without tag get empty.
@@ -1139,7 +1142,7 @@ EOF
 
 CFG=$(parse_agents_cfg "$TMPDIR/tag_none.json")
 LINE1=$(echo "$CFG" | sed -n '1p')
-IFS='|' read -r m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
+IFS='|' read -r _ m1 u1 k1 e1 a1 c1 p1 t1 g1 d1 <<< "$LINE1"
 assert_eq "absent top-level tag" "" "$g1"
 
 # ============================================================
@@ -4362,7 +4365,7 @@ for _v_i in 1 2; do
             "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
             && echo true || echo false)"
     assert_eq "agent $_v_i: mount, labels, policies and name follow docker_args" \
-        "1" "$(grep -F -- "|run --rm --restart always --name other -d --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-${_v_i} " || true)"
+        "1" "$(grep -F -- "|run --rm --restart always --name other -d --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --label swarm-core.role=agent --label swarm-core.profile-index=1 --label swarm-core.agent-number=${_v_i} --restart no --rm=false --name ${_v_img}-${_v_i} " || true)"
 done
 assert_eq "start builds the image once" "1" \
     "$(grep -c '|build ' "$V_DIR/log" || true)"
@@ -4392,7 +4395,7 @@ assert_eq "the session gets a volume of its own" "true" \
         "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
         && echo true || echo false)"
 assert_eq "mounted after docker_args, with the policies and its name" "1" \
-    "$(grep -F -- "|run --rm --restart always --name other -it --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_sess} " || true)"
+    "$(grep -F -- "|run --rm --restart always --name other -it --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --label swarm-core.role=interactive --label swarm-core.profile-index=1 --label swarm-core.agent-number= --restart no --rm=false --name ${_v_sess} " || true)"
 assert_eq "its session record names the daemon" "daemon=daemon-a" \
     "$(grep '^daemon=' "$V_RT/interactive-${_v_sess}.pending" 2>/dev/null)"
 assert_eq "joining builds the image too" "1" \
@@ -4415,7 +4418,7 @@ assert_eq "post-process gets a volume of its own" "true" \
         "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
         && echo true || echo false)"
 assert_eq "mounted after docker_args, with the policies and its name" "1" \
-    "$(grep -F -- "|run --rm --restart always --name other -d --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-post " || true)"
+    "$(grep -F -- "|run --rm --restart always --name other -d --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --label swarm-core.role=post-process --label swarm-core.profile-index= --label swarm-core.agent-number= --restart no --rm=false --name ${_v_img}-post " || true)"
 
 # --- volume failures stop before any docker run ----------------------
 # Creation fails; the labels read back are not the ones set (another
@@ -5450,6 +5453,121 @@ for _v_da in absent null empty; do
     V_CFG="$_v_cfg_saved"
 done
 
+# Print "NAME|ROLE|PROFILE|NUMBER" for each docker run logged: its last
+# --name, and the last value of each interface label (docker run keeps
+# the last one), "unset" for one it does not get.
+v_run_labels() {
+    jq -r 'select(.[0] == "run") | . as $a
+        | ([range(0; length - 1) | select($a[.] == "--label") | $a[. + 1]
+            | capture("^(?<k>[^=]*)=(?<v>.*)$") | {(.k): .v}] | add // {})
+            as $l
+        | ([range(0; length - 1) | select($a[.] == "--name") | $a[. + 1]]
+            | last) as $n
+        | [$n, ($l["swarm-core.role"], $l["swarm-core.profile-index"],
+                $l["swarm-core.agent-number"] | . // "unset")]
+        | join("|")' "$V_DIR/argv.jsonl"
+}
+# Every workload container gets the interface's labels, after
+# docker_args: a numbered agent its profile's agents[] index (a profile
+# of no agents keeps its index) and its number, post-process neither,
+# an interactive session its profile's index and the role of the mode
+# it opens in, however the profile was chosen.
+_v_cfg_lab="$_v_root/labels.json"
+jq '.agents = [{name: "a", count: 2, model: "fake"},
+        {name: "z", count: 0, model: "fake"},
+        {name: "b", count: 1, model: "fake"}]
+    | .docker_args = ["--label", "team=x"]' "$_v_cfg_saved" > "$_v_cfg_lab"
+V_CFG="$_v_cfg_lab"
+v_new
+_v_rc=0
+v_run start >/dev/null || _v_rc=$?
+assert_eq "labels: start works" "0" "$_v_rc"
+assert_eq "labels: each numbered agent's" \
+    "${_v_img}-1|agent|1|1 ${_v_img}-2|agent|1|2 ${_v_img}-3|agent|3|3" \
+    "$(v_run_labels | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "labels: docker_args' own label stays" "3" \
+    "$(jq -c 'select(.[0] == "run" and .[1:3] == ["--label", "team=x"])' \
+        "$V_DIR/argv.jsonl" | grep -c . || true)"
+v_agents exited
+: > "$V_DIR/argv.jsonl"
+echo run > "$V_DIR/fail"
+v_run post-process >/dev/null || true
+rm -f "$V_DIR/fail"
+assert_eq "labels: post-process's" "${_v_img}-post|post-process||" \
+    "$(v_run_labels)"
+for _v_spec in "interactive b|interactive|3" \
+        "interactive --agent b|interactive|3" \
+        "interactive --agent-index 1|interactive|1" \
+        "interactive --agent-index 01|interactive|1" \
+        "interactive --agent-index 3|interactive|3" \
+        "interactive b --shell|shell|3" \
+        "chat a|interactive|1" \
+        "shell b|shell|3" \
+        "shell --agent a --chat|interactive|1"; do
+    : > "$V_DIR/argv.jsonl"
+    # shellcheck disable=SC2086
+    v_run ${_v_spec%%|*} >/dev/null || true
+    assert_eq "labels: ${_v_spec%%|*}" "${_v_spec#*|}|" \
+        "$(v_run_labels | cut -d'|' -f2-)"
+done
+# --agent-index is a decimal number: 09 is the ninth profile (Bash
+# reads 09 as a bad octal number), here for a session that creates the
+# engagement.
+jq '.agents = [range(9) | {name: "p\(. + 1)", count: 0, model: "fake"}]' \
+    "$_v_cfg_saved" > "$_v_cfg_lab"
+v_new
+_v_rc=0
+_v_out=$(v_run interactive --agent-index 09) || _v_rc=$?
+assert_eq "labels: --agent-index 09 works" "0" "$_v_rc"
+assert_eq "labels: --agent-index 09 is the ninth profile" "interactive|9|" \
+    "$(v_run_labels | cut -d'|' -f2-)"
+# Each field of an agents[] entry reaches its agents' docker run through
+# the lines start reads, with the profile's index: a value of its own in
+# every field, two drivers, and Claude Code's, which passes the base
+# URL, the key and the token on, so that a field read from the wrong
+# place shows.
+jq '.agents = [
+        {name: "a", count: 1, model: "model-a", base_url: "http://base-a",
+         api_key: "key-a", effort: "high", auth: "apikey",
+         context: "slim", prompt: "prompt.md", tag: "tag-a",
+         driver: "claude-code"},
+        {name: "b", count: 1, model: "model-b", base_url: "http://base-b",
+         api_key: "key-b", effort: "low", context: "none",
+         prompt: "sub/configs/swarm.json", auth_token: "tok-b",
+         tag: "tag-b", driver: "claude-code"},
+        {name: "c", count: 1, model: "model-c", effort: "medium",
+         context: "full", tag: "tag-c", driver: "fake"}]
+    | del(.docker_args)' "$_v_cfg_saved" > "$_v_cfg_lab"
+v_new
+_v_rc=0
+ANTHROPIC_API_KEY='' ANTHROPIC_BASE_URL='' ANTHROPIC_AUTH_TOKEN='' \
+    CLAUDE_CODE_OAUTH_TOKEN='' v_run start >/dev/null || _v_rc=$?
+assert_eq "fields: start works" "0" "$_v_rc"
+assert_eq "fields: each agent's run gets its own profile's" \
+    "${_v_img}-1|1|model-a|http://base-a|key-a||key|high|slim|prompt.md|tag-a|claude-code ${_v_img}-2|2|model-b|http://base-b||tok-b|token|low|none|sub/configs/swarm.json|tag-b|claude-code ${_v_img}-3|3|model-c|||||medium|full|prompt.md|tag-c|fake" \
+    "$(jq -r 'select(.[0] == "run") | . as $a
+        | def opt($o): [range(0; length - 1) | select($a[.] == $o)
+            | $a[. + 1] | capture("^(?<k>[^=]*)=(?<v>.*)$") | {(.k): .v}]
+            | add // {};
+        opt("-e") as $e | opt("--label") as $l
+        | ([range(0; length - 1) | select($a[.] == "--name") | $a[. + 1]]
+            | last) as $n
+        | [$n, $l["swarm-core.profile-index"], $e.SWARM_MODEL,
+           $e.ANTHROPIC_BASE_URL, $e.ANTHROPIC_API_KEY,
+           $e.ANTHROPIC_AUTH_TOKEN, $e.SWARM_AUTH_MODE, $e.SWARM_EFFORT,
+           $e.SWARM_CONTEXT, $e.SWARM_PROMPT, $e.SWARM_TAG, $e.SWARM_DRIVER]
+        | map(. // "") | join("|")' "$V_DIR/argv.jsonl" \
+        | tr '\n' ' ' | sed 's/ $//')"
+# A swarmfile with one profile, chosen without naming it.
+jq '.agents = [{count: 1, model: "fake"}]' "$_v_cfg_saved" > "$_v_cfg_lab"
+v_new
+v_run start >/dev/null || true
+: > "$V_DIR/argv.jsonl"
+v_run interactive >/dev/null || true
+assert_eq "labels: the only profile, unnamed" "interactive|1|" \
+    "$(v_run_labels | cut -d'|' -f2-)"
+V_CFG="$_v_cfg_saved"
+
 # A bad docker_args stops start, post-process, interactive, chat and
 # shell before they prepare anything: no runtime directory, nothing in
 # Docker.
@@ -5533,7 +5651,7 @@ do
     done
 done
 V_CFG="$_v_root/da-target-ok.json"
-jq '.docker_args = ["-e", "TARGET_REPOX=1", "--label-file", "/dev/null",
+jq '.docker_args = ["-e", "TARGET_REPOX=1", "--label", "swarm-corex=1",
     "--mount", "type=volume,dst=/target-upstreamx"]' \
     "$_v_cfg_saved" > "$V_CFG"
 v_new
@@ -5542,7 +5660,7 @@ v_run start >/dev/null || _v_rc=$?
 assert_eq "their neighbours: start works" "0" "$_v_rc"
 assert_eq "  and they reach docker run" "2" \
     "$(jq -c 'select(.[0] == "run" and .[1:7] == ["-e", "TARGET_REPOX=1",
-        "--label-file", "/dev/null", "--mount",
+        "--label", "swarm-corex=1", "--mount",
         "type=volume,dst=/target-upstreamx"])' "$V_DIR/argv.jsonl" \
         | grep -c . || true)"
 V_CFG="$_v_cfg_saved"

@@ -211,9 +211,15 @@ make_container() {
         check "$label: volume" "failed" "created"
         return 1
     fi
+    # The labels of the interface, as on a numbered agent of the engine.
     if ! docker run --name "$name" \
             --label "${SWARM_PROJECT_LABEL}=${P}" \
             --label "${SWARM_CHECKOUT_LABEL}=${CK}" \
+            --label "${SWARM_ENGAGEMENT_LABEL}=e1" \
+            --label "${SWARM_TOKEN_LABEL}=0123456789abcdef" \
+            --label "${SWARM_ROLE_LABEL}=agent" \
+            --label "${SWARM_PROFILE_INDEX_LABEL}=1" \
+            --label "${SWARM_AGENT_NUMBER_LABEL}=1" \
             --mount "type=volume,src=${vol},dst=/workspace" \
             "${MC_ARGS[@]+"${MC_ARGS[@]}"}" \
             --entrypoint bash "$img" -c '
@@ -381,13 +387,13 @@ group_interrupt_scan_case() {
         snap=$(docker images -q --no-trunc \
             --filter "reference=${P}-agent-retire" | head -n 1)
         labels=$(docker image inspect -f \
-            '{{index .Config.Labels "swarm-core.project"}}|{{index .Config.Labels "swarm-core.checkout"}}' \
+            '{{index .Config.Labels "swarm-core.project"}}|{{index .Config.Labels "swarm-core.checkout"}}|{{index .Config.Labels "swarm-core.engagement"}}|{{index .Config.Labels "swarm-core.engagement-token"}}|{{index .Config.Labels "swarm-core.role"}}|{{index .Config.Labels "swarm-core.profile-index"}}|{{index .Config.Labels "swarm-core.agent-number"}}' \
             "$snap" 2>/dev/null)
     fi
     kill -INT -- "-$pid" 2>/dev/null
     wait "$pid" || rc=$?
     check "$label: the snapshot existed first" "$seen" "1"
-    check "$label: its engine labels are empty" "$labels" "|"
+    check "$label: its engine labels are empty" "$labels" "||||||"
     check "$label: stopped" "$rc" "130"
     check "$label: snapshot removed" "$(snapshots)" "$base"
     check "$label: no container made from it is left" \
