@@ -352,9 +352,16 @@ PPPROMPT
 }
 
 cmd_unit() {
-    local pass=0 fail=0 total_tests=0
+    local pass=0 fail=0 total_tests=0 width=0
     echo "=== Unit tests ==="
     echo ""
+    # Pad the names to the longest one, so that the counts line up.
+    for f in "$TESTS_DIR"/test_*.sh; do
+        f=$(basename "$f")
+        if [ "${#f}" -gt "$width" ]; then
+            width=${#f}
+        fi
+    done
     for f in "$TESTS_DIR"/test_*.sh; do
         local name rc output count
         name=$(basename "$f")
@@ -370,12 +377,12 @@ cmd_unit() {
             output="${output}"$'\n'"(no summary line: the file stopped early)"
         fi
         if [ "$rc" -eq 0 ]; then
-            printf "  PASS  %-24s (%s)\n" "$name" "${count:-?}"
-            pass=$((pass + 1))
             local n="${count%% *}"
+            printf "  PASS  %-*s  %4s passed\n" "$width" "$name" "${n:-?}"
+            pass=$((pass + 1))
             [ -n "$n" ] && total_tests=$((total_tests + n))
         else
-            printf "  FAIL  %-24s\n" "$name"
+            printf "  FAIL  %s\n" "$name"
             # Surface explicit FAIL: lines (with the expected/actual
             # context printed by assert_eq/assert_contains) before
             # the tail snippet -- when many assertions run after the
