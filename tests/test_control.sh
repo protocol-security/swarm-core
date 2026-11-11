@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
 # Unit tests for control.sh, the control interface swarm-core.control/v1
-# (USAGE.md, "Control interface"): its grammar, version, the actions
+# (USAGE, CONTROL INTERFACE): its grammar, version, the actions
 # run by exec, and observe against a fake docker, with every field
 # type-checked, every condition and reason, and the promise that a
 # query changes nothing.
@@ -236,7 +236,7 @@ q() { jq -c "$1" "$TMPDIR/out" 2>/dev/null; }
 qr() { jq -r "$1" "$TMPDIR/out" 2>/dev/null; }
 
 # Every field of the observation, with its type and nullability, as
-# USAGE.md gives them: "valid" or the first field that is not.
+# USAGE gives them: "valid" or the first field that is not.
 # shellcheck disable=SC2016
 TYPES='def str: type == "string";
 def ostr: . == null or type == "string";

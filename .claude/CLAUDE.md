@@ -100,12 +100,12 @@ Drafting the PR:
 
 ## Documentation
 
-- Every feature change must update relevant `.md` files
-  (README.md, USAGE.md, CLAUDE.md).
+- Every feature change must update the relevant docs
+  (README, USAGE, CLAUDE.md).
 - Add an entry to NEWS, under `Unreleased` at the top, when
   adding features, fixes, or notable changes.  NEWS is plain
   text: one or two lines per change, imperative, no Markdown
-  emphasis and no `Fix:` or `Feature:` label.  Start a
+  (no backticks either) and no `Fix:` or `Feature:` label.  Start a
   breaking change with `Breaking:`.  The why belongs in the
   commit message.
 - Check thoroughly: add new fields to tables, update

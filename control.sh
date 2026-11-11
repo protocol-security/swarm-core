@@ -1,7 +1,7 @@
 #!/bin/bash
 # The control interface of swarm-core, swarm-core.control/v1, for a
-# program that drives engagements (a CI job, a scheduler).  USAGE.md,
-# "Control interface", documents it.
+# program that drives engagements (a CI job, a scheduler).  USAGE,
+# CONTROL INTERFACE, documents it.
 #
 #   control.sh --interface swarm-core.control/v1 COMMAND [ARGS...]
 #   control.sh version
@@ -31,7 +31,7 @@ control_usage() {
         "         interactive, chat, shell (launch.sh's), and harvest" \
         "         (harvest.sh)." \
         "" \
-        "USAGE.md, \"Control interface\", documents each one."
+        "USAGE, CONTROL INTERFACE, documents each one."
 }
 
 # Print "swarm-core: REASON: MESSAGE" as one line on stderr (observe's
@@ -210,7 +210,7 @@ control_state_read() {
 
 # What observe reports of a state (compact JSON on stdin): the owner and
 # project it records, whether a cleanup is pending, and the engagement
-# (null when none is recorded), its fields typed as USAGE.md gives them.
+# (null when none is recorded), its fields typed as USAGE gives them.
 # Fails on a field of the wrong type.
 # shellcheck disable=SC2016
 CONTROL_STATE_JQ='
@@ -434,8 +434,8 @@ control_mirrors_condition() {
     }
 }
 
-# observe: print the observation document (USAGE.md, "Control
-# interface").
+# observe: print the observation document (USAGE, CONTROL
+# INTERFACE).
 control_observe() {
     local observed_at root canonical project rt out legacy
     local state="" again proj="" engagement=null complete revision=""
