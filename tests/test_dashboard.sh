@@ -5,7 +5,7 @@ set -euo pipefail
 # shellcheck source=_test_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
-# Unit tests for dashboard.sh helper functions:
+# Unit tests for swarm dashboard helper functions:
 #   format_model, truncate_str, and column layout (with optional Tag).
 # No Docker or API key required.
 
@@ -26,7 +26,7 @@ assert_eq() {
     fi
 }
 
-# --- Functions under test (copied from dashboard.sh) ---
+# --- Functions under test (copied from swarm dashboard) ---
 
 format_model() {
     local m="${1:-unknown}" effort="${2:-}"
@@ -695,7 +695,7 @@ assert_eq "default title wins" "$DEFAULT_TITLE_TEST" "${USER_TITLE_T:-${SWARM_TI
 echo ""
 echo "=== 12. Post-process dashboard shortcuts ==="
 
-DASHBOARD_FILE="$TESTS_DIR/../bin/dashboard.sh"
+DASHBOARD_FILE="$TESTS_DIR/../libexec/dashboard"
 
 assert_eq "help documents uppercase post-process logs" "1" \
     "$(grep -cF 'P           Tail post-process logs' "$DASHBOARD_FILE")"
@@ -721,7 +721,7 @@ assert_eq "leading blank inspect state keeps real state" "running" \
 assert_eq "dashboard uses normalized container state" "5" \
     "$(grep -cF 'container_state "' "$DASHBOARD_FILE")"
 
-# Post-process container predicates, loaded from dashboard.sh with
+# Post-process container predicates, loaded from swarm dashboard with
 # container_state stubbed.  Only a running container blocks p.
 eval "$(sed -n '/^post_process_container_exists()/,/^}/p;
     /^post_process_container_running()/,/^}/p' "$DASHBOARD_FILE")"
@@ -773,15 +773,15 @@ assert_eq "uppercase P points to lowercase start" "1" \
         | grep -cF 'press p to start' || true)"
 assert_eq "uppercase P does not start post-process" "0" \
     "$(printf '%s\n' "$pp_upper_case" \
-        | grep -cF '"$SWARM_DIR/bin/launch.sh" post-process' || true)"
+        | grep -cF '"$SWARM_DIR/bin/swarm" post-process' || true)"
 # Lowercase p starts post-processing after confirmation.
 assert_eq "lowercase p asks for confirmation" "true" \
     "$([ "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF '[y/N]' || true)" -gt 0 ] && echo true || echo false)"
 assert_eq "lowercase p can launch post-process" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
-        | grep -cF '"$SWARM_DIR/bin/launch.sh" post-process' || true)"
-# Both launch.sh runs get the dashboard's swarmfile and the token of the
+        | grep -cF '"$SWARM_DIR/bin/swarm" post-process' || true)"
+# Both swarm runs get the dashboard's swarmfile and the token of the
 # engagement shown, so a cleanup and a new start between them make the
 # second refuse.
 assert_eq "lowercase p passes the dashboard config to both runs" "2" \
@@ -790,9 +790,9 @@ assert_eq "lowercase p passes the dashboard config to both runs" "2" \
 assert_eq "lowercase p passes the engagement token to both runs" "2" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'SWARM_ENGAGEMENT_TOKEN="$_token"' || true)"
-assert_eq "lowercase p stops the numbered agents through launch.sh" "1" \
+assert_eq "lowercase p stops the numbered agents through swarm" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
-        | grep -cF '"$SWARM_DIR/bin/launch.sh" stop --numbered' || true)"
+        | grep -cF '"$SWARM_DIR/bin/swarm" stop --numbered' || true)"
 assert_eq "lowercase p has cancellation path" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF '"(post-processing not started)"' || true)"
@@ -804,7 +804,7 @@ assert_eq "lowercase p blocks only running post-process" "1" \
         | grep -cF 'if post_process_container_running; then' || true)"
 assert_eq "lowercase p sends an exited post-process to retire" "1" \
     "$(printf '%s\n' "$pp_lower_case" \
-        | grep -cF './bin/launch.sh retire --post-process' || true)"
+        | grep -cF 'swarm retire --post-process' || true)"
 assert_eq "lowercase p has no replacement prompt" "0" \
     "$(printf '%s\n' "$pp_lower_case" \
         | grep -cF 'Replace existing' || true)"
@@ -825,11 +825,11 @@ assert_eq "footer guards start hint on running container" "1" \
 assert_eq "footer keeps logs hint for exited container" "1" \
     "$(printf '%s\n' "$help_bar" \
         | grep -cF 'if post_process_container_exists; then' || true)"
-# launch.sh stop covers the agents, post-process and the interactive
+# swarm stop covers the agents, post-process and the interactive
 # containers of the engagement shown (its token), with its own checks.
-assert_eq "s stops through launch.sh stop" "1" \
+assert_eq "s stops through swarm stop" "1" \
     "$(printf '%s\n' "$s_case" \
-        | grep -cF '"$SWARM_DIR/bin/launch.sh" stop' || true)"
+        | grep -cF '"$SWARM_DIR/bin/swarm" stop' || true)"
 assert_eq "s passes the dashboard config" "1" \
     "$(printf '%s\n' "$s_case" | grep -cF 'SWARM_CONFIG="$CONFIG_FILE"' \
         || true)"
@@ -867,7 +867,7 @@ for _fn in runtime_ok bare_git interactive_branch_status; do
     awk -v fn="$_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' \
-        "$TESTS_DIR/../bin/dashboard.sh" > "$_rt_tmp/$_fn.sh"
+        "$TESTS_DIR/../libexec/dashboard" > "$_rt_tmp/$_fn.sh"
     # shellcheck source=/dev/null
     source "$_rt_tmp/$_fn.sh"
 done
@@ -905,7 +905,7 @@ assert_eq "branch status skips a symlinked runtime" "exited" \
 
 # Every read of the bare repo in draw() sits behind runtime_ok.
 _draw_body=$(awk '/^draw\(\)[[:space:]]*\{/,/^\}/' \
-    "$TESTS_DIR/../bin/dashboard.sh")
+    "$TESTS_DIR/../libexec/dashboard")
 assert_eq "draw() reads the bare repo only behind runtime_ok" \
     '    if [ -d "$BARE_REPO" ] && runtime_ok; then' \
     "$(printf '%s\n' "$_draw_body" \
@@ -922,14 +922,14 @@ for _fn in state_value load_state; do
     awk -v fn="$_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' \
-        "$TESTS_DIR/../bin/dashboard.sh" > "$_ls_tmp/$_fn.sh"
+        "$TESTS_DIR/../libexec/dashboard" > "$_ls_tmp/$_fn.sh"
     # shellcheck source=/dev/null
     source "$_ls_tmp/$_fn.sh"
 done
 
 RUNTIME_DIR="$_ls_tmp/rt"
 STATE_FILE="$RUNTIME_DIR/state.json"
-# As dashboard.sh sets them before its first load_state.
+# As swarm dashboard sets them before its first load_state.
 DASH_TOKEN=""
 DASH_CLEANUP=false
 mkdir -m 700 "$RUNTIME_DIR"
@@ -1040,7 +1040,7 @@ for _fn in identity_ok own_ref; do
     awk -v fn="$_fn" '$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { p = 1 }
          p { print }
          p && /^\}[[:space:]]*$/ { exit }' \
-        "$TESTS_DIR/../bin/dashboard.sh" > "$_id_tmp/$_fn.sh"
+        "$TESTS_DIR/../libexec/dashboard" > "$_id_tmp/$_fn.sh"
     # shellcheck source=/dev/null
     source "$_id_tmp/$_fn.sh"
 done
@@ -1104,9 +1104,9 @@ rm -rf "$_id_tmp"
 
 # ============================================================
 echo ""
-echo "=== 17. s and p act through launch.sh on the engagement shown ==="
+echo "=== 17. s and p act through swarm on the engagement shown ==="
 
-# The s and p arms of the key loop, run with a launch.sh that logs its
+# The s and p arms of the key loop, run with a swarm that logs its
 # arguments, the swarmfile and the token it got.  Its stop can fail, or
 # replace the engagement (another token in the state file) as a cleanup
 # and a new start in another terminal would.  The swarmfile is a custom
@@ -1114,7 +1114,7 @@ echo "=== 17. s and p act through launch.sh on the engagement shown ==="
 # engagement shown is DASH_TOKEN (load_state sets it at each refresh).
 _kd=$(mktemp -d)
 mkdir -p "$_kd/swarm/bin"
-cat > "$_kd/swarm/bin/launch.sh" <<'EOF'
+cat > "$_kd/swarm/bin/swarm" <<'EOF'
 #!/bin/bash
 printf '%s|%s|%s\n' "$*" "${SWARM_CONFIG:-}" \
     "${SWARM_ENGAGEMENT_TOKEN-unset}" >> "$KEYS_DIR/log"
@@ -1128,7 +1128,7 @@ if [ "$1" = stop ]; then
 fi
 exit 0
 EOF
-chmod +x "$_kd/swarm/bin/launch.sh"
+chmod +x "$_kd/swarm/bin/swarm"
 # Run the body of a case arm (ARM, as extracted above) once, with the
 # answers on standard input; its output goes to $_kd/out.
 run_key() {
@@ -1171,7 +1171,7 @@ key_reset() {
 }
 key_reset
 run_key "$s_case"
-assert_eq "s runs launch.sh stop with the swarmfile and the token" \
+assert_eq "s runs swarm stop with the swarmfile and the token" \
     "stop|$_kd/custom.json|t1" "$(cat "$_kd/log")"
 key_reset
 run_key "$pp_lower_case" y
@@ -1197,14 +1197,14 @@ run_key "$pp_lower_case" y
 assert_eq "an earlier post-process container: p runs nothing" "0" \
     "$(grep -c . "$_kd/log" || true)"
 assert_eq "and names the retire step" "1" \
-    "$(grep -c 'retire it first: ./bin/launch.sh retire --post-process' \
+    "$(grep -c 'retire it first: swarm retire --post-process' \
         "$_kd/out" || true)"
 key_reset
 run_key "$pp_lower_case" n
 assert_eq "p not confirmed: nothing runs" "0" \
     "$(grep -c . "$_kd/log" || true)"
 # No engagement shown (cleaned up, or none started): nothing runs,
-# rather than a launch.sh bound to no engagement, which would act on
+# rather than a swarm bound to no engagement, which would act on
 # whatever is there by then.
 key_reset
 KEY_TOKEN=""
@@ -1292,7 +1292,7 @@ _ex_rc=0
 _ex_out=$(_ex_run 'echo "$swarm_test_unset_variable"') || _ex_rc=$?
 assert_eq "stopped on an unset variable: status 1" "1" "$_ex_rc"
 assert_eq "saying so where Bash 3.2 would end with 0" "$_stop_says" \
-    "$(grep -c 'dashboard.sh stopped before the end of its run' \
+    "$(grep -c 'swarm dashboard stopped before the end of its run' \
         <<< "$_ex_out")"
 assert_eq "the scratch directory goes" "yes" "$(_ex_gone)"
 assert_eq "the terminal is restored" "yes" "$(_ex_restored)"
@@ -1346,7 +1346,7 @@ for _ex_b in $_ex_bashes; do
     assert_eq "$_ex_b: no flag where the check is made: status 1" "1" \
         "$_ex_rc"
     assert_eq "$_ex_b:   saying so once" "1" \
-        "$(grep -c 'dashboard.sh stopped before the end of its run' \
+        "$(grep -c 'swarm dashboard stopped before the end of its run' \
             <<< "$_ex_out")"
     assert_eq "$_ex_b:   scratch gone, terminal restored" "yes yes" \
         "$(_ex_gone) $(_ex_restored)"
@@ -1474,7 +1474,7 @@ rv_draw() {
     (cd "$_rv/proj" && printf 'q' | env -u SWARM_CONFIG -u SWARM_PROJECT \
         PATH="$_rv/bin:$PATH" RV_DIR="$_rv" \
         SWARM_RUNTIME_DIR="$_rv_rt" XDG_STATE_HOME="$_rv/xdg" \
-        bash "$TESTS_DIR/../bin/dashboard.sh") > "$_rv/screen" 2>&1 || true
+        bash "$TESTS_DIR/../libexec/dashboard") > "$_rv/screen" 2>&1 || true
 }
 # STATUS of row ID (1-9 or P) on the screen, as its status column shows.
 rv_row() {
@@ -1532,7 +1532,7 @@ assert_eq "a container there, inspect failing: not volume only" "true" \
 rv_draw
 assert_eq "agent 1 gone, no volume: configured" "configured" "$(rv_row 1)"
 assert_eq "the engagement's volumes counted" "1" \
-    "$(grep -c '3 workspace volume(s), no container: harvest, then ./bin/launch.sh cleanup ends the engagement' "$_rv/screen" || true)"
+    "$(grep -c '3 workspace volume(s), no container: harvest, then swarm cleanup ends the engagement' "$_rv/screen" || true)"
 # Docker cannot list volumes: nothing is said about them.
 : > "$_rv/volume-ls-fails"
 rv_draw
@@ -1561,7 +1561,7 @@ assert_eq "and no volume line" "0" \
 rv_state '.cleanup = {snapshot: "s1"}'
 rv_draw
 assert_eq "an unfinished cleanup is shown" "1" \
-    "$(grep -c 'A cleanup has not finished.*if it is not running, run ./bin/launch.sh cleanup again' "$_rv/screen" || true)"
+    "$(grep -c 'A cleanup has not finished.*if it is not running, run swarm cleanup again' "$_rv/screen" || true)"
 assert_eq "instead of the volume line" "0" \
     "$(grep -c 'workspace volume' "$_rv/screen" || true)"
 # Once it is done (no checkpoint), the line goes.

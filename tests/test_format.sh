@@ -4,7 +4,7 @@ set -euo pipefail
 # shellcheck source=_test_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
-# Unit tests for formatting functions used by dashboard.sh and costs.sh.
+# Unit tests for formatting functions used by swarm dashboard and swarm costs.
 # No Docker or API key required.
 
 PASS=0
@@ -23,7 +23,7 @@ assert_eq() {
     fi
 }
 
-# --- Functions under test (from dashboard.sh / costs.sh) ---
+# --- Functions under test (from swarm dashboard / swarm costs) ---
 
 format_duration() {
     local s=$1

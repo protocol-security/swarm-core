@@ -16,7 +16,7 @@ jobs:
       - name: ShellCheck
         run: |
           shellcheck -s bash --severity=warning \
-            bin/*.sh \
+            bin/swarm libexec/* \
             lib/*.sh lib/drivers/*.sh \
             tests/*.sh
 

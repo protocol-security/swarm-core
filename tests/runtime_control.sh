@@ -7,7 +7,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 # tests/runtime_control.sh
 #
 # The control interface under real Docker, with the fake driver: one
-# engagement driven through control.sh only (start, wait, an
+# engagement driven through swarm control only (start, wait, an
 # interactive session, retire, cleanup), and observe after each step:
 # the engagement, every container with its role, profile, number, state
 # and exit code, the workspace volumes, and the labels on the real
@@ -19,7 +19,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
-CONTROL="${REPO_ROOT}/bin/control.sh"
+CONTROL="${REPO_ROOT}/libexec/control"
 IFACE="swarm-core.control/v1"
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -96,7 +96,7 @@ check() {
 gitc() {
     git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"
 }
-# control.sh with the interface and ARGS, in the checkout; output to
+# swarm control with the interface and ARGS, in the checkout; output to
 # $WORKDIR/out and $WORKDIR/err; prints the status.
 ctl() {
     local rc=0

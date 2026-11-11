@@ -4,14 +4,14 @@ set -euo pipefail
 # shellcheck source=_test_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
-# Unit tests for harvest.sh logic.
+# Unit tests for swarm harvest logic.
 # Uses local git repos (no Docker or API key required).
 
 PASS=0
 FAIL=0
 TMPDIR=$(mktemp -d)
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HARVEST_SH="$REPO_ROOT/bin/harvest.sh"
+HARVEST_SH="$REPO_ROOT/libexec/harvest"
 LEGACY_BARE=""
 cleanup() {
     rm -rf "$TMPDIR"
@@ -32,7 +32,7 @@ printf '#!/bin/bash\necho "$*" >> "%s"\nexit 1\n' "$_down_log" \
 chmod +x "$_down_bin/docker"
 PATH="$_down_bin:$PATH"
 
-# Point harvest.sh at a private runtime directory below TMPDIR, with an
+# Point swarm harvest at a private runtime directory below TMPDIR, with an
 # engagement recorded as this engine records it before it makes the
 # bare repo (record_engagement writes it again).  record_base BARE
 # records BARE's HEAD, the commit it was made from, as the engagement's
@@ -124,7 +124,7 @@ add_interactive_commits() {
     rm -rf "$agent_dir"
 }
 
-# --- Harvest logic (from harvest.sh) ---
+# --- Harvest logic (from swarm harvest) ---
 
 harvest() {
     local bare_repo="$1" work_dir="$2" dry_run="${3:-false}"
@@ -265,7 +265,7 @@ assert_eq "preview pipe ends with || true" \
 
 # ============================================================
 echo ""
-echo "=== 7. Behavioural: harvest.sh --dry survives >20 commits ==="
+echo "=== 7. Behavioural: swarm harvest --dry survives >20 commits ==="
 
 HARVEST_PROJECT="swarmtest-harvest-sigpipe-$$"
 HARVEST_WORK="$TMPDIR/$HARVEST_PROJECT"
@@ -285,7 +285,7 @@ git -C "$HARVEST_BARE" branch agent-work HEAD 2>/dev/null || true
 # Seed 100 commits with ~1 KiB subject padding so the
 # `git log --oneline` output (~100 KiB) exceeds the kernel
 # pipe buffer (64 KiB) and has many more than 20 lines.  Both
-# conditions are needed to make the preview pipe on harvest.sh
+# conditions are needed to make the preview pipe on swarm harvest
 # line 55 trigger SIGPIPE without the `|| true` guard.  Empty
 # commits keep setup fast (~0.15 s).
 HARVEST_AGENT="$TMPDIR/harvest-sigpipe-agent"
@@ -307,7 +307,7 @@ else
     rc=$?
 fi
 
-assert_eq "harvest.sh --dry exits 0 on oversized log" "0" "$rc"
+assert_eq "swarm harvest --dry exits 0 on oversized log" "0" "$rc"
 assert_eq "shows 100 new commits header" "true" \
     "$(grep -q '^100 new commits on agent-work:' <<< "$output" \
         && echo true || echo false)"
@@ -320,7 +320,7 @@ assert_eq "shows dry-run notice" "true" \
 
 # ============================================================
 echo ""
-echo "=== 7.5 Behavioural: harvest.sh sees interactive branches ==="
+echo "=== 7.5 Behavioural: swarm harvest sees interactive branches ==="
 
 INTERACTIVE_PROJECT="swarmtest-harvest-interactive-$$"
 INTERACTIVE_WORK="$TMPDIR/$INTERACTIVE_PROJECT"
@@ -603,7 +603,7 @@ assert_eq "unguarded pipe aborts before next statement" "false" \
     "$(grep -q '^REACHED_AFTER_PIPE$' "$TMPDIR/unguarded.out" \
         && echo true || echo false)"
 
-# The actual harvest.sh idiom (line 55): `|| true` must recover.
+# The actual swarm harvest idiom (line 55): `|| true` must recover.
 set +e
 bash -c '
     set -euo pipefail
@@ -620,12 +620,12 @@ assert_eq "guarded pipe continues past the preview" "true" \
 
 # ============================================================
 echo ""
-echo "=== 9. Behavioural: harvest.sh refuses divergent bare ==="
+echo "=== 9. Behavioural: swarm harvest refuses divergent bare ==="
 
 # Reproduces issue #97: an upstream history rewrite (force-push,
 # rebase) leaves the bare's agent-work pointing at a tip whose
 # ancestry no longer matches the working tree's HEAD.  Without
-# the guard, harvest.sh silently 3-way-merges and re-introduces
+# the guard, swarm harvest silently 3-way-merges and re-introduces
 # commits the operator already removed; with the guard it aborts
 # with a clear remediation.
 
@@ -679,7 +679,7 @@ assert_eq "guard names the engagement's base" "true" \
     "$(grep -qE "base:[[:space:]]+${HEAD_BEFORE:0:12}" <<< "$guard_output" \
         && echo true || echo false)"
 assert_eq "guard sends the user to cleanup --allow-unharvested" "true" \
-    "$(grep -q 'launch.sh cleanup --allow-unharvested' <<< "$guard_output" \
+    "$(grep -q 'swarm cleanup --allow-unharvested' <<< "$guard_output" \
         && echo true || echo false)"
 assert_eq "guard prints no removal command" "0" \
     "$(grep -cE 'docker run|rm -rf' <<< "$guard_output" || true)"
@@ -688,7 +688,7 @@ assert_eq "_agent-harvest remote cleaned up after failure" "" \
     "$(git remote | grep -E '^_agent-harvest$' || true)"
 
 # Sanity check the happy path: when agent-work descends from
-# HEAD again, the same harvest.sh invocation succeeds.  Catches
+# HEAD again, the same swarm harvest invocation succeeds.  Catches
 # a regression where the guard accidentally rejects valid runs.
 git -C "$GUARD_BARE" branch -f agent-work "$HEAD_BEFORE"
 git clone -q "$GUARD_BARE" "$GUARD_AGENT"
@@ -714,7 +714,7 @@ assert_eq "fast-forward shows new commit header" "true" \
 echo ""
 echo "=== 10. Restore tag created before harvest ==="
 
-# harvest.sh tags the pre-merge branch tip with a local
+# swarm harvest tags the pre-merge branch tip with a local
 # swarm-harvest-<date>-<time> tag so a harvest can be undone with
 # `git reset --hard <tag>`.  The tag lives in refs/tags and is
 # skipped on --dry and when nothing is new.
@@ -794,7 +794,7 @@ assert_eq "with two restore tags of that second" \
 
 # ============================================================
 echo ""
-echo "=== 11. Behavioural: harvest.sh refuses legacy /tmp state ==="
+echo "=== 11. Behavioural: swarm harvest refuses legacy /tmp state ==="
 
 LEGACY_PROJECT="swarmtest-harvest-legacy-$$"
 LEGACY_WORK="$TMPDIR/$LEGACY_PROJECT"
@@ -824,7 +824,7 @@ assert_eq "harvest runs once the old state is gone" "0" "$legacy_rc"
 
 # ============================================================
 echo ""
-echo "=== 12. Behavioural: harvest.sh refuses an open runtime dir ==="
+echo "=== 12. Behavioural: swarm harvest refuses an open runtime dir ==="
 
 chmod 755 "$SWARM_RUNTIME_DIR"
 open_rc=0
@@ -837,7 +837,7 @@ chmod 700 "$SWARM_RUNTIME_DIR"
 
 # ============================================================
 echo ""
-echo "=== 13. Behavioural: harvest.sh refuses another checkout's runtime ==="
+echo "=== 13. Behavioural: swarm harvest refuses another checkout's runtime ==="
 
 # The runtime directory from section 11 now names another checkout.
 jq -n --arg root "$TMPDIR/elsewhere/${LEGACY_PROJECT}" \
@@ -854,7 +854,7 @@ record_engagement
 
 # ============================================================
 echo ""
-echo "=== 15. harvest.sh and progress.sh need jq ==="
+echo "=== 15. swarm harvest and swarm progress need jq ==="
 
 # They read the JSON state file.  Run them with a PATH that has git
 # and dirname but no jq.
@@ -865,7 +865,7 @@ ln -s "$(command -v dirname)" "$_nojq_bin/dirname"
 ln -s "$(command -v docker 2>/dev/null || command -v true)" \
     "$_nojq_bin/docker"
 cd "$LEGACY_WORK"
-for _tool in harvest.sh progress.sh; do
+for _tool in swarm harvest swarm progress; do
     nojq_rc=0
     nojq_out=$(PATH="$_nojq_bin" /bin/bash "$REPO_ROOT/$_tool" 2>&1) \
         || nojq_rc=$?
@@ -877,9 +877,9 @@ done
 
 # ============================================================
 echo ""
-echo "=== 16. Behavioural: harvest.sh refuses foreign containers ==="
+echo "=== 16. Behavioural: swarm harvest refuses foreign containers ==="
 
-# harvest.sh runs docker exec and docker cp in interactive containers,
+# swarm harvest runs docker exec and docker cp in interactive containers,
 # so a container named for this project id has to be this checkout's.
 cd "$INTERACTIVE_WORK"
 for _fake_owner in /elsewhere/proj ""; do
@@ -900,7 +900,7 @@ done
 
 # ============================================================
 echo ""
-echo "=== 17. Behavioural: harvest.sh with the Docker daemon down ==="
+echo "=== 17. Behavioural: swarm harvest with the Docker daemon down ==="
 
 # The merge needs only git.  With Docker installed but its daemon down,
 # harvest skips every container operation instead of failing.
@@ -924,13 +924,13 @@ assert_eq "no container operation is attempted" "" \
 
 # ============================================================
 echo ""
-echo "=== 18. Behavioural: progress.sh with the Docker daemon down ==="
+echo "=== 18. Behavioural: swarm progress with the Docker daemon down ==="
 
-# progress.sh shows the commit history with git alone and reports the
+# swarm progress shows the commit history with git alone and reports the
 # containers as unavailable.
 cd "$DOWN_WORK"
 progress_rc=0
-progress_out=$(bash "$REPO_ROOT/bin/progress.sh" 2>&1) || progress_rc=$?
+progress_out=$(bash "$REPO_ROOT/libexec/progress" 2>&1) || progress_rc=$?
 assert_eq "progress runs with the daemon down" "0" "$progress_rc"
 assert_eq "progress shows the history" "true" \
     "$(grep -qF '=== Recent commits ===' <<< "$progress_out" \
@@ -951,7 +951,7 @@ git --git-dir="$_pb" config log.showSignature true
 git --git-dir="$_pb" config gpg.program "touch $TMPDIR/progress-gpg-ran"
 _pb_tmp=$(mktemp -d)
 progress_rc=0
-progress_out=$(TMPDIR="$_pb_tmp" bash "$REPO_ROOT/bin/progress.sh" 2>&1) \
+progress_out=$(TMPDIR="$_pb_tmp" bash "$REPO_ROOT/libexec/progress" 2>&1) \
     || progress_rc=$?
 assert_eq "progress shows agent-work's latest commit" "0 true" \
     "$progress_rc $(grep -qF 'agent progress marker' <<< "$progress_out" \
@@ -961,7 +961,7 @@ assert_eq "progress runs no pager or gpg of the bare repo's" "false false" \
     "$([ -e "$TMPDIR/progress-pager-ran" ] && echo true || echo false) $(
         [ -e "$TMPDIR/progress-gpg-ran" ] && echo true || echo false)"
 assert_eq "progress turns the pager off" "1" \
-    "$(grep -c 'git --no-pager' "$REPO_ROOT/bin/progress.sh")"
+    "$(grep -c 'git --no-pager' "$REPO_ROOT/libexec/progress")"
 rmdir "$_pb_tmp"
 git --git-dir="$_pb" config --unset core.pager
 git --git-dir="$_pb" config --unset log.showSignature
@@ -989,14 +989,14 @@ echo() {
 EOF
 progress_rc=0
 progress_out=$(BASH_ENV="$TMPDIR/progress-stop-env.sh" SWARM_TEST_STOP=1 \
-    "$REPO_ROOT/bin/progress.sh" 2>&1) || progress_rc=$?
+    "$REPO_ROOT/libexec/progress" 2>&1) || progress_rc=$?
 assert_eq "progress stopped on an unset variable ends with 1" "1" \
     "$progress_rc"
 assert_eq "saying so where Bash 3.2 would end with 0" "$_stop_says" \
-    "$(grep -c 'progress.sh stopped before the end of its run' \
+    "$(grep -c 'swarm progress stopped before the end of its run' \
         <<< "$progress_out")"
 progress_rc=0
-BASH_ENV="$TMPDIR/progress-stop-env.sh" "$REPO_ROOT/bin/progress.sh" \
+BASH_ENV="$TMPDIR/progress-stop-env.sh" "$REPO_ROOT/libexec/progress" \
     >/dev/null 2>&1 || progress_rc=$?
 assert_eq "the same run without the stop ends with 0" "0" "$progress_rc"
 # The check is made only on Bash before 4.1 (later versions end a run
@@ -1012,7 +1012,7 @@ _px_extract() {  # FUNCTION FILE
 }
 _px_extract swarm_stop_guard_needed "$REPO_ROOT/lib/project.sh" \
     > "$TMPDIR/progress-guard.sh"
-_px_extract progress_exit_trap "$REPO_ROOT/bin/progress.sh" \
+_px_extract progress_exit_trap "$REPO_ROOT/libexec/progress" \
     > "$TMPDIR/progress-trap.sh"
 _px_guard() {
     (
@@ -1061,7 +1061,7 @@ for _px_b in $_px_bashes; do
     assert_eq "$_px_b: no flag where the check is made: status 1" "1" \
         "$_px_rc"
     assert_eq "$_px_b:   saying so once" "1" \
-        "$(grep -c 'progress.sh stopped before the end of its run' \
+        "$(grep -c 'swarm progress stopped before the end of its run' \
             <<< "$_px_out")"
     _px_rc=0
     _px_out=$(_px_run "$_px_b" 1 ':') || _px_rc=$?
@@ -1082,7 +1082,7 @@ done
 
 # ============================================================
 echo ""
-echo "=== 19. Behavioural: harvest.sh checks the engagement ==="
+echo "=== 19. Behavioural: swarm harvest checks the engagement ==="
 
 record_engagement
 cd "$DOWN_WORK"
@@ -1098,7 +1098,7 @@ record_engagement
 
 # ============================================================
 echo ""
-echo "=== 20. Behavioural: harvest.sh takes the engagement lock ==="
+echo "=== 20. Behavioural: swarm harvest takes the engagement lock ==="
 
 cd "$DOWN_WORK"
 exec 8>>"$SWARM_RUNTIME_DIR/engagement.lock"
@@ -1115,7 +1115,7 @@ exec 8>&-
 
 # ============================================================
 echo ""
-echo "=== 21. Behavioural: harvest.sh and the engagement it was started for ==="
+echo "=== 21. Behavioural: swarm harvest and the engagement it was started for ==="
 
 # An engagement an earlier release started (no Docker daemon recorded)
 # is refused before the checkout is touched, with the way to finish it;
@@ -1135,7 +1135,7 @@ assert_eq "the checkout's refs are as they were" "$refs_before" \
     "$(git for-each-ref)"
 assert_eq "no harvest remote is left" "" \
     "$(git remote | grep -E '^_agent-harvest$' || true)"
-# A token names the engagement harvest.sh was started for.
+# A token names the engagement swarm harvest was started for.
 record_engagement
 tok_rc=0
 tok_out=$(SWARM_ENGAGEMENT_TOKEN=t2 bash "$HARVEST_SH" --dry 2>&1) \
@@ -1174,7 +1174,7 @@ record_engagement
 
 # ============================================================
 echo ""
-echo "=== 22. Behavioural: harvest.sh merges what is built on the base ==="
+echo "=== 22. Behavioural: swarm harvest merges what is built on the base ==="
 
 # The engagement starts at the checkout's HEAD, recorded as its base.
 # Work built on that base merges even once HEAD moved on: local commits
@@ -1190,7 +1190,7 @@ bg() {
     git -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@"
 }
 git init -q "$BASE_WORK"
-# harvest.sh merges with plain git, so the checkout names who merges.
+# swarm harvest merges with plain git, so the checkout names who merges.
 git -C "$BASE_WORK" config user.name test
 git -C "$BASE_WORK" config user.email t@t
 git -C "$BASE_WORK" config commit.gpgsign false
@@ -1283,7 +1283,7 @@ p_out=$(bash "$HARVEST_SH" 2>&1) || p_rc=$?
 assert_eq "a merge given up: harvest refuses" "1" "$p_rc"
 assert_eq "naming --again" "true" \
     "$(grep -qF "harvest left to merge: that merge stopped" \
-        <<< "$p_out" && grep -qF "./bin/harvest.sh --again" <<< "$p_out" \
+        <<< "$p_out" && grep -qF "swarm harvest --again" <<< "$p_out" \
         && echo true || echo false)"
 p_rc=0
 bash "$HARVEST_SH" --again >/dev/null 2>&1 || p_rc=$?
@@ -1363,7 +1363,7 @@ assert_eq "saying so" "true" \
     "$(grep -qF "HEAD no longer has what an earlier harvest merged" \
         <<< "$w_out" && echo true || echo false)"
 assert_eq "and naming --again" "true" \
-    "$(grep -qF "./bin/harvest.sh --again" <<< "$w_out" \
+    "$(grep -qF "swarm harvest --again" <<< "$w_out" \
         && echo true || echo false)"
 assert_eq "HEAD is as it was" "$before" "$(git rev-parse HEAD)"
 w_rc=0
@@ -1395,10 +1395,10 @@ assert_eq "saying so" "true" \
 assert_eq "before merging anything" "$before" "$(git rev-parse HEAD)"
 bash "$HARVEST_SH" >/dev/null 2>&1
 # Harvest runs no hooks, so a test acts during its merges through this
-# git, put first on PATH for harvest.sh alone: around a merge (the
+# git, put first on PATH for swarm harvest alone: around a merge (the
 # command after git's -c options), it runs the command HV_BEFORE_MERGE,
 # the merge, then HV_AFTER_MERGE if the merge succeeded, as a post-merge
-# hook would, with harvest.sh's pid in HV_PARENT.  It passes every
+# hook would, with swarm harvest's pid in HV_PARENT.  It passes every
 # command on as it was given.
 _hv_bin="$TMPDIR/hv-bin"
 mkdir -p "$_hv_bin"
@@ -1436,7 +1436,7 @@ k_out=$(bash "$HARVEST_SH" 2>&1) || k_rc=$?
 assert_eq "that merge dropped: refused" "1" "$k_rc"
 assert_eq "naming --again" "true" \
     "$(grep -qF "harvest left to merge: that merge stopped" <<< "$k_out" \
-        && grep -qF "./bin/harvest.sh --again" <<< "$k_out" \
+        && grep -qF "swarm harvest --again" <<< "$k_out" \
         && echo true || echo false)"
 k_rc=0
 bash "$HARVEST_SH" --again >/dev/null 2>&1 || k_rc=$?
@@ -1615,7 +1615,7 @@ ag_commit() {
     git -C "$AG_AGENT" push -q origin "$1"
     git -C "$AG_AGENT" rev-parse HEAD
 }
-# Run harvest.sh ARGS in the checkout; print its status.
+# Run swarm harvest ARGS in the checkout; print its status.
 ag_harvest() {
     local rc=0
     (cd "$AG_WORK" && bash "$HARVEST_SH" "$@" > "$TMPDIR/ag.out" 2>&1) \
@@ -1757,7 +1757,7 @@ assert_eq "through the branch, not by id" "1 0" \
         grep -c 'no branch brings back' "$TMPDIR/ag.out" || true)"
 
 echo ""
-echo "=== 24. Behavioural: harvest.sh runs no hook or fsmonitor command ==="
+echo "=== 24. Behavioural: swarm harvest runs no hook or fsmonitor command ==="
 
 # Harvest puts the agents' files in the checkout.  With core.hooksPath
 # at a directory of it (as husky sets it), a hook the Git config defines
@@ -1867,7 +1867,7 @@ HK_HOOKS=$_hk_n
 hk_hook_cfg hk-remote "$_hk_n" > "$TMPDIR/hk-remote-hooks.cfg"
 printf '[includeIf "hasconfig:remote.*.url:**/upstream.git"]\n\tpath = %s\n' \
     "$TMPDIR/hk-remote-hooks.cfg" >> "$HK_WORK/.git/config"
-# Run harvest.sh ARGS in the checkout, with what ran (one name per line
+# Run swarm harvest ARGS in the checkout, with what ran (one name per line
 # in HK_RAN) cleared first, TMPDIR set to HK_HARVEST_TMPDIR and the
 # shell options of HK_HARVEST_BASHOPTS on, if set; print its status.
 hk_harvest() {

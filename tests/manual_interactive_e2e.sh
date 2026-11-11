@@ -84,9 +84,7 @@ mkdir -p \
     "$REPO_DIR/scripts" \
     "$REPO_DIR/test-results"
 
-write_wrapper "$REPO_DIR/launch.sh" "$SWARM_DIR/bin/launch.sh"
-write_wrapper "$REPO_DIR/dashboard.sh" "$SWARM_DIR/bin/dashboard.sh"
-write_wrapper "$REPO_DIR/harvest.sh" "$SWARM_DIR/bin/harvest.sh"
+write_wrapper "$REPO_DIR/swarm" "$SWARM_DIR/bin/swarm"
 
 cat > "$REPO_DIR/README.md" <<'EOF'
 # swarm-core manual interactive fixture
@@ -150,7 +148,7 @@ cat > "$REPO_DIR/scripts/post-setup.sh" <<'EOF'
 set -euo pipefail
 
 # Lighter setup used only for the post-process pass.  swarm.json sets
-# post_process.setup to this script, so launch.sh runs it instead of
+# post_process.setup to this script, so swarm runs it instead of
 # inheriting the heavier top-level scripts/setup.sh.  The unique marker
 # makes the override observable: it proves the post-process container
 # ran this lighter script and did not redo the top-level setup.
@@ -282,7 +280,7 @@ cat > "$REPO_DIR/env.example" <<'EOF'
 # Copy these exports into your shell.  Do not commit real secrets.
 #
 # Claude OAuth is needed for the Claude headless and manual profiles.
-# If you do not export it, launch.sh should warn and the dashboard auth
+# If you do not export it, swarm should warn and the dashboard auth
 # column should not claim the Claude containers are authenticated.
 export CLAUDE_CODE_OAUTH_TOKEN='replace-me'
 
@@ -307,7 +305,7 @@ export SWARM_CONFIG=swarm.json
 
 ## 0. Credential Preflight
 
-Export Claude OAuth in the shell that will run \`launch.sh\`.  Inline
+Export Claude OAuth in the shell that will run \`swarm\`.  Inline
 environment variables only affect the one command they prefix, so use
 \`export\` when you plan to run \`start\`, \`shell\`, and \`chat\`
 separately.
@@ -325,7 +323,7 @@ Expected result:
 ## 1. Dashboard Before Launch
 
 \`\`\`bash
-./dashboard.sh
+./swarm dashboard
 \`\`\`
 
 Expected result:
@@ -345,7 +343,7 @@ Press \`q\` to exit.
 ## 2. Start Headless Agents With Dashboard
 
 \`\`\`bash
-./launch.sh start --dashboard
+./swarm start --dashboard
 \`\`\`
 
 Expected result:
@@ -364,13 +362,13 @@ finish naturally.  Once you have seen enough, press \`s\` in the
 dashboard or run:
 
 \`\`\`bash
-./launch.sh stop
+./swarm stop
 \`\`\`
 
 ## 3. Codex Manual Shell
 
 \`\`\`bash
-./launch.sh shell --agent codex-manual
+./swarm shell --agent codex-manual
 \`\`\`
 
 Inside the container, run:
@@ -400,7 +398,7 @@ Expected result:
 ## 4. Claude Manual Shell
 
 \`\`\`bash
-./launch.sh shell --agent claude-manual
+./swarm shell --agent claude-manual
 \`\`\`
 
 Inside the container, run:
@@ -433,8 +431,8 @@ Use these only when you want to test the actual driver UI, not just the
 container shell:
 
 \`\`\`bash
-./launch.sh chat --agent codex-manual
-./launch.sh chat --agent claude-manual
+./swarm chat --agent codex-manual
+./swarm chat --agent claude-manual
 \`\`\`
 
 When the UI opens, paste the contents of \`prompts/manual.md\`.  Ask
@@ -445,7 +443,7 @@ branch.
 ## 6. Dashboard Interactive Rows
 
 \`\`\`bash
-./dashboard.sh
+./swarm dashboard
 \`\`\`
 
 Expected result:
@@ -459,18 +457,18 @@ Expected result:
 ## 7. Post-Process From Dashboard
 
 \`\`\`bash
-./dashboard.sh
+./swarm dashboard
 \`\`\`
 
 Press \`p\`, confirm with \`y\`, and watch the \`P\` row.  After the
 post-process container exists, uppercase \`P\` tails its logs and the
 \`[p] post-process\` start hint disappears.  Use \`s\` or
-\`./launch.sh stop\` before starting a new post-process run.
+\`./swarm stop\` before starting a new post-process run.
 
 Equivalent non-dashboard command:
 
 \`\`\`bash
-./launch.sh post-process
+./swarm post-process
 \`\`\`
 
 Expected result:
@@ -501,8 +499,8 @@ override (a path); to try the others, edit \`swarm.json\`:
 ## 8. Harvest And Inspect
 
 \`\`\`bash
-./harvest.sh --dry
-./harvest.sh
+./swarm harvest --dry
+./swarm harvest
 git log --oneline --max-count=16
 find test-results -maxdepth 1 -type f -print | sort
 \`\`\`
@@ -519,7 +517,7 @@ Expected result:
 ## Cleanup
 
 \`\`\`bash
-./launch.sh stop
+./swarm stop
 \`\`\`
 
 Optional cleanup for this disposable repo's Docker artifacts:
@@ -549,7 +547,7 @@ set -euo pipefail
 printf 'Read MANUAL_STEPS.md, then run the commands one at a time.\n'
 printf 'Suggested first command:\n\n'
 printf '  export SWARM_CONFIG=swarm.json\n'
-printf '  ./dashboard.sh\n'
+printf '  ./swarm dashboard\n'
 EOF
 chmod +x "$REPO_DIR/manual-workflow.sh"
 
@@ -574,7 +572,7 @@ Next commands:
 
   cd "$REPO_DIR"
   export SWARM_CONFIG=swarm.json
-  ./dashboard.sh
+  ./swarm dashboard
 
 Read the full manual runbook:
 

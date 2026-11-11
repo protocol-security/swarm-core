@@ -239,7 +239,7 @@ else
 fi
 
 echo ""
-echo "=== 4. What launch.sh gives a target's containers ==="
+echo "=== 4. What swarm gives a target's containers ==="
 # The five variables, by exact name before the first "=", in every
 # spelling the grammar takes.
 refused "sets TARGET_REPO" -e TARGET_REPO=x

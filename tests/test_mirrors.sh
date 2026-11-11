@@ -95,7 +95,7 @@ listed() {
 # What a container does: a clone of the checkout at ROOT into WS (as
 # from /upstream), then swarm_submodules_init with the mirrors in DIR.
 # Messages in $TMPDIR/init.out.
-# SWARM_MIRRORS_BASE and SWARM_MIRRORS_COUNT are what launch.sh passes:
+# SWARM_MIRRORS_BASE and SWARM_MIRRORS_COUNT are what swarm passes:
 # EXPECT (or BASE), and COUNT (or how many entries the manifest has).
 container_init() {
     local root="$1" dir="$2" ws="$3" count

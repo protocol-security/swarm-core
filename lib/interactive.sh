@@ -75,7 +75,7 @@ print_driver_auth_hint() {
                     || [ -n "${ANTHROPIC_AUTH_TOKEN:-}" ]; then
                 ilog "claude auth env present; verify with: claude auth status"
             else
-                ilog_err "claude auth env missing; rerun launch.sh with auth"
+                ilog_err "claude auth env missing; rerun swarm with auth"
             fi
             ;;
     esac

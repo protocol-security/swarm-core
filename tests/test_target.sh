@@ -156,7 +156,7 @@ RT="$TMPDIR/runtime"
 mkdir -p "$RT"
 
 # The resolution runs in its own Bash, with set -euo pipefail as in
-# launch.sh: the checks, then swarm_target_resolve RUNTIME FORMAT.  It
+# swarm: the checks, then swarm_target_resolve RUNTIME FORMAT.  It
 # prints "<commit>|<base commit>" and writes the snapshot's path and the
 # physical paths, one per line, to the file named by its third argument.
 DRIVER="$TMPDIR/resolve.sh"
@@ -1232,7 +1232,7 @@ record() {
           else . end'
 }
 # The join validator in its own Bash, with set -euo pipefail as in
-# launch.sh, after the code in $JHOOK (functions a case replaces); then
+# swarm, after the code in $JHOOK (functions a case replaces); then
 # the run arguments, as JSON.  ARGS before the Bash: env's.  Prints
 # "<status>|<arguments>"; stderr to $TMPDIR/jerr.
 JOIN="$TMPDIR/join.sh"

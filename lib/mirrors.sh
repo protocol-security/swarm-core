@@ -3,7 +3,7 @@
 # containers get, at any depth, each cloned into a numbered mirror under
 # the runtime directory's mirrors/, and mirrors/manifest.json listing
 # them (lib/submodules.sh reads it in the containers).  Sourced by
-# launch.sh after lib/project.sh, lib/preserve.sh and lib/submodules.sh;
+# swarm after lib/project.sh, lib/preserve.sh and lib/submodules.sh;
 # runs under Bash 3.2.
 
 # The walk's result, one element per submodule, parents first: its id
@@ -576,7 +576,7 @@ swarm_mirrors_state() {
     if [ -e "${dir}/manifest.json.new" ] \
             || [ -L "${dir}/manifest.json.new" ]; then
         echo "ERROR: ${dir}/manifest.json.new is left from a run stopped" \
-             "half way; ./bin/launch.sh cleanup removes it." >&2
+             "half way; swarm cleanup removes it." >&2
         return 1
     fi
     if [ -e "${dir}/manifest.json" ] || [ -L "${dir}/manifest.json" ]; then
@@ -601,7 +601,7 @@ _swarm_mirrors_legacy_explain() {
     echo "ERROR: $1 holds mirrors without a manifest, which an earlier" \
          "release of swarm-core made; this release does not take them" \
          "over.  Finish the engagement with that release, or end it:" \
-         "stop the agents, run harvest.sh, then ./bin/launch.sh cleanup." >&2
+         "stop the agents, run swarm harvest, then swarm cleanup." >&2
 }
 
 # swarm_mirrors_ready ROOT DIR BASE
@@ -629,7 +629,7 @@ swarm_mirrors_ready() {
                     echo "ERROR: this engagement's submodule mirrors were" \
                          "never made (a run stopped half way).  An" \
                          "interactive session that joins makes them;" \
-                         "./bin/launch.sh cleanup ends the engagement." >&2
+                         "swarm cleanup ends the engagement." >&2
                     return 1 ;;
                 1)
                     echo none
@@ -644,13 +644,13 @@ swarm_mirrors_ready() {
         if [ -e "${dir}/${id}.git.new" ] || [ -L "${dir}/${id}.git.new" ]
         then
             echo "ERROR: ${dir}/${id}.git.new is left from a run stopped" \
-                 "half way; ./bin/launch.sh cleanup removes it." >&2
+                 "half way; swarm cleanup removes it." >&2
             return 1
         fi
         if [ ! -e "${dir}/${id}.git" ] && [ ! -L "${dir}/${id}.git" ]; then
             echo "ERROR: ${dir}/${id}.git is missing (a run stopped half" \
                  "way).  An interactive session that joins makes it" \
-                 "again; ./bin/launch.sh cleanup ends the engagement." >&2
+                 "again; swarm cleanup ends the engagement." >&2
             return 1
         fi
         _swarm_mirrors_complete "${dir}/${id}.git" "$commit" || return 1
@@ -674,7 +674,7 @@ _swarm_mirrors_complete() {
     fi
     if [ "$pin" != "$commit" ]; then
         echo "ERROR: ${mirror} is not a complete mirror (its" \
-             "refs/swarm/gitlink is not ${commit}).  ./bin/launch.sh cleanup" \
+             "refs/swarm/gitlink is not ${commit}).  swarm cleanup" \
              "ends the engagement and keeps what it holds." >&2
         return 1
     fi
@@ -721,7 +721,7 @@ _swarm_mirrors_build() {
     local gitdir="$1" mirror="$2" oid="$3"
     if [ -e "${mirror}.new" ] || [ -L "${mirror}.new" ]; then
         echo "ERROR: ${mirror}.new is left from a run stopped half" \
-             "way; ./bin/launch.sh cleanup removes it." >&2
+             "way; swarm cleanup removes it." >&2
         return 1
     fi
     # Through Git's transport, as create_bare_repo does: new files, so

@@ -5,7 +5,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
 # Guard against the regression reported in the bug:
-#   dashboard.sh: line 207: printf: 52.185737173...: invalid number
+#   swarm dashboard: line 207: printf: 52.185737173...: invalid number
 # on systems using `,` as the decimal separator.  Pin the
 # `export LC_NUMERIC=C` fix structurally, then drive the
 # formatting functions under a comma-decimal locale to prove
@@ -55,7 +55,7 @@ echo "=== 1. Structural: LC_NUMERIC=C pinned near script top ==="
 
 # The export must appear within the first 20 lines so it fires
 # before any function runs or any `bc`/`awk`/`printf` call.
-for f in bin/dashboard.sh bin/costs.sh lib/harness.sh; do
+for f in libexec/dashboard libexec/costs lib/harness.sh; do
     path="$REPO_ROOT/$f"
     head_lines=$(head -20 "$path")
     if grep -qE '^export LC_NUMERIC=C$' <<< "$head_lines"; then
@@ -118,7 +118,7 @@ else
     FOUND_LOCALE=true
 fi
 
-# Extract the format_* function definitions out of dashboard.sh
+# Extract the format_* function definitions out of swarm dashboard
 # so we can exercise them without running the TUI main loop.
 # `sed` pulls each `name() { ... }` block up to the first bare
 # `}` line.
@@ -130,11 +130,11 @@ extract_fn() {
 FORMAT_LIB="$TMPDIR/format_lib.sh"
 {
     echo '#!/bin/bash'
-    extract_fn format_tokens "$REPO_ROOT/bin/dashboard.sh"
+    extract_fn format_tokens "$REPO_ROOT/libexec/dashboard"
     echo
-    extract_fn format_cost   "$REPO_ROOT/bin/dashboard.sh"
+    extract_fn format_cost   "$REPO_ROOT/libexec/dashboard"
     echo
-    extract_fn format_tps    "$REPO_ROOT/bin/dashboard.sh"
+    extract_fn format_tps    "$REPO_ROOT/libexec/dashboard"
 } > "$FORMAT_LIB"
 
 # Sanity-check the extraction: each function must be present

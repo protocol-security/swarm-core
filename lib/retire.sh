@@ -1,5 +1,5 @@
 #!/bin/bash
-# launch.sh retire: remove this checkout's stopped engine containers
+# swarm retire: remove this checkout's stopped engine containers
 # without losing anything.  A container's /workspace is a Docker volume
 # that stays; what dies with the container is its own layer, so retire
 # refuses any container whose layer may hold work: one that runs or may
@@ -9,7 +9,7 @@
 # and one with a Git repository anywhere outside the volume.  Every
 # selected container is checked before any is removed.
 #
-# Sourced by launch.sh after lib/project.sh and lib/preserve.sh; uses
+# Sourced by swarm after lib/project.sh and lib/preserve.sh; uses
 # PROJECT, CHECKOUT_PATH, RUNTIME_DIR, STATE_FILE and IMAGE_NAME.
 
 # What an interrupted retire (Ctrl-C, a timeout's SIGTERM) would leave
@@ -1206,13 +1206,13 @@ Usage: $0 retire [--post-process] [--discard-uncommitted]
 
 Remove this checkout's stopped engine containers (or only the
 post-process container) after checking that nothing lives only in
-them.  Their workspace volumes stay (./bin/launch.sh cleanup deletes them
+them.  Their workspace volumes stay (swarm cleanup deletes them
 after its own checks).  Git checkouts a container has outside its
 volume (a test's fixture in /tmp, say) are first copied into this
 checkout as recovery refs (refs/swarm-recovery/...), up to
 SWARM_RETIRE_LAYER_LIMIT_MB megabytes per container; work outside
 Git's history in them stops retire, unless --discard-uncommitted
-drops exactly what it lists.  Run costs.sh first if you need the
+drops exactly what it lists.  Run swarm costs first if you need the
 containers' stats.
 HELP
                 return 0 ;;
@@ -1318,7 +1318,7 @@ EOF
         fi
     done 3< "$checked" < /dev/null
     echo "Workspace volumes stay, with the files of the removed containers;" \
-         "./bin/launch.sh cleanup deletes them after its checks."
+         "swarm cleanup deletes them after its checks."
     if [ -n "$kept_prefix" ]; then
         echo "The Git checkouts they had outside their volumes are kept" \
              "as recovery refs under ${kept_prefix}/ (git cat-file blob" \

@@ -1,15 +1,40 @@
 QUICK START
         # Create a swarmfile and launch numbered agents.
-        SWARM_CONFIG=swarm.json ./bin/launch.sh start --dashboard
+        SWARM_CONFIG=swarm.json swarm start --dashboard
 
         # Later, after agents are running or have exited:
-        SWARM_CONFIG=swarm.json ./bin/launch.sh wait
+        SWARM_CONFIG=swarm.json swarm wait
 
         # Then delete the engagement before the next start:
-        ./bin/launch.sh cleanup
+        swarm cleanup
 
     All configuration lives in the swarmfile (JSON). Place a swarm.json in your
     repo root or point to it with SWARM_CONFIG.
+
+UPGRADING FROM 0.24
+    The six scripts at the top of the tree are one command, bin/swarm:
+
+        launch.sh COMMAND    swarm COMMAND
+        harvest.sh           swarm harvest
+        dashboard.sh         swarm dashboard
+        costs.sh             swarm costs
+        progress.sh          swarm progress
+        control.sh           swarm control
+
+    Options, exit statuses, swarm.json and the SWARM_* variables are unchanged;
+    messages name the new commands. Nothing is left at the old paths, so a
+    script that calls one fails with "No such file or directory" until it is
+    changed. For a checkout or a submodule at tools/swarm-core:
+
+        d=tools/swarm-core
+        sed -i -E \
+            -e "s,$d/launch\.sh,$d/bin/swarm,g" \
+            -e "s,$d/(harvest|dashboard|costs)\.sh,$d/bin/swarm \1,g" \
+            -e "s,$d/(progress|control)\.sh,$d/bin/swarm \1,g" \
+            FILE...
+
+    The documents changed names too: README.md, USAGE.md and CHANGELOG.md are
+    README, USAGE and NEWS, and LICENSE is COPYING.
 
 UPGRADING FROM CLAUDE-SWARM
     The project is now named swarm-core. Script names, swarm.json, SWARM_*
@@ -43,29 +68,38 @@ UPGRADING FROM CLAUDE-SWARM
     bind mounts still refer to their original paths.
 
 COMMANDS
-        ./bin/launch.sh start [--dashboard]   # Start an engagement: launch
-                                          # numbered agents.
-        ./bin/launch.sh stop [--numbered]     # Stop this engagement's
-                                          # containers (or only the
-                                          # numbered agents).
-        ./bin/launch.sh status                # Show containers.
-        ./bin/launch.sh logs N                # Tail agent N logs.
-        ./bin/launch.sh wait                  # Wait for already-started
-                                          # numbered agents, then
-                                          # post-process and harvest.
-                                          # Does not start agents.
-        ./bin/launch.sh post-process          # Run only post-process, then
-                                          # harvest.
-        ./bin/launch.sh interactive hunter    # Start a human-guided driver
-                                          # session from agents[].name.
-        ./bin/launch.sh shell --agent hunter  # Start a shell in that profile.
-        ./bin/launch.sh retire                # Remove stopped containers.
-        ./bin/launch.sh cleanup               # Keep what Git had as recovery
-                                          # refs, then delete the
-                                          # engagement.
+        swarm start [--dashboard]   # Start an engagement: launch
+                                    # numbered agents.
+        swarm stop [--numbered]     # Stop this engagement's
+                                    # containers (or only the
+                                    # numbered agents).
+        swarm status                # Show containers.
+        swarm logs N                # Tail agent N logs.
+        swarm wait                  # Wait for already-started
+                                    # numbered agents, then
+                                    # post-process and harvest.
+                                    # Does not start agents.
+        swarm post-process          # Run only post-process, then
+                                    # harvest.
+        swarm interactive hunter    # Start a human-guided driver
+                                    # session from agents[].name.
+        swarm shell --agent hunter  # Start a shell in that profile.
+        swarm retire                # Remove stopped containers.
+        swarm cleanup               # Keep what Git had as recovery
+                                    # refs, then delete the
+                                    # engagement.
+        swarm harvest [--dry]       # Merge the agents' work into
+                                    # the checkout.
+        swarm dashboard             # Open the TUI dashboard.
+        swarm costs [--json]        # Print cost and usage.
+        swarm progress              # Print the agents' commits.
 
-    A program that drives engagements runs them through control.sh instead (see
-    CONTROL INTERFACE).
+    swarm is bin/swarm in this repository. Call it by its path, as in
+    tools/swarm-core/bin/swarm start, or put bin/ on your PATH. The programs
+    in libexec/ are run by swarm and are not called directly.
+
+    A program that drives engagements runs them through swarm control instead
+    (see CONTROL INTERFACE).
 
 ENVIRONMENT VARIABLES
     Credentials stay as env vars (not in shell history).
@@ -155,13 +189,13 @@ ENVIRONMENT VARIABLES
     SWARM_WATCHDOG_GRACE (default: 10)
         Grace window between watchdog SIGTERM and SIGKILL. Rarely needs tuning.
 
-    SWARM_STOP_TIMEOUT (default: 60) Seconds './bin/launch.sh stop' passes to
+    SWARM_STOP_TIMEOUT (default: 60) Seconds 'swarm stop' passes to
         'docker stop -t', so the harness's SIGTERM trap has time to ship any
         in-flight local commits via _session_end_push before SIGKILL hits. Also
         how long stop waits for the engagement lock. See "Stopping the swarm".
 
     SWARM_WAIT_POLL (default: 10)
-        Seconds between the checks of './bin/launch.sh wait'.
+        Seconds between the checks of 'swarm wait'.
 
     SWARM_RETIRE_LAYER_LIMIT_MB (default: 100)
         The most, in megabytes, that the Git checkouts a container has outside
@@ -235,9 +269,9 @@ CONFIG FILE FIELDS
     Use interactive, chat, or shell to open one human-guided container from an
     agents[] profile:
 
-        SWARM_CONFIG=swarm.json ./bin/launch.sh interactive hunter
-        SWARM_CONFIG=swarm.json ./bin/launch.sh shell --agent hunter
-        SWARM_CONFIG=swarm.json ./bin/launch.sh chat --agent-index 2
+        SWARM_CONFIG=swarm.json swarm interactive hunter
+        SWARM_CONFIG=swarm.json swarm shell --agent hunter
+        SWARM_CONFIG=swarm.json swarm chat --agent-index 2
 
     The profile supplies the same setup, Docker args, driver, model, effort,
     auth, context, prompt, tag, and signing configuration used for numbered
@@ -295,7 +329,7 @@ CONFIG FILE FIELDS
     exited. Default is '0' (disabled); 300-600 is a sensible starting point for
     production swarms:
 
-        SWARM_ACTIVITY_TIMEOUT=600 ./bin/launch.sh start --dashboard
+        SWARM_ACTIVITY_TIMEOUT=600 swarm start --dashboard
 
     The watchdog's kill decision is written to the CLI's stderr file
     (/workspace/*.log.err inside the container, visible via 'docker logs') so
@@ -307,7 +341,7 @@ CONFIG FILE FIELDS
 
   Stopping the swarm
 
-    './bin/launch.sh stop' sends every running container of the engagement
+    'swarm stop' sends every running container of the engagement
     (numbered agents, post-process, interactive sessions) 'docker stop -t 60';
     --numbered stops only the numbered agents. The 60 s grace gives the
     harness's SIGTERM trap time to ship any in-flight local commits (in-place
@@ -325,7 +359,7 @@ CONFIG FILE FIELDS
     For larger swarms where 45+ agents race the same push lock, raise the
     grace:
 
-        SWARM_STOP_TIMEOUT=120 ./bin/launch.sh stop
+        SWARM_STOP_TIMEOUT=120 swarm stop
 
     The harness handles SIGTERM and SIGINT identically; an 'Exited (143)'
     (128+SIGTERM) or 'Exited (130)' (128+SIGINT) status with a clean log line
@@ -353,7 +387,7 @@ CONFIG FILE FIELDS
 
   Extra Docker arguments
 
-    Pass flags to the 'docker run' of each container launch.sh starts (the
+    Pass flags to the 'docker run' of each container swarm starts (the
     agents, post-process and interactive sessions; not the helper containers of
     retire and cleanup) with the top-level docker_args array. Each element is
     exactly one argument: no element is split, and each must be a string that
@@ -410,7 +444,7 @@ CONFIG FILE FIELDS
 
     Docker's -e flag accepts two forms: '-e VAR=value' passes a literal value,
     and '-e VAR' (no =value) inherits VAR from the caller's environment at
-    'launch.sh start' time, omitting it entirely when unset. This lets you
+    'swarm start' time, omitting it entirely when unset. This lets you
     parameterize a single swarmfile with host env without templating:
 
         {
@@ -418,7 +452,7 @@ CONFIG FILE FIELDS
           "docker_args": ["-e", "HTTPS_PROXY", "-e", "NO_PROXY"]
         }
 
-    What launch.sh gives a target's containers cannot come from docker_args,
+    What swarm gives a target's containers cannot come from docker_args,
     whether or not the engagement has a target, so the check also rejects: -e
     in any spelling naming TARGET_REPO, TARGET_REV, TARGET_REV_BASE,
     TARGET_REV_BASE_REPO or SWARM_TARGET_MIRROR (the name is what comes before
@@ -432,12 +466,12 @@ CONFIG FILE FIELDS
     field only at its start ("dst=/a,b", not dst="/a,b").
 
     Swarmfiles of earlier releases that passed the target with '-e TARGET_REPO
-    -e TARGET_REV' move it to the host environment, where launch.sh resolves it
+    -e TARGET_REV' move it to the host environment, where swarm resolves it
     (see "Target"), and their setup hooks call swarm-target-checkout instead of
     cloning it; an abbreviated TARGET_REV becomes a full commit id, a branch or
     a tag. Joining an engagement started without a target is rejected while
-    TARGET_* is set: unset it, or finish the engagement ('./bin/launch.sh
-    stop', harvest.sh, './bin/launch.sh cleanup') before one with a target
+    TARGET_* is set: unset it, or finish the engagement ('swarm
+    stop', swarm harvest, 'swarm cleanup') before one with a target
     starts.
 
   Setup hook
@@ -455,13 +489,13 @@ CONFIG FILE FIELDS
   Target
 
     An engagement can have an audit target: a repository and a revision that
-    launch.sh resolves on the host, once, when it creates the engagement, into
+    swarm resolves on the host, once, when it creates the engagement, into
     a snapshot that every container of the engagement mounts read-only. Set it
     in the host environment (docker_args may not set the target's variables,
     see "Extra Docker arguments"):
 
         TARGET_REPO=git@github.com:org/repo.git TARGET_REV=v1.2.0 \
-            ./bin/launch.sh start
+            swarm start
 
     TARGET_REPO
         The repository: an absolute local path, ssh://, [user@]host:path, or
@@ -508,7 +542,7 @@ CONFIG FILE FIELDS
     commit, and the object format. A failure before that write leaves no
     engagement, and the next start can follow at once. If publishing the
     snapshot or making the bare repo fails after it, the engagement is
-    incomplete, and every launch rejects it until './bin/launch.sh cleanup' has
+    incomplete, and every launch rejects it until 'swarm cleanup' has
     finished it.
 
     Every container of the engagement (agents, post-process, interactive
@@ -522,7 +556,7 @@ CONFIG FILE FIELDS
     engagement, and wait before it polls, check:
 
     - the record, as creation writes it (a damaged one points to
-      './bin/launch.sh cleanup');
+      'swarm cleanup');
     - each TARGET_* variable that is set (an unset one takes the recorded
       value): TARGET_REPO must be the repository as given or its physical path,
       TARGET_REV the revision as given or its commit, and the base ones
@@ -535,13 +569,13 @@ CONFIG FILE FIELDS
       storage outside it, exactly the pins at the recorded commits, and a clean
       'git fsck --full', which reads every object. Each Git command is bounded
       by SWARM_TARGET_VERIFY_TIMEOUT. A damaged snapshot cannot be repaired in
-      place: stop the agents, run harvest.sh, then './bin/launch.sh cleanup'.
+      place: stop the agents, run swarm harvest, then 'swarm cleanup'.
 
     Nothing reaches the target's source: a join works when the source is gone
     or out of reach. Under the lock, once the agents are done, wait checks the
     record and the variables again; the snapshot is checked again where it is
     mounted, by the post-process wait goes on to, so damage made while wait
-    polls stops that post-process but not harvest.sh, which never mounts the
+    polls stops that post-process but not swarm harvest, which never mounts the
     snapshot. The checks see modes, not access control lists: every container
     user needs effective read access to the snapshot's files and read and
     search access to its directories, and a default ACL on the runtime
@@ -557,8 +591,8 @@ CONFIG FILE FIELDS
     target checkout inside /workspace, ignore its directory in this checkout's
     root .gitignore (/target/ for the hook above), and commit the rule before
     start, post-process or interactive creates the engagement. Otherwise an
-    agent's commit can record the target checkout as a gitlink, and harvest.sh
-    merges that commit into this checkout.
+    agent's commit can record the target checkout as a gitlink, and swarm
+    harvest merges that commit into this checkout.
 
     'swarm-target-checkout DIR' makes DIR a checkout of the recorded commit,
     HEAD detached at TARGET_REV, with its pin as refs/swarm/target and, with a
@@ -618,12 +652,12 @@ CONFIG FILE FIELDS
     false'), overriding anything that might otherwise leak in from the image or
     a mounted config.
 
-    The host key file must exist at 'launch.sh start' time; otherwise launch
+    The host key file must exist at 'swarm start' time; otherwise launch
     fails with 'ERROR: signing key not found'. The container image ships
     openssh-client for the 'ssh-keygen -Y sign' that git invokes.
 
 DASHBOARD
-        ./bin/dashboard.sh
+        swarm dashboard
 
     Per-agent model, auth source, status, cost, tokens, cache, turns,
     throughput, and duration. Updates every 3s. The header shows a compact
@@ -632,12 +666,12 @@ DASHBOARD
     not count toward numbered-agent completion.
 
     A numbered agent or the post-process that has no container but a workspace
-    volume of the engagement shows 'volume only': './bin/launch.sh retire'
+    volume of the engagement shows 'volume only': 'swarm retire'
     removed its container (or 'docker run' never made it), and its files stay
-    on the volume until './bin/launch.sh cleanup'. Once no container is left, a
+    on the volume until 'swarm cleanup'. Once no container is left, a
     line under the recent commits counts those volumes. A cleanup that has not
     finished (running, or stopped before the end) is shown there instead, until
-    it finishes; if it is not running, run './bin/launch.sh cleanup' again.
+    it finishes; if it is not running, run 'swarm cleanup' again.
 
     'q'
         Quit.
@@ -652,7 +686,7 @@ DASHBOARD
         Harvest results.
 
     's'
-        Stop the containers of the engagement shown ('./bin/launch.sh stop').
+        Stop the containers of the engagement shown ('swarm stop').
 
     'p'
         After confirmation, stop the numbered agents and start post-process;
@@ -664,7 +698,7 @@ DASHBOARD
 
 ACTIVITY STREAMING
     Agent activity streams to Docker logs in real time. Press [1-9] in the
-    dashboard (or './bin/launch.sh logs N') to see what an agent is doing:
+    dashboard (or 'swarm logs N') to see what an agent is doing:
 
         12:34:56 harness[1] session start at=abc123
         12:35:01   agent[1] Read src/main.ts
@@ -772,32 +806,32 @@ POST-PROCESSING
           }
         }
 
-    Trigger via [p] in the dashboard, './bin/launch.sh post-process', or
-    automatically via './bin/launch.sh wait' after numbered agents have already
-    been started. './bin/launch.sh wait' does not launch numbered agents.
+    Trigger via [p] in the dashboard, 'swarm post-process', or
+    automatically via 'swarm wait' after numbered agents have already
+    been started. 'swarm wait' does not launch numbered agents.
 
     post-process refuses while numbered agents of the engagement run: stop them
-    ('./bin/launch.sh stop --numbered') or wait for them first. A post-process
+    ('swarm stop --numbered') or wait for them first. A post-process
     container is never replaced: while <project>-agent-post is there,
     post-process refuses. Stop it first if it runs, then remove it with
-    './bin/launch.sh retire --post-process'; its workspace volume stays for
+    'swarm retire --post-process'; its workspace volume stays for
     cleanup.
 
     The post-process agent clones the same bare repo, sees all commits on
     agent-work, runs its prompt, and pushes.
 
-    harvest.sh only merges agent work into the current local branch: agent-work
-    plus any swarm/*/interactive-* branches. It does not run post_process. If
-    you harvested manually and still need post-processing, run './bin/launch.sh
-    post-process'; use that command directly when you intentionally want to run
-    only the post-process agent and then harvest.
+    swarm harvest only merges agent work into the current local branch:
+    agent-work plus any swarm/*/interactive-* branches. It does not run
+    post_process. If you harvested manually and still need post-processing, run
+    'swarm post-process'; use that command directly when you intentionally want
+    to run only the post-process agent and then harvest.
 
-    harvest.sh merges a branch built on the commit the engagement started from
-    (base_commit in the state file) as long as HEAD's history still has that
-    commit, so it also merges agent work after you merged an interactive branch
-    or made commits of your own. It refuses when HEAD's history no longer has
-    it (rewritten after the engagement started, by a force-push or a rebase):
-    take what you need by hand, then end the engagement with './bin/launch.sh
+    swarm harvest merges a branch built on the commit the engagement started
+    from (base_commit in the state file) as long as HEAD's history still has
+    that commit, so it also merges agent work after you merged an interactive
+    branch or made commits of your own. It refuses when HEAD's history no
+    longer has it (rewritten after the engagement started, by a force-push or a
+    rebase): take what you need by hand, then end the engagement with 'swarm
     cleanup --allow-unharvested'. It also records what each harvest merged, and
     refuses when HEAD no longer has that (a rebase dropped some of it): merging
     again would bring it back. Each merge is recorded before it starts, and
@@ -806,16 +840,15 @@ POST-PROCESSING
     it up. Finished by hand, it counts as merged; given up, or cut short with
     the harvest (killed, say), the next harvest refuses as well, as does one
     run while the merge is still in progress. After undoing a harvest on
-    purpose ('git reset --hard <tag>', below) or giving up such a merge,
-    './bin/harvest.sh --again' merges that work again, also what the bare
-    repo's branches no longer bring back (a branch deleted there, or agent-work
-    moved back): it merges the recorded commits by id from this checkout, which
-    keeps them recorded until HEAD has them, and refuses one the checkout no
-    longer has.
+    purpose ('git reset --hard <tag>', below) or giving up such a merge, 'swarm
+    harvest --again' merges that work again, also what the bare repo's branches
+    no longer bring back (a branch deleted there, or agent-work moved back): it
+    merges the recorded commits by id from this checkout, which keeps them
+    recorded until HEAD has them, and refuses one the checkout no longer has.
 
     The files a harvest merges are the agents', so Git runs no hook and no
-    fsmonitor command for harvest.sh on the host (core.hooksPath=/dev/null, an
-    empty core.fsmonitor, and each hook the checkout's Git config defines
+    fsmonitor command for swarm harvest on the host (core.hooksPath=/dev/null,
+    an empty core.fsmonitor, and each hook the checkout's Git config defines
     turned off by name; a hook name with '=' makes it refuse). It still runs
     the commands your Git config names for Git to run (filters and merge
     drivers, on the files an agent's .gitattributes assigns them to;
@@ -826,7 +859,7 @@ POST-PROCESSING
     merged, as you would a pull request, before you run anything in the
     checkout.
 
-    Before merging, harvest.sh tags the current branch tip with a local
+    Before merging, swarm harvest tags the current branch tip with a local
     swarm-harvest-<date>-<time> tag (-2, -3 and so on for another harvest
     within the same second; skipped on --dry and when nothing is new). Undo a
     harvest with 'git reset --hard <tag>'. The tag is never pushed and does not
@@ -842,7 +875,7 @@ POST-PROCESSING
     path runs that script, false or '""' skips setup (so a heavy top-level
     setup is not redone), and omitting the key inherits the top-level setup.
 
-    './bin/launch.sh post-process' (and wait when it triggers post-processing)
+    'swarm post-process' (and wait when it triggers post-processing)
     exits with the post-process container's exit code. Harvest still runs
     first, so a crashed agent's in-flight commits are recovered locally, but a
     non-zero exit lets CI or daemons refuse to publish partial state.
@@ -928,8 +961,8 @@ AUTH MODES
     with 'claude setup-token' and export CLAUDE_CODE_OAUTH_TOKEN.
 
     Claude Code credentials are resolved each time a container is created. If
-    you run 'ANTHROPIC_API_KEY=... ./bin/launch.sh start', that inline
-    environment does not persist for a later './bin/launch.sh shell --agent
+    you run 'ANTHROPIC_API_KEY=... swarm start', that inline
+    environment does not persist for a later 'swarm shell --agent
     ...'; export the variable first or prefix the shell, chat, or interactive
     command too. Inside a Claude interactive shell, 'claude auth status' should
     report the injected credential.
@@ -976,7 +1009,7 @@ AUTH MODES
           ]
         }
 
-    Run './bin/launch.sh interactive operator' for Pi's native UI. As with the
+    Run 'swarm interactive operator' for Pi's native UI. As with the
     other interactive drivers, the profile prompt's path is displayed, not
     automatically submitted. Git instructions are appended to the system prompt
     in both modes.
@@ -1123,8 +1156,8 @@ GIT COORDINATION
     Disable with '"inject_git_rules": false' in the swarmfile.
 
 COST TRACKING
-        ./bin/costs.sh          # Table.
-        ./bin/costs.sh --json   # JSON.
+        swarm costs          # Table.
+        swarm costs --json   # JSON.
 
     Stats collected per session inside each container
     (agent_logs/stats_agent_*.tsv), read on demand.
@@ -1247,7 +1280,7 @@ DRIVERS
 
     Then run it:
 
-        SWARM_CONFIG=dry-run.json ./bin/launch.sh start --dashboard
+        SWARM_CONFIG=dry-run.json swarm start --dashboard
 
     The fake driver runs the full harness loop -- cloning, setup script
     execution, git hooks -- but replaces the agent session with a synthetic
@@ -1277,28 +1310,28 @@ RUNTIME DIRECTORY
     engagement.lock
         Lock that lifecycle commands hold.
 
-    The state file is JSON (swarm-core.state/v1, mode 600) that 'launch.sh
+    The state file is JSON (swarm-core.state/v1, mode 600) that 'swarm
     start' replaces in one rename; the dashboard reads it with jq and never
     sources it.
 
     The directory is $XDG_STATE_HOME/swarm-core/<project>, which is
     ~/.local/state/swarm-core/<project> when XDG_STATE_HOME is unset or
     relative. Set SWARM_RUNTIME_DIR to an absolute path to put it elsewhere,
-    and set it the same way for every command of a run (launch.sh, harvest.sh,
-    dashboard.sh, progress.sh, costs.sh): each one resolves the directory on
-    its own. 'launch.sh start' prints the directory it used.
+    and set it the same way for every command of a run (swarm, swarm harvest,
+    swarm dashboard, swarm progress, swarm costs): each one resolves the
+    directory on its own. 'swarm start' prints the directory it used.
 
-    Cleanup has to be able to work there, so launch.sh refuses, before it
+    Cleanup has to be able to work there, so swarm refuses, before it
     creates anything, a runtime directory that is '/' or your home directory,
     that holds or lies inside the checkout or its git dir, that is not a
     directory of yours, or whose path has a comma, a quote, a tab or a newline.
     Only an earlier release can have made one in such a place (see "Engagements
     of earlier releases").
 
-    launch.sh creates the directory with mode 700 and refuses one that is a
+    swarm creates the directory with mode 700 and refuses one that is a
     symlink, belongs to another user, has any group or other permission bits,
-    or (on macOS) has an ACL entry that allows access; harvest.sh and
-    progress.sh refuse it too. On macOS it also refuses to create the directory
+    or (on macOS) has an ACL entry that allows access; swarm harvest and swarm
+    progress refuse it too. On macOS it also refuses to create the directory
     below an inheritable ACL entry that allows access, since the new directory
     would inherit it. The bare repo inside stays writable for every UID,
     because the container's agent user can have a different UID from the host
@@ -1316,12 +1349,12 @@ RUNTIME DIRECTORY
     already in that form is refused, and the error shows the accepted form.
 
     The state file records which checkout owns the runtime directory. Every
-    launch.sh command, harvest.sh, progress.sh, costs.sh and the dashboard
+    swarm command, swarm harvest, swarm progress, swarm costs and the dashboard
     refuse to act when another checkout owns it, so two checkouts with the same
     directory name never share a bare repo, an image or containers: give the
     second one its own SWARM_PROJECT. A checkout moved to a new path is refused
     the same way. Harvest from the old path first, or remove the runtime
-    directory once nothing in it is needed. 'launch.sh stop' keeps the state
+    directory once nothing in it is needed. 'swarm stop' keeps the state
     file.
 
     Container names are shared by everything on the Docker host, and the
@@ -1331,8 +1364,8 @@ RUNTIME DIRECTORY
     refuses to act while one of the project's containers belongs to another
     checkout, or has no labels because an older release created it (see
     Upgrading from /tmp state ("Upgrading from /tmp state")). Removing or
-    stopping a container checks its labels again and acts on its ID. harvest.sh
-    only looks into containers when the Docker daemon answers.
+    stopping a container checks its labels again and acts on its ID. swarm
+    harvest only looks into containers when the Docker daemon answers.
 
   Workspace volumes
 
@@ -1342,11 +1375,11 @@ RUNTIME DIRECTORY
     and swarm-core.engagement-token labels, plus swarm-core.container (its
     container's name), swarm-core.kind (agent for numbered agents and
     post-process, interactive for a human session), swarm-core.context (full,
-    slim or none) and a random swarm-core.nonce that launch.sh reads back after
+    slim or none) and a random swarm-core.nonce that swarm reads back after
     creating the volume. A launch fails before 'docker run' when the volume
     cannot be created or does not carry those labels. Containers carry the
-    engagement labels too. Removing a stopped container ('./bin/launch.sh
-    retire') leaves its volume, and the files in it; './bin/launch.sh cleanup'
+    engagement labels too. Removing a stopped container ('swarm
+    retire') leaves its volume, and the files in it; 'swarm cleanup'
     copies what Git keeps there into the checkout, then deletes the volumes.
 
   Engagements
@@ -1356,10 +1389,10 @@ RUNTIME DIRECTORY
     state file records no engagement, and the state file records its id: the
     value of SWARM_ENGAGEMENT_ID (1-64 letters, digits, '.', '_' or '-',
     starting with a letter or digit), or a generated '<UTC time>-<random hex>'
-    id. post-process, interactive, stop, wait, harvest.sh and the dashboard act
-    on an existing engagement only when SWARM_ENGAGEMENT_ID is unset or equal
-    to the recorded id, so a caller that names its engagement cannot act on
-    another one. An empty value counts as set and is refused.
+    id. post-process, interactive, stop, wait, swarm harvest and the dashboard
+    act on an existing engagement only when SWARM_ENGAGEMENT_ID is unset or
+    equal to the recorded id, so a caller that names its engagement cannot act
+    on another one. An empty value counts as set and is refused.
 
     A new bare repo starts from the commit the checkout has: agent-work and
     refs/swarm/base point at it, the state file records it as base_commit, and
@@ -1375,7 +1408,7 @@ RUNTIME DIRECTORY
     "Submodule mirrors".
 
     The state file also records the Docker daemon ('docker info' ID) the
-    engagement runs on, and a token of 16 random hex digits that launch.sh
+    engagement runs on, and a token of 16 random hex digits that swarm
     makes for each new engagement (an engagement id can come from the caller
     and repeat, the token cannot); containers and volumes carry it in
     swarm-core.engagement-token. post-process and interactive joining an
@@ -1385,8 +1418,8 @@ RUNTIME DIRECTORY
     Docker calls, even if another terminal switches it meanwhile.
 
     SWARM_ENGAGEMENT_TOKEN binds a command to one engagement: stop,
-    post-process, interactive, retire, cleanup and harvest.sh refuse when it is
-    set and the state file records another token or none (retire and cleanup
+    post-process, interactive, retire, cleanup and swarm harvest refuse when it
+    is set and the state file records another token or none (retire and cleanup
     check it under the engagement lock, before they change anything), and
     post-process and interactive then never create an engagement. start refuses
     it outright: it makes a new engagement, and a token names one to join. Set
@@ -1394,7 +1427,7 @@ RUNTIME DIRECTORY
     engagement. wait reads the token once, refuses to go on when the engagement
     changed while it waited (a cleanup and a new start in another terminal),
     and passes the token to the post-process or harvest it runs; the dashboard
-    passes it to each launch.sh it runs.
+    passes it to each swarm it runs.
 
     A new engagement starts only on a clean runtime directory. start, and
     post-process or interactive when the state file records no engagement,
@@ -1404,15 +1437,15 @@ RUNTIME DIRECTORY
     also refuses while the state file still records an engagement, even with
     nothing of it left on disk. The error lists what it found and, when the
     bare repo holds agent work the checkout lacks, what to harvest. End the
-    engagement first: stop the agents, run harvest.sh, then './bin/launch.sh
+    engagement first: stop the agents, run swarm harvest, then 'swarm
     cleanup'. Nothing is removed by force.
 
     The state file decides between creating and joining: an engagement it
     records is joined, never created again, and only when it is complete, that
     is when its bare repo is a usable bare repository (Git, given its path,
     takes it for one, and its HEAD names a commit). post-process and
-    interactive, and wait before it goes on to post-process or harvest.sh,
-    refuse an incomplete engagement and point to './bin/launch.sh cleanup'; a
+    interactive, and wait before it goes on to post-process or swarm harvest,
+    refuse an incomplete engagement and point to 'swarm cleanup'; a
     recorded engagement's bare repo is never made again. With a target,
     post-process and interactive also need its snapshot to pass the target's
     check, and wait checks it before it polls (see "Target"). The engagement is
@@ -1463,7 +1496,7 @@ RUNTIME DIRECTORY
     joining adds none. Before any container starts, every mirror the manifest
     lists must be there with its commit; otherwise the command stops and says
     whether an interactive session that joins can make it again or only
-    './bin/launch.sh cleanup' deals with it. With no submodule, nothing is
+    'swarm cleanup' deals with it. With no submodule, nothing is
     mounted.
 
     Containers mount mirrors/ read-only at /mirrors. At startup, before the
@@ -1482,7 +1515,7 @@ RUNTIME DIRECTORY
     An engagement an earlier release created has its mirrors named after the
     submodules and no manifest: this release does not join it (post-process and
     interactive refuse); finish it with that release, or end it with
-    './bin/launch.sh cleanup', which handles both layouts.
+    'swarm cleanup', which handles both layouts.
 
   Engagements of earlier releases
 
@@ -1490,7 +1523,7 @@ RUNTIME DIRECTORY
     and its containers keep their files in their own layers (or in volumes
     docker_args made); Docker may remove some when they stop (--rm in
     docker_args). This release does not take such an engagement over: start,
-    post-process, interactive, stop, wait, retire, cleanup and harvest.sh
+    post-process, interactive, stop, wait, retire, cleanup and swarm harvest
     refuse it and change nothing, and only status and logs work on it. The same
     holds for what an engagement leaves (a bare repo, mirrors, containers,
     volumes) when the state file records none, and for a runtime directory in a
@@ -1500,10 +1533,10 @@ RUNTIME DIRECTORY
 
   Engagement lock
 
-    start, post-process, interactive, chat, shell and harvest.sh take
+    start, post-process, interactive, chat, shell and swarm harvest take
     engagement.lock in the runtime directory with 'flock -n' before they change
     anything, and fail at once while another operation holds it. start and
-    post-process keep it until they exit (harvest.sh started by them shares
+    post-process keep it until they exit (swarm harvest started by them shares
     it). interactive keeps it while it records the session in
     'interactive-<container name>.pending' in the runtime directory (its pid,
     that process's start time and the Docker daemon), then lets it go and execs
@@ -1521,8 +1554,8 @@ RUNTIME DIRECTORY
     --dashboard' lets the lock go before the dashboard opens. stop waits for it
     after its first passes, which stop what runs without it (see "Stopping the
     swarm"); wait takes it once the agents are done, and waits up to a minute
-    for it. status, logs, progress.sh, costs.sh and the dashboard never take
-    it, and containers push through git without it.
+    for it. status, logs, swarm progress, swarm costs and the dashboard never
+    take it, and containers push through git without it.
 
     A caller that runs several commands as one unit can hold the lock itself
     and pass the descriptor in SWARM_LOCK_FD. The engine checks that the
@@ -1531,8 +1564,8 @@ RUNTIME DIRECTORY
         (
             exec 9>>"<runtime dir>/engagement.lock"
             flock -n 9 || exit 1
-            SWARM_LOCK_FD=9 ./bin/launch.sh start || exit $?
-            SWARM_LOCK_FD=9 ./bin/launch.sh wait
+            SWARM_LOCK_FD=9 swarm start || exit $?
+            SWARM_LOCK_FD=9 swarm wait
         )   # The lock goes when the subshell exits.
 
     flock comes with util-linux on Linux; on macOS install it with 'brew
@@ -1544,9 +1577,9 @@ RUNTIME DIRECTORY
     /tmp/<project>-mirror-*.git and /tmp/<project>-swarm.env, where any local
     user could write to it. It is never reused, and this release changes
     nothing there. While /tmp/<project>-upstream.git exists and belongs to you,
-    start, post-process, interactive, chat, shell and harvest.sh stop.
+    start, post-process, interactive, chat, shell and swarm harvest stop.
 
-    Containers that an older release started carry no labels, so launch.sh
+    Containers that an older release started carry no labels, so swarm
     refuses every command while they exist, stop included, before it gets to
     the /tmp check (see "Project identity"). Their agents push to the old bare
     repo. Finish that engagement with the release that made it, as for
@@ -1558,8 +1591,8 @@ RUNTIME DIRECTORY
         git fetch /tmp/<project>-upstream.git \
             '+refs/heads/*:refs/remotes/legacy-swarm/*'
 
-RETIRING CONTAINERS './bin/launch.sh retire' removes this checkout's stopped
-    engine containers; './bin/launch.sh retire --post-process' removes only
+RETIRING CONTAINERS 'swarm retire' removes this checkout's stopped
+    engine containers; 'swarm retire --post-process' removes only
     <project>-agent-post, so post-process can run again. A container's
     /workspace is a Docker volume that stays; what goes is the container's own
     layer, so retire checks every selected container before it removes any, and
@@ -1597,7 +1630,7 @@ RETIRING CONTAINERS './bin/launch.sh retire' removes this checkout's stopped
     checkout as recovery refs, runs 'git fsck --full', and only then removes
     the container. Work outside Git's history in it (uncommitted, untracked or
     ignored files, the agent's agent_logs included) stops retire, unless
-    './bin/launch.sh retire --discard-uncommitted' (or cleanup's) drops exactly
+    'swarm retire --discard-uncommitted' (or cleanup's) drops exactly
     what it lists; so does a repository below it that the scan cannot carry,
     and a link that leads out of it into what the container wrote. A repository
     nested in it is kept with it, the way cleanup keeps one in a volume. A
@@ -1639,13 +1672,13 @@ RETIRING CONTAINERS './bin/launch.sh retire' removes this checkout's stopped
     config sets a filter driver or includes other files.
 
     The error says what to copy out first. Removal goes by ID, without -f, and
-    leaves any container that changed since it was checked. Run costs.sh before
-    retire if you need the containers' stats. retire needs no swarmfile; it
-    takes the engagement lock, refuses an engagement of an earlier release (see
-    "Engagements of earlier releases"), and removes nothing while Docker talks
-    to another daemon than the engagement's.
+    leaves any container that changed since it was checked. Run swarm costs
+    before retire if you need the containers' stats. retire needs no swarmfile;
+    it takes the engagement lock, refuses an engagement of an earlier release
+    (see "Engagements of earlier releases"), and removes nothing while Docker
+    talks to another daemon than the engagement's.
 
-CLEANUP './bin/launch.sh cleanup' deletes this checkout's engagement: its
+CLEANUP 'swarm cleanup' deletes this checkout's engagement: its
     containers, its workspace volumes, the bare repo and the mirrors. It loses
     nothing Git kept there: before it deletes a repository location it copies
     everything Git keeps in it (every ref and reflog entry, every object,
@@ -1671,13 +1704,13 @@ CLEANUP './bin/launch.sh cleanup' deletes this checkout's engagement: its
     in the runtime directory still stops the cleanup of an engagement, as
     below.
 
-        ./bin/launch.sh cleanup [--discard-uncommitted] [--allow-unharvested]
+        swarm cleanup [--discard-uncommitted] [--allow-unharvested]
 
     It stops, and deletes nothing of the engagement, when
 
     - the bare repo holds agent work that HEAD's history does not have yet
       (agent-work, swarm/*, agent-parked/*): harvest first. When it never can
-      (harvest.sh refuses when HEAD's history no longer has the engagement's
+      (swarm harvest refuses when HEAD's history no longer has the engagement's
       base commit, after a rewritten upstream say), take what you need by hand
       and pass --allow-unharvested, which keeps that work as recovery refs
       only. A read of the bare repo's refs that fails part of the way refuses
@@ -1711,9 +1744,9 @@ CLEANUP './bin/launch.sh cleanup' deletes this checkout's engagement: its
     containers and checks everything again before it copies and deletes. A
     later failure (the copy into the checkout, 'git fsck') leaves the
     containers retired and every repository location in place, so save the
-    containers' logs and stats first if you need them ('./bin/launch.sh logs
-    N', costs.sh). A .new that a run cut off while it cloned the bare repo or a
-    mirror is copied as it is (every file) and deleted too.
+    containers' logs and stats first if you need them ('swarm logs N', swarm
+    costs). A .new that a run cut off while it cloned the bare repo or a mirror
+    is copied as it is (every file) and deleted too.
 
     A repository in a volume that registers a linked worktree outside it does
     not stop those checks: such a worktree is in a container's layer, which
@@ -1745,26 +1778,25 @@ CLEANUP './bin/launch.sh cleanup' deletes this checkout's engagement: its
     Files the agents wrote belong to the container's user; what this user
     cannot delete goes through a throwaway container of the engine image, as
     root. A cleanup that stops half way (an error, Ctrl-C) leaves a checkpoint
-    in the state file: start, post-process, interactive, stop and harvest.sh
-    refuse until './bin/launch.sh cleanup' runs again and finishes. Each run
+    in the state file: start, post-process, interactive, stop and swarm harvest
+    refuse until 'swarm cleanup' runs again and finishes. Each run
     checks everything again and copies whatever is still there; it also checks
     that the recovery refs earlier runs wrote are intact. The engagement lock,
     the runtime directory and its claim stay.
 
-CONTROL INTERFACE
-    A program that drives engagements (a CI job, a scheduler) uses control.sh:
-    it names the interface it was written for, runs the engine's commands, and
-    observes an engagement without changing anything. This section is
-    swarm-core.control/v1. Such a program depends on it and on nothing else of
-    swarm-core: paths, the files in the runtime directory (state.json, the
-    mirrors' manifest), container names and the output of commands may change
-    from one release to the next.
+CONTROL INTERFACE A program that drives engagements (a CI job, a scheduler)
+    uses swarm control: it names the interface it was written for, runs the
+    engine's commands, and observes an engagement without changing anything.
+    This section is swarm-core.control/v1. Such a program depends on it and on
+    nothing else of swarm-core: paths, the files in the runtime directory
+    (state.json, the mirrors' manifest), container names and the output of
+    commands may change from one release to the next.
 
-        ./bin/control.sh version
-        ./bin/control.sh --interface swarm-core.control/v1 observe
-        ./bin/control.sh --interface swarm-core.control/v1 start
-        ./bin/control.sh --interface swarm-core.control/v1 wait
-        ./bin/control.sh --interface swarm-core.control/v1 cleanup
+        swarm control version
+        swarm control --interface swarm-core.control/v1 observe
+        swarm control --interface swarm-core.control/v1 start
+        swarm control --interface swarm-core.control/v1 wait
+        swarm control --interface swarm-core.control/v1 cleanup
 
   Commands
 
@@ -1775,10 +1807,10 @@ CONTROL INTERFACE
     <message>', or 'swarm-core: unsupported-interface: <message>'.
 
     Actions are the engine's commands: start, stop, wait, post-process, retire,
-    cleanup, interactive, chat and shell run launch.sh with that command and
-    the arguments that follow it, harvest runs harvest.sh with its arguments.
-    control.sh runs them by exec, before it reads anything: the same process,
-    working directory, environment, descriptors and terminal, and that
+    cleanup, interactive, chat and shell run swarm with that command and the
+    arguments that follow it, harvest runs swarm harvest with its arguments.
+    swarm control runs them by exec, before it reads anything: the same
+    process, working directory, environment, descriptors and terminal, and that
     command's output and exit status. Each does what the rest of this document
     says it does and needs what it needs (retire and cleanup need no swarmfile,
     harvest no Docker). They exit 0 when they did it, and non-zero with a

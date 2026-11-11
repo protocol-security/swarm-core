@@ -4,7 +4,7 @@ set -euo pipefail
 # shellcheck source=_test_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
-# Unit tests for launch.sh cleanup, with a fake docker CLI whose answers
+# Unit tests for swarm cleanup, with a fake docker CLI whose answers
 # come from files, and real Git repositories for the checkout, the bare
 # repo and the mirrors: the preservation check, the scans, the import of
 # recovery refs and git fsck all run for real.  No Docker or API key
@@ -17,7 +17,7 @@ TMPDIR=$(mktemp -d)
 # scratch files here, under the cleanup below.
 export TMPDIR
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LAUNCH="$REPO_ROOT/bin/launch.sh"
+LAUNCH="$REPO_ROOT/bin/swarm"
 trap 'chmod -R u+rwX "$TMPDIR" 2>/dev/null; rm -rf "$TMPDIR"' EXIT
 
 # The scanner asks git which config files it reads (git var, Git 2.42
@@ -289,7 +289,7 @@ setup() {
     : > "$RT/engagement.lock"
 }
 
-# Run launch.sh cleanup ARGS; print "<status>".  SHIM_DIR (when set)
+# Run swarm cleanup ARGS; print "<status>".  SHIM_DIR (when set)
 # comes first on PATH.
 SHIM_DIR=""
 cleanup() {
@@ -659,7 +659,7 @@ swarm_cleanup_pending_check "$RT/state.json" 2>/dev/null || rc=$?
 assert_eq "other commands refuse meanwhile" "1" "$rc"
 rc=0
 (cd "$REPO" && SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" \
-    "$BASH" "$REPO_ROOT/bin/harvest.sh" > "$TMPDIR/hout" 2>&1) || rc=$?
+    "$BASH" "$REPO_ROOT/libexec/harvest" > "$TMPDIR/hout" 2>&1) || rc=$?
 assert_eq "harvest refuses meanwhile" "1" "$rc"
 assert_eq "saying a cleanup is in progress" "1" \
     "$(grep -c 'cleanup in progress' "$TMPDIR/hout" || true)"
@@ -1001,7 +1001,7 @@ fi
 
 echo ""
 echo "=== 5. Commands that wait for a pending cleanup ==="
-# Run launch.sh ARGS (another command than cleanup) with a small
+# Run swarm ARGS (another command than cleanup) with a small
 # swarmfile; print "<status>".
 lifecycle() {
     local rc=0 orig="$PATH"

@@ -13,7 +13,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 # checks both out from the read-only /mirrors before its setup hook
 # runs (as root, through sudo -E), which reports what it sees.
 # post-process and an interactive session, each in a new workspace, do
-# the same.  Then stop, harvest.sh, retire and cleanup, which deletes
+# the same.  Then stop, swarm harvest, retire and cleanup, which deletes
 # the mirrors and keeps their manifest under a recovery ref.
 #
 # Requires Docker and python3 (the supervisor of the runs that could
@@ -21,7 +21,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_test_env.sh"
 
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$TESTS_DIR/.." && pwd)"
-LAUNCH_SH="${REPO_ROOT}/bin/launch.sh"
+LAUNCH_SH="${REPO_ROOT}/bin/swarm"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "SKIP: docker not found"
@@ -50,7 +50,7 @@ WORKDIR=$(cd -P "$WORKDIR" && pwd -P)
 RT="$WORKDIR/runtime"
 CHECKOUT="$WORKDIR/checkout"
 
-# Everything of this run's project goes: containers of launch.sh,
+# Everything of this run's project goes: containers of swarm,
 # retire's and cleanup's helpers and the probes, then volumes, then the
 # engine image and retire's snapshot images.  The shared base image
 # stays, as the other runtime tests keep it.
@@ -112,7 +112,7 @@ run_launch() {
         SWARM_SKIP_DEP_CHECK=1 "$BASH" "$LAUNCH_SH" "$@")
 }
 
-# The supervisor of a launch.sh run that could hang (as in
+# The supervisor of a swarm run that could hang (as in
 # runtime_target.sh): the command under a new pseudo-terminal, its
 # output in LOG, at most SECS seconds, then the process group killed and
 # status 124.
@@ -339,10 +339,10 @@ session=$(docker ps -a --filter "label=${SWARM_PROJECT_LABEL}=${P}" \
 check "(its container is there)" "$([ -n "$session" ] && echo yes)" yes
 [ -z "$session" ] || container_checks interactive "$session"
 
-echo "--- stop, harvest.sh, retire, cleanup ---"
+echo "--- stop, swarm harvest, retire, cleanup ---"
 run_launch stop >/dev/null 2>&1 || true
 (cd "$CHECKOUT" && SWARM_RUNTIME_DIR="$RT" SWARM_PROJECT="$P" \
-    SWARM_SKIP_DEP_CHECK=1 "$BASH" "$REPO_ROOT/bin/harvest.sh") \
+    SWARM_SKIP_DEP_CHECK=1 "$BASH" "$REPO_ROOT/libexec/harvest") \
     >/dev/null 2>&1 || true
 rc=0
 out=$(run_launch retire 2>&1) || rc=$?

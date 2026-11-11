@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Project identity and the per-project runtime directory, shared by
-# launch.sh, harvest.sh and the dashboard.  User-facing labels should
+# swarm, swarm harvest and the dashboard.  User-facing labels should
 # keep the raw repository basename; internal Docker identifiers must be
 # lowercase and separator-safe.
 
@@ -457,8 +457,8 @@ swarm_runtime_owner_check() {
         echo "  owner:    ${owner}" >&2
         echo "  this one: ${canonical}" >&2
         echo "Give this checkout its own id with SWARM_PROJECT. If it" \
-             "is the same checkout at a new path, run harvest.sh and" \
-             "./bin/launch.sh cleanup from the old path." >&2
+             "is the same checkout at a new path, run swarm harvest and" \
+             "swarm cleanup from the old path." >&2
         return 1
     fi
     # The runtime directory can be named apart from the project id
@@ -564,7 +564,7 @@ swarm_random_hex() {
 }
 
 # Whether Bash MAJOR.MINOR needs the stop check of the EXIT traps of
-# launch.sh, retire, cleanup, costs.sh, progress.sh and dashboard.sh:
+# swarm, retire, cleanup, swarm costs, swarm progress and swarm dashboard:
 # before 4.1, Bash (macOS's /bin/bash is 3.2) runs an EXIT trap with $?
 # at 0 when set -u stops the script on an unset variable, so that stop
 # would pass for success; later versions end such a run with a nonzero
@@ -732,7 +732,7 @@ swarm_containers_verify() {
     if [ "$others" != 0 ]; then
         echo "Give this checkout its own id with SWARM_PROJECT, or" \
              "retire or clean up those containers from the checkout" \
-             "that owns them (./bin/launch.sh retire, ./bin/launch.sh cleanup" \
+             "that owns them (swarm retire, swarm cleanup" \
              "there)." >&2
     fi
     # An older release started these, and their files may live only in
@@ -1063,7 +1063,7 @@ swarm_engagement_complete() {
     local engagement="$1" bare="$2"
     swarm_bare_repo_ready "$bare" && return 0
     echo "ERROR: engagement ${engagement} is incomplete: ${bare} is" \
-         "missing or is no usable bare repository.  Run ./bin/launch.sh" \
+         "missing or is no usable bare repository.  Run swarm" \
          "cleanup to finish it (it refuses, and says why, what it" \
          "cannot preserve)." >&2
     return 1
@@ -1192,7 +1192,7 @@ swarm_cleanup_pending_check() {
         return 1
     fi
     if [ "$pending" = true ]; then
-        echo "ERROR: cleanup in progress: run ./bin/launch.sh cleanup again." >&2
+        echo "ERROR: cleanup in progress: run swarm cleanup again." >&2
         return 1
     fi
 }
@@ -1318,7 +1318,7 @@ swarm_unlock() {
     unset SWARM_LOCK_FD
 }
 
-# An interactive session runs for hours without the lock.  launch.sh
+# An interactive session runs for hours without the lock.  swarm
 # records it under the lock in DIR/interactive-<container name>.pending
 # with its own pid, that process's start time and the Docker daemon,
 # releases the lock and execs `docker run`, which keeps the pid and

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Force C numeric locale so `awk` / `printf '%f'` parse and
 # format decimals with `.` regardless of the container's
-# LC_NUMERIC.  See dashboard.sh header for details.
+# LC_NUMERIC.  See swarm dashboard header for details.
 export LC_NUMERIC=C
 
 # Container entrypoint: clone, setup, loop agent sessions.
@@ -13,7 +13,7 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
 Usage: $0
 
 Container entrypoint for swarm agents. Not intended to be run
-directly -- launched automatically inside Docker by launch.sh.
+directly -- launched automatically inside Docker by swarm.
 
 Clones the bare repo, runs optional setup, then loops agent
 sessions until the agent is idle for MAX_IDLE cycles.
@@ -551,7 +551,7 @@ _run_agent_session() {
 # + SIGKILL) abandoned any unpushed commits sitting in
 # /workspace/.git -- the harness was busy waiting on the agent
 # pipeline and the bottom-of-loop push block never ran.  Pair
-# this with `docker stop -t 60` (see launch.sh cmd_stop) so the
+# this with `docker stop -t 60` (see swarm cmd_stop) so the
 # emergency push has time to land before SIGKILL.
 _on_signal() {
     local sig="$1"
@@ -834,7 +834,7 @@ while true; do
 
     # Compute cost from token counts when the driver doesn't report
     # it natively (e.g. Gemini CLI).  Pricing is $/M tokens, passed
-    # via env vars from launch.sh (sourced from config "pricing" map).
+    # via env vars from swarm (sourced from config "pricing" map).
     if [ -n "${SWARM_PRICE_INPUT:-}" ]; then
         cost=$(awk "BEGIN {printf \"%.6f\",
             (${tok_in} * ${SWARM_PRICE_INPUT} + ${tok_out} * ${SWARM_PRICE_OUTPUT:-0} + ${cache_rd} * ${SWARM_PRICE_CACHED:-0}) / 1000000}")

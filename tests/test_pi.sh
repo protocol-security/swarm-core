@@ -444,8 +444,8 @@ assert_eq "single-line shell display" no "$(has 'second line' "$WORK/display")"
 
 # Exercise actual build functions with Docker stubbed, including profiles
 # that are interactive-only and a Pi post-processor.
-eval "$(awk '/^compute_swarm_agents\(\) \{/,/^\}$/' "$ROOT/bin/launch.sh")"
-eval "$(awk '/^build_image\(\) \{/,/^\}$/' "$ROOT/bin/launch.sh")"
+eval "$(awk '/^compute_swarm_agents\(\) \{/,/^\}$/' "$ROOT/bin/swarm")"
+eval "$(awk '/^build_image\(\) \{/,/^\}$/' "$ROOT/bin/swarm")"
 CONFIG_FILE="$WORK/config.json"
 # Used by the extracted build_image function.
 # shellcheck disable=SC2034

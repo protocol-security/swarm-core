@@ -44,7 +44,7 @@ assert_contains() {
     fi
 }
 
-# --- Helpers: same jq expressions used in launch.sh ---
+# --- Helpers: same jq expressions used in swarm ---
 
 parse_prompt()     { jq -r '.prompt // empty' "$1"; }
 parse_setup()      { jq -r '.setup // empty' "$1"; }
@@ -984,7 +984,7 @@ assert_eq "hetero pp auth" "oauth" "$(jq -r '.post_process.auth' "$CFG")"
 echo ""
 echo "=== 28. docker_args field ==="
 
-# The reader launch.sh uses (lib/docker-args.sh), one element per line
+# The reader swarm uses (lib/docker-args.sh), one element per line
 # (an element holds no newline).
 parse_docker_args() {
     (
