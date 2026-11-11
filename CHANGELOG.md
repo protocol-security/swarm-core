@@ -6,6 +6,11 @@
 
 
 
+
+
+
+
+
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the
   Pi driver reads, as it does for swarm-core's own settings, in every
@@ -13,7 +18,69 @@
   `PI_REASONING` or `PI_COMPACTION_RESERVE_TOKENS` exported, as on a
   host that runs Pi agents, `tests/test_pi.sh` and
   `tests/test_launch.sh` failed.
+- **The image checks a target out: `swarm-target-checkout DIR`.** A
+  setup hook or an agent makes `DIR` a checkout of the engagement's
+  recorded commit from the read-only snapshot, without the network and
+  without the caller's Git configuration or `GIT_*` variables (no
+  hook, filter, fsmonitor or URL rewrite applies). The checkout is
+  built beside `DIR` and renamed into place at the end, so a failure
+  before that leaves `DIR` as it was; a pin at another object than the
+  recorded commit is refused.
 
+- **A target is resolved on the host, once per engagement.**
+  `TARGET_REPO` and `TARGET_REV` (and a base) went to the containers
+  through `docker_args`, and each container's setup hook fetched the
+  target on its own, with the container's network and credentials, at
+  whatever commit a branch had by then. They now go in the host
+  environment: creating the engagement resolves them with the host's
+  Git credentials, each Git command bounded, into `target.git`, a
+  checked snapshot the state file records with the engagement, and
+  every container mounts it read-only at `/target-upstream`, with the
+  commit ids in `TARGET_REV` and `TARGET_REV_BASE`. Joining an
+  engagement checks the record, the variables set against it and the
+  snapshot (`git fsck --full` included) before anything starts; the
+  source is never asked again. `docker_args` may no longer set the
+  target's variables or use `--env-file`, `--volumes-from` or a mount
+  at `/target-upstream`.
+
+- **`docker_args` reach `docker run` exactly, and their form is
+  checked first.** Each element was split at newlines, empty elements
+  were dropped, other JSON values (and a `docker_args` object) were
+  turned into text, and nothing checked the result: a positional
+  element ended `docker run`'s options and made the engine's own
+  arguments the container's command. Each element is now one argument,
+  read once, and `start`, `post-process` and `interactive` check them
+  against `docker run`'s options before they prepare anything: an
+  unknown option, `--help`, `--`, a positional element, an option
+  missing its value and grouped short options (`-it`) refuse, naming
+  the element. They also come first now, so `-d`, `-it`, the name, the
+  policies and interactive's entrypoint are always the engine's.
+- **Cleanup deletes a target snapshot.** `target.git` in the runtime
+  directory, a copy of the audit target, holds none of the engagement's
+  work: cleanup deletes it without copying it, after the repository
+  locations, with a record of its own in the checkpoint, and refuses
+  before it retires anything when it is a link, is not a directory or
+  is another user's, or when `target.git.removing` is there too. What a
+  target resolution cut off leaves (`.target-fetch.*`,
+  `.target-prep.*`) is never part of an engagement and goes at the
+  start of every cleanup, best effort; nothing is deleted through a
+  mount.
+- **Only a complete engagement is joined.** `post-process` and
+  `interactive` chose between creating and joining by whether the bare
+  repo existed. A state file that recorded an engagement with nothing
+  of it left on disk (a run stopped right after recording it) let
+  `start`, `post-process` or `interactive` record a new engagement
+  over it, and an `upstream.git` that was an empty directory or a link
+  was joined. The state file now decides: a recorded engagement is
+  joined, never created again, and only when its bare repo is a usable
+  bare repository; otherwise `post-process`, `interactive` and `wait`
+  refuse and point to `./launch.sh cleanup`, as `start` does for a
+  record with nothing left. Containers mount the bare repo with
+  `--mount`, which fails on a missing source instead of creating an
+  empty directory. Agents can write the bare repo: the check refuses a
+  config that includes other files and gives each Git read of it 60
+  seconds (a FIFO there would hang it with the engagement lock held).
+  perl is now required.
 - **Retire and cleanup let a linked worktree outside the volume
   through when it can be checked.** An agent that ran `git worktree
   add /tmp/<dir>` in a repository under `/workspace` (to build or test

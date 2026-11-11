@@ -92,8 +92,9 @@ run_all_tests() {
     # is unavailable so --all stays useful on hosts without it.
     # Also runs the real Pi CLI against a local test API, without keys,
     # launch.sh retire on real containers, whose snapshots and docker
-    # diff test_retire.sh only imitates, and launch.sh cleanup on files
-    # a container wrote as its own user.
+    # diff test_retire.sh only imitates, launch.sh cleanup on files
+    # a container wrote as its own user, and an engagement's target:
+    # its read-only snapshot and swarm-target-checkout in the image.
     echo "=== Phase 1.5: Docker runtime tests ==="
     echo ""
     if ! command -v docker >/dev/null 2>&1; then
@@ -105,7 +106,7 @@ run_all_tests() {
     else
         local rt_test rt_start rt_elapsed rt_rc
         for rt_test in runtime_signal_trap.sh runtime_pi.sh \
-                runtime_retire.sh runtime_cleanup.sh; do
+                runtime_retire.sh runtime_cleanup.sh runtime_target.sh; do
             rt_rc=0
             rt_start=$(date +%s)
             "$TESTS_DIR/$rt_test" || rt_rc=$?
@@ -428,8 +429,9 @@ Options:
   --runtime         Runtime tests (need Docker, no API key): drives
                     SIGTERM / SIGINT / fatal-exit paths under a real
                     container with a synthetic test-committer driver,
-                    then launch.sh retire on real stopped containers and
-                    launch.sh cleanup on what containers wrote.
+                    then launch.sh retire on real stopped containers,
+                    launch.sh cleanup on what containers wrote, and a
+                    target checked out from its snapshot in the image.
   --all             Unit + runtime, then full integration matrix.
   --oauth           Integration test using CLAUDE_CODE_OAUTH_TOKEN
                     (needs Docker + OAuth token).
@@ -491,6 +493,7 @@ if $RUN_RUNTIME; then
     "$TESTS_DIR/runtime_signal_trap.sh" || rt_rc=1
     "$TESTS_DIR/runtime_retire.sh" || rt_rc=1
     "$TESTS_DIR/runtime_cleanup.sh" || rt_rc=1
+    "$TESTS_DIR/runtime_target.sh" || rt_rc=1
     exit "$rt_rc"
 fi
 

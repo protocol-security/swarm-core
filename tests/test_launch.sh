@@ -15,6 +15,9 @@ trap 'rm -rf "$TMPDIR"' EXIT
 TESTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=../lib/project.sh
 source "$TESTS_DIR/../lib/project.sh"
+# The functions extracted from launch.sh below call into it.
+# shellcheck source=../lib/target.sh
+source "$TESTS_DIR/../lib/target.sh"
 
 # The fake docker CLIs below hand "docker volume" to this script, which
 # keeps each volume's labels in a file, so launch.sh can create and
@@ -1228,14 +1231,16 @@ assert_eq "pp tag env expansion" "expanded-pp" "$pp_expanded"
 echo ""
 echo "=== 33. docker_args array construction ==="
 
-# Mirrors the DOCKER_EXTRA_ARGS construction in launch.sh.
+# The reader launch.sh uses (lib/docker-args.sh), its elements joined by
+# "|" so that their boundaries show.
 build_docker_extra_args() {
-    local config_file="$1"
-    local DOCKER_EXTRA_ARGS=()
-    while IFS= read -r _da; do
-        [ -n "$_da" ] && DOCKER_EXTRA_ARGS+=("$_da")
-    done < <(jq -r '.docker_args[]?' "$config_file" 2>/dev/null)
-    echo "${DOCKER_EXTRA_ARGS[*]+"${DOCKER_EXTRA_ARGS[*]}"}"
+    (
+        # shellcheck source=../lib/docker-args.sh
+        source "$TESTS_DIR/../lib/docker-args.sh"
+        swarm_docker_args_read "$1" || exit 1
+        IFS='|'
+        echo "${SWARM_DOCKER_ARGS[*]+"${SWARM_DOCKER_ARGS[*]}"}"
+    )
 }
 
 cat > "$TMPDIR/da_full.json" <<'EOF'
@@ -1247,7 +1252,7 @@ cat > "$TMPDIR/da_full.json" <<'EOF'
 EOF
 
 assert_eq "docker_args full" \
-    "-v /var/run/docker.sock:/var/run/docker.sock --privileged" \
+    "-v|/var/run/docker.sock:/var/run/docker.sock|--privileged" \
     "$(build_docker_extra_args "$TMPDIR/da_full.json")"
 
 # No docker_args — empty.
@@ -1279,9 +1284,17 @@ cat > "$TMPDIR/da_complex.json" <<'EOF'
   "agents": [{ "count": 1, "model": "m" }]
 }
 EOF
-assert_eq "docker_args complex" \
-    "-v /var/run/docker.sock:/var/run/docker.sock -v /tmp:/host-tmp:ro --cap-add SYS_PTRACE" \
+_da_want="-v|/var/run/docker.sock:/var/run/docker.sock"
+_da_want="${_da_want}|-v|/tmp:/host-tmp:ro|--cap-add|SYS_PTRACE"
+assert_eq "docker_args complex" "$_da_want" \
     "$(build_docker_extra_args "$TMPDIR/da_complex.json")"
+# An element with a space stays one element.
+cat > "$TMPDIR/da_space.json" <<'EOF'
+{ "prompt": "p.md", "docker_args": ["--label", "a b=c d"],
+  "agents": [{ "count": 1, "model": "m" }] }
+EOF
+assert_eq "docker_args element with a space" "--label|a b=c d" \
+    "$(build_docker_extra_args "$TMPDIR/da_space.json")"
 
 # ============================================================
 echo ""
@@ -1428,6 +1441,7 @@ _hl_mirror="$_hl_runtime/mirrors/sub.git"
     # shellcheck disable=SC2329
     swarm_docker_daemon_id() { printf 'TEST:DAEMON'; }
     REPO_ROOT="$_hl_dir/src"
+    RUNTIME_DIR="$_hl_runtime"
     BARE_REPO="$_hl_dir/bare.git"
     MIRROR_DIR="$_hl_runtime/mirrors"
     STATE_FILE="$_hl_runtime/state.json"
@@ -1500,6 +1514,7 @@ _tr_run() {  # FUNCTION ARGS...: one of the live functions, output kept
         # shellcheck disable=SC2329
         swarm_docker_daemon_id() { printf 'TEST:DAEMON'; }
         REPO_ROOT="$_tr_src"
+        RUNTIME_DIR="$_tr_runtime"
         BARE_REPO="$_tr_dir/bare.git"
         MIRROR_DIR="$_tr_runtime/mirrors"
         STATE_FILE="$_tr_runtime/state.json"
@@ -1689,6 +1704,7 @@ _gd_run() {  # 'FUNCTION [ARG]'...: each in turn, under set -e as in
         # shellcheck disable=SC2329
         swarm_docker_daemon_id() { printf 'TEST:DAEMON'; }
         REPO_ROOT="$_gd_src"
+        RUNTIME_DIR="$_gd_runtime"
         BARE_REPO="$_gd_dir/bare.git"
         MIRROR_DIR="$_gd_runtime/mirrors"
         STATE_FILE="$_gd_runtime/state.json"
@@ -2502,9 +2518,11 @@ CMD_INTERACTIVE_BODY=$(awk '
     p && /^\}[[:space:]]*$/ { exit }
 ' "$LAUNCH_FILE")
 
-assert_eq "interactive execs docker run -it" "1" \
+assert_eq "interactive execs docker run, -it after docker_args" "1" \
     "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
-        | grep -cF 'exec docker run -it')"
+        | grep -A2 -F 'exec docker run' \
+        | sed -n '2s/.*DOCKER_EXTRA_ARGS.*/da/p;3s/^ *-it \\$/it/p' \
+        | tr -d '\n' | grep -c '^dait$')"
 assert_eq "interactive uses dedicated entrypoint" "1" \
     "$(printf '%s\n' "$CMD_INTERACTIVE_BODY" \
         | grep -cF -- '--entrypoint /interactive.sh')"
@@ -2771,6 +2789,8 @@ _hint_out=$(
     }
     ensure_bare_repo_for_interactive 2>&1
 ) || true
+assert_eq "a stale bare repo: refused as stale" "1" \
+    "$(printf '%s\n' "$_hint_out" | grep -c 'is stale (agent-work' || true)"
 assert_eq "a stale bare repo: the hint names cleanup" "1" \
     "$(printf '%s\n' "$_hint_out" | grep -c 'launch.sh cleanup' || true)"
 assert_eq "and offers no removal command" "0" \
@@ -3044,7 +3064,7 @@ assert_eq "a container that appears later stops start" "1" \
 assert_eq "the late container is not removed" "0" \
     "$(grep -c '^rm ' "$_id_log" || true)"
 assert_eq "no agent container is started" "0" \
-    "$(grep -c '^run -d' "$_id_log" || true)"
+    "$(grep -v '^run refused' "$_id_log" | grep -c '^run ' || true)"
 
 # A container of another project can hold one of the names commands
 # address (here start-repo-agent-1, labeled for project "other").
@@ -3164,7 +3184,11 @@ echo "\$*" >> "$_lk_log"
 # FAKE_EXIT.  With FAKE_NEVER_RUNS the container never starts.
 [ "\$1" = info ] && { echo d1; exit 0; }
 [ "\$1 \$2" = "context show" ] && { echo default; exit 0; }
-if [ "\$1 \$2" = "run -it" ]; then
+_it=false
+for _a in "\$@"; do
+    [ "\$_a" != -it ] || _it=true
+done
+if [ "\$1" = run ] && \$_it; then
     _name=""
     _prev=""
     for _a in "\$@"; do
@@ -3237,15 +3261,15 @@ jq '. + {docker_args: ["--detach-keys=ctrl-x", "--label", "-itd",
     SWARM_CONFIG=sub/configs/docker-args.json SWARM_SKIP_DEP_CHECK=1 \
     "$BASH" "$_LAUNCH_SH" interactive --agent-index 1 >/dev/null 2>&1) \
     || true
-assert_eq "docker_args reach docker run unchanged" "1" \
-    "$(grep '^run -it ' "$_lk_log" \
-        | grep -c -- ' --detach-keys=ctrl-x --label -itd --name custom' \
-        || true)"
+assert_eq "docker_args reach docker run unchanged, right after run" "1" \
+    "$(grep -c -- \
+        '^run --detach-keys=ctrl-x --label -itd --name custom-session -it ' \
+        "$_lk_log" || true)"
 assert_eq "the container gets the recorded name" "1" \
     "$(grep -c 'record names the session' "$_lk_log" || true)"
 assert_eq "the session label follows docker_args too" "1" \
-    "$(grep '^run -it ' "$_lk_log" | grep -cE -- \
-        ' --name custom-session .* --name [^ ]+ --label swarm-core\.session=' \
+    "$(grep '^run ' "$_lk_log" | grep -cE -- \
+        ' --name custom-session -it .* --name [^ ]+ --label swarm-core\.session=' \
         || true)"
 rm -f "$_lk_cfg"
 
@@ -3327,6 +3351,8 @@ _br_run() {
         # shellcheck disable=SC2329
         swarm_docker_daemon_id() { printf 'TEST:DAEMON'; }
         REPO_ROOT="$1"
+        RUNTIME_DIR="$_br_dir/runtime-$2"
+        [ -d "$RUNTIME_DIR" ] || mkdir -m 700 "$RUNTIME_DIR"
         BARE_REPO="$_br_dir/bare-$2.git"
         STATE_FILE="$_br_dir/state-$2.json"
         create_bare_repo
@@ -3357,6 +3383,39 @@ assert_eq "and a token of 16 hex digits" "true" \
 assert_eq "no upstream.git.new is left" "false" \
     "$([ -e "$_br_bare.new" ] && echo true || echo false)"
 
+# A target's snapshot has the checkout's object format: a SHA-256
+# checkout and target give a SHA-256 snapshot, recorded so.
+_br_s256="$_br_dir/s256"
+mkdir -p "$_br_s256"
+for _br_r in checkout target; do
+    git init -q -b main --object-format=sha256 "$_br_s256/$_br_r"
+    git -C "$_br_s256/$_br_r" -c user.name=t -c user.email=t@t \
+        -c commit.gpgsign=false commit -q --allow-empty -m "$_br_r"
+done
+_br_s256_tip=$(git -C "$_br_s256/target" rev-parse HEAD)
+_br_rc=0
+(
+    # shellcheck source=/dev/null
+    source "$_br_dir/funcs.sh"
+    # shellcheck disable=SC2329
+    swarm_docker_daemon_id() { printf 'TEST:DAEMON'; }
+    REPO_ROOT="$_br_s256/checkout"
+    RUNTIME_DIR="$_br_s256/runtime"
+    mkdir -m 700 "$RUNTIME_DIR"
+    BARE_REPO="$RUNTIME_DIR/upstream.git"
+    STATE_FILE="$RUNTIME_DIR/state.json"
+    export TARGET_REPO="$_br_s256/target" TARGET_REV=main
+    create_bare_repo
+) >/dev/null 2>&1 || _br_rc=$?
+assert_eq "a SHA-256 checkout with a target: the engagement is made" "0" \
+    "$_br_rc"
+assert_eq "  its snapshot is SHA-256" "sha256" \
+    "$(git --git-dir="$_br_s256/runtime/target.git" rev-parse \
+        --show-object-format 2>/dev/null)"
+assert_eq "  recorded so, with the commit" "sha256 ${_br_s256_tip}" \
+    "$(jq -r '"\(.target.format) \(.target.commit)"' \
+        "$_br_s256/runtime/state.json" 2>/dev/null)"
+
 # The engagement is recorded before the clone starts.  A failure while
 # the clone is prepared must not leave a bare repo that later commands
 # would join with old agent branches in it, nor the half-made clone:
@@ -3382,6 +3441,8 @@ _br_fail() {
             swarm_state_update() { return 1; }
         fi
         REPO_ROOT="$_br_src"
+        RUNTIME_DIR="$_br_dir/runtime-$n"
+        [ -d "$RUNTIME_DIR" ] || mkdir -m 700 "$RUNTIME_DIR"
         BARE_REPO="$_br_dir/bare-$n.git"
         STATE_FILE="$_br_dir/state-$n.json"
         create_bare_repo
@@ -4022,6 +4083,10 @@ case "$1" in
             if [ -f "$d/at.$w" ]; then
                 mv "$d/at.$w" "$d/containers"
             fi
+            if [ -f "$d/hook.$w" ]; then
+                bash "$d/hook.$w"
+                rm -f "$d/hook.$w"
+            fi
         fi
         if [ "$fmt" = '{{.Names}} {{.State}}' ] && [ -e "$d/newtoken" ]; then
             rm -f "$d/newtoken"
@@ -4081,6 +4146,7 @@ case "$1" in
             *) printf '%s\n' "$c" ;;
         esac ;;
     run)
+        jq -nc '$ARGS.positional' --args -- "$@" >> "$d/argv.jsonl"
         fails run && exit 125
         case " $* " in
             *" -d "*) echo "cid-run" ;;
@@ -4240,7 +4306,7 @@ for _v_i in 1 2; do
             "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
             && echo true || echo false)"
     assert_eq "agent $_v_i: mount, labels, policies and name follow docker_args" \
-        "1" "$(grep -F -- '|run -d ' "$V_DIR/log" | grep -cF -- " --rm --restart always --name other --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-${_v_i} " || true)"
+        "1" "$(grep -F -- "|run --rm --restart always --name other -d --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-${_v_i} " || true)"
 done
 assert_eq "start builds the image once" "1" \
     "$(grep -c '|build ' "$V_DIR/log" || true)"
@@ -4254,7 +4320,8 @@ echo a > "$V_DIR/context"
 _v_rc=0
 _v_out=$(v_run interactive --agent-index 1) || _v_rc=$?
 assert_eq "interactive joins the engagement" "0" "$_v_rc"
-_v_sess=$(grep -F -- '|run -it ' "$V_DIR/log" \
+_v_sess=$(grep -F -- '|run --rm --restart always --name other -it ' \
+    "$V_DIR/log" \
     | sed -n 's/.* --rm=false --name \([^ ]*\) .*/\1/p')
 assert_eq "the session's name ends in UTC time and 8 hex digits" "true" \
     "$(grep -qE "^${_v_img}-interactive-[a-z0-9._-]+-[0-9]{14}-[0-9a-f]{8}$" \
@@ -4269,7 +4336,7 @@ assert_eq "the session gets a volume of its own" "true" \
         "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
         && echo true || echo false)"
 assert_eq "mounted after docker_args, with the policies and its name" "1" \
-    "$(grep -F -- '|run -it ' "$V_DIR/log" | grep -cF -- " --rm --restart always --name other --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_sess} " || true)"
+    "$(grep -F -- "|run --rm --restart always --name other -it --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_sess} " || true)"
 assert_eq "its session record names the daemon" "daemon=daemon-a" \
     "$(grep '^daemon=' "$V_RT/interactive-${_v_sess}.pending" 2>/dev/null)"
 assert_eq "joining builds the image too" "1" \
@@ -4292,7 +4359,7 @@ assert_eq "post-process gets a volume of its own" "true" \
         "$V_DIR/vols/${_v_vol:-none}" >/dev/null 2>&1 \
         && echo true || echo false)"
 assert_eq "mounted after docker_args, with the policies and its name" "1" \
-    "$(grep -F -- '|run -d ' "$V_DIR/log" | grep -cF -- " --rm --restart always --name other --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-post " || true)"
+    "$(grep -F -- "|run --rm --restart always --name other -d --mount type=bind,src=$V_RT/upstream.git,dst=/upstream " "$V_DIR/log" | grep -cF -- " --mount type=volume,src=${_v_vol:-none},dst=/workspace --label swarm-core.engagement=${_v_eng} --label swarm-core.engagement-token=${_v_tok} --restart no --rm=false --name ${_v_img}-post " || true)"
 
 # --- volume failures stop before any docker run ----------------------
 # Creation fails; the labels read back are not the ones set (another
@@ -4492,7 +4559,7 @@ assert_eq "wait: the lock held a moment, it waits for it" "1" \
 assert_eq "the holder let it go once wait waited" "true" \
     "$(v_holder_waited)"
 assert_eq "then post-process starts" "1" \
-    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+    "$(grep -c "|run .* -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 assert_eq "and ends at the failed docker run" "125" "$_v_rc"
 # A stop that fails without the lock fails at once, without waiting for
 # the lock first.
@@ -4748,7 +4815,7 @@ _v_rc=0
 _v_out=$(v_run wait) || _v_rc=$?
 rm -f "$V_DIR/fail"
 assert_eq "wait: all agents done, post-process starts" "1" \
-    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+    "$(grep -c "|run .* -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 assert_eq "wait: post-process ended at the failed docker run" "125" \
     "$_v_rc"
 
@@ -4768,7 +4835,7 @@ rm -f "$V_DIR/fail"
 assert_eq "wait: a running agent keeps it waiting" "5" \
     "$(cat "$V_DIR/wait-listed" 2>/dev/null)"
 assert_eq "wait: then post-process starts" "1" \
-    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+    "$(grep -c "|run .* -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 # A start records the engagement before it launches the agents, and
 # holds the lock until they run: agents that run by the time wait has
 # the lock are waited for too.
@@ -4787,7 +4854,7 @@ rm -f "$V_DIR/fail"
 assert_eq "wait: agents launched while it took the lock are waited for" \
     "6" "$(cat "$V_DIR/wait-listed" 2>/dev/null)"
 assert_eq "wait: post-process only after them" "1" \
-    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+    "$(grep -c "|run .* -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 # The count itself: numbered agents only, any state that may still run.
 awk '/^wait_count\(\)[[:space:]]*\{/ { p = 1 } p { print }
      p && /^\}[[:space:]]*$/ { exit }' "$_LAUNCH_SH" > "$_v_root/wait_count.sh"
@@ -4857,11 +4924,12 @@ _v_rc=0
 _v_out=$(v_run wait) || _v_rc=$?
 rm -f "$V_DIR/fail"
 assert_eq "wait: an agent that failed to start is not waited for" "1" \
-    "$(grep -c "|run -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
+    "$(grep -c "|run .* -d .* --name ${_v_img}-post " "$V_DIR/log" || true)"
 : > "$V_DIR/containers"
 
-# A token names an engagement to join: with the bare repo gone,
-# post-process and interactive do not make a new one.
+# A token names an engagement to join: with the bare repo gone, the
+# engagement recorded is incomplete; post-process and interactive do not
+# make a new one or its parts.
 mv "$V_RT/upstream.git" "$_v_root/upstream.saved"
 for _v_cmd in post-process "interactive --agent-index 1"; do
     : > "$V_DIR/log"
@@ -4870,7 +4938,9 @@ for _v_cmd in post-process "interactive --agent-index 1"; do
     _v_out=$(SWARM_ENGAGEMENT_TOKEN="$_v_tok" v_run $_v_cmd) || _v_rc=$?
     assert_eq "token, no bare repo: $_v_cmd refused" "1" "$_v_rc"
     assert_eq "token, no bare repo: $_v_cmd says why" "true" \
-        "$(v_has "has no bare repo any more" "$_v_out")"
+        "$(v_has "is incomplete: $V_RT/upstream.git is missing" "$_v_out")"
+    assert_eq "token, no bare repo: $_v_cmd gives the way out" "true" \
+        "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
     assert_eq "token, no bare repo: $_v_cmd makes nothing" "0" \
         "$(v_writes)"
 done
@@ -4881,8 +4951,9 @@ mv "$_v_root/upstream.saved" "$V_RT/upstream.git"
 # lacks), upstream.git.new, mirrors/, a remnant in the runtime
 # directory, a hidden one, a container of this checkout in any state, a
 # volume, an open interactive session.  Each makes start refuse and
-# change nothing; post-process and interactive, which would create the
-# engagement when there is no bare repo, refuse the same.
+# change nothing; post-process and interactive join the engagement the
+# state records, which is incomplete without its bare repo, and refuse
+# too.
 sleep 60 &
 _v_live=$!
 # A runtime with a recorded engagement and, of what start made, only
@@ -4928,10 +4999,19 @@ for _v_kind in work new mirrors remnant hidden container volume session; do
             _v_out=$(v_run "$_v_cmd") || _v_rc=$?
         fi
         assert_eq "$_v_kind left: $_v_cmd refused" "1" "$_v_rc"
-        assert_eq "$_v_kind left: $_v_cmd names the clean runtime rule" \
-            "true" "$(v_has "a new engagement starts only on a clean runtime" "$_v_out")"
-        assert_eq "$_v_kind left: $_v_cmd gives the way out" "true" \
-            "$(v_has "then ./launch.sh cleanup" "$_v_out")"
+        if [ "$_v_cmd" = start ]; then
+            assert_eq "$_v_kind left: $_v_cmd names the clean runtime rule" \
+                "true" "$(v_has \
+                    "a new engagement starts only on a clean runtime" \
+                    "$_v_out")"
+            assert_eq "$_v_kind left: $_v_cmd gives the way out" "true" \
+                "$(v_has "then ./launch.sh cleanup" "$_v_out")"
+        else
+            assert_eq "$_v_kind left: $_v_cmd finds it incomplete" "true" \
+                "$(v_has "is incomplete: $V_RT/upstream.git" "$_v_out")"
+            assert_eq "$_v_kind left: $_v_cmd gives the way out" "true" \
+                "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
+        fi
         assert_eq "$_v_kind left: $_v_cmd changes nothing" "$_v_before" \
             "$(v_snap)"
         assert_eq "$_v_kind left: $_v_cmd makes nothing in Docker" "0" \
@@ -4981,7 +5061,7 @@ done
 
 # --- creation stopped half way ------------------------------------------
 # The clone fails: only the .new it made goes; the engagement stays
-# recorded, and the runtime is clean for the next start.
+# recorded, so the next start refuses until cleanup finishes it.
 _v_git="$TMPDIR/v55-git"
 mkdir -p "$_v_git"
 cat > "$_v_git/git" <<EOF
@@ -5011,9 +5091,841 @@ assert_eq "the engagement was recorded first" "true" \
         && echo true || echo false)"
 assert_eq "no container was started" "0" \
     "$(grep -c '|run ' "$V_DIR/log" || true)"
+_v_before=$(v_snap)
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run start) || _v_rc=$?
+assert_eq "the next start refuses" "1" "$_v_rc"
+assert_eq "naming the engagement still recorded" "true" \
+    "$(v_has "still records engagement" "$_v_out")"
+assert_eq "and the way out" "true" \
+    "$(v_has "Run ./launch.sh cleanup" "$_v_out")"
+assert_eq "and changes nothing" "$_v_before" "$(v_snap)"
+assert_eq "nor makes anything in Docker" "0" "$(v_writes)"
+_v_rc=0
+v_run cleanup > "$_v_root/cleanup.out" || _v_rc=$?
+assert_eq "cleanup finishes that engagement" "0" "$_v_rc"
+assert_eq "its record goes" "" \
+    "$(jq -r '.engagement_id // empty' "$V_STATE" 2>/dev/null)"
 _v_rc=0
 v_run start >/dev/null || _v_rc=$?
-assert_eq "the next start finds the runtime clean" "0" "$_v_rc"
+assert_eq "then a start works" "0" "$_v_rc"
+
+# --- only a complete engagement is joined -------------------------------
+# swarm_bare_repo_ready: a bare repository at that very path, given to
+# Git explicitly, whose HEAD names a commit.
+_rb="$_v_root/ready"
+mkdir -p "$_rb"
+git clone -q --bare "$_st_repo" "$_rb/bare.git"
+ln -s "$_rb/bare.git" "$_rb/link.git"
+mkdir "$_rb/empty.git" "$_st_repo/inside.git"
+git clone -q "$_st_repo" "$_rb/work.git"
+git init -q --bare "$_rb/unborn.git"
+rb() {
+    swarm_bare_repo_ready "$1" && echo ready || echo no
+}
+assert_eq "a bare repo is ready" ready "$(rb "$_rb/bare.git")"
+assert_eq "a missing path is not" no "$(rb "$_rb/missing.git")"
+assert_eq "a link to a bare repo is not" no "$(rb "$_rb/link.git")"
+assert_eq "an empty directory is not" no "$(rb "$_rb/empty.git")"
+assert_eq "nor one inside another repository (no discovery)" no \
+    "$(rb "$_st_repo/inside.git")"
+assert_eq "a repository with a work tree is not" no "$(rb "$_rb/work.git")"
+assert_eq "its git dir is not bare either" no "$(rb "$_rb/work.git/.git")"
+assert_eq "a bare repo whose HEAD names no commit is not" no \
+    "$(rb "$_rb/unborn.git")"
+assert_eq "the caller's GIT_DIR does not stand in" no \
+    "$(GIT_DIR="$_rb/bare.git" rb "$_rb/empty.git")"
+assert_eq "nor its GIT_OBJECT_DIRECTORY get in the way" ready \
+    "$(GIT_OBJECT_DIRECTORY="$_rb/empty.git" rb "$_rb/bare.git")"
+rmdir "$_st_repo/inside.git"
+# Agents can write the bare repo.  A config that includes another file
+# is refused before Git reads it (an include of a FIFO would block the
+# read; a regular file here, so that following it fails the test rather
+# than hanging it), and a FIFO where Git reads makes the read end once
+# its time is up.
+git clone -q --bare "$_st_repo" "$_rb/include.git"
+printf '[core]\n\tbare = true\n' > "$_rb/include.git/extra"
+git config -f "$_rb/include.git/config" include.path extra
+assert_eq "a bare repo whose config includes another file is not" no \
+    "$(rb "$_rb/include.git" 2>/dev/null)"
+assert_eq "saying so" 1 \
+    "$(rb "$_rb/include.git" 2>&1 >/dev/null \
+        | grep -c 'config includes other files' || true)"
+git clone -q --bare "$_st_repo" "$_rb/fifo.git"
+rm "$_rb/fifo.git/HEAD"
+mkfifo "$_rb/fifo.git/HEAD"
+# In the background, watched: a read that never ends would hang the
+# tests.
+(
+    _SWARM_GIT_READ_SECS=1
+    rb "$_rb/fifo.git" > "$TMPDIR/rb-fifo.out" 2>/dev/null
+) &
+_rb_pid=$!
+_rb_i=0
+while kill -0 "$_rb_pid" 2>/dev/null && [ "$_rb_i" -lt 150 ]; do
+    sleep 0.1
+    _rb_i=$((_rb_i + 1))
+done
+if kill -0 "$_rb_pid" 2>/dev/null; then
+    # Still reading: a writer opening the FIFO lets the read end.
+    perl -e 'alarm 5; open(my $f, ">", $ARGV[0])' "$_rb/fifo.git/HEAD" \
+        || true
+    _rb_fifo=hung
+else
+    _rb_fifo=$(cat "$TMPDIR/rb-fifo.out")
+fi
+wait "$_rb_pid" 2>/dev/null || true
+assert_eq "a bare repo whose HEAD is a FIFO is not, once the read times out" \
+    no "$_rb_fifo"
+# Each of these reads is bounded: a git that does not return (here a
+# stand-in that sleeps on the call named, and runs Git otherwise) ends
+# within a second or two (under 15 s allows for a slow host; without
+# the bound it takes 30).
+_rb_slow="$TMPDIR/rb-slow"
+mkdir -p "$_rb_slow"
+cat > "$_rb_slow/git" <<'EOF'
+#!/bin/sh
+for a in "$@"; do
+    [ "$a" = "$RB_SLOW_ON" ] && exec sleep 30
+done
+exec "$RB_REAL_GIT" "$@"
+EOF
+chmod +x "$_rb_slow/git"
+_rb_git=$(command -v git)
+rb_slow() {  # ARGUMENT REPO: the result, then 1 when it took under 15 s
+    local t0=$SECONDS out
+    out=$(PATH="$_rb_slow:$PATH" RB_SLOW_ON="$1" RB_REAL_GIT="$_rb_git" \
+        _SWARM_GIT_READ_SECS=1 rb "$2" 2>"$TMPDIR/rb-slow.err")
+    echo "$out $((SECONDS - t0 < 15))"
+}
+assert_eq "a config check that does not return ends" "no 1" \
+    "$(rb_slow --get-regexp "$_rb/bare.git")"
+assert_eq "saying it took too long" 1 \
+    "$(grep -c 'took over 1 seconds' "$TMPDIR/rb-slow.err" || true)"
+assert_eq "a bare repository check that does not return ends" "no 1" \
+    "$(rb_slow --is-bare-repository "$_rb/bare.git")"
+assert_eq "a HEAD commit check that does not return ends" "no 1" \
+    "$(rb_slow --verify "$_rb/bare.git")"
+assert_eq "with the stand-in sleeping on nothing, it is ready" "ready 1" \
+    "$(rb_slow --no-such-argument "$_rb/bare.git")"
+assert_eq "each read gets 60 seconds (as CHANGELOG.md says)" 60 \
+    "$_SWARM_GIT_READ_SECS"
+# The bound holds where the caller ignores SIGALRM.
+assert_eq "swarm_bounded ends a command whose SIGALRM was ignored" "142 1" \
+    "$(trap '' ALRM
+        _t0=$SECONDS _rc=0
+        swarm_bounded 1 sleep 30 || _rc=$?
+        echo "$_rc $((SECONDS - _t0 < 15))")"
+# And where it comes blocked (a signal mask exec passes on).
+assert_eq "swarm_bounded ends a command whose SIGALRM was blocked" "142 1" \
+    "$(perl -MPOSIX -e 'sigprocmask(SIG_BLOCK, POSIX::SigSet->new(SIGALRM))
+            or exit 126; exec @ARGV' \
+        "$BASH" -c 'source "$1"; t0=$SECONDS rc=0
+            swarm_bounded 1 sleep 30 2>/dev/null || rc=$?
+            echo "$rc $((SECONDS - t0 < 15))"' _ "$TESTS_DIR/../lib/project.sh")"
+# Git reads no stdin here, even with its global config there (a pipe
+# that never ends would hold the read until the bound).
+assert_eq "Git's reads get no stdin" "ready" \
+    "$(yes '' | GIT_CONFIG_GLOBAL=/dev/stdin _SWARM_GIT_READ_SECS=2 \
+        rb "$_rb/bare.git" 2>/dev/null)"
+
+# A recorded engagement whose bare repo is KIND: missing (state, with
+# nothing else left either), a link, an empty directory, a repository
+# with a work tree, a bare repo with no commit, one whose config
+# includes another file.
+v_incomplete() {
+    v_new
+    v_run start >/dev/null || true
+    rm -rf "$V_RT/upstream.git" "$V_RT/mirrors"
+    rm -f "$V_RT"/interactive-*.pending
+    case "$1" in
+        link)
+            git clone -q --bare "$_st_repo" "$_v_root/elsewhere-$_v_n.git"
+            ln -s "$_v_root/elsewhere-$_v_n.git" "$V_RT/upstream.git" ;;
+        empty) mkdir "$V_RT/upstream.git" ;;
+        worktree) git clone -q "$_st_repo" "$V_RT/upstream.git" ;;
+        unborn) git init -q --bare "$V_RT/upstream.git" ;;
+        include)
+            git clone -q --bare "$_st_repo" "$V_RT/upstream.git"
+            printf '[core]\n\tbare = true\n' > "$V_RT/upstream.git/extra"
+            git config -f "$V_RT/upstream.git/config" include.path extra ;;
+    esac
+    : > "$V_DIR/log"
+}
+for _v_kind in state link empty worktree unborn include; do
+    v_incomplete "$_v_kind"
+    _v_before=$(v_snap)
+    for _v_cmd in post-process "interactive --agent-index 1"; do
+        _v_rc=0
+        # shellcheck disable=SC2086
+        _v_out=$(v_run $_v_cmd) || _v_rc=$?
+        assert_eq "bare repo $_v_kind: $_v_cmd refused" "1" "$_v_rc"
+        assert_eq "bare repo $_v_kind: $_v_cmd finds it incomplete" "true" \
+            "$(v_has "is incomplete: $V_RT/upstream.git" "$_v_out")"
+        assert_eq "bare repo $_v_kind: $_v_cmd changes nothing" \
+            "$_v_before" "$(v_snap)"
+        assert_eq "bare repo $_v_kind: $_v_cmd makes nothing in Docker" "0" \
+            "$(v_writes)"
+    done
+done
+# A record with nothing left: start refuses it too.
+v_incomplete state
+_v_before=$(v_snap)
+_v_rc=0
+_v_out=$(v_run start) || _v_rc=$?
+assert_eq "a record alone: start refused" "1" "$_v_rc"
+assert_eq "a record alone: start names it" "true" \
+    "$(v_has "still records engagement" "$_v_out")"
+assert_eq "a record alone: start changes nothing" "$_v_before" "$(v_snap)"
+assert_eq "a record alone: start makes nothing in Docker" "0" "$(v_writes)"
+
+# wait: once the agents are done, an incomplete engagement stops it
+# before post-process, and before harvest without one.
+_v_tok_saved="$_v_tok"
+for _v_cfg in post harvest; do
+    v_incomplete state
+    # Agents of this engagement, done.
+    _v_tok=$(jq -r .engagement_token "$V_STATE" 2>/dev/null)
+    v_agents exited
+    _v_cfg_saved="$V_CFG"
+    if [ "$_v_cfg" = harvest ]; then
+        V_CFG="$_v_root/no-post.json"
+        jq 'del(.post_process)' "$_v_cfg_saved" > "$V_CFG"
+    fi
+    _v_rc=0
+    _v_out=$(v_run wait) || _v_rc=$?
+    V_CFG="$_v_cfg_saved"
+    assert_eq "wait ($_v_cfg next), incomplete engagement: refused" "1" \
+        "$_v_rc"
+    assert_eq "wait ($_v_cfg next): finds it incomplete" "true" \
+        "$(v_has "is incomplete: $V_RT/upstream.git" "$_v_out")"
+    assert_eq "wait ($_v_cfg next): no post-process starts" "0" \
+        "$(grep -c '|run ' "$V_DIR/log" || true)"
+    assert_eq "wait ($_v_cfg next): no harvest" "false" \
+        "$(v_has "Harvesting results" "$_v_out")"
+    assert_eq "wait ($_v_cfg next): it listed this engagement's agents" \
+        "true" "$(v_has "0 running, 2 exited" "$_v_out")"
+done
+_v_tok="$_v_tok_saved"
+
+# The bare repo is mounted with --mount, which fails on a missing source
+# rather than making one, at each docker run that mounts it.
+v_new
+v_run start >/dev/null || true
+assert_eq "start mounts the bare repo with --mount" "2" \
+    "$(grep -cF -- "--mount type=bind,src=$V_RT/upstream.git,dst=/upstream" \
+        "$V_DIR/log" || true)"
+v_agents exited
+: > "$V_DIR/log"
+v_run post-process >/dev/null || true
+assert_eq "post-process mounts it with --mount" "1" \
+    "$(grep -cF -- "--mount type=bind,src=$V_RT/upstream.git,dst=/upstream" \
+        "$V_DIR/log" || true)"
+: > "$V_DIR/log"
+v_run interactive --agent-index 1 >/dev/null || true
+assert_eq "interactive mounts it with --mount" "1" \
+    "$(grep -cF -- "--mount type=bind,src=$V_RT/upstream.git,dst=/upstream" \
+        "$V_DIR/log" || true)"
+assert_eq "and no -v names /upstream any more" "0" \
+    "$(grep -c ':/upstream' "$_LAUNCH_SH" || true)"
+_v_cfg_saved="$V_CFG"
+
+# --- docker_args: the exact vector, first, checked before anything -----
+# Each docker run gets docker_args exactly (argument boundaries kept, as
+# the fake's JSON log of each run shows) right after "run", before every
+# argument the engine sets.
+_v_cfg_da="$_v_root/da-exact.json"
+jq '.docker_args = ["--label", "a b=c d", "--env", "X= y", "-e", "Z",
+    "--network=host"]' "$_v_cfg_saved" > "$_v_cfg_da"
+_v_cfg_saved="$V_CFG"
+V_CFG="$_v_cfg_da"
+v_new
+v_run start >/dev/null || true
+_v_da_want='["--label","a b=c d","--env","X= y","-e","Z","--network=host"]'
+assert_eq "each agent's run gets docker_args exactly, right after run" "2" \
+    "$(jq -c --argjson w "$_v_da_want" \
+        'select(.[0] == "run" and .[1:8] == $w and .[8] == "-d")' \
+        "$V_DIR/argv.jsonl" | grep -c . || true)"
+v_agents exited
+: > "$V_DIR/argv.jsonl"
+# (The fake's docker run fails here, after logging: post-process ends at
+# once instead of waiting for a container the fake never makes.)
+echo run > "$V_DIR/fail"
+v_run post-process >/dev/null || true
+rm -f "$V_DIR/fail"
+assert_eq "post-process's too" "1" \
+    "$(jq -c --argjson w "$_v_da_want" \
+        'select(.[0] == "run" and .[1:8] == $w and .[8] == "-d")' \
+        "$V_DIR/argv.jsonl" | grep -c . || true)"
+: > "$V_DIR/argv.jsonl"
+v_run interactive --agent-index 1 >/dev/null || true
+assert_eq "and interactive's, -it after them" "1" \
+    "$(jq -c --argjson w "$_v_da_want" \
+        'select(.[0] == "run" and .[1:8] == $w and .[8] == "-it")' \
+        "$V_DIR/argv.jsonl" | grep -c . || true)"
+V_CFG="$_v_cfg_saved"
+
+# Absent, null and empty docker_args: the engine's arguments right after
+# run, at each launch.
+for _v_da in absent null empty; do
+    _v_cfg_da="$_v_root/da-$_v_da.json"
+    case "$_v_da" in
+        absent) jq 'del(.docker_args)' "$_v_cfg_saved" > "$_v_cfg_da" ;;
+        null) jq '.docker_args = null' "$_v_cfg_saved" > "$_v_cfg_da" ;;
+        empty) jq '.docker_args = []' "$_v_cfg_saved" > "$_v_cfg_da" ;;
+    esac
+    V_CFG="$_v_cfg_da"
+    v_new
+    _v_rc=0
+    v_run start >/dev/null || _v_rc=$?
+    assert_eq "docker_args $_v_da: start works" "0" "$_v_rc"
+    v_agents exited
+    echo run > "$V_DIR/fail"
+    _v_rc=0
+    v_run post-process >/dev/null || _v_rc=$?
+    rm -f "$V_DIR/fail"
+    assert_eq "docker_args $_v_da: post-process gets to docker run" "125" \
+        "$_v_rc"
+    v_run interactive --agent-index 1 >/dev/null || true
+    assert_eq "docker_args $_v_da: -d or -it right after run, each time" \
+        "-d -d -d -it" \
+        "$(jq -r '.[1]' "$V_DIR/argv.jsonl" | tr '\n' ' ' | sed 's/ $//')"
+    V_CFG="$_v_cfg_saved"
+done
+
+# A bad docker_args stops start, post-process, interactive, chat and
+# shell before they prepare anything: no runtime directory, nothing in
+# Docker.
+_v_cfg_bad="$_v_root/da-bad.json"
+jq '.docker_args = ["--rm", "-it"]' "$_v_cfg_saved" > "$_v_cfg_bad"
+V_CFG="$_v_cfg_bad"
+for _v_cmd in start post-process "interactive --agent-index 1" \
+        "chat --agent-index 1" "shell --agent-index 1"; do
+    v_new
+    _v_rc=0
+    # shellcheck disable=SC2086
+    _v_out=$(v_run $_v_cmd) || _v_rc=$?
+    assert_eq "bad docker_args: $_v_cmd refused" "1" "$_v_rc"
+    assert_eq "bad docker_args: $_v_cmd says why" "true" \
+        "$(v_has "docker_args element 2 (-it) groups short options" \
+            "$_v_out")"
+    assert_eq "bad docker_args: $_v_cmd prepares nothing" "no" \
+        "$([ -e "$V_RT" ] && echo yes || echo no)"
+    assert_eq "bad docker_args: $_v_cmd makes nothing in Docker" "0" \
+        "$(v_writes)"
+done
+V_CFG="$_v_cfg_saved"
+
+# wait reads docker_args only when it goes on to post-process; stop,
+# status and logs never do.
+v_new
+v_run start >/dev/null || true
+v_agents exited
+_v_tok_saved="$_v_tok"
+_v_tok=$(jq -r .engagement_token "$V_STATE" 2>/dev/null)
+v_agents exited
+V_CFG="$_v_cfg_bad"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run wait) || _v_rc=$?
+assert_eq "wait on to post-process: a bad docker_args stops it" "1" "$_v_rc"
+assert_eq "  saying why" "true" \
+    "$(v_has "docker_args element 2 (-it) groups short options" "$_v_out")"
+assert_eq "  before any run" "0" "$(grep -c '|run ' "$V_DIR/log" || true)"
+V_CFG="$_v_root/da-bad-harvest.json"
+jq 'del(.post_process)' "$_v_cfg_bad" > "$V_CFG"
+_v_out=$(v_run wait) || true
+assert_eq "wait on to harvest: docker_args not read" "false" \
+    "$(v_has "docker_args" "$_v_out")"
+assert_eq "  it goes on to harvest" "true" \
+    "$(v_has "Harvesting results" "$_v_out")"
+V_CFG="$_v_root/da-not-array.json"
+jq '.docker_args = "-it"' "$_v_cfg_saved" > "$V_CFG"
+for _v_cmd in stop status "logs 1"; do
+    # shellcheck disable=SC2086
+    _v_out=$(v_run $_v_cmd) || true
+    assert_eq "$_v_cmd ignores docker_args" "false" \
+        "$(v_has "docker_args" "$_v_out")"
+done
+V_CFG="$_v_cfg_saved"
+_v_tok="$_v_tok_saved"
+
+# What launch.sh gives a target's containers is refused in docker_args,
+# by start, post-process and interactive alike, before they prepare
+# anything; the neighbours pass and reach docker run.
+for _v_da in '-e|TARGET_REPO|sets TARGET_REPO' \
+        '-e|TARGET_REV=main|sets TARGET_REV' \
+        '--env-file|/dev/null|reads variables from a file' \
+        '--volumes-from|other|takes every mount of another container' \
+        '--mount|type=volume,dst=/target-upstream|at or below /target-upstream'
+do
+    V_CFG="$_v_root/da-target.json"
+    _v_da_v=$(printf '%s' "$_v_da" | cut -d'|' -f2)
+    jq --arg o "${_v_da%%|*}" --arg v "$_v_da_v" \
+        '.docker_args = [$o, $v]' "$_v_cfg_saved" > "$V_CFG"
+    for _v_cmd in start post-process "interactive --agent-index 1"; do
+        v_new
+        _v_rc=0
+        # shellcheck disable=SC2086
+        _v_out=$(v_run $_v_cmd) || _v_rc=$?
+        assert_eq "docker_args ${_v_da%%|*}: $_v_cmd refused" "1" "$_v_rc"
+        assert_eq "  saying why" "true" \
+            "$(v_has "${_v_da##*|}" "$_v_out")"
+        assert_eq "  preparing nothing" "no" \
+            "$([ -e "$V_RT" ] && echo yes || echo no)"
+    done
+done
+V_CFG="$_v_root/da-target-ok.json"
+jq '.docker_args = ["-e", "TARGET_REPOX=1", "--label-file", "/dev/null",
+    "--mount", "type=volume,dst=/target-upstreamx"]' \
+    "$_v_cfg_saved" > "$V_CFG"
+v_new
+_v_rc=0
+v_run start >/dev/null || _v_rc=$?
+assert_eq "their neighbours: start works" "0" "$_v_rc"
+assert_eq "  and they reach docker run" "2" \
+    "$(jq -c 'select(.[0] == "run" and .[1:7] == ["-e", "TARGET_REPOX=1",
+        "--label-file", "/dev/null", "--mount",
+        "type=volume,dst=/target-upstreamx"])' "$V_DIR/argv.jsonl" \
+        | grep -c . || true)"
+V_CFG="$_v_cfg_saved"
+
+# --- a target: resolved on the host, recorded, mounted ----------------
+# The target's source: main (two commits) and base (the first).
+_v_tsrc="$_v_root/target-src"
+git init -q -b main "$_v_tsrc"
+_v_tsrc=$(cd -P "$_v_tsrc" && pwd -P)
+_v_tgit() { git -C "$_v_tsrc" -c user.name=t -c user.email=t@t \
+    -c commit.gpgsign=false "$@"; }
+echo one > "$_v_tsrc/f"
+_v_tgit add f
+_v_tgit commit -q -m one
+_v_tone=$(git -C "$_v_tsrc" rev-parse HEAD)
+_v_tgit branch base
+echo two > "$_v_tsrc/f"
+_v_tgit commit -q -am two
+_v_tmain=$(git -C "$_v_tsrc" rev-parse HEAD)
+# The arguments a run of this case's target gets, as JSON: with a base
+# (default) or without (nobase).
+v_target_args() {
+    jq -nc --arg s "$V_RT/target.git" --arg r "$_v_tsrc" --arg m "$_v_tmain" \
+        --arg o "$_v_tone" --arg k "${1:-base}" '
+        ["--mount", "type=bind,src=\($s),dst=/target-upstream,readonly",
+         "-e", "SWARM_TARGET_MIRROR=/target-upstream",
+         "-e", "TARGET_REPO=\($r)", "-e", "TARGET_REV=\($m)",
+         "-e", "TARGET_REV_BASE=\(if $k == "base" then $o else "" end)",
+         "-e", "TARGET_REV_BASE_REPO=\(if $k == "base" then $r else "" end)"]'
+}
+_v_tnone='["-e","SWARM_TARGET_MIRROR=","-e","TARGET_REPO=","-e","TARGET_REV=",'
+_v_tnone="${_v_tnone}"'"-e","TARGET_REV_BASE=","-e","TARGET_REV_BASE_REPO="]'
+# Count the logged runs holding JSON array $1 as a contiguous run of
+# arguments after the upstream mount and before the workspace's (the
+# mirror and signing-key mounts may come between).
+v_runs_with() {
+    jq -c --argjson w "$1" 'select(.[0] == "run") | . as $a
+        | ([range(0; length)
+            | select($a[.] | startswith("type=bind,src=")
+                and endswith(",dst=/upstream"))] | first) as $up
+        | ([range(0; length)
+            | select($a[.] | startswith("type=volume,")
+                and endswith(",dst=/workspace"))] | first) as $ws
+        | select($up != null and $ws != null
+            and any(range($up + 1; $ws - ($w | length));
+                $a[.:. + ($w | length)] == $w))' "$V_DIR/argv.jsonl" \
+        | grep -c . || true
+}
+v_target_on() {
+    TARGET_REPO="$_v_tsrc" TARGET_REV=main TARGET_REV_BASE=base "$@"
+}
+v_scratch() {
+    (cd "$V_RT" 2>/dev/null && find . -maxdepth 1 -name '.target-*' \
+        | LC_ALL=C sort | tr '\n' ' ')
+}
+v_pins() {
+    git --git-dir="$V_RT/target.git" for-each-ref \
+        --format='%(refname) %(objectname)' 2>/dev/null | tr '\n' ';'
+}
+
+v_new
+_v_rc=0
+_v_out=$(v_target_on v_run start) || _v_rc=$?
+assert_eq "a targeted start works" "0" "$_v_rc"
+assert_eq "  resolving the target first" "true" \
+    "$(v_has "--- Resolving the target ---" "$_v_out")"
+assert_eq "  the record holds the target" "$(jq -nc --arg r "$_v_tsrc" \
+    --arg m "$_v_tmain" --arg o "$_v_tone" '{repo: $r, repo_physical: $r,
+    rev: "main", commit: $m, base_repo: $r, base_repo_physical: $r,
+    base_rev: "base", base_commit: $o, format: "sha1"}')" \
+    "$(jq -c .target "$V_STATE")"
+assert_eq "  target.git holds the two pins" \
+    "refs/swarm/target ${_v_tmain};refs/swarm/target-base ${_v_tone};" \
+    "$(v_pins)"
+assert_eq "  no scratch is left" "" "$(v_scratch)"
+assert_eq "  each agent's run mounts it and sets the five" "2" \
+    "$(v_runs_with "$(v_target_args)")"
+_v_tcase="$_v_n"
+
+v_new
+v_run start >/dev/null || true
+assert_eq "an untargeted start records no target" "null" \
+    "$(jq -c .target "$V_STATE")"
+assert_eq "  each run sets the five empty" "2" "$(v_runs_with "$_v_tnone")"
+assert_eq "  and mounts nothing at /target-upstream" "0" \
+    "$(grep -c 'target-upstream' "$V_DIR/argv.jsonl" || true)"
+assert_eq "  no target.git" "no" \
+    "$([ -e "$V_RT/target.git" ] && echo yes || echo no)"
+
+v_new
+TARGET_REPO="$_v_tsrc" TARGET_REV=main v_run start >/dev/null || true
+assert_eq "a target without a base: the base variables empty" "2" \
+    "$(v_runs_with "$(v_target_args nobase)")"
+
+# A start whose target does not resolve records no engagement and
+# leaves nothing; the next start works at once.
+v_new
+_v_rc=0
+_v_out=$(TARGET_REPO="$_v_tsrc" TARGET_REV=nosuch v_run start) || _v_rc=$?
+assert_eq "a target that does not resolve: start refused" "1" "$_v_rc"
+assert_eq "  saying why" "true" \
+    "$(v_has "TARGET_REV (nosuch) is no branch or tag" "$_v_out")"
+assert_eq "  no engagement recorded" "" \
+    "$(jq -r '.engagement_id // empty' "$V_STATE" 2>/dev/null)"
+assert_eq "  no target.git, no bare repo, no scratch" "no no " \
+    "$([ -e "$V_RT/target.git" ] && printf 'yes ' || printf 'no '
+       [ -e "$V_RT/upstream.git" ] && printf 'yes ' || printf 'no '
+       v_scratch)"
+assert_eq "  no container" "0" "$(grep -c '|run ' "$V_DIR/log" || true)"
+_v_rc=0
+v_target_on v_run start >/dev/null || _v_rc=$?
+assert_eq "  the next start works" "0" "$_v_rc"
+
+# Inputs are checked before anything is prepared, by every command
+# that could create the engagement.
+for _v_cmd in start post-process "interactive --agent-index 1"; do
+    v_new
+    _v_rc=0
+    # shellcheck disable=SC2086
+    _v_out=$(TARGET_REPO="$_v_tsrc" TARGET_REV='main^' v_run $_v_cmd) \
+        || _v_rc=$?
+    assert_eq "a bad TARGET_REV: $_v_cmd refused" "1" "$_v_rc"
+    assert_eq "  saying why" "true" \
+        "$(v_has "TARGET_REV is no full commit id" "$_v_out")"
+    assert_eq "  preparing nothing" "no" \
+        "$([ -e "$V_RT" ] && echo yes || echo no)"
+done
+v_new
+_v_rc=0
+_v_out=$(TARGET_REV=main v_run start) || _v_rc=$?
+assert_eq "TARGET_REV alone: start refused" "1" "$_v_rc"
+assert_eq "  saying why" "true" \
+    "$(v_has "a target needs both TARGET_REPO and TARGET_REV" "$_v_out")"
+assert_eq "  preparing nothing" "no" \
+    "$([ -e "$V_RT" ] && echo yes || echo no)"
+# post-process and interactive check the pair once they know they
+# create the engagement (alone, a variable may join one).
+for _v_cmd in post-process "interactive --agent-index 1"; do
+    v_new
+    _v_rc=0
+    # shellcheck disable=SC2086
+    _v_out=$(TARGET_REV=main v_run $_v_cmd) || _v_rc=$?
+    assert_eq "TARGET_REV alone: $_v_cmd refused" "1" "$_v_rc"
+    assert_eq "  saying why" "true" \
+        "$(v_has "a target needs both TARGET_REPO and TARGET_REV" "$_v_out")"
+    assert_eq "  no engagement recorded" "" \
+        "$(jq -r '.engagement_id // empty' "$V_STATE" 2>/dev/null)"
+    assert_eq "  nothing built" "0" "$(v_writes)"
+done
+
+# Failures once the target is resolved: the engagement record, the
+# publication of target.git, the bare repo after it.
+_v_shim="$TMPDIR/v55-tshim"
+mkdir -p "$_v_shim"
+_v_real_jq=$(command -v jq)
+_v_real_mv=$(command -v mv)
+_v_real_git=$(command -v git)
+cat > "$_v_shim/jq" <<EOF
+#!/bin/bash
+if [ -e "\$V_DIR/fail-record" ]; then
+    for a in "\$@"; do
+        case "\$a" in *'.engagement_token = \$token'*) exit 5 ;; esac
+    done
+fi
+exec "$_v_real_jq" "\$@"
+EOF
+cat > "$_v_shim/mv" <<EOF
+#!/bin/bash
+if [ -e "\$V_DIR/fail-publish" ]; then
+    case "\${@: -1}" in */target.git) exit 1 ;; esac
+fi
+exec "$_v_real_mv" "\$@"
+EOF
+cat > "$_v_shim/git" <<EOF
+#!/bin/bash
+if [ -e "\$V_DIR/fail-clone" ]; then
+    case " \$* " in *" clone --bare --no-local "*) exit 1 ;; esac
+fi
+exec "$_v_real_git" "\$@"
+EOF
+chmod +x "$_v_shim/jq" "$_v_shim/mv" "$_v_shim/git"
+v_shimmed() { PATH="$_v_shim:$PATH" "$@"; }
+
+v_new
+: > "$V_DIR/fail-record"
+_v_rc=0
+_v_out=$(v_target_on v_shimmed v_run start) || _v_rc=$?
+rm -f "$V_DIR/fail-record"
+assert_eq "the engagement record fails: start refused" "1" "$_v_rc"
+assert_eq "  saying why" "true" \
+    "$(v_has "cannot record the engagement" "$_v_out")"
+assert_eq "  no engagement recorded" "" \
+    "$(jq -r '.engagement_id // empty' "$V_STATE" 2>/dev/null)"
+assert_eq "  the snapshot stays as scratch, nothing published" \
+    "./.target-prep.* no" \
+    "$(v_scratch | sed 's/\.target-prep\.[^ ]*/.target-prep.*/;s/ $//') $(
+        [ -e "$V_RT/target.git" ] && echo yes || echo no)"
+_v_rc=0
+v_target_on v_run start >/dev/null || _v_rc=$?
+assert_eq "  the next start works" "0" "$_v_rc"
+assert_eq "  and deletes that scratch" "" "$(v_scratch)"
+
+for _v_step in publish clone; do
+    v_new
+    : > "$V_DIR/fail-$_v_step"
+    _v_rc=0
+    _v_out=$(v_target_on v_shimmed v_run start) || _v_rc=$?
+    rm -f "$V_DIR/fail-$_v_step"
+    assert_eq "$_v_step fails: start refused" "1" "$_v_rc"
+    case "$_v_step" in
+        publish)
+            assert_eq "  saying why" "true" \
+                "$(v_has "cannot publish the target's snapshot" "$_v_out")"
+            assert_eq "  target.git missing" "no" \
+                "$([ -e "$V_RT/target.git" ] && echo yes || echo no)" ;;
+        clone)
+            assert_eq "  saying why" "true" \
+                "$(v_has "cannot prepare $V_RT/upstream.git" "$_v_out")"
+            assert_eq "  target.git published" "yes" \
+                "$([ -d "$V_RT/target.git" ] && echo yes || echo no)" ;;
+    esac
+    assert_eq "  the engagement is recorded with its target" "$_v_tmain" \
+        "$(jq -r '.target.commit // empty' "$V_STATE")"
+    v_agents exited
+    : > "$V_DIR/log"
+    _v_before=$(v_snap)
+    for _v_cmd in start post-process "interactive --agent-index 1"; do
+        _v_rc=0
+        # shellcheck disable=SC2086
+        _v_out=$(v_target_on v_run $_v_cmd) || _v_rc=$?
+        assert_eq "  then $_v_cmd refuses" "1" "$_v_rc"
+        assert_eq "  pointing to cleanup" "true" \
+            "$(v_has "./launch.sh cleanup" "$_v_out")"
+    done
+    assert_eq "  changing nothing" "$_v_before" "$(v_snap)"
+    assert_eq "  making nothing in Docker" "0" "$(v_writes)"
+    : > "$V_DIR/containers"
+    _v_rc=0
+    v_run cleanup > "$_v_root/cleanup.out" 2>&1 || _v_rc=$?
+    assert_eq "  cleanup finishes it" "0" "$_v_rc"
+    assert_eq "  leaving no target.git" "no" \
+        "$([ -e "$V_RT/target.git" ] && echo yes || echo no)"
+    _v_rc=0
+    v_target_on v_run start >/dev/null || _v_rc=$?
+    assert_eq "  then a start works" "0" "$_v_rc"
+done
+
+# post-process and interactive create a targeted engagement on their
+# own too (docker run fails here after logging: post-process ends at
+# once).
+v_new
+echo run > "$V_DIR/fail"
+_v_rc=0
+v_target_on v_run post-process >/dev/null || _v_rc=$?
+rm -f "$V_DIR/fail"
+assert_eq "post-process creating a targeted engagement gets to its run" \
+    "125" "$_v_rc"
+assert_eq "  which mounts the target" "1" "$(v_runs_with "$(v_target_args)")"
+assert_eq "  recorded with the engagement" "$_v_tmain" \
+    "$(jq -r '.target.commit // empty' "$V_STATE")"
+v_new
+_v_rc=0
+v_target_on v_run interactive --agent-index 1 >/dev/null || _v_rc=$?
+assert_eq "interactive creating a targeted engagement runs" "0" "$_v_rc"
+assert_eq "  mounting the target" "1" "$(v_runs_with "$(v_target_args)")"
+
+# Joining the targeted engagement of the first case.
+V_DIR="$_v_root/case-$_v_tcase"
+V_RT="$_v_root/rt-$_v_tcase"
+V_STATE="$V_RT/state.json"
+_v_tok_saved="$_v_tok"
+_v_tok=$(jq -r .engagement_token "$V_STATE")
+v_agents exited
+for _v_req in "" "TARGET_REPO=$_v_tsrc" "TARGET_REV=$_v_tmain" \
+        "TARGET_REV=main TARGET_REV_BASE=base TARGET_REV_BASE_REPO=$_v_tsrc"
+do
+    : > "$V_DIR/argv.jsonl"
+    echo run > "$V_DIR/fail"
+    _v_rc=0
+    _v_out=$(for _v_kv in $_v_req; do export "${_v_kv?}"; done
+        v_run post-process) || _v_rc=$?
+    rm -f "$V_DIR/fail"
+    assert_eq "post-process joins (${_v_req:-nothing set})" "125" "$_v_rc"
+    assert_eq "  its run mounts the target" "1" \
+        "$(v_runs_with "$(v_target_args)")"
+done
+: > "$V_DIR/argv.jsonl"
+_v_rc=0
+_v_out=$(v_run interactive --agent-index 1) || _v_rc=$?
+assert_eq "interactive joins" "0" "$_v_rc"
+assert_eq "  its run mounts the target" "1" "$(v_runs_with "$(v_target_args)")"
+_v_before=$(v_snap)
+for _v_req in "TARGET_REV=base|TARGET_REV does not name" \
+        "TARGET_REPO=$_v_root|TARGET_REPO does not name" \
+        "TARGET_REV_BASE=main|TARGET_REV_BASE does not name"; do
+    for _v_cmd in post-process "interactive --agent-index 1"; do
+        : > "$V_DIR/log"
+        _v_rc=0
+        # shellcheck disable=SC2086
+        _v_out=$(export "${_v_req%%|*}"; v_run $_v_cmd) || _v_rc=$?
+        assert_eq "${_v_req%%|*}: $_v_cmd refused" "1" "$_v_rc"
+        assert_eq "  saying why" "true" "$(v_has "${_v_req#*|}" "$_v_out")"
+        assert_eq "  before any run" "0" \
+            "$(grep -c '|run ' "$V_DIR/log" || true)"
+    done
+done
+assert_eq "  changing nothing" "$_v_before" "$(v_snap)"
+# A damaged snapshot refuses joins.
+_v_obj=$(find "$V_RT/target.git/objects" -type f | head -1)
+chmod o-r "$_v_obj"
+for _v_cmd in post-process "interactive --agent-index 1"; do
+    : > "$V_DIR/log"
+    _v_rc=0
+    # shellcheck disable=SC2086
+    _v_out=$(v_run $_v_cmd) || _v_rc=$?
+    assert_eq "a damaged snapshot: $_v_cmd refused" "1" "$_v_rc"
+    assert_eq "  saying why" "true" \
+        "$(v_has "not every container user can read" "$_v_out")"
+    assert_eq "  before any run" "0" "$(grep -c '|run ' "$V_DIR/log" || true)"
+done
+chmod o+r "$_v_obj"
+
+# wait: the whole check before it polls; under the lock the record and
+# the request again, the snapshot where post-process mounts it.
+: > "$V_DIR/argv.jsonl"
+echo run > "$V_DIR/fail"
+_v_rc=0
+_v_out=$(v_run wait) || _v_rc=$?
+rm -f "$V_DIR/fail"
+assert_eq "wait on to post-process: its run mounts the target" "1" \
+    "$(v_runs_with "$(v_target_args)")"
+chmod o-r "$_v_obj"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run wait) || _v_rc=$?
+assert_eq "wait with a damaged snapshot: refused before it polls" "1" \
+    "$_v_rc"
+assert_eq "  saying why" "true" \
+    "$(v_has "not every container user can read" "$_v_out")"
+assert_eq "  no listing of agents" "0" \
+    "$(grep -c '|ps .*{{.Names}} {{.State}}' "$V_DIR/log" || true)"
+chmod o+r "$_v_obj"
+_v_rc=0
+_v_out=$(TARGET_REV=base v_run wait) || _v_rc=$?
+assert_eq "wait with a mismatching request: refused" "1" "$_v_rc"
+assert_eq "  saying why" "true" \
+    "$(v_has "TARGET_REV does not name" "$_v_out")"
+# Damage made while wait polls: post-process refuses before its run;
+# without a post-process prompt, harvest runs.
+v_agents running
+jq -c 'if .name == "'"${_v_img}"'-1" then .state = "exited" else . end' \
+    "$V_DIR/containers" > "$V_DIR/at.1"
+printf 'chmod o-r %q\n' "$_v_obj" > "$V_DIR/hook.1"
+rm -f "$V_DIR/wait-listed"
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(v_run wait) || _v_rc=$?
+assert_eq "damage while wait polls: post-process refuses" "1" "$_v_rc"
+assert_eq "  saying why" "true" \
+    "$(v_has "not every container user can read" "$_v_out")"
+assert_eq "  before any run" "0" "$(grep -c '|run ' "$V_DIR/log" || true)"
+assert_eq "  (the damage came after wait's first check)" "true" \
+    "$(v_has "All agents finished." "$_v_out")"
+V_CFG_T="$_v_root/target-harvest.json"
+jq 'del(.post_process)' "$V_CFG" > "$V_CFG_T"
+_v_cfg_t_saved="$V_CFG"
+V_CFG="$V_CFG_T"
+chmod o+r "$_v_obj"
+v_agents running
+jq -c 'if .name == "'"${_v_img}"'-1" then .state = "exited" else . end' \
+    "$V_DIR/containers" > "$V_DIR/at.1"
+printf 'chmod o-r %q\n' "$_v_obj" > "$V_DIR/hook.1"
+rm -f "$V_DIR/wait-listed"
+_v_out=$(v_run wait) || true
+assert_eq "  with no post-process prompt, harvest runs" "true" \
+    "$(v_has "Harvesting results" "$_v_out")"
+chmod o+r "$_v_obj"
+# A record damaged while wait polls stops it under the lock, before
+# post-process or harvest.
+v_agents running
+jq -c 'if .name == "'"${_v_img}"'-1" then .state = "exited" else . end' \
+    "$V_DIR/containers" > "$V_DIR/at.1"
+cp "$V_STATE" "$_v_root/target-state.saved"
+printf '%s\n' "jq -c '.target.format = \"sha3\"' $(printf '%q' "$V_STATE") \
+    > $(printf '%q' "$V_STATE.x") && mv $(printf '%q' "$V_STATE.x") \
+    $(printf '%q' "$V_STATE")" > "$V_DIR/hook.1"
+rm -f "$V_DIR/wait-listed"
+_v_rc=0
+_v_out=$(v_run wait) || _v_rc=$?
+assert_eq "a record damaged while wait polls: wait refuses" "1" "$_v_rc"
+assert_eq "  saying why" "true" \
+    "$(v_has "records a damaged target" "$_v_out")"
+assert_eq "  before harvest" "false" "$(v_has "Harvesting results" "$_v_out")"
+cp "$_v_root/target-state.saved" "$V_STATE"
+V_CFG="$_v_cfg_t_saved"
+
+# The lock on descriptor 8, from the caller: every Git command that
+# reads the snapshot runs without it.
+_v_glog="$TMPDIR/v55-glog"
+mkdir -p "$_v_glog"
+cat > "$_v_glog/git" <<EOF
+#!/bin/bash
+if { true >&8; } 2>/dev/null; then fd8=open; else fd8=closed; fi
+echo "fd8=\${fd8} lock=\${SWARM_LOCK_FD-unset} \$*" >> "\$V_DIR/git.log"
+exec "$_v_real_git" "\$@"
+EOF
+chmod +x "$_v_glog/git"
+v_agents exited
+: > "$V_DIR/git.log"
+echo run > "$V_DIR/fail"
+exec 8>>"$V_RT/engagement.lock"
+flock -n 8
+_v_rc=0
+(cd "$_st_repo" && PATH="$_v_glog:$_v_bin:$PATH" V_DIR="$V_DIR" \
+    V_STATE="$V_STATE" SWARM_RUNTIME_DIR="$V_RT" SWARM_CONFIG="$V_CFG" \
+    SWARM_SKIP_DEP_CHECK=1 SWARM_WAIT_POLL=0 SWARM_LOCK_FD=8 \
+    "$BASH" "$_LAUNCH_SH" post-process >/dev/null 2>&1) || _v_rc=$?
+exec 8>&-
+rm -f "$V_DIR/fail"
+assert_eq "post-process joining with the caller's lock on 8 runs" "125" \
+    "$_v_rc"
+assert_eq "  the snapshot's Git commands ran" "yes" \
+    "$(grep -q 'target.git' "$V_DIR/git.log" && echo yes || echo no)"
+assert_eq "  each without the lock" "" \
+    "$(grep 'target.git' "$V_DIR/git.log" \
+        | grep -v '^fd8=closed lock=unset ' || true)"
+
+# An untargeted engagement refuses a request for a target.
+v_new
+v_run start >/dev/null || true
+v_agents exited
+: > "$V_DIR/log"
+_v_rc=0
+_v_out=$(TARGET_REPO="$_v_tsrc" v_run post-process) || _v_rc=$?
+assert_eq "an untargeted engagement: TARGET_REPO refused" "1" "$_v_rc"
+assert_eq "  saying why" "true" \
+    "$(v_has "this engagement has no target" "$_v_out")"
+assert_eq "  before any run" "0" "$(grep -c '|run ' "$V_DIR/log" || true)"
+_v_tok="$_v_tok_saved"
 
 # A run killed during the clone leaves upstream.git.new: the gate
 # refuses it (cleanup preserves and removes it, see test_cleanup.sh).

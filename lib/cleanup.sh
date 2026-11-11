@@ -209,6 +209,98 @@ cleanup_check_evidence() {
     fi
 }
 
+# The target snapshot, RUNTIME_DIR/target.git, is a copy of the audit
+# target that start made; nothing of the engagement's work is in it.
+# Cleanup deletes it without preserving it, with a record of its own in
+# the checkpoint (.cleanup.target), and resumes from what is on disk.
+
+# Fail unless what is at PATH (the target snapshot or its remnant, both
+# named directly in the runtime directory) can be deleted safely: a
+# directory, not a link, this user's, nothing mounted at or under it.
+# Whether it is a valid snapshot does not matter.
+cleanup_target_safe() {
+    local path="$1"
+    if [ -L "$path" ]; then
+        echo "ERROR: ${path} is a link; cleanup will not follow it." >&2
+        return 1
+    fi
+    if [ ! -d "$path" ]; then
+        echo "ERROR: ${path} is not a directory." >&2
+        return 1
+    fi
+    if [ ! -O "$path" ]; then
+        echo "ERROR: ${path} is not this user's; cleanup leaves it." >&2
+        return 1
+    fi
+    swarm_no_mounts "$path" at
+}
+
+# Check what is there of the target snapshot (the first pass, before
+# anything is retired or deleted, and again after retire): both names at
+# once refuse, and each one there must be safe to delete.
+cleanup_target_check() {
+    local t="$RUNTIME_DIR/target.git" r="$RUNTIME_DIR/target.git.removing"
+    if { [ -e "$t" ] || [ -L "$t" ]; } && { [ -e "$r" ] || [ -L "$r" ]; }
+    then
+        echo "ERROR: both ${t} and ${r} exist; cleanup will not rename one" \
+             "into the other.  Move one out first." >&2
+        return 1
+    fi
+    if [ -e "$t" ] || [ -L "$t" ]; then
+        cleanup_target_safe "$t" || return 1
+    fi
+    if [ -e "$r" ] || [ -L "$r" ]; then
+        cleanup_target_safe "$r" || return 1
+    fi
+}
+
+# Record step STATE of the target snapshot's deletion in the checkpoint.
+cleanup_target_record() {
+    swarm_state_update "$STATE_FILE" \
+        '.cleanup.target = {state: $s, at: $at}' --arg s "$1" \
+        --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" || {
+        echo "ERROR: cannot record the target snapshot's deletion in" \
+             "${STATE_FILE}." >&2
+        return 1
+    }
+}
+
+# Delete the target snapshot: "removing" recorded before it is renamed
+# to target.git.removing, "renamed", "deleting", then "deleted" once it
+# is gone.  A run that stopped resumes from the disk: target.git there
+# is renamed, target.git.removing there is deleted.  Each step checks
+# again that it is safe.
+cleanup_target_remove() {
+    local t="$RUNTIME_DIR/target.git" r="$RUNTIME_DIR/target.git.removing"
+    cleanup_target_check || return 1
+    if [ -e "$t" ] || [ -L "$t" ]; then
+        cleanup_target_record removing || return 1
+        cleanup_target_safe "$t" || return 1
+        if [ -e "$r" ] || [ -L "$r" ]; then
+            echo "ERROR: ${r} exists; cleanup will not rename into it." >&2
+            return 1
+        fi
+        mv "$t" "$r" || {
+            echo "ERROR: cannot rename ${t}." >&2
+            return 1
+        }
+        cleanup_target_record renamed || return 1
+    fi
+    if [ -e "$r" ] || [ -L "$r" ]; then
+        cleanup_target_record deleting || return 1
+        cleanup_target_safe "$r" || return 1
+        chmod -R u+rwX "$r" 2>/dev/null || true
+        rm -rf "$r" 2>/dev/null || true
+        if [ -e "$r" ] || [ -L "$r" ]; then
+            echo "ERROR: cannot delete ${r} (files this user cannot" \
+                 "remove?)." >&2
+            return 1
+        fi
+        cleanup_target_record deleted || return 1
+        echo "  deleted ${t}"
+    fi
+}
+
 # Write the sources cleanup will delete to FILE, one per line:
 #   <kind>\t<path or volume>
 # kind: removing, mirror, new, bare, volume.  Remnants (*.removing)
@@ -225,6 +317,9 @@ cleanup_sources() {
             "$RUNTIME_DIR"/..?*.removing "$MIRROR_DIR"/*.removing \
             "$MIRROR_DIR"/.[!.]*.removing "$MIRROR_DIR"/..?*.removing; do
         [ -e "$e" ] || [ -L "$e" ] || continue
+        # The target snapshot's remnant is cleanup_target_remove's: a
+        # copy of the target, never a preserved source.
+        [ "$e" != "$RUNTIME_DIR/target.git.removing" ] || continue
         case "$e" in
             *$'\t'*|*$'\n'*) odd="${odd}  ${e}"$'\n'; continue ;;
         esac
@@ -296,52 +391,6 @@ cleanup_sources() {
     for v in $vols; do
         printf 'volume\t%s\n' "$v" >> "$out" || return 1
     done
-}
-
-# Print the mount points of this host under directory DIR (canonical),
-# and with AT set, at DIR as well; one per line.  Fails when the mount
-# table cannot be read.
-cleanup_mounts_under() {
-    local dir="$1" at="${2:-}" table
-    if [ -r /proc/self/mountinfo ]; then
-        # Field 5 is the mount point, with a space, a tab, a newline and
-        # a backslash written as \040, \011, \012 and \134.
-        D="$dir" AT="$at" awk '{
-            m = $5
-            gsub(/\\040/, " ", m); gsub(/\\011/, "\t", m)
-            gsub(/\\012/, "\n", m); gsub(/\\134/, "\\", m)
-            d = ENVIRON["D"]
-            if (index(m, d "/") == 1 || (ENVIRON["AT"] != "" && m == d))
-                print m
-        }' /proc/self/mountinfo
-    else
-        # mount prints "<device> on <mount point> (<options>)".
-        table=$(mount) || return 1
-        printf '%s\n' "$table" | D="$dir" AT="$at" awk '{
-            d = ENVIRON["D"]
-            if (index($0, " on " d "/") ||
-                    (ENVIRON["AT"] != "" && index($0, " on " d " (")))
-                print
-        }'
-    fi
-}
-
-# Fail when something is mounted under PATH, or with AT set, at PATH:
-# deleting there would delete what the mount shows (a bind mount of the
-# checkout's git dir, say).  PATH need not exist on this host.
-cleanup_no_mounts() {
-    local path="$1" at="${2:-}" canon found
-    canon=$(swarm_path_resolve "$path") || return 1
-    if ! found=$(cleanup_mounts_under "$canon" "$at"); then
-        echo "ERROR: cannot read this host's mount table." >&2
-        return 1
-    fi
-    if [ -n "$found" ]; then
-        echo "ERROR: something is mounted in ${path}; cleanup will not" \
-             "delete through a mount:" >&2
-        printf '%s\n' "$found" | sed 's/^/  /' >&2
-        return 1
-    fi
 }
 
 # Print the Mountpoint of volume NAME.
@@ -529,7 +578,7 @@ cleanup_delete_host() {
         echo "ERROR: ${path} is not in ${RUNTIME_DIR}; not deleting it." >&2
         return 1
     fi
-    cleanup_no_mounts "$RUNTIME_DIR" || return 1
+    swarm_no_mounts "$RUNTIME_DIR" || return 1
     case "$path" in
         *.removing) target="$path" ;;
         *)
@@ -622,7 +671,8 @@ cleanup_examine() {
     cleanup_sources "$sources" || return 1
 
     # Storage: the checkout must keep what it gets by itself.
-    cleanup_no_mounts "$RUNTIME_DIR" || return 1
+    swarm_no_mounts "$RUNTIME_DIR" || return 1
+    cleanup_target_check || return 1
     while IFS="$(printf '\t')" read -r -u 3 kind path; do
         seen=$((seen + 1))
         if [ "$kind" = volume ]; then
@@ -634,7 +684,7 @@ cleanup_examine() {
                 return 1
             }
             if [ -n "$mp" ]; then
-                cleanup_no_mounts "$mp" at || return 1
+                swarm_no_mounts "$mp" at || return 1
                 targets+=("$mp")
             fi
         else
@@ -711,6 +761,9 @@ HELP
     # delete, and with none recorded there is nothing of its left.
     swarm_engagement_token_check "$STATE_FILE" || return 1
     cleanup_runtime_sane || return 1
+    # Scratch a target resolution left (never part of an engagement),
+    # best effort.
+    swarm_target_scratch_clean "$RUNTIME_DIR"
     local engagement
     engagement=$(swarm_engagement_recorded "$STATE_FILE") || return 1
     if [ -z "$engagement" ]; then
@@ -880,7 +933,7 @@ HELP
                         return 1
                     }
                     if [ -n "$mp" ]; then
-                        cleanup_no_mounts "$mp" at || return 1
+                        swarm_no_mounts "$mp" at || return 1
                     fi
                     cleanup_record "$id" '.state = "deleting"' || return 1
                     if ! docker volume rm "$path" >/dev/null 2>&1; then
@@ -909,9 +962,18 @@ HELP
         echo "ERROR: ${MIRROR_DIR} is not empty after cleanup." >&2
         return 1
     fi
+    cleanup_target_remove || return 1
     # The engagement's records go only once nothing they stand for is
     # left, whatever this run did or did not list.
     cleanup_sources "$RETIRE_SCRATCH/left" || return 1
+    local tgt
+    for tgt in "$RUNTIME_DIR/target.git" "$RUNTIME_DIR/target.git.removing"
+    do
+        if [ -e "$tgt" ] || [ -L "$tgt" ]; then
+            printf 'target\t%s\n' "$tgt" >> "$RETIRE_SCRATCH/left" \
+                || return 1
+        fi
+    done
     if [ -s "$RETIRE_SCRATCH/left" ]; then
         echo "ERROR: cleanup left these in place:" >&2
         cut -f2 "$RETIRE_SCRATCH/left" | sed 's/^/  /' >&2

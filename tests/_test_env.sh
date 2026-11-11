@@ -8,7 +8,9 @@ unset GIT_CONFIG GIT_CONFIG_PARAMETERS
 
 # Keep it independent of the caller's swarm-core settings too.
 unset SWARM_PROJECT SWARM_RUNTIME_DIR SWARM_ENGAGEMENT_ID SWARM_LOCK_FD \
-    SWARM_ENGAGEMENT_TOKEN SWARM_GIT_NO_BACKGROUND
+    SWARM_ENGAGEMENT_TOKEN SWARM_GIT_NO_BACKGROUND TARGET_REPO TARGET_REV \
+    TARGET_REV_BASE TARGET_REV_BASE_REPO SWARM_TARGET_TIMEOUT \
+    SWARM_TARGET_VERIFY_TIMEOUT
 
 # And of the caller's Pi settings (a host that runs Pi agents may export
 # them), which change what the Pi driver writes and forwards: in every

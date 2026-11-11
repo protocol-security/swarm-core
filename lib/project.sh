@@ -784,14 +784,64 @@ swarm_own_containers() {
         'select(.owner == $root) | "\(.name) \(.id)"'
 }
 
+# Print the mount points of this host under directory DIR (canonical),
+# and with AT set, at DIR as well; one per line.  Fails when the mount
+# table cannot be read.
+swarm_mounts_under() {
+    local dir="$1" at="${2:-}" table
+    if [ -r /proc/self/mountinfo ]; then
+        # Field 5 is the mount point, with a space, a tab, a newline and
+        # a backslash written as \040, \011, \012 and \134.
+        D="$dir" AT="$at" awk '{
+            m = $5
+            gsub(/\\040/, " ", m); gsub(/\\011/, "\t", m)
+            gsub(/\\012/, "\n", m); gsub(/\\134/, "\\", m)
+            d = ENVIRON["D"]
+            if (index(m, d "/") == 1 || (ENVIRON["AT"] != "" && m == d))
+                print m
+        }' /proc/self/mountinfo
+    else
+        # mount prints "<device> on <mount point> (<options>)".
+        table=$(mount) || return 1
+        printf '%s\n' "$table" | D="$dir" AT="$at" awk '{
+            d = ENVIRON["D"]
+            if (index($0, " on " d "/") ||
+                    (ENVIRON["AT"] != "" && index($0, " on " d " (")))
+                print
+        }'
+    fi
+}
+
+# Fail when something is mounted under PATH, or with AT set, at PATH:
+# deleting there would delete what the mount shows (a bind mount of the
+# checkout's git dir, say).  PATH need not exist on this host.  The
+# message names cleanup, its first user.
+swarm_no_mounts() {
+    local path="$1" at="${2:-}" canon found
+    canon=$(swarm_path_resolve "$path") || return 1
+    if ! found=$(swarm_mounts_under "$canon" "$at"); then
+        echo "ERROR: cannot read this host's mount table." >&2
+        return 1
+    fi
+    if [ -n "$found" ]; then
+        echo "ERROR: something is mounted in ${path}; cleanup will not" \
+             "delete through a mount:" >&2
+        printf '%s\n' "$found" | sed 's/^/  /' >&2
+        return 1
+    fi
+}
+
 # Print what runtime directory DIR holds of an engagement, one entry per
-# line: its bare repo and upstream.git.new, mirrors/, any remnant of a
-# cleanup (hidden names too), and the containers and workspace volumes
-# of the checkout at ROOT (canonical path CHECKOUT) under project id
-# PROJECT.  Fails, saying so, when Docker cannot list them.
+# line: its bare repo and upstream.git.new, mirrors/, its target
+# snapshot, any remnant of a cleanup (hidden names too), and the
+# containers and workspace volumes of the checkout at ROOT (canonical
+# path CHECKOUT) under project id PROJECT.  Fails, saying so, when
+# Docker cannot list them.  Target scratch (.target-fetch.*,
+# .target-prep.*) is never part of an engagement.
 swarm_runtime_leftovers() {
     local dir="$1" project="$2" root="$3" checkout="$4" e containers vols
     for e in "$dir/upstream.git" "$dir/upstream.git.new" "$dir/mirrors" \
+            "$dir/target.git" \
             "$dir"/*.removing "$dir"/.[!.]*.removing \
             "$dir"/..?*.removing; do
         if [ -e "$e" ] || [ -L "$e" ]; then
@@ -896,6 +946,105 @@ swarm_engagement_recorded() {
         return 1
     }
     printf '%s' "$state" | jq -r '.engagement_id // empty'
+}
+
+# Succeed when the config files of git dir DIR are safe for the host's
+# git to read: each one there is a regular file that includes no other.
+# Git follows an include wherever it points, and opening a FIFO there
+# would hang; agents can write the bare repo (and swap a file for a FIFO
+# once it is checked: the read is bounded).  Say why on stderr
+# otherwise.
+swarm_gitdir_config_plain() {
+    local dir="$1" f rc
+    for f in "$dir/config" "$dir/config.worktree"; do
+        [ -e "$f" ] || [ -L "$f" ] || continue
+        if [ ! -f "$f" ]; then
+            echo "ERROR: ${f} is not a regular file." >&2
+            return 1
+        fi
+        rc=0
+        swarm_bounded "$_SWARM_GIT_READ_SECS" git config -f "$f" \
+            --name-only --get-regexp '^(include|includeif)\.' \
+            >/dev/null 2>&1 < /dev/null || rc=$?
+        case "$rc" in
+            0)
+                echo "ERROR: ${f} includes other files." >&2
+                return 1 ;;
+            1) ;;
+            142)
+                echo "ERROR: reading ${f} took over" \
+                     "${_SWARM_GIT_READ_SECS} seconds." >&2
+                return 1 ;;
+            *)
+                echo "ERROR: cannot parse ${f}." >&2
+                return 1 ;;
+        esac
+    done
+}
+
+# Run command ARGS ($2...) for at most SECS ($1) seconds: perl sets
+# SIGALRM to its default action and unblocks it (an inherited ignore or
+# block would defeat the alarm), arms the alarm, then execs; the alarm
+# survives exec.  A command still running then ends by SIGALRM.
+swarm_bounded() {
+    local secs="$1"
+    shift
+    perl -e 'use POSIX ();
+        my $secs = shift @ARGV;
+        $SIG{ALRM} = "DEFAULT";
+        POSIX::sigprocmask(POSIX::SIG_UNBLOCK(),
+            POSIX::SigSet->new(POSIX::SIGALRM())) or exit 126;
+        alarm($secs);
+        exec { $ARGV[0] } @ARGV;
+        print STDERR "cannot run $ARGV[0]: $!\n";
+        exit 127;' -- "$secs" "$@"
+}
+
+# How long a git command reading a git dir agents can write may take.
+_SWARM_GIT_READ_SECS=60
+
+# Succeed when bare repo DIR is published and usable: a directory, not
+# a link, whose config files include no other (swarm_gitdir_config_plain;
+# agents can write it), that Git, given it explicitly (so no repository
+# is looked for around it), takes for a bare repository whose HEAD names
+# a commit, none of the caller's GIT_* variables applying but the choice
+# of config files.  Each git command is bounded: a FIFO or a device an
+# agent left where Git reads would block it, with the engagement lock
+# held.  DIR.new beside it never counts.
+swarm_bare_repo_ready() {
+    local dir="$1" phys
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+    phys=$(cd -P -- "$dir" 2>/dev/null && pwd -P) || return 1
+    swarm_gitdir_config_plain "$phys" || return 1
+    (
+        for v in "${!GIT_@}"; do
+            case "$v" in
+                GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM) ;;
+                *) unset "$v" ;;
+            esac
+        done
+        export GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=''
+        [ "$(swarm_bounded "$_SWARM_GIT_READ_SECS" git --git-dir="$phys" \
+            rev-parse --is-bare-repository 2>/dev/null < /dev/null)" = true ] \
+            || exit 1
+        swarm_bounded "$_SWARM_GIT_READ_SECS" git --git-dir="$phys" \
+            rev-parse --verify --quiet 'HEAD^{commit}' > /dev/null 2>&1 \
+            < /dev/null
+    )
+}
+
+# Fail, saying how to finish it, unless recorded engagement ENGAGEMENT
+# has every part it needs: its bare repo BARE, published and usable.  A
+# run cut off once the engagement was recorded leaves it incomplete, and
+# nothing makes its parts again.
+swarm_engagement_complete() {
+    local engagement="$1" bare="$2"
+    swarm_bare_repo_ready "$bare" && return 0
+    echo "ERROR: engagement ${engagement} is incomplete: ${bare} is" \
+         "missing or is no usable bare repository.  Run ./launch.sh" \
+         "cleanup to finish it (it refuses, and says why, what it" \
+         "cannot preserve)." >&2
+    return 1
 }
 
 # Print the engagement token state file FILE records (empty when none,

@@ -74,34 +74,6 @@ swarm_tip_contained() {
     return 0
 }
 
-# Succeed when the config files of git dir DIR are safe for the host's
-# git to read: each one there is a regular file that includes no other.
-# Git follows an include wherever it points, and opening a FIFO there
-# would hang; agents can write the bare repo.  Say why on stderr
-# otherwise.
-swarm_gitdir_config_plain() {
-    local dir="$1" f rc
-    for f in "$dir/config" "$dir/config.worktree"; do
-        [ -e "$f" ] || [ -L "$f" ] || continue
-        if [ ! -f "$f" ]; then
-            echo "ERROR: ${f} is not a regular file." >&2
-            return 1
-        fi
-        rc=0
-        git config -f "$f" --name-only --get-regexp \
-            '^(include|includeif)\.' >/dev/null 2>&1 || rc=$?
-        case "$rc" in
-            0)
-                echo "ERROR: ${f} includes other files." >&2
-                return 1 ;;
-            1) ;;
-            *)
-                echo "ERROR: cannot parse ${f}." >&2
-                return 1 ;;
-        esac
-    done
-}
-
 # Check the preservation refs of bare repo BARE against the checkout at
 # ROOT.  Return 0 when the checkout contains every tip, 1 when some are
 # missing (printed as "<ref> <sha>" lines), and 2 when the check could

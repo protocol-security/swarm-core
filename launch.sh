@@ -66,11 +66,15 @@ HELP
 fi
 
 source "$SWARM_DIR/lib/check-deps.sh"
-check_deps git jq docker
+check_deps git jq docker perl
 # shellcheck source=lib/project.sh
 source "$SWARM_DIR/lib/project.sh"
 # shellcheck source=lib/preserve.sh
 source "$SWARM_DIR/lib/preserve.sh"
+# shellcheck source=lib/target.sh
+source "$SWARM_DIR/lib/target.sh"
+# shellcheck source=lib/docker-args.sh
+source "$SWARM_DIR/lib/docker-args.sh"
 
 # retire and cleanup read and write Git data: none of the caller's GIT_*
 # variables may point them at another repository or inject settings
@@ -221,13 +225,14 @@ prepare_runtime() {
     swarm_runtime_claim "$RUNTIME_DIR" "$REPO_ROOT" "$PROJECT" || exit 1
 }
 
-# Stop unless the runtime directory holds nothing of an engagement: no
-# bare repo, no upstream.git.new, no mirrors/, no remnant of a cleanup,
-# no container or workspace volume of this checkout, no interactive
-# session open or starting.  A new engagement starts only there, after
-# ./launch.sh cleanup has preserved and removed the last one.  Called
-# under the lock and the pin, by start, and by post-process and
-# interactive when they would create the engagement.
+# Stop unless the runtime directory holds nothing of an engagement and
+# the state file records none: no bare repo, no upstream.git.new, no
+# mirrors/, no remnant of a cleanup, no container or workspace volume of
+# this checkout, no interactive session open or starting.  A new
+# engagement starts only there, after ./launch.sh cleanup has preserved
+# and removed the last one.  Called under the lock and the pin, by
+# start, and by post-process and interactive when they would create the
+# engagement.
 require_clean_runtime() {
     local left live engaged rc=0 tmp
     left=$(swarm_runtime_leftovers "$RUNTIME_DIR" "$PROJECT" "$REPO_ROOT" \
@@ -237,8 +242,17 @@ require_clean_runtime() {
         left="${left:+${left}$'\n'}  interactive sessions: $(printf '%s\n' \
             "$live" | tr '\n' ' ')"
     fi
-    [ -n "$left" ] || return 0
     engaged=$(swarm_engagement_recorded "$STATE_FILE") || exit 1
+    if [ -z "$left" ]; then
+        [ -n "$engaged" ] || return 0
+        # A run cut off right after recording its engagement leaves the
+        # record alone; it still stands for that engagement.
+        echo "ERROR: ${STATE_FILE} still records engagement ${engaged}," \
+             "with nothing of it left in ${RUNTIME_DIR}.  Run" \
+             "./launch.sh cleanup to finish it before a new one" \
+             "starts." >&2
+        exit 1
+    fi
     if [ -z "$engaged" ]; then
         swarm_legacy_explain "$RUNTIME_DIR" \
             "what is left of an engagement it never recorded"
@@ -294,6 +308,7 @@ write_state_file() {
 
 create_bare_repo() {
     local label="${1:-bare repo}" base daemon new="${BARE_REPO}.new"
+    local format=""
     echo "--- Creating ${label} ---"
     # The engagement starts from the commit the checkout has now.
     base=$(git -C "$REPO_ROOT" rev-parse --verify --quiet 'HEAD^{commit}') \
@@ -309,13 +324,37 @@ create_bare_repo() {
         echo "ERROR: cannot read the Docker daemon id." >&2
         exit 1
     fi
-    # The engagement is recorded first: a run stopped from here on
-    # leaves at most upstream.git.new under it, which cleanup preserves
-    # and removes.
-    begin_engagement "$base" "$daemon" || {
+    # Remove scratch left by an interrupted resolution first.  The
+    # target is resolved before the engagement is recorded: a failure up
+    # to the record leaves no engagement, only scratch.  Its snapshot has
+    # the checkout's object format (swarm_target_resolve refuses any
+    # other than sha1 and sha256).
+    swarm_target_scratch_clean "$RUNTIME_DIR"
+    if swarm_target_requested; then
+        if ! format=$(git -C "$REPO_ROOT" rev-parse --show-object-format)
+        then
+            echo "ERROR: cannot read the object format of ${REPO_ROOT}." >&2
+            exit 1
+        fi
+        echo "--- Resolving the target ---"
+        swarm_target_resolve "$RUNTIME_DIR" "$format" || exit 1
+    fi
+    # The engagement is recorded first, with its target: a run stopped
+    # from here on leaves an incomplete engagement (target.git or the
+    # bare repo missing, at most upstream.git.new and target scratch),
+    # which cleanup preserves and removes.
+    begin_engagement "$base" "$daemon" "$format" || {
         echo "ERROR: cannot record the engagement in ${STATE_FILE}." >&2
         exit 1
     }
+    # The clean-runtime check came first: target.git is not there.
+    if [ -n "$format" ] \
+            && ! mv "$SWARM_TARGET_PREP" "$RUNTIME_DIR/target.git"; then
+        echo "ERROR: cannot publish the target's snapshot as" \
+             "${RUNTIME_DIR}/target.git.  Run ./launch.sh cleanup to" \
+             "finish this engagement." >&2
+        exit 1
+    fi
     # Through Git's transport (--no-local), not a copy of the object
     # store: the bare repo gets new files, so the chmod below cannot
     # reach the checkout's own through hardlinks; it borrows nothing
@@ -365,22 +404,52 @@ prepare_bare_repo() {
 # later phase checks against SWARM_ENGAGEMENT_ID, and the commit it
 # starts from (BASE).  Agents can write to the bare repo, including its
 # refs/swarm/base, so the state file keeps the copy that later checks
-# of the agents' branches can trust.  Returns 1 if either fails.
+# of the agents' branches can trust.  With object format FORMAT (a
+# target was resolved: swarm_target_resolve's results), the same write
+# records the target, its four base fields null without a base;
+# without, it records none.  Returns 1 if either fails.
 begin_engagement() {
-    local base="$1" daemon="$2" id token
+    local base="$1" daemon="$2" format="${3:-}" id token target
     id=$(swarm_engagement_new) || return 1
     token=$(swarm_random_hex 8) || return 1
+    target='del(.target)'
+    if [ -n "$format" ]; then
+        target='def n: if . == "" then null else . end;
+            .target = {repo: $repo, repo_physical: $repo_physical,
+                rev: $rev, commit: $commit,
+                base_repo: ($base_repo | n),
+                base_repo_physical: ($base_repo_physical | n),
+                base_rev: ($base_rev | n), base_commit: ($base_commit | n),
+                format: $format}'
+    fi
     # What harvests of an earlier engagement merged means nothing for
     # this one (cleanup drops it too).
     swarm_state_update "$STATE_FILE" \
-        '.engagement_id = $id | .engagement_started_at = $at
-         | .base_commit = $base | .docker_daemon = $daemon
-         | .engagement_token = $token
-         | del(.harvested, .harvest_pending)' \
+        "${target} | .engagement_id = \$id | .engagement_started_at = \$at
+         | .base_commit = \$base | .docker_daemon = \$daemon
+         | .engagement_token = \$token
+         | del(.harvested, .harvest_pending)" \
         --arg id "$id" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg base "$base" --arg daemon "$daemon" --arg token "$token" \
+        --arg repo "${TARGET_REPO:-}" \
+        --arg repo_physical "${SWARM_TARGET_REPO_PHYSICAL:-}" \
+        --arg rev "${TARGET_REV:-}" --arg commit "${SWARM_TARGET_COMMIT:-}" \
+        --arg base_repo "${SWARM_TARGET_BASE_REPO_EFFECTIVE:-}" \
+        --arg base_repo_physical "${SWARM_TARGET_BASE_REPO_PHYSICAL:-}" \
+        --arg base_rev "${SWARM_TARGET_BASE_COMMIT:+${TARGET_REV_BASE:-}}" \
+        --arg base_commit "${SWARM_TARGET_BASE_COMMIT:-}" \
+        --arg format "$format" \
         || return 1
     echo "Engagement: ${id}"
+}
+
+# Fill TARGET_ARGS from the engagement's target record, under the lock,
+# once the engagement was created or joined (the join validator checked
+# it; swarm_target_args).
+target_args_load() {
+    swarm_target_record_read "$STATE_FILE" || exit 1
+    swarm_target_args "$RUNTIME_DIR" || exit 1
+    TARGET_ARGS=("${SWARM_TARGET_ARGS[@]}")
 }
 
 # Fill WORKSPACE_ARGS with a new workspace volume for container NAME
@@ -415,12 +484,19 @@ workspace_args() {
 # image is built once the checks passed, and before an engagement is
 # created, so a failed build leaves the runtime directory clean.
 ensure_bare_repo_for_interactive() {
-    if [ ! -d "$BARE_REPO" ]; then
+    local engaged
+    # The state decides: a recorded engagement is joined, never made
+    # again, and only a complete one is joined.
+    engaged=$(swarm_engagement_recorded "$STATE_FILE") || exit 1
+    if [ -z "$engaged" ]; then
         # A token names an engagement to join, never a new one.
         if [ -n "${SWARM_ENGAGEMENT_TOKEN:-}" ]; then
             echo "ERROR: the engagement this session was started for" \
-                 "has no bare repo any more." >&2
+                 "is not recorded any more." >&2
             exit 1
+        fi
+        if swarm_target_requested; then
+            swarm_target_inputs_check || exit 1
         fi
         require_clean_runtime
         build_image
@@ -430,6 +506,8 @@ ensure_bare_repo_for_interactive() {
     fi
     swarm_engagement_join "$STATE_FILE" || exit 1
     swarm_engagement_daemon_check "$STATE_FILE" || exit 1
+    swarm_engagement_complete "$engaged" "$BARE_REPO" || exit 1
+    swarm_target_join_check "$STATE_FILE" "$RUNTIME_DIR" || exit 1
 
     local bare_head local_head
     bare_head=$(swarm_no_fetch git -C "$BARE_REPO" rev-parse --verify \
@@ -703,6 +781,7 @@ GIT_SIGNING_KEY="$(expand_env_ref "$GIT_SIGNING_KEY")"
 # Resolve signing key path and build volume mount.
 SIGNING_KEY_ARGS=()
 if [ -n "$GIT_SIGNING_KEY" ]; then
+    # shellcheck disable=SC2031  # lib/target.sh sets HOME in subshells only
     GIT_SIGNING_KEY="${GIT_SIGNING_KEY/#\~/$HOME}"
     if [ ! -f "$GIT_SIGNING_KEY" ]; then
         echo "ERROR: signing key not found: $GIT_SIGNING_KEY" >&2
@@ -714,10 +793,16 @@ NUM_AGENTS=$(jq '[.agents[]? | (.count // 0)] | add // 0' "$CONFIG_FILE")
 SWARM_DRIVER_DEFAULT=$(jq -r '.driver // "claude-code"' "$CONFIG_FILE")
 MAX_RETRY_WAIT=$(jq -r '.max_retry_wait // 0' "$CONFIG_FILE")
 
+# docker_args, read and checked by the commands that launch containers
+# (docker_args_load), before they prepare anything.
 DOCKER_EXTRA_ARGS=()
-while IFS= read -r _da; do
-    [ -n "$_da" ] && DOCKER_EXTRA_ARGS+=("$_da")
-done < <(jq -r '.docker_args[]?' "$CONFIG_FILE" 2>/dev/null)
+# What every container gets of the engagement's target (target_args_load).
+TARGET_ARGS=()
+docker_args_load() {
+    swarm_docker_args_read "$CONFIG_FILE" || exit 1
+    swarm_docker_args_check || exit 1
+    DOCKER_EXTRA_ARGS=("${SWARM_DOCKER_ARGS[@]+"${SWARM_DOCKER_ARGS[@]}"}")
+}
 
 parse_start_args() {
     OPEN_DASHBOARD=false
@@ -924,8 +1009,11 @@ HELP
         exit 1
     fi
 
+    swarm_target_vars_check || exit 1
+    docker_args_load
     prepare_runtime
     ensure_bare_repo_for_interactive
+    target_args_load
 
     MIRROR_ARGS=()
     mirror_volume_args
@@ -974,13 +1062,16 @@ HELP
     swarm_unlock
     echo "--- Starting interactive ${profile_label} (${agent_model}) ---"
     echo "Branch: ${branch}"
-    # --name and the session label come after docker_args: the last
-    # one wins, and the record must find the container Docker makes.
-    exec docker run -it \
-        -v "${BARE_REPO}:/upstream:rw" \
+    # docker_args come first: everything the engine sets comes after
+    # them, so the last value of an option is the engine's (-it, the
+    # name and the session label the record must find, the entrypoint).
+    exec docker run \
+        "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+        -it \
+        --mount "type=bind,src=${BARE_REPO},dst=/upstream" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
         "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
-        "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+        "${TARGET_ARGS[@]}" \
         "${WORKSPACE_ARGS[@]}" \
         --name "$name" \
         --label "${SWARM_SESSION_LABEL}=${name}" \
@@ -1082,6 +1173,11 @@ cmd_start() {
         exit 1
     fi
 
+    # A target's inputs, checked before anything is prepared.
+    if swarm_target_requested; then
+        swarm_target_inputs_check || exit 1
+    fi
+    docker_args_load
     prepare_runtime
 
     # A new engagement, only once the last one was cleaned up.  The
@@ -1093,6 +1189,7 @@ cmd_start() {
 
     # Mirror each submodule so containers can init without network.
     mirror_submodules
+    target_args_load
 
     # Mirror volume mounts, shared across all containers.
     MIRROR_ARGS=()
@@ -1148,13 +1245,16 @@ cmd_start() {
             read -r price_input price_output price_cached <<< "$_price"
         fi
 
-        # The workspace, its labels, no restart policy, no auto-remove
-        # and the name come after docker_args: the last value wins.
-        docker run -d \
-            -v "${BARE_REPO}:/upstream:rw" \
+        # docker_args come first: -d, the workspace, its labels, no
+        # restart policy, no auto-remove and the name come after them,
+        # so the last value of each is the engine's.
+        docker run \
+            "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+            -d \
+            --mount "type=bind,src=${BARE_REPO},dst=/upstream" \
             "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
             "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
-            "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+            "${TARGET_ARGS[@]}" \
             "${WORKSPACE_ARGS[@]}" \
             --name "$NAME" \
             "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
@@ -1482,6 +1582,8 @@ cmd_wait() {
         exit 1
     fi
     swarm_engagement_daemon_check "$snap" || exit 1
+    # The target too, snapshot included, before the hours of polling.
+    swarm_target_join_check "$snap" "$RUNTIME_DIR" || exit 1
     # A lock the caller holds stays held throughout.
     [ -z "${SWARM_LOCK_FD:-}" ] || own_lock=false
     echo "--- Waiting for all agents to finish ---"
@@ -1523,6 +1625,14 @@ cmd_wait() {
             swarm_unlock
         fi
     done
+    # What comes next needs the engagement complete (under the lock).
+    local engaged
+    engaged=$(swarm_engagement_recorded "$STATE_FILE") || exit 1
+    swarm_engagement_complete "$engaged" "$BARE_REPO" || exit 1
+    # The token shows it is the same engagement: its target record and
+    # the input variables are checked again here, the snapshot where it
+    # is mounted (post-process's join, below); harvest never mounts it.
+    swarm_target_record_check "$STATE_FILE" || exit 1
     SWARM_ENGAGEMENT_TOKEN="$token"
     export SWARM_ENGAGEMENT_TOKEN
 
@@ -1577,17 +1687,25 @@ cmd_post_process() {
         exit 1
     fi
 
+    swarm_target_vars_check || exit 1
+    docker_args_load
     prepare_runtime
-    local NAME="${IMAGE_NAME}-post" pp_state
-    if [ ! -d "$BARE_REPO" ]; then
+    local NAME="${IMAGE_NAME}-post" pp_state pp_engaged
+    # The state decides: a recorded engagement is joined, never made
+    # again, and only a complete one is joined.
+    pp_engaged=$(swarm_engagement_recorded "$STATE_FILE") || exit 1
+    if [ -z "$pp_engaged" ]; then
         # A token names an engagement to join, never a new one.
         if [ -n "${SWARM_ENGAGEMENT_TOKEN:-}" ]; then
             echo "ERROR: the engagement post-process was started for" \
-                 "has no bare repo any more." >&2
+                 "is not recorded any more." >&2
             exit 1
         fi
         # The image is built before the engagement is created, so a
         # failed build leaves the runtime directory clean.
+        if swarm_target_requested; then
+            swarm_target_inputs_check || exit 1
+        fi
         require_clean_runtime
         build_image
         create_bare_repo "bare repo for post-process"
@@ -1595,6 +1713,8 @@ cmd_post_process() {
     else
         swarm_engagement_join "$STATE_FILE" || exit 1
         swarm_engagement_daemon_check "$STATE_FILE" || exit 1
+        swarm_engagement_complete "$pp_engaged" "$BARE_REPO" || exit 1
+        swarm_target_join_check "$STATE_FILE" "$RUNTIME_DIR" || exit 1
         # The numbered agents must be done: post-process works on what
         # they pushed, and under the lock no start can be launching more
         # of them (the dashboard's p stops them first, without the lock).
@@ -1628,6 +1748,7 @@ cmd_post_process() {
         build_image
     fi
 
+    target_args_load
     workspace_args "$NAME" agent full
 
     # Build mirror volume args from existing mirrors.
@@ -1666,13 +1787,15 @@ cmd_post_process() {
 
     echo "--- Starting post-processing (${pp_model}) ---"
     local pp_id
-    # As for the agents: the workspace, its labels, the policies and the
-    # name come after docker_args.
-    pp_id=$(docker run -d \
-        -v "${BARE_REPO}:/upstream:rw" \
+    # As for the agents: docker_args first, then -d, the workspace, its
+    # labels, the policies and the name.
+    pp_id=$(docker run \
+        "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+        -d \
+        --mount "type=bind,src=${BARE_REPO},dst=/upstream" \
         "${MIRROR_ARGS[@]+"${MIRROR_ARGS[@]}"}" \
         "${SIGNING_KEY_ARGS[@]+"${SIGNING_KEY_ARGS[@]}"}" \
-        "${DOCKER_EXTRA_ARGS[@]+"${DOCKER_EXTRA_ARGS[@]}"}" \
+        "${TARGET_ARGS[@]}" \
         "${WORKSPACE_ARGS[@]}" \
         --name "$NAME" \
         "${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}" \
