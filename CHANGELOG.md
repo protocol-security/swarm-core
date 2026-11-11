@@ -1,17 +1,6 @@
 # Changelog
 
-## Unreleased
-
-
-
-
-
-
-
-
-
-
-
+## 0.24.0 — 2026-11-11
 
 - **Fix: the test files no longer take Pi settings from the caller's
   environment.** `tests/_test_env.sh` now unsets the `PI_` variables the

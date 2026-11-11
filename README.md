@@ -1,183 +1,37 @@
 # swarm-core
 
-[![CI][ci-badge]][ci]
-
-[ci-badge]:
-  https://github.com/protocol-security/swarm-core/actions/workflows/ci.yml/badge.svg
-[ci]: https://github.com/protocol-security/swarm-core/actions/workflows/ci.yml
-
-N coding agents in Docker, coordinating through git.
-No orchestrator, no message passing.  Designed to support
-multiple agent CLIs via a driver abstraction layer.
-
-Previously named `claude-swarm`. Existing installations do not need
-new configuration or directory names; see
-[upgrading existing installations](USAGE.md#upgrading-from-claude-swarm).
-
-Based on the agent-team pattern from
-[Building a C Compiler with Large Language Models](https://www.anthropic.com/engineering/building-c-compiler).
+N coding agents in Docker, coordinating through Git. No orchestrator and
+no message passing. Formerly `claude-swarm`.
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/)
-- bash (5.0+), git, jq, bc, perl
-- flock (util-linux on Linux; `brew install flock` on macOS)
-- tput (ncurses) — used by the dashboard
-- Credentials for the selected [agent/provider](USAGE.md#auth-modes)
+Docker, Bash 5, Git, jq, bc, perl, flock, tput, and credentials for a
+driver.
 
-For development: `shellcheck` for linting.
+## Usage
 
-## Setup
+Put a `swarm.json` in your repository root, then run `launch.sh` there.
 
-Add as a submodule:
+    ./launch.sh start --dashboard
 
-```bash
-git submodule add https://github.com/protocol-security/swarm-core.git \
-  tools/swarm-core
-```
-
-Or clone standalone and run from your project directory
-(with a `swarm.json` in the project root):
-
-```bash
-./path/to/swarm-core/launch.sh start --dashboard
-```
-
-## How it works
-
-```
-Host                         runtime dir (mode 700)
-~/project/ ── git clone ──>  upstream.git (rw)
-               --bare        mirrors/*.git (ro)
-                                        |
-                                        | bind mounts
-                                        |
-                 .-----------.----------+-----------.
-                 |           |          |           |
-           Container 1            Container 2       ...
-           /upstream  (rw)        /upstream  (rw)
-           /mirrors/* (ro)        /mirrors/* (ro)
-                 |                      |
-                 v                      v
-           /workspace/            /workspace/
-           (agent-work)           (agent-work)
-           volume                 volume
-           <name>-ws-<hex>        <name>-ws-<hex>
-```
-
-All containers mount the same bare repo. Each runs
-`lib/harness.sh` which loops: reset to `origin/agent-work`,
-run one agent session, push. When one agent pushes, others
-see the changes on the next fetch.
-
-Each container's `/workspace` is a Docker volume of its own, so its
-files outlive the container. One engagement goes from `start` to
-`harvest.sh`, which merges the agents' work into the checkout, then to
-`./launch.sh retire`, which removes the stopped containers once nothing
-lives only in them, and `./launch.sh cleanup`, which copies everything
-Git kept in the volumes, the bare repo and the mirrors into the
-checkout as recovery refs before it deletes them. The next `start`
-needs a runtime directory cleaned up that way.
-
-The runtime directory is private to the user who runs the swarm,
-`~/.local/state/swarm-core/<project>` by default (see
-[USAGE.md](USAGE.md#runtime-directory)).
-
-Interactive containers use the same image and setup, but start a
-human-guided driver UI or shell on a separate
-`swarm/<run>/interactive-*` branch. `harvest.sh` merges those
-branches explicitly alongside `agent-work`.
-
-## Quick start
-
-```bash
-# Create a swarmfile and launch numbered agents.
-SWARM_CONFIG=swarm.json ./launch.sh start --dashboard
-
-# Later, after agents are running or have exited:
-SWARM_CONFIG=swarm.json ./launch.sh wait
-
-# Open a human-guided session from a named agent profile:
-SWARM_CONFIG=swarm.json ./launch.sh interactive hunter
-
-# Once the work is harvested (wait does it), delete the engagement;
-# what Git had in it stays in the checkout as recovery refs:
-./launch.sh cleanup
-
-# Or place swarm.json in your repo root and launch.
-./launch.sh start --dashboard
-```
-
-See [USAGE.md](USAGE.md) for all commands, dashboard keys,
-and testing. A program that drives engagements (a CI job, a
-scheduler) uses `control.sh`, a versioned interface: see
-[Control interface](USAGE.md#control-interface).
-
-## Configuration
-
-Place a `swarm.json` in your repo root:
-
-```json
-{
-  "prompt": "prompts/task.md",
-  "setup": "scripts/setup.sh",
-  "max_idle": 3,
-  "driver": "claude-code",
-  "agents": [
-    { "count": 2, "model": "claude-opus-4-6", "effort": "high" },
-    { "count": 1, "model": "claude-opus-4-6", "context": "none" },
-    { "name": "reviewer", "count": 1, "model": "claude-sonnet-4-6", "prompt": "prompts/review.md" },
-    { "name": "hunter", "count": 0, "model": "gpt-5.4", "driver": "codex-cli" },
-    {
-      "count": 3,
-      "model": "openrouter/custom",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key": "sk-or-..."
-    }
-  ],
-  "post_process": {
-    "prompt": "prompts/review.md",
-    "model": "claude-opus-4-6",
-    "max_idle": 2
-  }
-}
-```
-
-Credentials are driver-specific. Claude Code groups without `api_key`
-use `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` from the environment;
-see [Auth modes](USAGE.md#auth-modes) for other drivers. A named group
-with omitted `count` or `count: 0` is an interactive-only profile.
-
-**Per-group fields:** `name`, `model`, `count`, `effort`, `context`,
-`prompt`, `auth`, `api_key`, `auth_token`, `base_url`, `tag`,
-`driver`. See [USAGE.md](USAGE.md) for
-field reference, environment variables, auth modes, context
-modes, per-group prompts, and agent drivers.
+- `./launch.sh wait` post-processes and harvests the agents' work.
+- `./launch.sh interactive NAME` opens a human-guided session.
+- `./launch.sh cleanup` deletes the engagement, keeping recovery refs.
 
 ## Drivers
 
-Agent drivers decouple the harness from any specific CLI.
-Each driver implements a fixed role interface:
+Each agent CLI sits behind a driver, selected per group in `swarm.json`.
 
-| Function | Description |
-| --- | --- |
-| `agent_name` | Human-readable name (e.g. "Claude Code") |
-| `agent_cmd` | CLI command (e.g. "claude") |
-| `agent_version` | CLI version string |
-| `agent_run` | Run one session, output JSONL |
-| `agent_interactive_run` | Start the native interactive UI |
-| `agent_settings` | Write agent-specific settings |
-| `agent_extract_stats` | Parse session stats from log |
-| `agent_detect_fatal` | Detect fatal errors from log + exit code |
-| `agent_is_retriable` | Detect retriable errors (rate limits, overload) |
-| `agent_activity_jq` | jq filter for activity display |
+- `claude-code` (default)
+- `pi`
+- `codex-cli`
+- `gemini-cli`
 
-Built-in drivers: `claude-code` (default), `gemini-cli`,
-`codex-cli`, `pi` ([Pi](https://pi.dev)), `fake` (test double).  See
-[USAGE.md](USAGE.md#writing-a-new-driver) for the full interface
-and guide to writing a new driver.
+## Documentation
 
-For Pi, set `"driver": "pi"` and use an Anthropic model ID or a Pi
-`provider/model` ID. Codex subscriptions use `openai-codex/<model>`,
-`"auth": "chatgpt"`, and a dedicated `PI_AUTH_DIR` with Pi OAuth login.
-See [Pi setup and authentication](USAGE.md#pi).
+[USAGE.md](USAGE.md) covers configuration, commands, authentication, and
+the control interface. [CHANGELOG.md](CHANGELOG.md) covers releases.
+
+## License
+
+[AGPL-3.0](LICENSE)
