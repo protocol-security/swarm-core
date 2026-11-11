@@ -2,391 +2,391 @@ swarm-core NEWS -- history of user-visible changes.
 
 0.24.0 (2026-11-11)
 
-  * Breaking: each container gets a workspace volume of its own, an
+  - Breaking: each container gets a workspace volume of its own, an
     engagement uses one Docker daemon, and a new engagement starts only
     on a clean runtime directory.
-  * Add `launch.sh retire [--post-process]`, which removes stopped
+  - Add 'launch.sh retire [--post-process]', which removes stopped
     containers once nothing lives only in them.
-  * Add `launch.sh cleanup [--discard-uncommitted]`, which keeps what
+  - Add 'launch.sh cleanup [--discard-uncommitted]', which keeps what
     Git had as recovery refs in the checkout, then deletes the
     engagement.
-  * Add control.sh, a versioned interface (swarm-core.control/v1) for
+  - Add control.sh, a versioned interface (swarm-core.control/v1) for
     programs that drive engagements.
-  * Resolve the target on the host, once per engagement, and mount it
+  - Resolve the target on the host, once per engagement, and mount it
     read-only in every container.
-  * Add `swarm-target-checkout DIR` to the image, which checks the
+  - Add 'swarm-target-checkout DIR' to the image, which checks the
     target out from its snapshot.
-  * Mirror submodules at any depth; containers check them out offline.
-  * Take each submodule mirror from that submodule's Git directory.
-  * Join only a complete engagement.
-  * Pass `docker_args` to `docker run` exactly, check their form first,
+  - Mirror submodules at any depth; containers check them out offline.
+  - Take each submodule mirror from that submodule's Git directory.
+  - Join only a complete engagement.
+  - Pass docker_args to 'docker run' exactly, check their form first,
     and refuse the engine's own labels.
-  * Read `interactive --agent-index` as a decimal number.
-  * Add `PI_REASONING=1`, which makes `effort` reach custom Pi models.
-  * Add `PI_COMPACTION_RESERVE_TOKENS` for Pi's compaction reserve.
-  * Keep what agents write from steering the host's Git or filling its
+  - Read 'interactive --agent-index' as a decimal number.
+  - Add PI_REASONING=1, which makes effort reach custom Pi models.
+  - Add PI_COMPACTION_RESERVE_TOKENS for Pi's compaction reserve.
+  - Keep what agents write from steering the host's Git or filling its
     disk.
-  * Keep repositories nested in a workspace, and Git checkouts outside
+  - Keep repositories nested in a workspace, and Git checkouts outside
     the volume, through retire and cleanup.
-  * Refuse a partial clone in a workspace on cleanup.
-  * Stop a workspace scan instead of hanging on what an agent left.
-  * Keep in the bare repo and the mirrors what the checkout's branches,
+  - Refuse a partial clone in a workspace on cleanup.
+  - Stop a workspace scan instead of hanging on what an agent left.
+  - Keep in the bare repo and the mirrors what the checkout's branches,
     tags and HEAD reach; start a new bare repo from the checkout's HEAD.
-  * Read agent-work from the bare repo in place in progress.sh.
-  * Show workspace volumes with no container, and an unfinished
+  - Read agent-work from the bare repo in place in progress.sh.
+  - Show workspace volumes with no container, and an unfinished
     cleanup, in the dashboard.
-  * Run no hook or fsmonitor command of the checkout in harvest.
-  * Merge agent work built on the engagement's base after HEAD moved.
-  * Keep commits that no push shipped, and move the harness branch
+  - Run no hook or fsmonitor command of the checkout in harvest.
+  - Merge agent work built on the engagement's base after HEAD moved.
+  - Keep commits that no push shipped, and move the harness branch
     after a scratch push whenever that loses nothing.
-  * Keep the bare repo and the mirrors while interactive sessions are
+  - Keep the bare repo and the mirrors while interactive sessions are
     open.
-  * Let no token reach another engagement through retire, cleanup or
+  - Let no token reach another engagement through retire, cleanup or
     start.
-  * Leave no Git process running that holds the engagement lock.
-  * Leave no temporary files behind in launch.sh.
-  * Say there is nothing to stop when `launch.sh stop` finds no runtime
+  - Leave no Git process running that holds the engagement lock.
+  - Leave no temporary files behind in launch.sh.
+  - Say there is nothing to stop when 'launch.sh stop' finds no runtime
     directory.
-  * Do not take a repository nested in an uninitialized submodule's
+  - Do not take a repository nested in an uninitialized submodule's
     directory for uncommitted work in cleanup.
-  * Exit nonzero when Bash 3.2 stops a script on an unset variable.
-  * Print no "stopped before its end" message when a signal ends a
+  - Exit nonzero when Bash 3.2 stops a script on an unset variable.
+  - Print no "stopped before its end" message when a signal ends a
     script on Bash 4.1 and later.
-  * Keep the caller's Pi settings out of the tests; fix
+  - Keep the caller's Pi settings out of the tests; fix
     tests/runtime_pi.sh on Linux hosts whose UID is not 1000.
 
 0.23.0 (2026-11-03)
 
-  * Rename claude-swarm to swarm-core.
-  * Breaking: move engine state out of /tmp.
-  * Breaking: write the state file as JSON.
-  * Breaking: allow one checkout per project id; add `SWARM_PROJECT`.
-  * Breaking: add the engagement lock.
-  * Add engagement ids.
-  * Add the `pi` driver.
-  * Support Codex subscriptions through Pi.
-  * Add a configurable Pi request timeout and in-session retry.
-  * Retry Pi OAuth validation during credential refresh.
-  * Restart an exited post-process with dashboard `p`.
-  * Fix costs.sh with an effort level on macOS.
-  * Start no post-process driver without `post_process`.
-  * Do not split a submodule mirror mount on a space.
-  * Create transient files with mktemp.
-  * Keep project ids ASCII in every locale.
-  * Copy the checkout's objects into the bare repo and the mirrors.
-  * Harvest again after merging an interactive branch.
-  * Fix tests when host and agent UIDs differ, and checks that failed
+  - Rename claude-swarm to swarm-core.
+  - Breaking: move engine state out of /tmp.
+  - Breaking: write the state file as JSON.
+  - Breaking: allow one checkout per project id; add SWARM_PROJECT.
+  - Breaking: add the engagement lock.
+  - Add engagement ids.
+  - Add the pi driver.
+  - Support Codex subscriptions through Pi.
+  - Add a configurable Pi request timeout and in-session retry.
+  - Retry Pi OAuth validation during credential refresh.
+  - Restart an exited post-process with dashboard 'p'.
+  - Fix costs.sh with an effort level on macOS.
+  - Start no post-process driver without post_process.
+  - Do not split a submodule mirror mount on a space.
+  - Create transient files with mktemp.
+  - Keep project ids ASCII in every locale.
+  - Copy the checkout's objects into the bare repo and the mirrors.
+  - Harvest again after merging an interactive branch.
+  - Fix tests when host and agent UIDs differ, and checks that failed
     now and then under load.
 
 0.22.0 (2026-06-08)
 
-  * Breaking: swap the dashboard's post-process keys; `P` tails the
-    logs and `p` starts the run.
-  * Base the agent image on Debian trixie and install unzip in it.
-  * Tag a restore point in harvest before merging.
-  * Add `post_process.setup` to override the post-process setup.
-  * Document the dashboard effort letters.
+  - Breaking: swap the dashboard's post-process keys; 'P' tails the
+    logs and 'p' starts the run.
+  - Base the agent image on Debian trixie and install unzip in it.
+  - Tag a restore point in harvest before merging.
+  - Add post_process.setup to override the post-process setup.
+  - Document the dashboard effort letters.
 
 0.21.1 (2026-06-08)
 
-  * Propagate the container's exit code from `post-process`.
+  - Propagate the container's exit code from post-process.
 
 0.21.0 (2026-05-26)
 
-  * Add interactive agent containers for human-guided work:
-    `launch.sh interactive`, `chat` and `shell`.
-  * Handle Docker errors in the dashboard's missing-container check.
-  * Include every swarm container in the stop controls.
-  * Skip interactive-only profiles in dashboard state summaries.
-  * Avoid setup-log conflicts in the manual interactive harvest test.
-  * Remove the scheduled full CI matrix.
+  - Add interactive agent containers for human-guided work:
+    'launch.sh interactive', chat and shell.
+  - Handle Docker errors in the dashboard's missing-container check.
+  - Include every swarm container in the stop controls.
+  - Skip interactive-only profiles in dashboard state summaries.
+  - Avoid setup-log conflicts in the manual interactive harvest test.
+  - Remove the scheduled full CI matrix.
 
 0.20.16 (2026-05-26)
 
-  * Sanitize Docker project names for uppercase repo basenames.
-  * Show configured post-processing before it starts.
-  * Give dashboard post-process logs a shortcut of their own.
-  * Document that `launch.sh wait` does not start agents.
+  - Sanitize Docker project names for uppercase repo basenames.
+  - Show configured post-processing before it starts.
+  - Give dashboard post-process logs a shortcut of their own.
+  - Document that 'launch.sh wait' does not start agents.
 
 0.20.15 (2026-05-16)
 
-  * Keep agent commits on a fatal-error exit and on `docker stop`.
-  * Verify the runtime emergency push under `--all`.
+  - Keep agent commits on a fatal-error exit and on 'docker stop'.
+  - Verify the runtime emergency push under --all.
 
 0.20.14 (2026-05-06)
 
-  * Rebuild the post-process image when the driver set changes.
-  * Do not re-introduce in harvest.sh commits that an upstream
+  - Rebuild the post-process image when the driver set changes.
+  - Do not re-introduce in harvest.sh commits that an upstream
     force-push dropped.
 
 0.20.13 (2026-04-28)
 
-  * Treat Codex "Selected model is at capacity" as retriable.
+  - Treat Codex "Selected model is at capacity" as retriable.
 
 0.20.12 (2026-04-28)
 
-  * Sign Codex agents' commits when `signing_key` is configured.
-  * Add Codex CLI version pinning.
-  * Isolate scratch-repo unit tests from the host's gitconfig.
+  - Sign Codex agents' commits when signing_key is configured.
+  - Add Codex CLI version pinning.
+  - Isolate scratch-repo unit tests from the host's gitconfig.
 
 0.20.11 (2026-04-24)
 
-  * Do not send the operator to harvest.sh from the bare-repo preflight
+  - Do not send the operator to harvest.sh from the bare-repo preflight
     when local HEAD is strictly ahead of the bare repo.
 
 0.20.10 (2026-04-23)
 
-  * Suppress hooks in the session-end rebase and push, which failed
+  - Suppress hooks in the session-end rebase and push, which failed
     every retry when the target installs worktree-touching hooks.
 
 0.20.9 (2026-04-23)
 
-  * Force the C numeric locale in dashboard.sh, costs.sh and the
-    harness, which died where `,` is the decimal separator.
+  - Force the C numeric locale in dashboard.sh, costs.sh and the
+    harness, which died where ',' is the decimal separator.
 
 0.20.8 (2026-04-23)
 
-  * Do not abort the harvest.sh preview on a large commit log.
+  - Do not abort the harvest.sh preview on a large commit log.
 
 0.20.7 (2026-04-22)
 
-  * Retry Codex SSE stream drops when `max_retry_wait` is set.
-  * Park cherry-pick conflicts in the scratch push instead of dropping
+  - Retry Codex SSE stream drops when max_retry_wait is set.
+  - Park cherry-pick conflicts in the scratch push instead of dropping
     the agent's commits.
 
 0.20.6 (2026-04-21)
 
-  * Suppress hooks in the scratch push's `worktree add`.
+  - Suppress hooks in the scratch push's 'worktree add'.
 
 0.20.5 (2026-04-20)
 
-  * Fall back to cherry-picking onto a scratch worktree when the
+  - Fall back to cherry-picking onto a scratch worktree when the
     session-end rebase exhausts its retries.
-  * Add an activity watchdog for silent CLI hangs.
-  * Grow test coverage.
+  - Add an activity watchdog for silent CLI hangs.
+  - Grow test coverage.
 
 0.20.4 (2026-04-19)
 
-  * Close the remaining session-end rebase failures on dirty trees.
+  - Close the remaining session-end rebase failures on dirty trees.
 
 0.20.3 (2026-04-19)
 
-  * Tolerate missing stdbuf and setsid on macOS CI runners.
+  - Tolerate missing stdbuf and setsid on macOS CI runners.
 
 0.20.2 (2026-04-19)
 
-  * Preserve agent work across the session-end rebase.
-  * Reap driver process groups so the agent pipeline can drain.
+  - Preserve agent work across the session-end rebase.
+  - Reap driver process groups so the agent pipeline can drain.
 
 0.20.1 (2026-04-17)
 
-  * Preserve the environment across sudo in the setup hook.
+  - Preserve the environment across sudo in the setup hook.
 
 0.20.0 (2026-04-17)
 
-  * Add optional SSH commit signing.
-  * Add `max_idle` per post-processor.
+  - Add optional SSH commit signing.
+  - Add max_idle per post-processor.
 
 0.19.2 (2026-04-16)
 
-  * Print no blank `Think:` lines on Opus 4.7.
-  * Opt in to `showThinkingSummaries` ahead of its default changing.
+  - Print no blank Think: lines on Opus 4.7.
+  - Opt in to showThinkingSummaries ahead of its default changing.
 
 0.19.1 (2026-04-13)
 
-  * Retry on API 500 errors.
-  * Label max effort in the dashboard.
-  * Remove the setup.sh wizard.
-  * Run CI weekly.
+  - Retry on API 500 errors.
+  - Label max effort in the dashboard.
+  - Remove the setup.sh wizard.
+  - Run CI weekly.
 
 0.19.0 (2026-04-13)
 
-  * Add the Codex CLI driver, with ChatGPT subscription auth.
-  * Bridge .claude/ conventions to Codex and inline its system prompt.
-  * Add context stripping hooks.
-  * Clean up stale rebases.
-  * Document per-driver effort values.
+  - Add the Codex CLI driver, with ChatGPT subscription auth.
+  - Bridge .claude/ conventions to Codex and inline its system prompt.
+  - Add context stripping hooks.
+  - Clean up stale rebases.
+  - Document per-driver effort values.
 
 0.18.4 (2026-04-11)
 
-  * Ask for tag and driver in the setup wizard.
+  - Ask for tag and driver in the setup wizard.
 
 0.18.3 (2026-04-10)
 
-  * Fix the bare repo UID mismatch for container pushes.
+  - Fix the bare repo UID mismatch for container pushes.
 
 0.18.2 (2026-04-09)
 
-  * Create the bare repo on demand in post-process.
+  - Create the bare repo on demand in post-process.
 
 0.18.1 (2026-04-07)
 
-  * Soften the agent system prompt.
+  - Soften the agent system prompt.
 
 0.18.0 (2026-04-07)
 
-  * Add extra Docker arguments (`docker_args`).
+  - Add extra Docker arguments (docker_args).
 
 0.17.1 (2026-04-06)
 
-  * Fix rate-limit retry for Pro subscriptions.
-  * Compact the retry status in the dashboard and clear it when the
+  - Fix rate-limit retry for Pro subscriptions.
+  - Compact the retry status in the dashboard and clear it when the
     session resumes.
 
 0.17.0 (2026-04-04)
 
-  * Add a push safety net for concurrent agents.
+  - Add a push safety net for concurrent agents.
 
 0.16.0 (2026-04-04)
 
-  * Show thinking and reasoning in the activity stream.
+  - Show thinking and reasoning in the activity stream.
 
 0.15.0 (2026-04-04)
 
-  * Add a top-level tag with a per-group override.
-  * Clean up the documentation.
+  - Add a top-level tag with a per-group override.
+  - Clean up the documentation.
 
 0.14.0 (2026-04-04)
 
-  * Retry on rate limits with exponential backoff.
+  - Retry on rate limits with exponential backoff.
 
 0.13.1 (2026-04-04)
 
-  * Warn about dependency versions outside the tested range.
-  * Disable Git commit signing in containers.
-  * Support jq 1.8.
+  - Warn about dependency versions outside the tested range.
+  - Disable Git commit signing in containers.
+  - Support jq 1.8.
 
 0.13.0 (2026-03-23)
 
-  * Configure through the swarmfile only.
-  * Make the top-level prompt optional.
-  * Widen dashboard columns and show branch info in the header.
-  * Add Claude Code version pinning.
-  * Add MiniMax-M2.7 to the kitchen-sink config.
-  * Rewrite the dry-run documentation around the swarmfile.
+  - Configure through the swarmfile only.
+  - Make the top-level prompt optional.
+  - Widen dashboard columns and show branch info in the header.
+  - Add Claude Code version pinning.
+  - Add MiniMax-M2.7 to the kitchen-sink config.
+  - Rewrite the dry-run documentation around the swarmfile.
 
 0.12.1 (2026-03-23)
 
-  * Let config pricing override the driver's cost.
+  - Let config pricing override the driver's cost.
 
 0.12.0 (2026-03-19)
 
-  * Push after every commit.
-  * Stop when the task is complete.
-  * Harden the smoke test.
+  - Push after every commit.
+  - Stop when the task is complete.
+  - Harden the smoke test.
 
 0.11.0 (2026-03-17)
 
-  * Add the Gemini CLI driver.
-  * Add an auth abstraction and a default model per driver.
-  * Build the Dockerfile conditionally on the drivers in use.
-  * Label the driver in the dashboard.
-  * Add six test configs.
+  - Add the Gemini CLI driver.
+  - Add an auth abstraction and a default model per driver.
+  - Build the Dockerfile conditionally on the drivers in use.
+  - Label the driver in the dashboard.
+  - Add six test configs.
 
 0.10.0 (2026-03-16)
 
-  * Add the agent driver abstraction, with two drivers: `claude-code`
-    and `fake`, a test double.
-  * Add the `driver` field to swarm.json, top-level and per agent.
-  * Validate the driver interface on startup and reject unknown
+  - Add the agent driver abstraction, with two drivers: claude-code
+    and fake, a test double.
+  - Add the driver field to swarm.json, top-level and per agent.
+  - Validate the driver interface on startup and reject unknown
     drivers before any container starts.
-  * Let drivers map generic config to CLI-specific Docker environment
+  - Let drivers map generic config to CLI-specific Docker environment
     variables.
-  * Read `SWARM_MODEL` and `SWARM_EFFORT` in the dashboard.
-  * Guard dashboard `p` when `post_process` is not configured.
-  * Document dry runs with the fake driver.
+  - Read SWARM_MODEL and SWARM_EFFORT in the dashboard.
+  - Guard dashboard 'p' when post_process is not configured.
+  - Document dry runs with the fake driver.
 
 0.9.3 (2026-03-12)
 
-  * Set `CLAUDE_CODE_ATTRIBUTION_HEADER=0` so local models keep their
+  - Set CLAUDE_CODE_ATTRIBUTION_HEADER=0 so local models keep their
     KV cache.
-  * Disable telemetry and nonessential traffic in agent containers.
-  * Refuse `--agents` with a config file that defines agent groups.
+  - Disable telemetry and nonessential traffic in agent containers.
+  - Refuse --agents with a config file that defines agent groups.
 
 0.9.2 (2026-03-10)
 
-  * Add CHANGELOG.md covering every release.
-  * Refuse to run when required tools are missing.
-  * List tput, whiptail and shellcheck in the README prerequisites.
+  - Add CHANGELOG.md covering every release.
+  - Refuse to run when required tools are missing.
+  - List tput, whiptail and shellcheck in the README prerequisites.
 
 0.9.1 (2026-03-10)
 
-  * Show the idle state (`idle N/M`) in the dashboard Status column.
-  * Widen the dashboard Model column.
-  * Add a README for the test config fixtures.
+  - Show the idle state ('idle N/M') in the dashboard Status column.
+  - Widen the dashboard Model column.
+  - Add a README for the test config fixtures.
 
 0.9.0 (2026-03-09)
 
-  * Adapt dashboard columns to the terminal width.
-  * Add an optional tag column, and show the credential source and the
+  - Adapt dashboard columns to the terminal width.
+  - Add an optional tag column, and show the credential source and the
     test progress in the dashboard.
-  * Slim the README and move details to USAGE.md.
-  * Color the full agent log line yellow.
+  - Slim the README and move details to USAGE.md.
+  - Color the full agent log line yellow.
 
 0.8.0 (2026-03-08)
 
-  * Add CLI flags to `launch.sh start`.
-  * Flatten the dashboard header into one line.
-  * Color the activity filter prefix yellow.
-  * Hide the idle count from the dashboard status column.
+  - Add CLI flags to 'launch.sh start'.
+  - Flatten the dashboard header into one line.
+  - Color the activity filter prefix yellow.
+  - Hide the idle count from the dashboard status column.
 
 0.7.0 (2026-03-06)
 
-  * Support `auth_token` for Bearer auth, as OpenRouter uses.
-  * Expand `$VAR` references in `api_key`.
-  * Rebalance dashboard column widths for long model names.
+  - Support auth_token for Bearer auth, as OpenRouter uses.
+  - Expand $VAR references in api_key.
+  - Rebalance dashboard column widths for long model names.
 
 0.6.0 (2026-03-04)
 
-  * Show per-group prompt tags and a tree-style agent summary in the
+  - Show per-group prompt tags and a tree-style agent summary in the
     dashboard header.
-  * Add a pre-commit hook that guards submodule pointers.
-  * Add a post-rewrite hook that re-injects provenance trailers.
-  * Do not recurse into submodules on `git fetch`.
-  * Reclaim workspace ownership after a sudo setup.
+  - Add a pre-commit hook that guards submodule pointers.
+  - Add a post-rewrite hook that re-injects provenance trailers.
+  - Do not recurse into submodules on 'git fetch'.
+  - Reclaim workspace ownership after a sudo setup.
 
 0.5.0 (2026-03-04)
 
-  * Add a per-group prompt override in swarm.json.
+  - Add a per-group prompt override in swarm.json.
 
 0.4.0 (2026-03-04)
 
-  * Add a per-agent context mode (`full`, `slim`, `none`), shown in the
+  - Add a per-agent context mode (full, slim, none), shown in the
     dashboard Ctx column.
-  * Timestamp and color harness log lines.
-  * Skip the session when the prompt file is missing.
+  - Timestamp and color harness log lines.
+  - Skip the session when the prompt file is missing.
 
 0.3.0 (2026-03-03)
 
-  * Stream activity: a live tool-call feed from stream-json output, in
-    `launch.sh logs N` and under the dashboard's `[1-9]` keys.
+  - Stream activity: a live tool-call feed from stream-json output, in
+    'launch.sh logs N' and under the dashboard's [1-9] keys.
 
 0.2.0 (2026-02-27)
 
-  * Add swarm.json for per-agent model groups.
-  * Add the TUI dashboard, with per-agent cost, tokens, cache, turns,
+  - Add swarm.json for per-agent model groups.
+  - Add the TUI dashboard, with per-agent cost, tokens, cache, turns,
     throughput and duration.
-  * Add costs.sh, a cost and usage summary.
-  * Add an interactive setup wizard (setup.sh).
-  * Add the wait and post-process commands.
-  * Select the auth source per agent; accept
-    `CLAUDE_CODE_OAUTH_TOKEN` in place of an API key.
-  * Support an effort level per agent and globally.
-  * Inject Git coordination rules through the system prompt.
-  * Add `--help` to every script.
-  * Move model provenance from the Git author name to commit trailers.
-  * Add the VERSION file.
-  * Prefix project environment variables with `SWARM_`.
-  * Move internal files into lib/ and tests into tests/.
+  - Add costs.sh, a cost and usage summary.
+  - Add an interactive setup wizard (setup.sh).
+  - Add the wait and post-process commands.
+  - Select the auth source per agent; accept
+    CLAUDE_CODE_OAUTH_TOKEN in place of an API key.
+  - Support an effort level per agent and globally.
+  - Inject Git coordination rules through the system prompt.
+  - Add --help to every script.
+  - Move model provenance from the Git author name to commit trailers.
+  - Add the VERSION file.
+  - Prefix project environment variables with SWARM_.
+  - Move internal files into lib/ and tests into tests/.
 
 0.1.0 (2026-02-10)
 
-  * Initial release: N Claude Code instances in Docker, coordinating
+  - Initial release: N Claude Code instances in Docker, coordinating
     through Git.
-  * Mirror the checkout into a bare repo, with a workspace clone per
+  - Mirror the checkout into a bare repo, with a workspace clone per
     agent.
-  * Loop in the harness: reset to origin/agent-work, run one session,
+  - Loop in the harness: reset to origin/agent-work, run one session,
     push.
-  * Add harvest.sh, which merges agent work into the host branch.
-  * Configure the Git identity with `GIT_USER_NAME` and
-    `GIT_USER_EMAIL`.
+  - Add harvest.sh, which merges agent work into the host branch.
+  - Configure the Git identity with GIT_USER_NAME and
+    GIT_USER_EMAIL.

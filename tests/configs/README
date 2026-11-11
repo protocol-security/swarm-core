@@ -1,0 +1,138 @@
+TEST CONFIGS FOR MIXED-MODEL SMOKE TESTS
+    These configs are used with './tests/test.sh --config <file>' to run
+    integration tests against multiple providers and agent configurations.
+
+SETUP
+    Export the API keys needed by your chosen config:
+
+        export ANTHROPIC_API_KEY="sk-ant-..."
+        export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-..."
+        export OPENROUTER_API_KEY="sk-or-v1-..."
+        export MINIMAX_API_KEY="sk-api-..."
+        export GEMINI_API_KEY="AI..."
+        export OPENAI_API_KEY="sk-..."
+
+    Verify they're set:
+
+        for v in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN OPENROUTER_API_KEY MINIMAX_API_KEY GEMINI_API_KEY OPENAI_API_KEY; do
+          printf "%-30s %s\n" "$v" "${!v:+(set)}"
+        done
+
+CONFIGS
+    mixed-effort-auth.json
+        Agents: 2x Opus + 1x Sonnet
+        Driver: claude-code
+        Required keys: ANTHROPIC_API_KEY + CLAUDE_CODE_OAUTH_TOKEN
+
+    mixed-context.json
+        Agents: 3x Opus (full/none/slim)
+        Driver: claude-code
+        Required keys: CLAUDE_CODE_OAUTH_TOKEN
+
+    mixed-providers.json
+        Agents: Opus + GPT-5.4 + MiniMax-M2.5
+        Driver: claude-code
+        Required keys: CLAUDE_CODE_OAUTH_TOKEN + OPENROUTER_API_KEY +
+          MINIMAX_API_KEY
+
+    kitchen-sink.json
+        Agents: 4x Opus + Sonnet + MiniMax-M2.7
+        Driver: claude-code
+        Required keys: ANTHROPIC_API_KEY + CLAUDE_CODE_OAUTH_TOKEN +
+          OPENROUTER_API_KEY + MINIMAX_API_KEY
+
+    no-tags.json
+        Agents: 2x Opus + 1x Sonnet, no tags
+        Driver: claude-code
+        Required keys: ANTHROPIC_API_KEY + CLAUDE_CODE_OAUTH_TOKEN
+
+    gemini-only.json
+        Agents: 2x gemini-2.5-pro
+        Driver: gemini-cli
+        Required keys: GEMINI_API_KEY
+
+    mixed-drivers.json
+        Agents: 2x Opus + 1x gemini-2.5-pro
+        Driver: mixed
+        Required keys: CLAUDE_CODE_OAUTH_TOKEN + GEMINI_API_KEY
+
+    driver-inheritance.json
+        Agents: gemini-2.5-pro + gemini-2.5-flash
+        Driver: gemini-cli
+        Required keys: GEMINI_API_KEY
+
+    driver-post-process.json
+        Agents: 2x gemini-2.5-pro (+ flash PP)
+        Driver: gemini-cli
+        Required keys: GEMINI_API_KEY
+
+    heterogeneous-kitchen-sink.json
+        Agents: Opus + 5x Gemini + Sonnet (+ PP)
+        Driver: mixed
+        Required keys: CLAUDE_CODE_OAUTH_TOKEN + ANTHROPIC_API_KEY +
+          GEMINI_API_KEY
+
+    codex-only.json
+        Agents: 2x gpt-5.4
+        Driver: codex-cli
+        Required keys: OPENAI_API_KEY
+
+    pi-only.json
+        Agents: 1x Sonnet 4.6 (low effort)
+        Driver: pi
+        Required keys: ANTHROPIC_OAUTH_TOKEN or CLAUDE_CODE_OAUTH_TOKEN; funded
+          extra usage
+
+    pi-chatgpt.json
+        Agents: 1x gpt-5.5 (low effort, chatgpt auth)
+        Driver: pi
+        Required keys: Dedicated PI_AUTH_DIR with Pi OpenAI Codex login
+
+    codex-chatgpt.json
+        Agents: 2x gpt-5.4 (chatgpt auth)
+        Driver: codex-cli
+        Required keys: ~/.codex/auth.json
+
+    codex-auth-mixed.json
+        Agents: gpt-5.4 (chatgpt) + gpt-5.3-codex (apikey) + gpt-5.4 (auto)
+        Driver: codex-cli
+        Required keys: ~/.codex/auth.json + OPENAI_API_KEY
+
+    codex-mixed.json
+        Agents: Opus + gpt-5.4 + gpt-5.3-codex + gpt-5.2
+        Driver: mixed
+        Required keys: CLAUDE_CODE_OAUTH_TOKEN + OPENAI_API_KEY
+
+USAGE
+        ./tests/test.sh --config tests/configs/mixed-effort-auth.json
+        ./tests/test.sh --config tests/configs/mixed-context.json
+        ./tests/test.sh --config tests/configs/mixed-providers.json
+        ./tests/test.sh --config tests/configs/kitchen-sink.json
+        ./tests/test.sh --config tests/configs/no-tags.json
+        ./tests/test.sh --config tests/configs/gemini-only.json
+        ./tests/test.sh --config tests/configs/mixed-drivers.json
+        ./tests/test.sh --config tests/configs/driver-inheritance.json
+        ./tests/test.sh --config tests/configs/driver-post-process.json
+        ./tests/test.sh --config tests/configs/heterogeneous-kitchen-sink.json
+        ./tests/test.sh --config tests/configs/codex-only.json
+        ./tests/test.sh --config tests/configs/pi-only.json
+        ./tests/test.sh --config tests/configs/pi-chatgpt.json
+        ./tests/test.sh --config tests/configs/codex-chatgpt.json
+        ./tests/test.sh --config tests/configs/codex-auth-mixed.json
+        ./tests/test.sh --config tests/configs/codex-mixed.json
+
+    The test runner injects its own prompt and setup script into the config, so
+    the '"prompt": "unused"' field is overwritten at runtime.
+
+    Pi's Anthropic OAuth requests use paid extra usage, not subscription plan
+    limits. A token alone does not guarantee that a live Pi test can run.
+    ./tests/runtime_pi.sh instead tests the real CLI with a local API fixture
+    and no real credentials; --all includes that Docker check. It also verifies
+    that two network-isolated Pi containers share one OAuth refresh and persist
+    the rotated Codex credentials.
+
+    For pi-chatgpt.json, log into OpenAI Codex using Pi with a dedicated
+    PI_AUTH_DIR, as described in "Pi" in USAGE. Keep that directory
+    exported when running the test. This uses the ChatGPT subscription, not an
+    OpenAI API key or CODEX_AUTH_JSON. Select a model available to your
+    account; the config uses openai-codex/gpt-5.5.

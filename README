@@ -1,0 +1,31 @@
+NAME
+    swarm-core - run coding agents in Docker over a shared Git repository
+
+SYNOPSIS
+    launch.sh start [--dashboard]
+    launch.sh wait
+    launch.sh interactive NAME
+    launch.sh cleanup
+
+DESCRIPTION
+    Each agent runs in a container of its own and pushes to one bare
+    repository; there is no orchestrator.  swarm.json, in the root of
+    the repository to work on, names the agents.
+
+    start launches the agents.  wait post-processes and harvests their
+    work into the checkout.  interactive opens a human-guided session.
+    cleanup deletes the engagement and keeps recovery refs.
+
+PREREQUISITES
+    Docker, Bash 5, Git, jq, bc, perl, flock, tput, and credentials for
+    a driver.
+
+DRIVERS
+    claude-code (default), pi, codex-cli, gemini-cli.
+
+SEE ALSO
+    USAGE for configuration, commands, authentication and the control
+    interface.  NEWS for the changes in each release.
+
+LICENSE
+    AGPL-3.0, see LICENSE.

@@ -530,7 +530,7 @@ SWARM_TOKEN_LABEL="swarm-core.engagement-token"
 # shell session) carries its role, the agents[] entry its profile is
 # (from 1) and a numbered agent's number, each empty where it does not
 # apply.  With the project, checkout, engagement and token labels these
-# are part of the control interface (USAGE.md, "Control interface"):
+# are part of the control interface (USAGE, CONTROL INTERFACE):
 # each keeps its meaning for good.
 # shellcheck disable=SC2034
 SWARM_ROLE_LABEL="swarm-core.role"
@@ -741,7 +741,7 @@ swarm_containers_verify() {
         echo "Containers without an owner label (${unlabeled}) come" \
              "from an older swarm-core, which made their engagement:" \
              "finish it with that release, as \"Upgrading from /tmp" \
-             "state\" in USAGE.md describes." >&2
+             "state\" in USAGE describes." >&2
     fi
     return 1
 }

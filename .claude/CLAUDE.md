@@ -75,14 +75,19 @@ Drafting the PR:
 2. Title: imperative, concise.
 3. Body:
 
-       ## Summary
+       SUMMARY
        - Bullet per logical change. What and why.
 
-       ## Changes
+       CHANGES
        - Per-file summary: what changed and why.
 
-       ## Test plan
+       TEST PLAN
        - [ ] Concrete verification steps.
+
+   Section names are plain uppercase lines, as in a man page,
+   not Markdown headings.  The body is not indented: GitHub
+   would render it as a code block and the checkboxes would
+   stop working.
 
 4. 3-6 summary bullets. Group related commits.
 5. Each bullet is one line; surrounding prose 1-2
@@ -100,12 +105,12 @@ Drafting the PR:
 
 ## Documentation
 
-- Every feature change must update relevant `.md` files
-  (README.md, USAGE.md, CLAUDE.md).
+- Every feature change must update the relevant docs
+  (README, USAGE, CLAUDE.md).
 - Add an entry to NEWS, under `Unreleased` at the top, when
   adding features, fixes, or notable changes.  NEWS is plain
   text: one or two lines per change, imperative, no Markdown
-  emphasis and no `Fix:` or `Feature:` label.  Start a
+  (no backticks either) and no `Fix:` or `Feature:` label.  Start a
   breaking change with `Breaking:`.  The why belongs in the
   commit message.
 - Check thoroughly: add new fields to tables, update

@@ -198,7 +198,7 @@ cleanup_check_evidence() {
             echo "ERROR: recovery refs an earlier cleanup wrote changed or" \
                  "went: ${prefix}." >&2
             echo "  Cleanup will not delete what they no longer keep." \
-                 "Restore them, or see USAGE.md (Cleanup) for the manual" \
+                 "Restore them, or see USAGE (CLEANUP) for the manual" \
                  "steps." >&2
             return 1
         fi
