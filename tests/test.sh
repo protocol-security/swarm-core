@@ -52,7 +52,11 @@ TIMEOUT="${TIMEOUT:-600}"
 # is over (the runs it starts share the id and leave it).
 drop_own_image() {
     $_own_project || return 0
-    docker rmi "${PROJECT}-agent" >/dev/null 2>&1 || true
+    local i
+    for i in $(docker images --format '{{.Repository}}:{{.Tag}}' \
+            "${PROJECT}-agent-keep" 2>/dev/null) "${PROJECT}-agent"; do
+        docker rmi "$i" >/dev/null 2>&1 || true
+    done
 }
 
 # Docker containers may leave files owned by a different UID.

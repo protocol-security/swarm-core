@@ -50,7 +50,11 @@ cleanup() {
             "$IMAGE" -rf /rt/upstream.git /rt/upstream.git.new /rt/mirrors \
             >/dev/null 2>&1 || true
     fi
-    docker image rm "$IMAGE" >/dev/null 2>&1 || true
+    local img
+    for img in $(docker images --format '{{.Repository}}:{{.Tag}}' \
+            "${IMAGE}-keep" 2>/dev/null) "$IMAGE"; do
+        docker image rm "$img" >/dev/null 2>&1 || true
+    done
     # The workspace volumes swarm made for this run's containers (the
     # project id is this run's own).
     local vol

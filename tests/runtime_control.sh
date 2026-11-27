@@ -68,7 +68,9 @@ sweep() {
         done
     fi
     for i in $(docker images --format '{{.Repository}}:{{.Tag}}' \
-            "${ENGINE_IMAGE}-retire" 2>/dev/null) "$ENGINE_IMAGE"; do
+            "${ENGINE_IMAGE}-retire" 2>/dev/null) \
+            $(docker images --format '{{.Repository}}:{{.Tag}}' \
+            "${ENGINE_IMAGE}-keep" 2>/dev/null) "$ENGINE_IMAGE"; do
         docker rmi "$i" >/dev/null 2>&1 || true
     done
 }

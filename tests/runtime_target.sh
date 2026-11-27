@@ -88,11 +88,14 @@ sweep() {
         echo "  WARNING: cannot list the volumes of ${P}"
     fi
     for i in $(docker images --format '{{.Repository}}:{{.Tag}}' \
-            "${ENGINE_IMAGE}-retire" 2>/dev/null) "$ENGINE_IMAGE"; do
+            "${ENGINE_IMAGE}-retire" 2>/dev/null) \
+            $(docker images --format '{{.Repository}}:{{.Tag}}' \
+            "${ENGINE_IMAGE}-keep" 2>/dev/null) "$ENGINE_IMAGE"; do
         docker rmi "$i" >/dev/null 2>&1 || true
     done
     left=$(docker images -q "$ENGINE_IMAGE" 2>&1; docker images -q \
-        "${ENGINE_IMAGE}-retire" 2>&1)
+        "${ENGINE_IMAGE}-retire" 2>&1; docker images -q \
+        "${ENGINE_IMAGE}-keep" 2>&1)
     [ -z "$left" ] || echo "  WARNING: images of ${P} are left: ${left}"
 }
 cleanup_test() {
