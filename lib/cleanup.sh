@@ -731,6 +731,31 @@ cleanup_examine() {
     CLEANUP_TOTAL="$total"
 }
 
+# Remove every ${IMAGE_NAME}-keep name (build_image gives one to each
+# image it builds), once no container of this checkout is left.  Only
+# the name goes when ${IMAGE_NAME} or another name still points to the
+# image, and docker refuses when a container still uses it; a name left
+# behind is only a warning, as it holds no engagement data.
+cleanup_drop_kept_images() {
+    local refs ref
+    if ! refs=$(docker images --format '{{.Repository}}:{{.Tag}}' \
+            --filter "reference=${IMAGE_NAME}-keep" 2>/dev/null); then
+        echo "WARNING: cannot list the images kept for the agents." >&2
+        return 0
+    fi
+    while IFS= read -r -u 3 ref; do
+        if [ -z "$ref" ]; then
+            continue
+        fi
+        if ! docker rmi "$ref" >/dev/null 2>&1; then
+            echo "WARNING: cannot remove ${ref}; remove it with" \
+                 "docker rmi ${ref}." >&2
+        fi
+    done 3<<EOF < /dev/null
+$refs
+EOF
+}
+
 # The cleanup command; cmd_cleanup runs it with retire's cleanup and
 # traps in place.
 cleanup_run() {
@@ -749,8 +774,9 @@ and delete them.  Work outside Git's history (uncommitted or ignored
 files, files too large to copy) stops it, unless
 --discard-uncommitted drops exactly what it lists.  So does agent work
 in the bare repo that HEAD's history lacks, unless --allow-unharvested
-keeps it as recovery refs only (after a rewritten upstream, say).  The
-engagement lock and the runtime directory stay.
+keeps it as recovery refs only (after a rewritten upstream, say).  Once
+no container is left it removes the ${IMAGE_NAME}-keep names each build
+gave its image.  The engagement lock and the runtime directory stay.
 HELP
                 return 0 ;;
             *) echo "ERROR: unknown cleanup option: $1" >&2; return 1 ;;
@@ -835,6 +861,9 @@ HELP
         printf '%s\n' "$left" | sed 's/^/  /' >&2
         return 1
     fi
+
+    # The images the build kept for the containers can go now.
+    cleanup_drop_kept_images
 
     # Then everything again, the volumes now free: nothing checked
     # before retire is trusted after it.

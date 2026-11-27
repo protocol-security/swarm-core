@@ -446,17 +446,27 @@ assert_eq "single-line shell display" no "$(has 'second line' "$WORK/display")"
 # that are interactive-only and a Pi post-processor.
 eval "$(awk '/^compute_swarm_agents\(\) \{/,/^\}$/' "$ROOT/bin/swarm")"
 eval "$(awk '/^build_image\(\) \{/,/^\}$/' "$ROOT/bin/swarm")"
+eval "$(awk '/^keep_image\(\) \{/,/^\}$/' "$ROOT/bin/swarm")"
 CONFIG_FILE="$WORK/config.json"
 # Used by the extracted build_image function.
 # shellcheck disable=SC2034
 SWARM_DIR="$ROOT"
 # shellcheck disable=SC2034
 IMAGE_NAME=pi-unit-test
-docker() { printf '%s\n' "$@" > "$WORK/docker-args"; }
+docker() {
+    case "$1" in
+        build) printf '%s\n' "$@" > "$WORK/docker-args" ;;
+        image) echo "sha256:0123456789abcdef0123" ;;
+        tag) printf '%s\n' "$@" > "$WORK/docker-tag" ;;
+    esac
+}
 printf '%s\n' '{"driver":"pi","pi_version":"0.86.1",
  "agents":[{"count":1,"model":"claude-sonnet-4-6"}]}' > "$CONFIG_FILE"
 build_image >/dev/null
 assert_eq "Pi build union" yes "$(has SWARM_AGENTS=pi "$WORK/docker-args")"
+assert_eq "the built image keeps a name after its id" \
+    "tag pi-unit-test pi-unit-test-keep:0123456789ab" \
+    "$(tr '\n' ' ' < "$WORK/docker-tag" | sed 's/ $//')"
 assert_eq "Pi version build argument" yes \
     "$(has PI_VERSION=0.86.1 "$WORK/docker-args")"
 printf '%s\n' '{"agents":[{"count":1},{"count":0,"driver":"pi"}],
