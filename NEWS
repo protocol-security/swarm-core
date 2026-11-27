@@ -1,5 +1,11 @@
 swarm-core NEWS -- history of user-visible changes.
 
+Unreleased
+
+  - Keep the image the agents ran under a second name,
+    <project>-agent-keep:<id>, until cleanup, so a post-process rebuild
+    cannot delete it while their stopped containers still need it.
+
 0.25.0 (2026-11-11)
 
   - Breaking: the six scripts are one command, bin/swarm.  launch.sh

@@ -78,7 +78,25 @@ printf '%s\n' "$*" >> "$F/log"
 case "$1" in
     info) cat "$F/daemon" 2>/dev/null || echo d1; exit 0 ;;
     context) echo default; exit 0 ;;
-    images) exit 0 ;;
+    images)
+        # $F/images holds one name per line, none by default; a line is
+        # listed when it starts with the --filter reference.  $F/images-fail
+        # fails the listing of the keep names only, which is the one cleanup
+        # survives; other callers of docker images are left alone.
+        ref=""
+        for a in "$@"; do
+            case "$a" in reference=*) ref="${a#reference=}" ;; esac
+        done
+        case "$ref" in
+            *-keep) [ ! -e "$F/images-fail" ] || exit 1 ;;
+        esac
+        [ ! -e "$F/images" ] || awk -v p="$ref" \
+            'index($0, p) == 1 { print }' "$F/images"
+        exit 0 ;;
+    rmi)
+        # $F/rmi-fails lists the names docker refuses to remove.
+        ! grep -qxF "$2" "$F/rmi-fails" 2>/dev/null || exit 1
+        exit 0 ;;
     wait) exit 0 ;;
     rm)
         shift
@@ -364,6 +382,38 @@ assert_eq "an engagement id with .. is fine" "0" "$(cleanup)"
 assert_eq "its refs are under its hex" "1" \
     "$(git -C "$REPO" for-each-ref "refs/swarm-recovery/e$(printf 'eng..1' \
         | od -An -tx1 | tr -d ' \n')/" | grep -c . | awk '{ print ($1 > 0) }')"
+
+# Every build names its image <project>-agent-keep:<id> so a later build
+# cannot leave the agents' stopped containers without their image; cleanup
+# drops those names once the containers are retired.
+setup
+printf '%s\n' "${P}-agent-keep:aaaaaaaaaaaa" "${P}-agent-keep:bbbbbbbbbbbb" \
+    > "$F/images"
+assert_eq "cleanup succeeds with images kept" "0" "$(cleanup)"
+assert_eq "it asks for this project's keep names only" "1" \
+    "$(grep -c "^images .* --filter reference=${P}-agent-keep\$" \
+        "$F/log" || true)"
+assert_eq "and removes both" "2" \
+    "$(grep -cE "^rmi ${P}-agent-keep:(aaaaaaaaaaaa|bbbbbbbbbbbb)\$" "$F/log" \
+        || true)"
+
+# A name docker will not drop is only a warning: it holds no engagement data.
+setup
+printf '%s\n' "${P}-agent-keep:cccccccccccc" > "$F/images"
+printf '%s\n' "${P}-agent-keep:cccccccccccc" > "$F/rmi-fails"
+assert_eq "cleanup still succeeds" "0" "$(cleanup)"
+assert_eq "and says which name is left" "1" \
+    "$(said "cannot remove ${P}-agent-keep:cccccccccccc")"
+assert_eq "the bare repo is gone all the same" "no" \
+    "$(present "$RT/upstream.git")"
+
+# A listing that fails leaves the names behind, with a warning.
+setup
+: > "$F/images-fail"
+assert_eq "cleanup succeeds without the listing" "0" "$(cleanup)"
+assert_eq "and says it could not look" "1" \
+    "$(said "cannot list the images kept for the agents")"
+rm -f "$F/images-fail"
 
 echo ""
 echo "=== 2. What stops cleanup before anything is deleted ==="

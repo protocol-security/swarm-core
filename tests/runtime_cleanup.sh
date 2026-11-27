@@ -72,7 +72,8 @@ cleanup_test() {
     docker run --rm --user 0 --entrypoint rm \
         -v "$WORKDIR:/workdir" "$BASE_IMAGE" -rf /workdir/runtime \
         /workdir/runtime2 >/dev/null 2>&1 || true
-    docker rmi "$ENGINE_IMAGE" "${P2}-agent" >/dev/null 2>&1 || true
+    docker rmi "$ENGINE_IMAGE" "${ENGINE_IMAGE}-keep:test" "${P2}-agent" \
+        >/dev/null 2>&1 || true
     rm -rf "$WORKDIR"
 }
 trap cleanup_test EXIT
@@ -198,9 +199,17 @@ else
 fi
 
 echo "--- cleanup ---"
+# The name build_image gives the image the agents ran.
+docker tag "$BASE_IMAGE" "${ENGINE_IMAGE}-keep:test" || exit 1
 rc=0
 out=$(run_cleanup 2>&1) || rc=$?
 check "cleanup succeeds" "$rc" "0"
+check "the kept image name is gone" \
+    "$(docker image inspect "${ENGINE_IMAGE}-keep:test" >/dev/null 2>&1 \
+        && echo yes || echo no)" "no"
+check "the engine image stays" \
+    "$(docker image inspect "$ENGINE_IMAGE" >/dev/null 2>&1 \
+        && echo yes || echo no)" "yes"
 [ "$rc" -eq 0 ] || printf '%s\n' "$out" | tail -8 | sed 's/^/      /'
 check "the bare repo is gone" "$(present "$RT/upstream.git")" "no"
 check "no remnant is left" \

@@ -1347,6 +1347,10 @@ RUNTIME DIRECTORY
     separators at either end dropped, and swarm when nothing is left (My.Repo
     gives my.repo, 'My Repo!' gives my-repo). A SWARM_PROJECT value that is not
     already in that form is refused, and the error shows the accepted form.
+    Each build also names its image <project>-agent-keep:<id>, after the first
+    12 digits of its id, so that a later build under <project>-agent
+    (post-process rebuilds) cannot leave the agents' stopped containers without
+    their image; cleanup removes these names once every container is retired.
 
     The state file records which checkout owns the runtime directory. Every
     swarm command, swarm harvest, swarm progress, swarm costs and the dashboard
@@ -1741,12 +1745,15 @@ CLEANUP 'swarm cleanup' deletes this checkout's engagement: its
 
     It checks the workspace volumes while the stopped containers are still
     there, so none of these refusals touches a container; then it retires the
-    containers and checks everything again before it copies and deletes. A
-    later failure (the copy into the checkout, 'git fsck') leaves the
-    containers retired and every repository location in place, so save the
-    containers' logs and stats first if you need them ('swarm logs N', swarm
-    costs). A .new that a run cut off while it cloned the bare repo or a mirror
-    is copied as it is (every file) and deleted too.
+    containers and checks everything again before it copies and deletes. Once
+    no container of the checkout is left it also removes the
+    <project>-agent-keep names each build gave its image (see "Project
+    identity"); a name it cannot remove is only a warning, since the name holds
+    nothing of the engagement. A later failure (the copy into the checkout,
+    'git fsck') leaves the containers retired and every repository location in
+    place, so save the containers' logs and stats first if you need them
+    ('swarm logs N', swarm costs). A .new that a run cut off while it cloned
+    the bare repo or a mirror is copied as it is (every file) and deleted too.
 
     A repository in a volume that registers a linked worktree outside it does
     not stop those checks: such a worktree is in a container's layer, which

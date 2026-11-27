@@ -199,6 +199,29 @@ build_image() {
         ${codex_version:+--build-arg "CODEX_CLI_VERSION=${codex_version}"} \
         ${pi_version:+--build-arg "PI_VERSION=${pi_version}"} \
         -f "$SWARM_DIR/Dockerfile" "$SWARM_DIR"
+    keep_image
+}
+
+# Give the image just built a second name after its id, which cleanup
+# removes.  A later build under the same name (post-process rebuilds)
+# can move ${IMAGE_NAME} to another image; this name keeps the one the
+# agents run, so their stopped containers still have it at retire.
+# The build runs before the engagement is recorded, so a launch that
+# fails in between leaves the name until a later engagement's cleanup:
+# it costs nothing but a name, and the image it holds is the one that
+# launch would have reused.
+keep_image() {
+    local id
+    if ! id=$(docker image inspect -f '{{.Id}}' "$IMAGE_NAME"); then
+        echo "ERROR: cannot read the id of ${IMAGE_NAME}." >&2
+        return 1
+    fi
+    id="${id#sha256:}"
+    if ! docker tag "$IMAGE_NAME" "${IMAGE_NAME}-keep:${id:0:12}"; then
+        echo "ERROR: cannot tag ${IMAGE_NAME} as" \
+             "${IMAGE_NAME}-keep:${id:0:12}." >&2
+        return 1
+    fi
 }
 
 # Print the state of this checkout's container NAME: its Docker status,
